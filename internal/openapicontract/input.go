@@ -59,6 +59,10 @@ func InputFiles(config map[string]any) ([]string, error) {
 // serviceDocument is the name under which Load reads the service's own OpenAPI document (gen.Context.ServiceOpenAPI).
 const serviceDocument = "openapi.json"
 
+// knownExtensions are the boolean extensions that a captured document may hold: those of the document of the rest-api
+// component, which carry no body value.
+var knownExtensions = map[string]bool{"x-sensitive": true, "x-stego-command": true, "x-kept": true}
+
 // Check syntax before the OpenAPI loader. YAML aliases and duplicate keys must
 // not change the meaning of a captured contract.
 func checkDocument(data []byte) error {
@@ -94,8 +98,9 @@ func checkDocument(data []byte) error {
 				seen[key.Value] = true
 				if strings.HasPrefix(strings.ToLower(key.Value), "x-") {
 					// x-stego-command marks the operation of a command in the document of the rest-api component
-					// (ST-SUP-RC20-OC53).
-					if (key.Value != "x-sensitive" && key.Value != "x-stego-command") || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+					// (ST-SUP-RC20-OC53); x-kept marks a member of a patch request that a client never writes
+					// (ST-SUP-RC20-OC15).
+					if !knownExtensions[key.Value] || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
 						return fmt.Errorf("unsupported OpenAPI extension")
 					}
 					// All body fields are excluded from diagnostics, including sensitive fields.

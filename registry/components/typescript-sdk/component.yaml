@@ -1,6 +1,8 @@
+# Version 1.2.3 takes a document whose request schemas mark a member x-kept, as the rest-api component writes a patch
+# request (ST-SUP-RC20-OC15); before, the input check refused such a document.
 kind: component
 name: typescript-sdk
-version: 1.2.2
+version: 1.2.3
 stage: ga
 output_namespace: tssdk
 config:

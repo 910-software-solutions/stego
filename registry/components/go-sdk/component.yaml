@@ -1,10 +1,12 @@
+# Version 2.2.1 takes a document whose request schemas mark a member x-kept, as the rest-api component writes a patch
+# request (ST-SUP-RC20-OC15); before, the input check refused such a document.
 # Version 2.2.0 makes the client from the OpenAPI document of the service when the declaration gives no document
 # (ST-SUP-RC06-OC09).
 kind: component
 name: go-sdk
 # Version 2.1.0: the common HTTPS client gives ErrTransport for a request that failed in transport or stopped
 # before the end of its answer, and ErrDeadline for a request whose time limit ended (security review of PR #447, I-2).
-version: 2.2.0
+version: 2.2.1
 stage: ga
 output_namespace: sdk
 config:

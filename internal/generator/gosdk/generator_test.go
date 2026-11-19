@@ -69,6 +69,45 @@ components:
         tags: {type: array, nullable: true, items: {type: string}}
 `
 
+// keptSample is a document as the rest-api component writes it for a patch of an entity with a field that a collection
+// write cannot change (ST-SUP-RC20-OC15): a closed patch request with kind and an x-kept member.
+const keptSample = `openapi: 3.0.3
+info: {title: Kept, version: '1'}
+paths:
+  /widgets/{id}:
+    patch:
+      operationId: patchWidgets
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WidgetsPatchRequest'}
+      responses:
+        '200':
+          description: Patched
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Widget'}
+components:
+  schemas:
+    Widget:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        code: {type: string, readOnly: true}
+    WidgetsPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [Widget]}
+        name: {type: string}
+        code: {type: string, x-kept: true, description: A patch cannot change this field.}
+`
+
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{"document": "api.yaml"}, Inputs: map[string][]byte{"api.yaml": []byte(sample)}}
 }
@@ -345,6 +384,20 @@ func TestServiceDocument(t *testing.T) {
 		own.ServiceOpenAPI = nil
 		if err := new(Generator).ValidateContext(own); err == nil || !strings.Contains(err.Error(), "the setting document, or the rest-api component") {
 			t.Errorf("with no document and no service document the SDK gives %v, want a refusal that names the setting", err)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC15-T05 The Go client is made from a service document whose patch request marks a member x-kept", func(t *testing.T) {
+		own := gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(keptSample)}
+		if err := new(Generator).ValidateContext(own); err != nil {
+			t.Fatalf("the document of a rest-api service with a kept field is refused: %v", err)
+		}
+		if files, _, err := new(Generator).Generate(own); err != nil || len(files) == 0 {
+			t.Fatalf("the client of a document with an x-kept member: %d files, %v", len(files), err)
+		}
+		// Only the marks of the rest-api document are taken: another extension is still refused.
+		own.ServiceOpenAPI = []byte(strings.Replace(keptSample, "x-kept: true", "x-go-type: Unsafe", 1))
+		if err := new(Generator).ValidateContext(own); err == nil {
+			t.Error("a document with the extension x-go-type passed preflight")
 		}
 	})
 	t.Run("ST-SUP-RC06-OC10-T01 The client sends the idempotency key that its caller gives", func(t *testing.T) {
