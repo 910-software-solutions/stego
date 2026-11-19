@@ -19,6 +19,8 @@
 # Version 1.14.0 gives an entity with a resource type of its own the repository type <Entity>Repo, whose GetForUpdate,
 # GetForDelete, Update and Delete take no parent, and Move for an update that changes a reference (walkthrough 15,
 # W15-B3, ST-SUP-RC32-OC26).
+# Version 1.15.0 takes a field written sensitivity: public as a field with no sensitivity (decision ST-DECL-Q46 (a)),
+# and names the seal change of each clear column in AfterSeal (ST-SUP-RP10-LC49; security review of PR #459, L1).
 # Version 1.16.0 states that STEGO_SECRET_KEY_RING_FILE is also required when a command message has a member that the
 # proto marks debug_redact: such a service keys its idempotency fingerprints and seals its stored answers
 # (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, ST-SUP-Q192).
