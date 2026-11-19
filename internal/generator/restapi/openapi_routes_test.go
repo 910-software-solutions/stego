@@ -279,6 +279,62 @@ func TestCommandResponseSecretRoot(t *testing.T) {
 	})
 }
 
+// opaqueProto is routesProto whose response holds an opaque member as the test case gives it in place of the member
+// detail.
+func opaqueProto(detail string) string {
+	return `syntax = "proto3";
+package todo.v1;
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+message Note { string text = 1; Inner inner = 2; }
+message Inner { ` + detail + ` }
+message CloseTodoRequest { string todo_id = 1; }
+message CloseTodoResponse {
+  string todo_id = 1;
+  Note note = 2;
+}
+`
+}
+
+func TestCommandOpaqueResponse(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC54-T06 A response that holds google.protobuf.Any, Struct, Value or ListValue at any depth is x-stego-opaque at its root, and is not x-sensitive", func(t *testing.T) {
+		for _, c := range []struct {
+			name, detail string
+			opaque       bool
+		}{
+			{"a Struct in a nested message", "google.protobuf.Struct data = 1;", true},
+			{"a list of Any", "repeated google.protobuf.Any items = 1;", true},
+			{"a map of Value", "map<string, google.protobuf.Value> values = 1;", true},
+			{"a ListValue", "google.protobuf.ListValue list = 1;", true},
+			{"a Timestamp only", "google.protobuf.Timestamp at = 1;", false},
+			{"plain members only", "string text = 1;", false},
+		} {
+			ctx := routesContext()
+			ctx.Inputs = map[string][]byte{"proto/todo.proto": []byte(opaqueProto(c.detail))}
+			document, err := new(Generator).OpenAPIDocument(onRuntime(ctx))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			doc, err := openapi3.NewLoader().LoadFromData(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Validate(context.Background()); err != nil {
+				t.Fatalf("%s: the document is not valid OpenAPI: %v", c.name, err)
+			}
+			op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+			root := op.Responses.Value("200").Value.Content.Get("application/json").Schema.Value
+			if got := root.Extensions["x-stego-opaque"] == true; got != c.opaque {
+				t.Errorf("the response root of %s has x-stego-opaque %t, want %t", c.name, got, c.opaque)
+			}
+			if root.Extensions["x-sensitive"] != nil {
+				t.Errorf("the response root of %s is x-sensitive; the opaque mark asks no key ring", c.name)
+			}
+		}
+	})
+}
+
 func TestCommandSecretPathParameter(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC54-T03 A path parameter that the proto marks debug_redact is refused", func(t *testing.T) {
 		for _, c := range []struct {

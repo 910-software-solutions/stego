@@ -2178,6 +2178,9 @@ type openAPISchema struct {
 	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
 	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
 	Sensitive bool `json:"x-sensitive,omitempty"`
+	// Opaque marks the root of a command response that holds a google.protobuf.Any, Struct, Value or ListValue member
+	// at any depth, whose content the document cannot describe (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+	Opaque bool `json:"x-stego-opaque,omitempty"`
 	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
 	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
 	Kept bool `json:"x-kept,omitempty"`

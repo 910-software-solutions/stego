@@ -35,8 +35,11 @@ package `<out>/cli/app`:
   of an entity that the command writes and no mark
   (`unmarked-secret-member`). A secret member cannot be a path parameter:
   generation refuses the route, because the URL goes in access logs;
-- `Sensitive` for a command whose answer holds a member marked `x-sensitive`:
-  it writes the answer only to `--output-file FILE`, and never to stdout;
+- `Sensitive` for a command whose answer holds a member marked `x-sensitive`,
+  or whose answer the document marks `x-stego-opaque` because it holds a
+  `google.protobuf.Any`, `Struct`, `Value` or `ListValue` member, which can
+  hold a secret that no mark reaches: it writes the answer only to
+  `--output-file FILE`, and never to stdout;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`, at a path with no parameter. The kind is the
