@@ -233,8 +233,8 @@ var relayResults = map[string]string{
 	"stego_outbox.expire_leases": "bigint",
 	"stego_outbox.blocked": "TABLE(r_tenant text, r_destination text, r_resource_key text, r_state text, r_attempts bigint, " +
 		"r_failure_code text, r_available_at timestamp with time zone, r_created_at timestamp with time zone)",
-	"stego_outbox.oldest":  "TABLE(r_destination text, r_age double precision)",
-	"stego_outbox.resolve": "TABLE(o_resolved_at timestamp with time zone, o_age_seconds double precision)",
+	"stego_outbox.oldest":          "TABLE(r_destination text, r_age double precision)",
+	"stego_outbox.resolve":         "TABLE(o_resolved_at timestamp with time zone, o_age_seconds double precision)",
 	"stego_outbox.free_successors": "TABLE(r_id uuid, r_group text, r_principal text)",
 }
 
