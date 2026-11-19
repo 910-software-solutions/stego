@@ -405,6 +405,17 @@ steps. Keep the other attributes of the field as the base has them: the
 baseline with the seal undone is the field in clear, so `001_initial` stays
 the same.
 
+The seal changes the answers of the API at once too, in the release with the
+expand step. From that release on, the answers of the collection, the lists,
+the queries, the events and the audit do not hold the field, and the OpenAPI
+document marks it `writeOnly` (see [Who reads a
+secret](fills.md#who-reads-a-secret)). A create, an update, an upsert or a
+patch still takes it in the body. The release before still returns the field
+in its answers, also while both releases run side by side, so the same row
+can come back with the field from the release before and without it from the
+new release. A client that reads the field must stop reading it before the
+expand step: tell the clients before you deploy the release.
+
 ### The expand step
 
 The expand migration adds the column `<column>_sealed`, nullable `bytea` with

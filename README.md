@@ -276,6 +276,38 @@ listing, gets 404 for `/listings/{listing_id}/variants`, and 200 for
 are shared with the user, also declare a collection of the entity with no
 scope: its list gives each row that the caller may view, from all parents.
 
+The operations of a collection are `create`, `read`, `update`, `delete`,
+`list`, `upsert` and `patch`. An update (`PUT <path>/{id}`) takes the whole
+row. A patch (`PATCH <path>/{id}`) changes only the fields that
+its body gives, and only the fields that the collection names in
+`patchable`:
+
+```yaml
+entities:
+  - name: Cart
+    resource_type: cart
+    permissions: {create: public, read: view, list: view, update: edit, patch: edit, delete: manage}
+    ...
+collections:
+  carts:
+    entity: Cart
+    operations: [create, read, update, list, patch]
+    patchable: [name, seller_ref]
+```
+
+A collection with `patch` must give `patchable`, and `patchable` needs
+`patch`. The entity names the permission of the patch in `permissions`, as
+for each operation. A patchable field must be a field of the entity, and must
+not be computed, a `ref`, an implicit field or the scope field of the
+collection, or have `writable: create` or `writable: never`. A patch changes
+no field that is not patchable. The OpenAPI document gives the body of the
+patch as the schema `<Collection>PatchRequest`. The `apply` command of the
+generated CLI changes a resource that it finds with this patch, so a
+collection is an apply resource only when it has `create`, `list` and
+`patch`, has no scope, and both the create and `patchable` hold a text field
+`name` (see the [cli-application
+README](registry/components/cli-application/README.md#the-apply-command)).
+
 The path of a scoped collection names the parent of a create, an update or an
 upsert. A body may leave the scope field out, or give the value of the path. A
 body that gives another value gets a 400 validation problem that names the
