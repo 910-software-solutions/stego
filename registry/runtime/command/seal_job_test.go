@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func noteSpec() EntitySpec[note] {
 			return v, m, err
 		},
 		func(v note) []any { return []any{v.ID, v.Label, SealAt("notes", "body_sealed", v.ID, v.Body)} }, nil)
-	s.AfterSeal = &AfterSeal[note]{Table: "public.notes", Clear: []string{"body"}, Select: after.Select, SelectForUpdate: after.SelectForUpdate,
+	s.AfterSeal = &AfterSeal[note]{Table: "public.notes", Clear: []string{"body"}, Changes: []string{noteChange}, Select: after.Select, SelectForUpdate: after.SelectForUpdate,
 		SelectForDelete: after.SelectForDelete, Insert: after.Insert, Update: after.Update, Scan: after.Scan, Values: after.Values}
 	return s
 }
@@ -510,7 +511,57 @@ func TestSealContract(t *testing.T) {
 		n.noSecretOutside(secret)
 	})
 
+	t.Run("ST-SUP-RP10-LC49-T05 A process that took its statements after the contract keeps the sealed column alone when a clear column comes back with no seal checkpoint", func(t *testing.T) {
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		n := newNoteEnv(t)
+		id := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: id, Label: "x", Body: sealed.SecretOf(secret + "-before")})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`ALTER TABLE notes DROP COLUMN body`, `DELETE FROM stego_schema.seals WHERE change_id = '`+noteChange+`'`)
+		if got := n.read("org-a", id); got.Body.Reveal() != secret+"-before" || !n.notes.contracted.Load() {
+			t.Fatal("the entity did not take its statements after the contract")
+		}
+		// A person adds a column of the clear name by hand; no checkpoint row comes back.
+		n.exec(`ALTER TABLE notes ADD COLUMN body text`)
+		for i := range 2 {
+			n.notes.recheckAt.Store(0)
+			if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+				l, err := r.GetForUpdate(ctx, id)
+				if err != nil {
+					return err
+				}
+				v := l.Value()
+				v.Body = sealed.SecretOf(fmt.Sprintf("%s-stray-%d", secret, i))
+				_, err = r.Update(ctx, l, v)
+				return err
+			}); err != nil {
+				t.Fatalf("an update with a stray clear column fails: %v", err)
+			}
+		}
+		if !n.notes.contracted.Load() {
+			t.Fatal("the entity takes the statements with the clear column again with no seal checkpoint")
+		}
+		if clear, clearSet, opened, _ := n.opened("org-a", id); clearSet || opened != secret+"-stray-1" {
+			t.Fatalf("the stray clear column is set %t (%t), and the sealed column holds the update %t", clearSet, clear != "", opened == secret+"-stray-1")
+		}
+		if got := strings.Count(logs.String(), "with no seal checkpoint"); got != 1 {
+			t.Fatalf("the stray clear column is logged %d times, want once", got)
+		}
+		n.noSecretOutside(secret)
+	})
+
 	t.Run("ST-SUP-RP10-LC50-T03 The seal job with no checkpoint completes nothing while the clear column is there, and logs the contract again after a restore", func(t *testing.T) {
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
 		n := newNoteEnv(t)
 		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '` + uuid.NewString() + `', 'x', '` + secret + `')`)
 		// The checkpoint row is gone while the clear column is there, as before the migration job of the release:
@@ -523,6 +574,13 @@ func TestSealContract(t *testing.T) {
 		}
 		if sealedRows := n.count(`SELECT count(*) FROM notes WHERE body_sealed IS NOT NULL`); sealedRows != 0 {
 			t.Fatalf("the run with no checkpoint sealed %d rows", sealedRows)
+		}
+		// A second run fails the same way and logs nothing more (security review of PR #459, I4).
+		if _, err := j.Run(n.ctx); !errors.Is(err, ErrSealCheckpoint) {
+			t.Fatalf("a second run with no checkpoint gives %v", err)
+		}
+		if got := strings.Count(logs.String(), "has no checkpoint while its clear column is there"); got != 1 {
+			t.Fatalf("the run with no checkpoint is logged %d times, want once", got)
 		}
 		// The contract drops the clear column: the job has no work and takes the change as contracted.
 		n.exec(`ALTER TABLE notes DROP COLUMN body`)

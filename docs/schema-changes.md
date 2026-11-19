@@ -568,8 +568,11 @@ take it through the steps again:
    stops, so on the restored database it would leave the clear value of a
    row older than its sealed value. From runtime v0.157.0 such a process
    checks the table again, at most once each second, and writes the clear
-   column again once the restore brings it back, but a call that runs while
-   the restore runs can still write the sealed column alone. Then restore the
+   column again once the restore brings it back with the seal checkpoint of
+   its change, but a call that runs while the restore runs can still write the
+   sealed column alone. A clear column with no checkpoint, such as one added by
+   hand, gets no value: the process logs it at the level error and writes the
+   sealed column alone. Then restore the
    backup, as [Restore from a backup](operations.md#restore-from-a-backup)
    tells.
 2. Run the migration Job of the release that runs now. When the backup is from

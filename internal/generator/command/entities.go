@@ -501,8 +501,16 @@ func renderAfterSeal(w *writer, e *entity, tenantKey string) {
 	for _, column := range e.clearColumns() {
 		clearColumns = append(clearColumns, fmt.Sprintf("%q", column))
 	}
+	// The seal change of each clear column, in the same order: the runtime takes a clear column again only while the
+	// checkpoint row of its change is there (ST-SUP-RP10-LC49; security review of PR #459, L1).
+	var changes []string
+	for _, f := range e.fields {
+		if f.sealing() {
+			changes = append(changes, fmt.Sprintf("%q", f.decl.SealChange))
+		}
+	}
 	w.f("\t// The statements after the contract step of each open seal, which the runtime takes once the contract has\n\t// dropped the clear columns (ST-SUP-RP10-LC49).\n")
-	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n", e.goName, "public."+quote(e.table), strings.Join(clearColumns, ", "))
+	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n\t\tChanges: []string{%s},\n", e.goName, "public."+quote(e.table), strings.Join(clearColumns, ", "), strings.Join(changes, ", "))
 	w.f("\t\tSelect: %q,\n\t\tSelectForUpdate: %q,\n\t\tSelectForDelete: %q,\n\t\tInsert: %q,\n\t\tUpdate: %q,\n", selectRow, forUpdate, forDelete, insert, update)
 	renderScanValues(w, after, "\t\t")
 	w.f("\t},\n")

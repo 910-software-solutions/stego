@@ -19,7 +19,8 @@
 # Version 1.14.0 gives an entity with a resource type of its own the repository type <Entity>Repo, whose GetForUpdate,
 # GetForDelete, Update and Delete take no parent, and Move for an update that changes a reference (walkthrough 15,
 # W15-B3, ST-SUP-RC32-OC26).
-# Version 1.15.0 takes a field written sensitivity: public as a field with no sensitivity (decision ST-DECL-Q46 (a)).
+# Version 1.15.0 takes a field written sensitivity: public as a field with no sensitivity (decision ST-DECL-Q46 (a)),
+# and names the seal change of each clear column in AfterSeal (ST-SUP-RP10-LC49; security review of PR #459, L1).
 kind: component
 name: command
 version: 1.15.0

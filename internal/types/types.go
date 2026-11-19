@@ -112,6 +112,9 @@ type Field struct {
 	// SealedFrom is the clear column of a readable secret whose seal step is open: from its expand step to its
 	// contract step the field is in two columns, the clear one, which a release before writes, and Column, its
 	// sealed column <column>_sealed (ST-SUP-RC01-OC49). The declaration never sets it.
+	// SealChange is the ID of the seal change of the field while SealedFrom is set: the runtime takes the clear column
+	// again only while the checkpoint row of that change is there (ST-SUP-RP10-LC49; security review of PR #459, L1).
+	SealChange string `yaml:"-" json:"SealChange,omitempty"`
 	SealedFrom string `yaml:"-" json:"SealedFrom,omitempty"`
 	// ClearStored marks a field of sensitivity secret that a generator before postgres-adapter 6.13.0 stored in
 	// clear, in a column of its type with its CHECKs: the stored shape before a seal from secret (walkthrough 13,

@@ -640,7 +640,7 @@ func SealedNames(entities []types.Entity, changes []types.SchemaChange, history 
 			clear := field.ColumnName()
 			entity.Fields[j].Column = SealColumn(clear)
 			if !contracted[id] {
-				entity.Fields[j].SealedFrom = clear
+				entity.Fields[j].SealedFrom, entity.Fields[j].SealChange = clear, id
 			}
 		}
 		out[i] = entity

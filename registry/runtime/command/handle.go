@@ -561,6 +561,8 @@ type Entity[T any] struct {
 	switchedAt atomic.Int64
 	// recheckAt is the time, in Unix nanoseconds, of the next catalog check of recheckSeal while contracted is set.
 	recheckAt atomic.Int64
+	// strayLogged is set once recheckSeal logged a clear column with no seal checkpoint.
+	strayLogged atomic.Bool
 	// owner is the runtime that registered the entity in its Config.Entities; an entity registers with one runtime
 	// only.
 	owner *Runtime
