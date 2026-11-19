@@ -1056,10 +1056,12 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 
 // readVariables gives the variables that the generated service reads: each one whose Read with names no package, or
 // a package of the runtime library that the generated code imports (ST-SUP-Q161, ST-DLV-UC01-R06). A browser-service
-// that imports no package of the runtime is not asked for the connection strings that only the runtime reads.
+// that imports no package of the runtime is not asked for the connection strings that only the runtime reads. A
+// variable that only a client program of the component reads, such as APPLY_CONFIG of the generated CLI, is never
+// one that the service reads, so no server pod gets it (Read by client; walkthrough 17, W17-D2).
 func readVariables(variables []registry.EnvironmentVariable, imported map[string]bool) []registry.EnvironmentVariable {
 	return slices.DeleteFunc(slices.Clone(variables), func(variable registry.EnvironmentVariable) bool {
-		return variable.ReadWith != "" && !imported[variable.ReadWith]
+		return variable.ReadByClient || (variable.ReadWith != "" && !imported[variable.ReadWith])
 	})
 }
 
