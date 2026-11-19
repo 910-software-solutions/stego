@@ -40,7 +40,9 @@ Do these steps for each upgrade. Do them in this order.
    `stego test` runs the tests of each fill. Sign each fill whose evidence is
    new with `stego fill sign <fill>`. When `stego plan` says that the
    declaration needs add steps and saved no plan, run `stego apply --base`
-   without `--saved-plan`. See [Schema changes](schema-changes.md).
+   without `--saved-plan`. See [Schema changes](schema-changes.md). When a
+   Go build fails with `could not import log/slog`, see [A Go build fails
+   with "could not import log/slog"](#a-go-build-fails-with-could-not-import-logslog).
 4. Make each new Secret, grant and role that the release notes name, before
    you deploy. A pod that needs a Secret key that is not there does not start.
    `stego env check` finds a missing Secret of the environment file:
@@ -507,3 +509,36 @@ Do these steps:
 From runtime v0.134.0, look at the parked list once after the first start
 all the same: a message that parks has another cause, such as a row that the
 fill needs and that does not exist.
+
+## A Go build fails with "could not import log/slog"
+
+The Go command keeps an index of each module version of the module cache in
+its build cache (`go env GOCACHE`). It makes the index one time and uses it
+again, because it takes the content of a module version as fixed. A released
+version of the STEGO runtime library never changes its content. A runtime
+version that you fetched before its release, such as from a branch of a pull
+request, can change its content and its sum before the release. Take such a
+new sum only from the go.sum line of the project that gives the version, and
+never turn off the check of sums (do not set GONOSUMDB, GONOSUMCHECK,
+GOSUMDB=off or GOFLAGS=-insecure). When the
+module cache then holds the new content and the build cache holds the index
+of the old content, a Go build can fail with an error such as:
+
+```text
+could not import log/slog (open : no such file or directory)
+```
+
+The same error can come from `go build`, `go test` or `go vet`, and from
+`stego test` or `stego deps`, which run Go commands. The error names a
+package of the standard library, but the cause is the old index. To correct
+it, clear the build cache, then build again:
+
+```sh
+go clean -cache
+```
+
+To build one time without the index, and keep the build cache, set
+`GODEBUG=goindex=0` for that command only, such as
+`GODEBUG=goindex=0 go build ./...`. When the error comes back, clear the build
+cache. A build cache that more users or builds share has the same old index
+for each of them: clear it when no build runs.
