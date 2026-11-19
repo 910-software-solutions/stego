@@ -787,6 +787,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value",
 	"ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it",
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",
+	"ST-SUP-RC20-OC48-T05 An update that leaves out a required secret, or gives it empty, answers 200 and keeps the stored value",
 	"ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value",
 	"ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service",
 	"ST-SUP-RC04-OC31-T02 The emitted CLI writes to a generated service that requires a key, and the second request of a write gets the stored answer",

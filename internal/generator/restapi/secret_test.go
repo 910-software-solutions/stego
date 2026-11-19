@@ -54,6 +54,20 @@ func TestSecretFields(t *testing.T) {
 		if slices.Contains(required(entity), "api_token") || !slices.Contains(required(create), "api_token") {
 			t.Errorf("the entity schema requires the secret, or the create request does not: %v %v", required(entity), required(create))
 		}
+		// An update may leave each secret out, or give it empty, so the update request requires none and holds no
+		// min_length of one, which an empty value would break (walkthrough 14, W14-B4).
+		update, ok := schemas["VaultUpdateRequest"].(map[string]any)
+		if !ok {
+			t.Fatal("the entity with a secret has no VaultUpdateRequest")
+		}
+		token := update["properties"].(map[string]any)["api_token"].(map[string]any)
+		if slices.Contains(required(update), "api_token") || slices.Contains(required(update), "pin") || !slices.Contains(required(update), "label") || token["minLength"] != nil || token["writeOnly"] != true {
+			t.Errorf("the update request requires %v and holds the secret as %v, want label alone required and the secret writeOnly with no minLength", required(update), token)
+		}
+		put := spec["paths"].(map[string]any)["/vaults/{id}"].(map[string]any)["put"].(map[string]any)
+		if ref := put["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)["$ref"]; ref != "#/components/schemas/VaultUpdateRequest" {
+			t.Errorf("the update takes the body %v, want VaultUpdateRequest", ref)
+		}
 		handler := findFileContent(t, files, "internal/api/vaults_handler.go")
 		for _, want := range []string{"func vaultsKeepSecrets(next, stored data.Vault) data.Vault", "if !next.ApiToken.IsSet() {",
 			"repo.Update(ctx, from, vaultsKeepSecrets(vaultsToData(vault), from.Value()), parents...)", `ApiToken: sealed.SecretOf(v.ApiToken)`,
