@@ -1589,8 +1589,10 @@ type state struct {
 	writes            map[Declared]bool
 	// reads are the read-only entities that a worker declares it reads (ST-SUP-RP10-LC53).
 	reads map[Declared]bool
-	// attempts are the checks of the counted compare-only values of the call, by row (ST-SUP-RP10-LC54).
+	// attempts are the counts that the call resets when it commits, by row, and chargeFailed is set when a charge of a
+	// check of a counted value did not commit (ST-SUP-RP10-LC54).
 	attempts     map[attemptKey]*attemptRow
+	chargeFailed bool
 	destinations map[string]Destination
 	// lists are the lists that the command or the worker declares, which its handle takes only (ST-SUP-RP10-LC38).
 	lists map[AnyList]listCopy
@@ -1945,7 +1947,7 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 	var meta Meta
 	err := sql.ErrNoRows
 	if e.spec.ValidID(id) {
-		value, meta, err = e.spec.Scan(s.opening(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id), false))
+		value, meta, err = e.spec.Scan(s.opening(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id)))
 		err = scanFailed(err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1996,7 +1998,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 	if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 		return zero, Meta{}, s.fail(ctx, step, err)
 	}
-	value, meta, err := e.spec.Scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id), true))
+	value, meta, err := e.spec.Scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id)))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := s.release(ctx, step); err != nil {
@@ -2134,7 +2136,7 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 		if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 			return nil, s.fail(ctx, step, err)
 		}
-		locked, err := r.scanAll(ctx, step, l.spec.Lock, true, append([]any{s.tenant.ID(), ids}, args...))
+		locked, err := r.scanAll(ctx, step, l.spec.Lock, append([]any{s.tenant.ID(), ids}, args...))
 		if err != nil {
 			return nil, err
 		}
@@ -2292,10 +2294,10 @@ type scanned[T any] struct {
 }
 
 func (r *Repository[T]) readList(ctx context.Context, l *List[T], limit int, args []any) ([]scanned[T], error) {
-	return r.scanAll(ctx, "read the list "+l.spec.Name, l.spec.Read, false, append([]any{r.st.tenant.ID(), limit}, args...))
+	return r.scanAll(ctx, "read the list "+l.spec.Name, l.spec.Read, append([]any{r.st.tenant.ID(), limit}, args...))
 }
 
-func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, locked bool, args []any) ([]scanned[T], error) {
+func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, args []any) ([]scanned[T], error) {
 	s := r.st
 	rows, err := s.query(ctx, statement, args...)
 	if err != nil {
@@ -2304,7 +2306,7 @@ func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, loc
 	defer rows.Close()
 	var out []scanned[T]
 	for rows.Next() {
-		value, meta, err := r.entity.spec.Scan(s.opening(rows, locked))
+		value, meta, err := r.entity.spec.Scan(s.opening(rows))
 		if err != nil {
 			return nil, s.fail(ctx, step, scanFailed(err))
 		}
@@ -2430,7 +2432,7 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(s.opening(row, true))
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	if err != nil {
 		return nil, r.failWrite(ctx, "create "+e.spec.Name, scanFailed(err))
 	}
@@ -2497,7 +2499,7 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(s.opening(row, true))
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}

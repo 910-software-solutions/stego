@@ -155,8 +155,8 @@ type entityField struct {
 	// sealed is a readable secret, of the Go type sealed.Secret, and compared a compare-only secret, of the Go type
 	// sealed.Compared (ST-SUP-RC32-OC20).
 	sealed, compared bool
-	// counter is the field that counts the wrong attempts of this compare-only field, or nil (ST-SUP-RC32-OC24).
-	counter *entityField
+	// limit is the limit of wrong attempts of this compare-only field, or 0 for none (ST-SUP-RC32-OC24).
+	limit int
 }
 
 // goTypes are the Go types of the declared field types, as the PostgreSQL columns of ST-SUP-RC01-OC41 scan.
@@ -323,22 +323,14 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		}
 		p.fields = append(p.fields, ef)
 	}
-	// A counter of wrong attempts binds to the compare-only field that it counts (ST-DECL-INV104, ST-SUP-RC32-OC24).
+	// A compare-only field with a limit of wrong attempts gets a counter (ST-DECL-INV104, ST-SUP-RC32-OC24).
 	for _, f := range p.fields {
-		a := f.decl.Attempts
-		if a == nil {
-			continue
-		}
-		var target *entityField
-		for _, t := range p.fields {
-			if t.decl.Name == a.Counts {
-				target = t
+		if a := f.decl.Attempts; a != nil {
+			if !f.compared || a.Limit < 1 || a.Limit > 100 {
+				return nil, fmt.Errorf("the field %s has a limit of wrong attempts and is not a compare-only secret with a limit from 1 to 100 (ST-DECL-INV104)", f.decl.Name)
 			}
+			f.limit = a.Limit
 		}
-		if target == nil || !target.compared || target.counter != nil || f.goType != "int32" || a.Limit < 1 || a.Limit > 100 {
-			return nil, fmt.Errorf("the field %s counts the wrong attempts of %q, which is not a compare-only field with no other counter, or it is not a required int32 with a limit from 1 to 100 (ST-DECL-INV104)", f.decl.Name, a.Counts)
-		}
-		target.counter = f
 	}
 	if ev := e.Events; ev != nil {
 		for _, name := range ev.Fields {
@@ -652,6 +644,23 @@ func (e *entity) view() *entity {
 	return v
 }
 
+// ViewColumns gives the columns of the table of the entity e that its read-only view reads, which the migration job
+// grants a consuming worker SELECT on and nothing more (ST-SUP-RC35-OC19, security review of PR #451, L4): the tenant
+// column, the ID, each field that is not secret, the version and, for an entity with a resource type, the token.
+func ViewColumns(e types.Entity, tenantKey string) []string {
+	columns := []string{tenantKey, "id"}
+	for _, f := range e.Fields {
+		if !f.Secret() {
+			columns = append(columns, f.ColumnName())
+		}
+	}
+	columns = append(columns, "version")
+	if e.ResourceType != "" {
+		columns = append(columns, "authz_token")
+	}
+	return columns
+}
+
 // renderView writes the read-only value, its loaded type, its read-only declaration and its Reader accessor of an
 // entity that a worker reads (ST-SUP-RC35-OC19, ST-SUP-RP10-LC53): its Select reads no secret column.
 func renderView(w *writer, e *entity, tenantKey string) {
@@ -726,19 +735,11 @@ func counterVar(e *entity, f *entityField) string {
 	return lowerFirst(e.goName) + f.goName + "Counter"
 }
 
-// renderCounter writes the counter of the wrong attempts of the compare-only field f (ST-SUP-RC32-OC24): the count
-// statement adds $3 to the count of the row of ID $2 in the tenant $1, at most to the limit, raises the version of the
-// row and sets its update time; the reset statement sets the count to 0 (ST-SUP-RP10-LC54).
-func renderCounter(w *writer, e *entity, f *entityField, tenantKey string) {
-	limit := f.counter.decl.Attempts.Limit
-	column := quote(f.counter.decl.ColumnName())
-	where := fmt.Sprintf("%s = $1 AND \"id\" = $2::uuid", quote(tenantKey))
-	count := fmt.Sprintf("UPDATE public.%s SET %s = LEAST(%s + $3::integer, %d), \"version\" = \"version\" + 1, \"updated_time\" = now() WHERE %s",
-		quote(e.table), column, column, limit, where)
-	reset := fmt.Sprintf("UPDATE public.%s SET %s = 0 WHERE %s AND %s <> 0", quote(e.table), column, where, column)
-	w.f("// %s counts the wrong attempts of %s.%s in %s, with the limit %d (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.counter.decl.Name, limit)
-	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Column: %q, Limit: %d,\n\tCount: %q,\n\tReset: %q}))\n\n",
-		counterVar(e, f), e.decl.Name, f.decl.Name, f.counter.decl.ColumnName(), limit, count, reset)
+// renderCounter writes the counter of the wrong attempts of the compare-only field f (ST-SUP-RC32-OC24): its entity,
+// its field and its limit; the runtime charges each check in its own table (ST-SUP-RP10-LC54).
+func renderCounter(w *writer, e *entity, f *entityField) {
+	w.f("// %s is the limit of wrong attempts of %s.%s: %d checks (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
 }
 
 // renderEventData writes EventData and EventVersion of an entity that declares event fields (ST-SUP-RC32-OC25): each
@@ -785,8 +786,8 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 		}
 	}
 	for _, f := range e.fields {
-		if f.counter != nil {
-			renderCounter(w, e, f, tenantKey)
+		if f.limit > 0 {
+			renderCounter(w, e, f)
 		}
 	}
 	w.f("// %sEntity is the repository declaration of %s (ST-SUP-RP10-LC02).\n", e.goName, e.decl.Name)
@@ -831,9 +832,9 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 		case f.sealed:
 			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
 			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.compared && f.counter != nil:
+		case f.compared && f.limit > 0:
 			// A counted compare-only value is bound to the counter of its row after the scan (ST-SUP-RP10-LC54).
-			targets = append(targets, fmt.Sprintf("command.CountedAt(%s, &v.ID, &v.%s, &v.%s)", counterVar(e, f), f.goName, f.counter.goName))
+			targets = append(targets, fmt.Sprintf("command.CountedAt(%s, &v.ID, &v.%s)", counterVar(e, f), f.goName))
 		case f.compared:
 			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
 		default:
@@ -853,6 +854,9 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
 			// compare-only secret as its hash (ST-SUP-RP10-LC44).
 			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared && f.limit > 0:
+			// A new value of a counted field resets the count of its row (ST-SUP-RP10-LC54).
+			values = append(values, fmt.Sprintf("command.HashCountedOf(%s, id, v.%s)", counterVar(e, f), f.goName))
 		case f.compared:
 			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
 		default:

@@ -671,7 +671,7 @@ func renderRunners(m *model) []byte {
 		}
 	}
 	w.f("}\n}\n\n")
-	w.f("// ConsumerReadTables are the tables of the entities that the workers with a consumes trigger only read, which the\n// migration job grants the worker role SELECT on, and nothing more (ST-SUP-RC35-OC19).\nfunc ConsumerReadTables() []string {\n\treturn []string{")
+	w.f("// ConsumerReadTables are the tables of the entities that the workers with a consumes trigger only read, by table, with\n// the columns of their views, which the migration job grants the worker role SELECT on, and nothing more\n// (ST-SUP-RC35-OC19).\nfunc ConsumerReadTables() map[string][]string {\n\treturn map[string][]string{")
 	first = true
 	for _, name := range m.readNames {
 		if seen[name] {
@@ -684,7 +684,18 @@ func renderRunners(m *model) []byte {
 				}
 				first = false
 				seen[name] = true
-				w.f("%q", command.TableName(name))
+				var e types.Entity
+				for _, d := range m.ctx.Entities {
+					if d.Name == name {
+						e = d
+					}
+				}
+				cols := command.ViewColumns(e, m.tenantKey)
+				quoted := make([]string, len(cols))
+				for i, c := range cols {
+					quoted[i] = strconv.Quote(c)
+				}
+				w.f("%q: {%s}", command.TableName(name), strings.Join(quoted, ", "))
 				break
 			}
 		}

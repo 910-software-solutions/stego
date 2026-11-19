@@ -1739,27 +1739,37 @@ func TestMigrateLocks(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC35-OC19-T02 The job gives the worker role only SELECT on the table of an entity that a consuming worker only reads", func(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC19-T02 The job gives the worker role only SELECT on the columns of the view of an entity that a consuming worker only reads", func(t *testing.T) {
 		endpoint, key := startSpiceDB(t)
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 		m := f.migration(nil)
 		m.Parts.Workers.Consumers = func(*command.Runtime, *outbox.Worker, func(string) command.WorkerObserver) error { return nil }
-		m.Parts.Workers.ConsumerReadTables = []string{"orders"}
+		// The view of the read entity reads tenant_id, id and version, and not status (security review of PR #451, L4).
+		m.Parts.Workers.ConsumerReadTables = map[string][]string{"orders": {"tenant_id", "id", "version"}}
 		if err := Migrate(context.Background(), settings, m); err != nil {
 			t.Fatal(err)
 		}
-		for privilege, want := range map[string]bool{"SELECT": true, "INSERT": false, "UPDATE": false, "DELETE": false} {
+		for privilege, want := range map[string]bool{"SELECT": false, "INSERT": false, "UPDATE": false, "DELETE": false} {
 			var has bool
 			if err := f.admin.QueryRow(`SELECT has_table_privilege($1, 'public.orders', $2)`, f.worker, privilege).Scan(&has); err != nil {
 				t.Fatal(err)
 			}
 			if has != want {
-				t.Errorf("the worker role holds %s on orders: %v, want %v", privilege, has, want)
+				t.Errorf("the worker role holds %s on the table orders: %v, want %v", privilege, has, want)
+			}
+		}
+		for column, want := range map[string]bool{"tenant_id": true, "id": true, "version": true, "status": false} {
+			var has bool
+			if err := f.admin.QueryRow(`SELECT has_column_privilege($1, 'public.orders', $2, 'SELECT')`, f.worker, column).Scan(&has); err != nil {
+				t.Fatal(err)
+			}
+			if has != want {
+				t.Errorf("the worker role holds SELECT on orders.%s: %v, want %v", column, has, want)
 			}
 		}
 		// A read table that the runtime role gets no grant on is refused before the job opens the database.
-		m.Parts.Workers.ConsumerReadTables = []string{"foreign_orders"}
+		m.Parts.Workers.ConsumerReadTables = map[string][]string{"foreign_orders": {"id"}}
 		if err := Migrate(context.Background(), settings, m); Stage(err) != "migrate."+StepSettings {
 			t.Fatalf("the job with the read table foreign_orders gave %v at the stage %q, want %s", err, Stage(err), StepSettings)
 		}

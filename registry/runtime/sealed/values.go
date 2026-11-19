@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 )
 
 // Redacted is the text that a Secret and a Compared give for each fmt verb, for String and for slog.
@@ -78,13 +79,31 @@ type Compared struct {
 	counter Counter
 }
 
-// Counter counts the checks of a stored compare-only value whose field declares a counter of wrong attempts
+// Counter counts the checks of a stored compare-only value whose field declares a limit of wrong attempts
 // (ST-DECL-INV104, ST-SUP-RP10-LC54). The command runtime binds it to each value that its handle reads.
 type Counter interface {
-	// Allow tells whether a check may run now: false at the limit, and for a value that its handle may not count.
-	Allow() bool
-	// Record records the result of one check.
+	// Charge takes one check of the limit before the check runs, and commits it on its own: false at the limit, when
+	// the charge cannot commit, and for a value that its handle may not count, and then no check runs.
+	Charge() bool
+	// Record records the result of one check that Charge allowed.
 	Record(matched bool)
+}
+
+// dummy is the hash that a check at the limit verifies against, made once.
+var dummy struct {
+	once sync.Once
+	hash string
+}
+
+// dummyHash gives the hash of a fixed text, which no secret has: a check at the limit runs one verify against it.
+func dummyHash() string {
+	dummy.once.Do(func() {
+		h, err := Hash("stego: the limit of wrong attempts is reached")
+		if err == nil {
+			dummy.hash = h
+		}
+	})
+	return dummy.hash
 }
 
 // CountedBy gives c with the counter k: each later Matches of a stored value asks k first and records its result in
@@ -121,7 +140,10 @@ func (c Compared) IsSet() bool { return c.text != nil || c.hash != nil }
 // a check, Matches gives false and checks nothing; otherwise the counter records the result (ST-SUP-RP10-LC54).
 func (c Compared) Matches(value string) bool {
 	if c.counter != nil && c.hash != nil {
-		if !c.counter.Allow() {
+		if !c.counter.Charge() {
+			// The same work as a check, so the time of the answer does not tell that the limit is reached (security
+			// review of PR #451, L1).
+			_ = Matches(dummyHash(), value+"\x00")
 			return false
 		}
 		matched := value != "" && Matches(*c.hash, value)
@@ -138,6 +160,9 @@ func (c Compared) Matches(value string) bool {
 	}
 	return false
 }
+
+// IsNew tells whether c is a new text, which the next write stores as its hash, and not a stored hash.
+func (c Compared) IsNew() bool { return c.text != nil }
 
 // Check runs ok on a new text before its hash, such as the generated check of the declared length; a stored hash and
 // a value that is not set pass, because their text is not known. ok never gets a stored hash.

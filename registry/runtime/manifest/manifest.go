@@ -127,7 +127,7 @@ type TenantKey struct {
 
 // runtimeTable is the grammar of the names of the tables of the runtime library, which are never the table of a
 // declared entity (ST-SUP-RP15-LC02 rule 1).
-var runtimeTable = regexp.MustCompile(`^(?:messages|idempotency_keys|leases|audit_.*|authz_.*)$`)
+var runtimeTable = regexp.MustCompile(`^(?:messages|idempotency_keys|attempt_counts|leases|audit_.*|authz_.*)$`)
 
 // Column is one column: its name, its type as format_type gives it, such as character varying(255), and whether
 // the code needs it NOT NULL. A column that the code takes as nullable may be NOT NULL in the database. A column of a

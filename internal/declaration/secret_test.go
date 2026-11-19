@@ -109,44 +109,32 @@ func entityRuleFaults(t *testing.T, rule, entityTail, tail string, fields ...str
 
 func TestAttemptsCounter(t *testing.T) {
 	const title = "- {name: title, type: string}"
-	const pin = "- {name: pin, type: string, sensitivity: secret, compare_only: true}"
-	counter := func(settings string) string {
-		return "- {name: pin_attempts, type: int32, " + settings + "}"
+	pin := func(settings string) string {
+		return "- {name: pin, type: string, " + settings + "}"
 	}
-	const ok = "default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 5}"
-	t.Run("ST-DECL-INV104-T A counter of a compare-only secret is accepted", func(t *testing.T) {
-		if faults := entityRuleFaults(t, "attempts-counter", "", "", title, pin, counter(ok)); len(faults) != 0 {
-			t.Fatalf("want no fault, got %v", faults)
+	t.Run("ST-DECL-INV104-T A limit of wrong attempts on a compare-only secret is accepted", func(t *testing.T) {
+		for _, limit := range []string{"1", "5", "100"} {
+			if faults := entityRuleFaults(t, "attempts-limit", "", "", title, pin("sensitivity: secret, compare_only: true, attempts: {limit: "+limit+"}")); len(faults) != 0 {
+				t.Fatalf("limit %s: want no fault, got %v", limit, faults)
+			}
 		}
 	})
-	refused := []struct {
-		name   string
-		fields []string
-	}{
-		{"a limit of 0", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 0}")}},
-		{"a limit of 101", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 101}")}},
-		{"counts of a readable secret", []string{title, "- {name: pin, type: string, sensitivity: secret}", counter(ok)}},
-		{"counts of a public field", []string{title, "- {name: pin, type: string}", counter(ok)}},
-		{"counts of a field that Todo does not declare", []string{title, counter(ok)}},
-		{"counts of itself", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin_attempts, limit: 5}")}},
-		{"a counter of type int64", []string{title, pin, "- {name: pin_attempts, type: int64, " + ok + "}"}},
-		{"an optional counter", []string{title, pin, counter("optional: true, " + ok)}},
-		{"a counter with the default 1", []string{title, pin, counter("default: 1, min: 0, writable: never, attempts: {counts: pin, limit: 5}")}},
-		{"a counter with a maximum", []string{title, pin, counter("max: 9, " + ok)}},
-		{"a counter that is writable always", []string{title, pin, counter("default: 0, min: 0, writable: always, attempts: {counts: pin, limit: 5}")}},
-		{"a pii counter", []string{title, pin, counter("sensitivity: pii, " + ok)}},
-		{"a unique counter", []string{title, pin, counter("unique: true, " + ok)}},
-		{"two counters of pin", []string{title, pin, counter(ok), "- {name: pin_tries, type: int32, " + ok + "}"}},
+	refused := map[string]string{
+		"a limit of 0":                  "sensitivity: secret, compare_only: true, attempts: {limit: 0}",
+		"a limit of 101":                "sensitivity: secret, compare_only: true, attempts: {limit: 101}",
+		"attempts on a readable secret": "sensitivity: secret, attempts: {limit: 5}",
+		"attempts on a public field":    "attempts: {limit: 5}",
+		"attempts on a pii field":       "sensitivity: pii, attempts: {limit: 5}",
 	}
-	for _, c := range refused {
-		t.Run("ST-DECL-INV104-T "+c.name+" is refused", func(t *testing.T) {
-			faults := entityRuleFaults(t, "attempts-counter", "", "", c.fields...)
+	for name, settings := range refused {
+		t.Run("ST-DECL-INV104-T "+name+" is refused", func(t *testing.T) {
+			faults := entityRuleFaults(t, "attempts-limit", "", "", title, pin(settings))
 			if len(faults) == 0 {
-				t.Fatal("want a fault of attempts-counter, got none")
+				t.Fatal("want a fault of attempts-limit, got none")
 			}
 			for _, fault := range faults {
-				if !strings.Contains(fault.Message, "ST-DECL-INV104") || (!strings.Contains(fault.Message, `"pin_attempts"`) && !strings.Contains(fault.Message, `"pin_tries"`)) {
-					t.Errorf("the fault does not name the counter field and the rule: %s", fault.Message)
+				if !strings.Contains(fault.Message, "ST-DECL-INV104") || !strings.Contains(fault.Message, `"pin"`) {
+					t.Errorf("the fault does not name the field and the rule: %s", fault.Message)
 				}
 			}
 		})

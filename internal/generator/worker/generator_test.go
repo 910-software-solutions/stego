@@ -714,7 +714,7 @@ func TestWorkerReads(t *testing.T) {
 			t.Errorf("the list funded is not a list of the view with no lock and no secret column:\n%s", list)
 		}
 		for _, want := range []string{"Reads: []command.Declared{workers.WalletViewEntity}", "return []command.Declared{workers.TotalEntity, workers.WalletViewEntity}",
-			"func ConsumerReadTables() []string {\n return []string{\"wallets\"}\n}"} {
+			"func ConsumerReadTables() map[string][]string {\n return map[string][]string{\"wallets\": {\"tenant_id\", \"id\", \"label\", \"balance\", \"version\", \"authz_token\"}}\n}"} {
 			if !strings.Contains(runners, want) {
 				t.Errorf("the runners do not hold %s:\n%s", want, runners)
 			}

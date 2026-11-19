@@ -1063,15 +1063,14 @@ func TestSealingEmission(t *testing.T) {
 }
 
 // walletEntities are the entities of the tests of the counter and the event fields: Wallet with a compare-only secret
-// pin, its counter pin_attempts with the limit 5 and no event fields, and Transaction with the event fields wallet_id,
+// pin with the limit of 5 wrong attempts and no event fields, and Transaction with the event fields wallet_id,
 // kind and amount at version 2.
 func walletEntities() []types.Entity {
-	zero, two := 0.0, 2
+	two := 2
 	return []types.Entity{
 		{Name: "Wallet", Fields: []types.Field{
 			{Name: "label", Type: types.FieldTypeString},
-			{Name: "pin", Type: types.FieldTypeString, Sensitivity: "secret", CompareOnly: true},
-			{Name: "pin_attempts", Type: types.FieldTypeInt32, Default: 0, Min: &zero, Writable: types.WritableNever, Attempts: &types.FieldAttempts{Counts: "pin", Limit: 5}},
+			{Name: "pin", Type: types.FieldTypeString, Sensitivity: "secret", CompareOnly: true, Attempts: &types.FieldAttempts{Limit: 5}},
 		}},
 		{Name: "Transaction", Fields: []types.Field{
 			{Name: "wallet_id", Type: types.FieldTypeString},
@@ -1103,17 +1102,16 @@ func buildEntityFile(t *testing.T, source []byte) {
 }
 
 func TestCounterEmission(t *testing.T) {
-	t.Run("ST-SUP-RC32-OC24-T01 A counted compare-only field gets its counter and the CountedAt target in the scan", func(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC24-T01 A compare-only field with a limit gets its counter, CountedAt in the scan and HashCountedOf in the values", func(t *testing.T) {
 		source, err := EntityFile("data", []string{"Wallet", "Transaction"}, walletEntities(), "tenant_id", Relations{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		text := string(source)
 		for _, want := range []string{
-			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Column: "pin_attempts", Limit: 5,`,
-			`Count: "UPDATE public.\"wallets\" SET \"pin_attempts\" = LEAST(\"pin_attempts\" + $3::integer, 5), \"version\" = \"version\" + 1, \"updated_time\" = now() WHERE \"tenant_id\" = $1 AND \"id\" = $2::uuid"`,
-			`Reset: "UPDATE public.\"wallets\" SET \"pin_attempts\" = 0 WHERE \"tenant_id\" = $1 AND \"id\" = $2::uuid AND \"pin_attempts\" <> 0"`,
-			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin, &v.PinAttempts)`,
+			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5}))`,
+			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin)`,
+			`command.HashCountedOf(walletPinCounter, id, v.Pin)`,
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("the entity file does not hold %s:\n%s", want, text)

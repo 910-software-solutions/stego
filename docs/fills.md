@@ -13,7 +13,7 @@ make, test and sign a fill.
 
 The example is the service `wallets`. A customer has wallets, and each wallet
 has transactions. Each wallet has a readable secret `api_key` and a
-compare-only secret `pin`, with a counter of the wrong PINs. The commands take
+compare-only secret `pin`, with a limit of wrong PINs. The commands take
 money from a wallet, move money between two wallets, change the PIN, and start
 a campaign of the tenant. The worker `sum-balances` reads the wallets and
 writes the daily total of the balances every hour. The change events of
@@ -68,8 +68,7 @@ entities:
       - { name: label, type: string, min_length: 1, max_length: 80 }
       - { name: balance, type: int64, min: 0, default: 0, writable: never }
       - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create }
-      - { name: pin_attempts, type: int32, default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 5} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
     events:
       fields: [customer_id, label, balance]
   - name: Transaction
@@ -318,7 +317,7 @@ Each field of an entity is one item of `fields`:
 | `sensitivity` | `public`, `pii` or `secret`. The default is `public`. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
-| `attempts` | For a counter of wrong attempts only: `{counts: <compare-only field>, limit: <1 to 100>}`. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
+| `attempts` | For a compare-only secret only: `{limit: <1 to 100>}`, the limit of wrong checks. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
 
 An entity can also declare `events`, the fields that its change events carry.
 See [The fields of a change event](#the-fields-of-a-change-event).
@@ -522,45 +521,49 @@ so a wrong PIN tells nothing of the balance.
 
 A PIN of 4 digits has only 10,000 values. A caller who may operate the wallet,
 such as with a stolen session, could try each value in some minutes. Thus the
-example declares a counter of the wrong PINs (runtime v0.140.0):
+example declares a limit of wrong PINs on the field (runtime v0.140.0):
 
 <!-- excerpt -->
 ```yaml
-      - { name: pin_attempts, type: int32, default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 5} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
 ```
 
-The counter is an `int32` with the default 0, the minimum 0, no maximum and
-`writable: never`. It counts one compare-only field of the same entity, and
-its limit is from 1 to 100, as NIST SP 800-63B (5.2.2) asks for each account.
-`stego validate` refuses each other counter.
+Only a compare-only secret can have `attempts`. The limit is from 1 to 100, as
+NIST SP 800-63B (5.2.2) asks for each account. `stego validate` refuses each
+other limit.
 
 The fill does not change. The runtime binds each PIN that a read of the handle
-gives to the counter of its row:
+gives to the count of its row:
 
-- Each `Matches` that does not match adds one to the count. The fill then
-  returns its refusal, such as `pin.wrong`, and the runtime rolls back the
-  command. After the rollback, the runtime adds the count in a short
-  transaction of its own, so the count survives the refusal. This also occurs
-  after any other failure of the command.
-- At the limit, `Matches` gives `false` and checks nothing, also for the right
-  PIN. The answer is the same refusal, so the caller does not learn that the
-  limit is reached.
-- A `Matches` that matches in a command that commits sets the count to 0.
-- `Matches` gives `false` and counts nothing for a row that the fill read with
-  no lock (`Get`) and in a worker. Read the row with `GetForUpdate`, so that
-  two checks of one row wait for each other. The count of a row that some
-  commands check at the same time can be late by the number of commands that
-  wait for the lock of the row.
-- The update of the count raises the version of the row, and writes no audit
-  row and no change event.
+- Before each `Matches` checks the value, the runtime adds one to the count, in
+  a short transaction of its own that commits before the check. Thus the count
+  stays after the fill returns its refusal, such as `pin.wrong`, and the
+  runtime rolls back the command. Commands that check one row at the same time
+  each see the counts before them: at most the limit of checks run.
+- At the limit, `Matches` gives `false` and does not check the value, also for
+  the right PIN. The answer is the same refusal, and the check takes the same
+  time, so the caller does not learn that the limit is reached.
+- When the runtime cannot write the count, such as when the database cannot
+  serve, `Matches` gives `false` and the command answers 503 and commits
+  nothing.
+- A `Matches` that matches in a command that commits sets the count to 0. A
+  write of a new value of the field, such as a new PIN, also sets it to 0.
+- In a worker, `Matches` gives `false` and counts nothing.
+- The count is not a field of the entity: the runtime keeps it in a table of
+  its own, `attempt_counts`, which the migration job makes. A count never
+  changes the row, its version, an audit row or a change event.
 
-Answers of the collections hold `pin_attempts`, and no collection write sets
-it. To unlock a wallet, write a command that sets the counter to 0, such as
-with a permission that only an admin has:
+Read the row through the handle, such as with `GetForUpdate`, before you call
+`Matches`: the read decides the permission of the caller on the row, so a
+caller who may not operate the wallet cannot use its checks. Then check the PIN
+before any other rule, as `Withdraw` does.
+
+To unlock a wallet, write a command that sets a new PIN, such as with a
+permission that only an admin has:
 
 ```go
 		v := wallet.Value()
-		v.PinAttempts = 0
+		v.Pin = sealed.ComparedOf(req.NewPin)
 		if _, err := wallets.Update(ctx, wallet, v); err != nil {
 			return nil, err
 		}

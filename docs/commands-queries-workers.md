@@ -1223,14 +1223,16 @@ worker mode, which runs the relay, runs.
   `command.WorkerSpec.Reads`, new field `command.EntitySpec.ReadOnly`, new
   function `command.ReadRepo` and new field
   `service.WorkerParts.ConsumerReadTables`, which the generated code fills. The
-  migration job gives the worker role only `SELECT` on such a table of a
-  consuming worker.
-- A field with `attempts: {counts: <field>, limit: N}` counts the wrong checks
-  of a compare-only secret. `Matches` gives `false` at the limit and for a row
-  that the handle did not lock, and the runtime commits the count also after a
-  refusal rolls back the command (ST-SUP-RP10-LC54, decision ST-SUP-Q185 (a)).
-  New `command.CounterSpec`, `command.NewCounter`, `command.CountedAt`,
-  `sealed.Counter` and `sealed.CountedBy`. See [Limit the wrong
+  migration job gives the worker role of a consuming worker only `SELECT` on
+  the columns that the view reads.
+- A compare-only secret with `attempts: {limit: N}` has a limit of wrong
+  checks. The runtime charges each check in its own table `attempt_counts`
+  before it checks the value, so the count stays after a refusal and parallel
+  checks stop at the limit. A charge that cannot commit answers 503
+  (ST-SUP-RP10-LC54, decision ST-SUP-Q185 (a)). New `command.CounterSpec`,
+  `command.NewCounter`, `command.CountedAt`, `command.HashCountedOf`,
+  `idempotency.AttemptsTable`, `sealed.Counter`, `sealed.CountedBy` and
+  `sealed.Compared.IsNew`. See [Limit the wrong
   attempts](fills.md#limit-the-wrong-attempts).
 - An entity with `events: {fields: [...]}` puts the declared fields of the row,
   as `data`, and their version, as `data_version`, in each change event
