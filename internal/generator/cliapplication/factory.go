@@ -280,6 +280,11 @@ func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 		if ref == nil || ref.Value == nil || ref.Value.ReadOnly || ref.Value.WriteOnly || ref.Value.Extensions["x-sensitive"] == true {
 			continue
 		}
+		// The member kind of one value is the name of the entity, which a body may give and the CLI never needs, and
+		// an x-kept member is one that a patch cannot change (the patch request, ST-SUP-RC20-OC15, ST-SUP-RC20-OC46).
+		if (name == "kind" && len(ref.Value.Enum) == 1) || ref.Value.Extensions["x-kept"] == true {
+			continue
+		}
 		t, ok := fieldType(ref)
 		flag := flagName(name)
 		if !ok || !cliProperty.MatchString(name) || !cliWord.MatchString(flag) || flags[flag] || reservedFlag(flag) {

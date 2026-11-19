@@ -46,6 +46,10 @@
 # Version 4.23.0 marks the root of a command response x-sensitive when the message holds such a member at any depth,
 # also deeper than the schema follows, and refuses a path parameter that is such a member (security review of
 # PR #460, L1 and L2).
+# Version 4.24.0 refuses each member of a patch body that is not kind, a patchable field or a field that a collection
+# write cannot change, in its exact letter case, with a 400 validation problem that names the member, and closes the
+# patch request of the OpenAPI document with additionalProperties: false (ST-SUP-RC20-OC15, security review of PR
+# #461, M1).
 # Version 4.25.0 puts Idempotency-Kept: 1 on each answer to a create or a patch with a key when the service has the
 # idempotency component, and describes the header on each response of such a create and patch and of each command
 # (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).

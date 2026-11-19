@@ -2,6 +2,7 @@ package restapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -4704,6 +4705,24 @@ func TestRuntimeWrites(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "repo.GetForDelete(ctx, id)", "stored := todosFromData(from.Value())",
 			"todo := stored", "if patch.Title != nil {", "todo.Title = *patch.Title", "if patch.Done != nil {", "todo.Done = ptrOf(*patch.Done)",
 			"repo.Repository.Update(ctx, from, todosToData(todo), parents...)")
+	})
+	t.Run("ST-SUP-RC20-OC15-T04 The OpenAPI document closes the patch request: it names kind and the patchable fields, and no other member", func(t *testing.T) {
+		var document struct {
+			Components struct {
+				Schemas map[string]map[string]any `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(files["api/openapi.json"], &document); err != nil {
+			t.Fatal(err)
+		}
+		patch := document.Components.Schemas["OrdersPatchRequest"]
+		properties, _ := patch["properties"].(map[string]any)
+		kind, _ := properties["kind"].(map[string]any)
+		if patch["additionalProperties"] != false || len(properties) != 2 || properties["qty"] == nil || fmt.Sprint(kind["enum"]) != "[Order]" {
+			t.Errorf("the patch request of orders is %v, want the members qty and kind (Order) and additionalProperties false", patch)
+		}
+		decode := handlerFunc(t, files, "orders", "decodeOrdersPatch")
+		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: unknown,", "json.Unmarshal(bodyBytes, &patch)")
 	})
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")

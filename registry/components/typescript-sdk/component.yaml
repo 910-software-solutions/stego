@@ -1,6 +1,6 @@
 kind: component
 name: typescript-sdk
-version: 1.2.1
+version: 1.2.2
 stage: ga
 output_namespace: tssdk
 config:

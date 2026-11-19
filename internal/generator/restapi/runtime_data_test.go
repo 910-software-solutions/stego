@@ -784,6 +784,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC44-T01 An update refuses a changed create or never field, names each, changes nothing, and keeps a field that the body leaves out or repeats",
 	"ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field",
 	"ST-SUP-RC20-OC46-T01 A patch refuses a create or never field that the body names with another value, and changes nothing",
+	"ST-SUP-RC20-OC15-T03 A patch refuses a member that is not kind, a patchable field or a kept field, also in another letter case, and changes nothing",
 	"ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value",
 	"ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it",
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",

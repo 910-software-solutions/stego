@@ -39,7 +39,11 @@ package `<out>/cli/app`:
   it writes the answer only to `--output-file FILE`, and never to stdout;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
-  that take a string `name`. The kind is the name of the entity.
+  that take a string `name`, at a path with no parameter. The kind is the
+  name of the entity, and the API version is `<service>/v1`, such as
+  `sellers/v1` for the service `sellers`. A scoped collection, whose path
+  names its parent, gets no apply resource: use its create and patch
+  commands.
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
@@ -221,13 +225,18 @@ A document holds the JSON subset of YAML: no aliases, merge keys or custom
 tags. Its keys are `apiVersion`, `kind`, `metadata` and `spec`, and no other:
 
 ```yaml
-apiVersion: example.com/v1
+apiVersion: clinics/v1
 kind: Clinic
 metadata:
   name: north
 spec:
   code: NO
 ```
+
+With no `factory_package`, `apiVersion` is `<service>/v1`, with the name of
+the service, such as `clinics/v1` for the service `clinics`. Apply refuses
+another `apiVersion` with `unsupported apply API version`, and accepts a
+document with no `apiVersion`.
 
 Give the application each kind as a `command.ApplyResource`: the `Kind`
 and the `APIVersion` that a document states, the `Path` of the collection,
@@ -248,6 +257,17 @@ each document is `created`, `configured`, `unchanged`, `failed`, `unknown`
 or `not_attempted`. Apply stops at the first write that fails. The writes
 before it stay. A status of `unknown` means that the write can have
 occurred: read the resource before you run apply again.
+
+A field that the create takes and the patch does not, such as a field with
+`writable: create`, is create-only. When apply patches a resource that it
+found, it leaves out each create-only field whose value in the document is
+the value that the service returned, so you can apply the same documents
+again. When the value is another one, apply refuses the documents before
+the first write, with `apply cannot change the field <field> of <kind>
+"<name>"`. A create-only field that the answer of the service does not hold
+is refused in the same way, because apply cannot compare it. To
+change a create-only field, use a command of the service that changes it, or
+delete the resource and apply again when the collection has a delete.
 
 Commands marked for confirmation require `--yes`. Interactive prompts,
 stdin bodies, legacy configuration migration, and automatic SDK generation

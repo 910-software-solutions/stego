@@ -168,6 +168,18 @@ go to a new partition. Then a record of the old partition that comes again takes
 of its row from the old partition only, and the messages of the new partition keep their place in the queue. So add
 partitions only when the parked list of each consuming destination is empty.
 
+The clients do not see a new partition at once. Each client keeps the metadata of the topic for at most 5 minutes,
+which is the default of the Kafka setting `metadata.max.age.ms` (`kgo.MetadataMaxAge` of franz-go, which STEGO
+does not change). Thus, for up to 5 minutes after you add partitions:
+
+- the outbox of the producer writes each event to the old partitions only;
+- the consumer group does not read the new partitions. When a worker refreshes its metadata, the group rebalances
+  and a worker takes each new partition.
+
+No event is lost. A group that has no committed offset of a partition reads that partition from its start, so a
+worker reads each event that the producer wrote to a new partition before the group took it. Wait 5 minutes, or
+restart the worker Deployment of the consumer, before you expect the new partitions to have a consumer.
+
 ## Access to the topic
 
 The inbox trusts the header `stego-tenant` only because the platform lets
