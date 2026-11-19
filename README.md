@@ -237,8 +237,14 @@ collections:
 ```
 
 The service needs pooled tenancy, SpiceDB authorization and the audit log. Each entity names
-its resource type and the permission of each operation. A create of a
-top-level entity is public, with a reason. A pooled service also names its tenant
+its resource type and the permission of each operation. The example gives
+the create of a top-level entity `public`, with a reason. Note: `public`
+decides no permission. Each signed-in caller of the tenant can then create
+rows. To limit the create, give it a permission instead. A create of an entity
+with no parent is then decided on the service-level resource of the tenant
+(see [A command with no resource member](docs/commands-queries-workers.md#a-command-with-no-resource-member)).
+A create under a parent is decided on the parent through its reference, so it
+stays `public`. A pooled service also names its tenant
 provisioning: the resource type, with a definition of its own, on which an operator
 is allowed to provision and retire tenants.
 

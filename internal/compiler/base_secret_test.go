@@ -302,3 +302,41 @@ func TestBaseSealTogether(t *testing.T) {
 		}
 	})
 }
+
+func TestBaseSealDrop(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T10 A drop of a field whose seal is open is refused, and another field of the entity goes through the expand and the contract of its drop while the seal stays open", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		const motto = "\n      - { name: motto, type: string, optional: true, max_length: 100 }"
+		clear := strings.Replace(td01, description, description+motto, 1)
+		sealed := strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1)
+		seal := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
+		open := "  - {change: organization-description-seal, phase: expand}\n"
+		mottoDrop := "  - {id: organization-motto-drop, kind: drop, entity: Organization, field: motto, definition: \"string, optional, max_length 100, after description\"}\n"
+		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, sensitivity secret, after name\"}\n"
+		noMotto := strings.Replace(sealed, motto, "", 1)
+		noDescription := strings.Replace(clear, description+"\n      - { name: motto", "{ name: motto", 1)
+		check := func(base []byte, head string) BaseCheck {
+			t.Helper()
+			c, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return c
+		}
+		// The base holds the seal of description open: its release reads and writes the clear and the sealed column.
+		base := []byte(withChanges(sealed, seal, open))
+		if c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n")); !c.HasFaults() {
+			t.Error("a drop of description while its seal is open is accepted")
+		}
+		if c := check(base, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n")); c.HasFaults() {
+			t.Errorf("the expand of a drop of motto while the seal of description is open is refused: %+v", c.Faults)
+		}
+		// The release of the expand step of the drop reads and writes no motto, also in its statements after the seal
+		// contract, so the contract of the drop leaves it working while the seal stays open.
+		dropped := []byte(withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n"))
+		if c := check(dropped, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n  - {change: organization-motto-drop, phase: contract}\n")); c.HasFaults() {
+			t.Errorf("the contract of the drop of motto while the seal of description is open is refused: %+v", c.Faults)
+		}
+	})
+}

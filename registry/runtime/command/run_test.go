@@ -26,8 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
 
 // runTriggers are the deferred constraint triggers of the COMMIT cases on reservations: a SKU fail-commit raises
@@ -805,6 +807,45 @@ func TestRunConflicts(t *testing.T) {
 			})
 		if !errors.Is(err, ErrConflict) || errors.Is(err, ErrCommitUnknown) {
 			t.Errorf("a cancel before COMMIT gave %v, want a conflict", err)
+		}
+	})
+}
+
+func TestRunStalePlan(t *testing.T) {
+	t.Run("ST-SUP-RP04-LC11-T02 A call whose prepared statement a change of its table made stale runs again once and passes", func(t *testing.T) {
+		n := newNoteEnv(t)
+		// One connection, so the read after the change runs the statement that the first read prepared.
+		n.pool.SetMaxOpenConns(1)
+		id := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: id, Label: "x", Body: sealed.SecretOf("body")})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := n.read("org-a", id); got.Label != "x" {
+			t.Fatalf("the first read gives the label %q", got.Label)
+		}
+		// A person drops the column and adds it again with another type: the prepared statement is stale.
+		n.exec("ALTER TABLE notes DROP COLUMN label", "ALTER TABLE notes ADD COLUMN label varchar NOT NULL DEFAULT 'y'")
+		var label string
+		result, err := n.runOn(n.rt, n.cmd, n.request("org-a", u7(t), "stale-plan", `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, n.notes)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			l, err := r.Get(ctx, id)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			label = l.Value().Label
+			return ok, nil
+		})
+		if err != nil {
+			t.Fatalf("the call after the change fails: %v", err)
+		}
+		if result.Attempts != 2 || label != "y" {
+			t.Fatalf("the call ran %d attempts and read the label %q, want 2 attempts and y", result.Attempts, label)
 		}
 	})
 }

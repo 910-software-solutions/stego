@@ -299,6 +299,14 @@ func sealSwitched(err error) bool {
 	return errors.As(err, &c) && c.sealSwitch
 }
 
+// rerunsOnce tells whether Run runs the call again once with no wait, also when the command declares no Retry on
+// conflict: after a seal switch (sealSwitched), and after a stale prepared statement, which the pools dropped, so the
+// next attempt prepares the statement again (ST-SUP-RP04-LC11).
+func rerunsOnce(err error) bool {
+	var c *conflictError
+	return sealSwitched(err) || (errors.As(err, &c) && c.stalePlan)
+}
+
 // failOf is fail for a statement of the entity e: when the contract step of an open seal of e dropped its clear
 // columns (switchAfterSeal), the call is a conflict that Run runs again with the statements after the contract.
 func (s *state) failOf(ctx context.Context, e sealSwitch, step string, err error) error {
