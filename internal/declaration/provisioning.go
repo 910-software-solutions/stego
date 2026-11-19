@@ -149,10 +149,46 @@ func checkTenantServiceRelation(service *types.ServiceDeclaration, schema *Authz
 		return fault("tenancy.provisioning", "the schema %s declares the relation %s of the type %s, which Provision writes, and the declaration declares no tenant provisioning; declare tenancy.provisioning, or remove the relation", schema.Path, tenantServiceRelation, tenantType)
 	}
 	resourceType := service.Tenancy.Provisioning.ResourceType
-	if subjects := definition.relations[tenantServiceRelation]; len(subjects) != 1 || subjects[0] != resourceType {
-		return fault("tenancy.provisioning.resource_type", "the relation %s of the type %s in the schema %s admits %s; Provision writes it with the service-level resource of the tenant as subject, so declare it as relation %s: %s and admit no other subject type", tenantServiceRelation, tenantType, schema.Path, strings.Join(subjects, " | "), tenantServiceRelation, resourceType)
+	// The relation admits exactly one plain subject of the resource type: a wildcard, a userset, a caveat or an
+	// expiration also has the type name, and Provision then fails at each write (security review of PR 448, L1).
+	subjects, _ := schema.RelationSubjects(tenantType, tenantServiceRelation)
+	if len(subjects) != 1 || !plainSubject(subjects[0], resourceType) {
+		admitted := make([]string, 0, len(subjects))
+		for _, subject := range subjects {
+			admitted = append(admitted, subjectText(subject))
+		}
+		return fault("tenancy.provisioning.resource_type", "the relation %s of the type %s in the schema %s admits %s; Provision writes it with the service-level resource of the tenant as subject, so declare it as relation %s: %s and admit no other subject type, and no wildcard, relation, caveat or expiration", tenantServiceRelation, tenantType, schema.Path, strings.Join(admitted, " | "), tenantServiceRelation, resourceType)
 	}
 	return nil
+}
+
+// plainSubject tells whether the subject is the type itself: no wildcard, no relation, no caveat and no expiration.
+// The schema compiler gives a plain subject type the relation "...".
+func plainSubject(subject SchemaSubject, typeName string) bool {
+	return subject.Type == typeName && (subject.Relation == "" || subject.Relation == "...") && !subject.Wildcard && subject.Caveat == "" && !subject.Expiration
+}
+
+// subjectText writes a subject of a relation as the schema writes it: service, service:*, group#member, and a
+// caveat or an expiration after "with".
+func subjectText(subject SchemaSubject) string {
+	text := subject.Type
+	switch {
+	case subject.Wildcard:
+		text += ":*"
+	case subject.Relation != "" && subject.Relation != "...":
+		text += "#" + subject.Relation
+	}
+	var traits []string
+	if subject.Caveat != "" {
+		traits = append(traits, subject.Caveat)
+	}
+	if subject.Expiration {
+		traits = append(traits, "expiration")
+	}
+	if len(traits) > 0 {
+		text += " with " + strings.Join(traits, " and ")
+	}
+	return text
 }
 
 // tenantServiceRelation is the relation of the type tenant that relates the tenant resource to the service-level
