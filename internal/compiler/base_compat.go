@@ -219,7 +219,7 @@ func sealRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 // SealSwitchRuntimeVersion is the first runtime library version whose release of the expand step of a seal goes on
 // after the contract step drops the clear column: it then reads and writes the sealed column alone
 // (ST-SUP-RP10-LC49; walkthrough 14, W14-B6).
-const SealSwitchRuntimeVersion = "v0.145.0"
+const SealSwitchRuntimeVersion = "v0.147.0"
 
 // sealContractFaults refuses a head with a new contract step of a seal when the record at the base names a runtime
 // library before SealSwitchRuntimeVersion, or none: the processes of that release, the release of the expand step,
