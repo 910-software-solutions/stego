@@ -107,6 +107,25 @@ func TestBaseSeal(t *testing.T) {
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the seal from public of a searched field is refused against the base in clear: %v %+v", err, check.Faults)
 		}
+		// A seal from public of a listed field of User and the rename of a patchable field of User in one release are
+		// each checked on their own: neither moves the indexes of the collections (walkthrough 17, W17-B2, where a
+		// generator that refused the rename gave the fault ST-GEN-INV33 that named the sealed field).
+		listed := strings.Replace(td01, "      - { name: metadata, type: jsonb, optional: true }\n", "      - { name: metadata, type: jsonb, optional: true }\n      - { name: badge, type: string, max_length: 40 }\n", 1)
+		const displayName = "{ name: display_name, type: string, min_length: 1, max_length: 100 }"
+		both := strings.Replace(strings.Replace(listed, "{ name: badge, type: string, max_length: 40 }", "{ name: badge, type: string, max_length: 40, sensitivity: secret }", 1),
+			displayName, "{ name: full_name, type: string, min_length: 1, max_length: 100 }", 1)
+		both = withChanges(strings.Replace(both, "patchable: [display_name, role, metadata]", "patchable: [full_name, role, metadata]", 1),
+			"  - {id: user-badge-seal, kind: seal, entity: User, field: badge, from: public}\n  - {id: user-display-name-rename, kind: rename, entity: User, field: full_name, from: display_name}\n",
+			"  - {change: user-badge-seal, phase: expand}\n  - {change: user-display-name-rename, phase: expand}\n")
+		if both == listed || !strings.Contains(both, "patchable: [full_name, role, metadata]") {
+			t.Fatal("the head of the seal and the rename is not built")
+		}
+		base = []byte(listed)
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, both))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("a seal from public and the rename of a patchable field of one entity in one release are refused against the base: %v %+v", err, check.Faults)
+		}
+		base = []byte(td01)
 		// A seal that also changes the bounds of the field is refused: the field before the seal is the field of the
 		// head in clear (ST-DECL-INV102).
 		wider := withChanges(strings.Replace(td01, description, "{ name: description, type: string, optional: true, max_length: 2000, sensitivity: secret }", 1), change,
