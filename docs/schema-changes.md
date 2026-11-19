@@ -435,10 +435,12 @@ While the step is open:
   contract step.**
 - A read takes the clear value when the two columns differ, because only a
   release before writes the clear column alone.
-- The release before still reads the clear column, and its audit, its audit
-  sink and its outbox write the value in clear: of each row that it writes, and
-  of each row that it reads when the entity has a `pii` field, also of a row
-  that the release of the expand step made. The contract step does not remove these copies (see [Where the values
+- The release before still reads the clear column and writes the value in
+  clear: in its audit, its audit sink and its outbox, of each row that it
+  writes; and in its audit and its audit sink only, of each row that it reads
+  when the entity has a `pii` field, also of a row that the release of the
+  expand step made. A read writes no outbox event. The contract step does not
+  remove these copies (see [Where the values
   of the field stay after the contract](#where-the-values-of-the-field-stay-after-the-contract)).
   So stop the release before as soon as the release of the expand step
   serves. The seal job waits for that anyway.

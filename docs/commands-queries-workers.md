@@ -502,7 +502,10 @@ answer, and a request again with the same key runs the slot again. A before
 slot that refuses the request (its result is not `Ok`) rolls back as an error
 does.
 Anything that the fill does outside the transaction, such as a log line,
-occurs again at each request. Thus, send each change to another system as an
+occurs again at each request. It can also occur twice in one request: the
+runtime runs a command again once, in a new transaction, when the database
+refuses a prepared statement that a change of a table made stale
+(ST-SUP-RP04-LC11). Thus, send each change to another system as an
 effect through the outbox (see [Effects](#effects)), never from the fill
 directly. A worker then sends it after the commit.
 

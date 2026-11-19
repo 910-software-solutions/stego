@@ -1,6 +1,9 @@
+# Version 1.8.0 states the gRPC variables as read by the api mode, and the TLS files as not required on their own
+# and required when the process serves gRPC, as grpc-application 2.4.0 does, so that a service can list both
+# components with no conflict of the variables (security review of PR #465, I1).
 kind: component
 name: grpc-processes
-version: 1.7.0
+version: 1.8.0
 stage: ga
 output_namespace: grpcapi
 config:
@@ -96,6 +99,7 @@ environment:
     default: "127.0.0.1:9090"
     description: "The address where the gRPC server listens. When it has no value, the server listens on 127.0.0.1:9090."
     secret: false
+    read_by_mode: api
     example: "0.0.0.0:9090"
   - name: STEGO_GRPC_STREAM_TIMEOUT
     type: duration
@@ -103,6 +107,7 @@ environment:
     default: "5m"
     description: "The longest time that a gRPC stream stays open. When it has no value, a stream stays open for 5 minutes."
     secret: false
+    read_by_mode: api
     example: "2m30s"
     allowed: {min: "1s", max: "30m"}
   - name: STEGO_GRPC_STREAM_IO_TIMEOUT
@@ -111,21 +116,26 @@ environment:
     default: "10s"
     description: "The longest time for one send or receive on a gRPC stream. When it has no value, the limit is 10 seconds."
     secret: false
+    read_by_mode: api
     example: "5s"
     allowed: {min: "1s", max: "10s"}
   - name: STEGO_GRPC_TLS_CERT
     type: path
-    required: true
+    required: false
+    required_when: "the process serves grpc"
     description: "The file of the PEM TLS certificate of the gRPC server. The server does not start when it has no value."
     secret: false
     secret_source: {name: "{service}-grpc-tls", key: tls-crt}
+    read_by_mode: api
     example: "/etc/stego/tls/tls.crt"
   - name: STEGO_GRPC_TLS_KEY
     type: path
-    required: true
+    required: false
+    required_when: "the process serves grpc"
     description: "The file of the PEM TLS private key of the gRPC server. The server does not start when it has no value."
     secret: false
     secret_source: {name: "{service}-grpc-tls", key: tls-key}
+    read_by_mode: api
     example: "/etc/stego/tls/tls.key"
   - name: STEGO_RPC_MONITOR_ADDR
     type: address
