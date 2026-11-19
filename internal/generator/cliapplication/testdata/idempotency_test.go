@@ -496,3 +496,74 @@ func TestWriteKeptHeader(t *testing.T) {
 	})
 }
 
+// asOtherUser makes the CLI see each file as the file of another user until the test ends.
+func asOtherUser(t *testing.T) {
+	t.Helper()
+	previous := effectiveUser
+	effectiveUser = func() int { return os.Geteuid() + 1 }
+	t.Cleanup(func() { effectiveUser = previous })
+}
+
+func TestOwnedPrivateFiles(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T05 A body file that holds a secret field and that another user owns is refused, also with the mode 0600", func(t *testing.T) {
+		app := applyDefinition()
+		app.Commands = append(app.Commands, Command{Name: []string{"issue", "key"}, Method: "POST", Path: "/keys", Fields: []Field{{Flag: "label", Key: "label", Type: "string"}},
+			BodyFields: []Field{{Key: "pin", Type: "string"}}, Success: []int{201}})
+		f := keySetup(t, app)
+		secret := filepath.Join(f.directory, "secret.json")
+		if err := os.WriteFile(secret, []byte(`{"label":"a","pin":"482913"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		f.next()
+		if err := run2(app, "issue", "key", "--body", secret); err != nil {
+			t.Fatalf("a private body file of the user that holds the pin gave %v", err)
+		}
+		asOtherUser(t)
+		data, private, err := readBody(secret)
+		if err != nil || private || len(data) == 0 {
+			t.Errorf("readBody of a file of another user gave private %t and %v, want the file read and not private", private, err)
+		}
+		if err := run2(app, "issue", "key", "--body", secret); err == nil || !strings.Contains(err.Error(), "must be your own file") {
+			t.Errorf("a body file of another user that holds the pin gave %v, want the refusal", err)
+		}
+		if got := f.got(); len(got) != 1 {
+			t.Errorf("the server got %d requests, want only the first", len(got))
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC09-T02 A token file and a configuration file that another user owns are refused, also with the mode 0600", func(t *testing.T) {
+		app := applyDefinition()
+		f := keySetup(t, app)
+		token, config := filepath.Join(f.directory, "token"), filepath.Join(f.directory, "config.json")
+		if _, err := readToken(token); err != nil {
+			t.Fatalf("the token file of the user gave %v", err)
+		}
+		file, err := os.Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readRegular(file, 65536, true); err != nil {
+			t.Fatalf("the configuration file of the user gave %v", err)
+		}
+		file.Close()
+		asOtherUser(t)
+		if _, err := readToken(token); err == nil || !strings.Contains(err.Error(), "invalid token file") {
+			t.Errorf("a token file of another user gave %v, want the refusal", err)
+		}
+		file, err = os.Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if _, err := readRegular(file, 65536, true); err == nil {
+			t.Error("a configuration file of another user was read")
+		}
+		f.next()
+		if err := run2(app, "get", "record", "one"); err == nil {
+			t.Error("a command with a token file and a configuration file of another user ran")
+		}
+		if got := f.got(); len(got) != 0 {
+			t.Errorf("a refused command reached the server: %+v", got)
+		}
+	})
+}

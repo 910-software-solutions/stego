@@ -140,8 +140,9 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   if c.Query||(c.Method!="POST"&&c.Method!="PATCH"&&c.Method!="PUT")||len(values)!=1{return errArguments}
   data,private,err:=readBody(name);if err!=nil{return err}
   if body,err=object(data);err!=nil{return err};delete(values,"body")
-  // A file that holds a secret body field is private, as the token file is (security review of PR #460, L3).
-  for _,f:=range c.BodyFields{if _,ok:=body[f.Key];ok&&!private{return errors.New("a request body file that holds a secret field must not permit access by other users")}}
+  // A file that holds a secret body field is private, as the token file is (security review of PR #460, L3, and of PR
+  // #462, L3).
+  for _,f:=range c.BodyFields{if _,ok:=body[f.Key];ok&&!private{return errors.New("a request body file that holds a secret field must be your own file and must not permit access by other users")}}
  }
  now:=time.Now()
  for flag,value:=range values{

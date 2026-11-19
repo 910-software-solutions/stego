@@ -7,7 +7,9 @@
 # field when the group or other users have access to it (security review of PR #460, I1 and L3).
 # Version 1.17.0 sends a write again after a 5xx answer only when the answer carries Idempotency-Kept: 1, ends with
 # an error that the write can have been done after a 5xx answer with no header, warns on standard error when a 2xx
-# answer of a write whose key the definition states kept has no header (ST-SUP-RC04-OC34, ST-SUP-Q193 (a)).
+# answer of a write whose key the definition states kept has no header (ST-SUP-RC04-OC34, ST-SUP-Q193 (a)), and
+# refuses a token file, a configuration file and a --body FILE that holds a secret body field when another user owns
+# it (security review of PR #462, L3).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource

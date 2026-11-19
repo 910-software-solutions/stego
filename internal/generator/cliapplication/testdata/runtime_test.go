@@ -204,8 +204,8 @@ func TestCommandWorkflowAndBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		before = calls.Load()
-		if _, err := run("get", "record", "one"); err == nil || !strings.Contains(err.Error(), "invalid HTTP client credential file") {
-			t.Fatalf("public token file gave %v, want the refusal \"invalid HTTP client credential file\"", err)
+		if _, err := run("get", "record", "one"); err == nil || !strings.Contains(err.Error(), "invalid token file") {
+			t.Fatalf("public token file gave %v, want the refusal \"invalid token file\"", err)
 		}
 		if calls.Load() != before {
 			t.Fatal("public credential reached server")

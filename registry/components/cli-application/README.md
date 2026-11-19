@@ -67,8 +67,9 @@ reads the current token file before its request. Logout removes configuration
 and retains the externally owned token file. The factory selects the environment
 variable and application directory used to locate configuration.
 
-New directories use mode 0700. Configuration and token files must exclude group
-and other access. The configuration directory must exclude writes by other
+New directories use mode 0700. Configuration and token files must be owned by
+the effective user, as ssh checks for its keys, and must exclude group and other
+access. A body file that holds a secret member has the same rules. The configuration directory must exclude writes by other
 users. Configuration reads reject leaf symlinks. Writes use an open directory
 handle, a random exclusive file, file sync, atomic rename, and directory sync.
 Failed writes do not replace configuration with partial JSON. Input files must
