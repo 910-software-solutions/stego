@@ -4,9 +4,12 @@ This component generates typed Go clients from OpenAPI 3.0 contracts.
 
 To get the client of the service's own API, bind the mixin `go-sdk` in the
 service declaration, such as `mixins: [go-sdk]`. The rest-crud archetype
-lists it. With no `document` setting, the client is made from the OpenAPI document that
-the rest-api component writes for the service in the same run
-(`out/internal/api/openapi.json`). Thus it has a method for each collection
+lists it, and an rpc-service can bind it too. With no `document` setting, the
+client is made from the OpenAPI document that the rest-api component writes
+for the service in the same run (`out/internal/api/openapi.json`). A service
+with no rest-api component, such as an rpc-service, has the document of its
+command and query routes, which the command component writes
+(`out/commands/openapi.json`). Thus it has a method for each collection
 route, each command and each get or list query, and it never differs from the
 service. The package is `out/sdk`. To make a client of another API, set
 `document` under `overrides.go-sdk` to the root contract in the project, and

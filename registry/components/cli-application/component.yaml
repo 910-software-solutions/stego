@@ -14,6 +14,8 @@
 # refuses a token file, a configuration file and a --body FILE that holds a secret body field when another user owns
 # it (security review of PR #462, L3).
 # Version 1.18.0 makes a command Sensitive when its answer is marked x-stego-opaque (ST-SUP-RC04-OC33, ST-SUP-Q194 (a)).
+# Version 1.20.0 makes the definitions of a service with no rest-api component, such as an rpc-service, from the
+# document of its command and query routes that the command component writes (ST-SUP-RC04-OC32, ST-SUP-Q198 (a)).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -29,7 +31,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.18.0
+version: 1.20.0
 stage: ga
 output_namespace: cli
 config:

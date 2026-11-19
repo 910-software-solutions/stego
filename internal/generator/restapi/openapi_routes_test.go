@@ -350,3 +350,52 @@ func TestCommandSecretPathParameter(t *testing.T) {
 		}
 	})
 }
+
+func TestRouteDocument(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T01 With no rest-api, the document of the command component holds each command and query route and no collection route", func(t *testing.T) {
+		// The context of the command component of a service with no rest-api: its own settings and namespace, and
+		// the entity Todo, which no collection serves.
+		ctx := routesContext()
+		ctx.ComponentConfig, ctx.OutputNamespace = ctx.PeerConfigs["command"], ctx.PeerNamespaces["command"]
+		ctx.PeerConfigs, ctx.PeerNamespaces, ctx.Collections = nil, nil, nil
+		data, err := new(Generator).RouteOpenAPIDocument(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(data)
+		if err != nil {
+			t.Fatalf("the route document does not load: %v", err)
+		}
+		want := map[string]string{"POST /api/todo/v1/todos/{todo_id}/state:close": "closeTodo", "GET /api/todo/v1/todos/{todoId}/summary": "todoSummary", "GET /api/todo/v1/todos/open": "openTodos"}
+		got := map[string]string{}
+		for route, item := range doc.Paths.Map() {
+			for method, op := range item.Operations() {
+				if !strings.HasPrefix(route, "/authz/") {
+					got[method+" "+route] = op.OperationID
+				}
+			}
+		}
+		for route, id := range want {
+			if got[route] != id {
+				t.Errorf("the route document gives %s the operation %q, want %q", route, got[route], id)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("the route document has the operations %v, want only %v: no collection route", got, want)
+		}
+		command := doc.Paths.Find("/api/todo/v1/todos/{todo_id}/state:close").Post
+		if command.Parameters.GetByInAndName("header", "Idempotency-Key") == nil || command.Extensions["x-stego-command"] != true {
+			t.Errorf("the command has no Idempotency-Key or no x-stego-command mark: %+v", command)
+		}
+		for name := range doc.Components.Schemas {
+			if strings.HasPrefix(name, "Todo") {
+				t.Errorf("the route document has the collection schema %s", name)
+			}
+		}
+		// A service that serves no command and no get or list query over HTTP has no route document.
+		ctx.Commands, ctx.Queries = nil, nil
+		if data, err := new(Generator).RouteOpenAPIDocument(ctx); err != nil || data != nil {
+			t.Errorf("with no route the document is %d bytes, %v; want none", len(data), err)
+		}
+	})
+}

@@ -129,7 +129,7 @@ func Load(ctx gen.Context) (*openapi3.T, error) {
 	if _, set := ctx.ComponentConfig["document"]; !set {
 		// The service's own document, which the rest-api component emits in the same generation (ST-SUP-RC06-OC09).
 		if ctx.ServiceOpenAPI == nil {
-			return nil, fmt.Errorf("SDK requires the setting document, or the rest-api component, whose OpenAPI document of the service the client is then made from")
+			return nil, fmt.Errorf("SDK requires the setting document, or the rest-api component or a command or query route of the service, whose OpenAPI document the client is then made from")
 		}
 		root, names, inputs = serviceDocument, []string{serviceDocument}, map[string][]byte{serviceDocument: ctx.ServiceOpenAPI}
 	} else if root, names, err = sourceNames(ctx.ComponentConfig); err != nil {

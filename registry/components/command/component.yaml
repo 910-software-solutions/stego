@@ -28,9 +28,12 @@
 # an archetype with no rest-api (ST-SUP-RC20-OC54; security review of PR #462, L2).
 # Version 1.18.0 puts Idempotency-Kept: 1 on each answer to a command request with a key, through the runtime's
 # Serve (ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
+# Version 1.20.0 writes <out>/commands/openapi.json, the OpenAPI document of the command and query routes, in a
+# service with no rest-api component, such as an rpc-service; the generated clients are made from it
+# (ST-SUP-RC32-OC29, decision ST-SUP-Q198 (a)).
 kind: component
 name: command
-version: 1.18.0
+version: 1.20.0
 stage: ga
 output_namespace: commands
 

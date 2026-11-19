@@ -827,6 +827,10 @@ member by either name, such as `insurance_number` or `insuranceNumber`. Thus
 the request validation of the document does not check the body of a command;
 the command runtime decodes it.
 
+A service with no rest-api component, such as an rpc-service, has no such
+document; the command component writes the document of its command and query
+routes, in the same form, in `out/commands/openapi.json`.
+
 The generated clients come from this document. Bind the mixin `go-sdk` for a
 Go client (`out/sdk`) and the mixin `cli-application` for a CLI
 (`out/cli/cmd`), with `mixins: [go-sdk, cli-application]`. See the READMEs of [go-sdk](../registry/components/go-sdk/README.md) and

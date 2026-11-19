@@ -61,7 +61,7 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 	if _, set := ctx.ComponentConfig["factory_package"]; !set {
 		// With no factory, the definitions come from the service's own OpenAPI document (ST-SUP-RC04-OC32).
 		if ctx.ServiceOpenAPI == nil {
-			return fmt.Errorf("CLI requires the setting factory_package, or the rest-api component, whose OpenAPI document of the service the commands are then made from")
+			return fmt.Errorf("CLI requires the setting factory_package, or the rest-api component or a command or query route of the service, whose OpenAPI document the commands are then made from")
 		}
 	} else if !ok || factory == "" || gen.ValidateGoImportNamespace(factory) != nil || factory == ctx.OutDirName || strings.HasPrefix(factory, ctx.OutDirName+"/") {
 		return fmt.Errorf("CLI requires a factory outside generated output")
