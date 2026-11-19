@@ -204,7 +204,8 @@ func (f *fillFault) log() {
 // row that is not there and one that the caller may not read (ST-SUP-RP10-LC51); ErrInvalid is 400 invalid with the
 // field it names (ST-SUP-Q118); a conflict after the last attempt is 409 conflict; a decision that the provider could
 // not make now (authz.Transient) is 503 undecided, which the handler answers with Retry-After (ST-SUP-Q140);
-// ErrUnavailable, a database that cannot serve now, is 503 unavailable with Retry-After; a COMMIT whose outcome is
+// ErrUnavailable, a database that cannot serve now, is 503 unavailable with Retry-After. ErrDenied or ErrNotFound
+// that also holds one of these two causes is that 503, so that the caller tries again. A COMMIT whose outcome is
 // not known and every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal
 // that is not one of refusals is an other error. A 500 of a fill whose cause no log line names writes the line
 // command.fill.failed with its cause class (ST-SUP-RP10-LC51). No error text reaches the answer, the audit row or the
@@ -218,7 +219,9 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 			}
 		}
 	}
-	if errors.Is(err, ErrDenied) {
+	if errors.Is(err, ErrDenied) && !unavailableNow(err) {
+		// A denial that also holds a cause of a 503 answer is 503, the same answer as ErrNotFound with that cause
+		// (security review of PR 449, INFO-1).
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 	}
 	if errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInternal) && !errors.Is(err, ErrConflict) && !unavailableNow(err) {
@@ -258,8 +261,9 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 }
 
 // unavailableNow tells whether the error holds a cause of a 503 answer of OutcomeOf: a decision that the provider could
-// not make now, or a database that cannot serve now. An error that holds such a cause and ErrNotFound too is
-// answered 503, so that the caller tries again, and not 404 (security review of PR 448, I2).
+// not make now, or a database that cannot serve now. An error that holds such a cause and ErrNotFound or ErrDenied
+// too is answered 503, so that the caller tries again, and not 404 (security review of PR 448, I2; of PR 449,
+// INFO-1).
 func unavailableNow(err error) bool {
 	return ErrorCode(err) == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err) || errors.Is(err, ErrUnavailable))
 }
