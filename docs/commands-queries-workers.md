@@ -851,15 +851,9 @@ worker each hour, and let the fill find out if the month has a run already:
 2. Declare an entity that records each run, with the period as a field, such
    as `MonthlyClose` with `period` (`pattern: "^[0-9]{4}-[0-9]{2}$"`). Put it
    in `writes`.
-3. Declare a list of the runs of one period:
-
-   ```yaml
-       lists:
-         - name: closes-of-period
-           entity: MonthlyClose
-           filter:
-             - {field: period, op: equals, param: period}
-   ```
+3. Declare in the worker a list of the runs of one period: the list
+   `closes-of-period` of the entity `MonthlyClose`, with the filter term
+   `{field: period, op: equals, param: period}`.
 
 4. In the fill, find the period from the tick, which is the time of the run.
    Return with no change when the list holds a row of the period. Else do the
