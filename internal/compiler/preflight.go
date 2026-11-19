@@ -205,6 +205,17 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			}
 			inputs = append(inputs, names...)
 		}
+		if compName == restAPIComponent {
+			// The rest-api component describes the request and the response of each command in its OpenAPI document,
+			// so it reads the proto files of the command messages too (ST-SUP-RC20-OC53).
+			if provider, ok := input.Generators[commandComponent].(gen.InputProvider); ok && components[commandComponent] != nil {
+				names, err := provider.InputFiles(peerConfigs[commandComponent])
+				if err != nil {
+					return nil, fmt.Errorf("generator %q inputs: %w", compName, err)
+				}
+				inputs = append(inputs, names...)
+			}
+		}
 		if len(inputs) > 0 {
 			ctx.Inputs, err = captureGeneratorInputs(input.ProjectDir, outDirName, inputs, resolved.InputSnapshots)
 			if err != nil {
@@ -215,6 +226,9 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 		resolved.Contexts[compName] = ctx
 	}
 	if err := resolveGoModelSources(input, resolved); err != nil {
+		return nil, err
+	}
+	if err := serviceOpenAPI(input, resolved); err != nil {
 		return nil, err
 	}
 	for _, name := range componentNames {
@@ -413,4 +427,39 @@ func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaCha
 		}
 	}
 	return live, dropped, nil
+}
+
+// clientComponents are the components whose client is generated from the service's own OpenAPI document when the
+// declaration names no document of their own: the setting that names the document or the definitions, by component
+// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32).
+var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package"}
+
+// serviceOpenAPI gives each active client component whose declaration does not set its setting of clientComponents
+// the OpenAPI document that the rest-api component emits for the service, in ServiceOpenAPI. The rest-api generator
+// makes it from the context of the rest-api component, so it is the document of the same generation.
+func serviceOpenAPI(input ReconcilerInput, resolved *resolvedCompilation) error {
+	var document []byte
+	for _, name := range sortedKeys(clientComponents) {
+		ctx, active := resolved.Contexts[name]
+		if !active {
+			continue
+		}
+		if value, set := ctx.ComponentConfig[clientComponents[name]]; set && value != nil && value != "" {
+			continue
+		}
+		rest, ok := resolved.Contexts[restAPIComponent]
+		provider, built := input.Generators[restAPIComponent].(gen.OpenAPIProvider)
+		if !ok || !built {
+			continue
+		}
+		if document == nil {
+			var err error
+			if document, err = provider.OpenAPIDocument(rest); err != nil {
+				return fmt.Errorf("component %q: the OpenAPI document of the service: %w", name, err)
+			}
+		}
+		ctx.ServiceOpenAPI = document
+		resolved.Contexts[name] = ctx
+	}
+	return nil
 }

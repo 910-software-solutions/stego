@@ -1,0 +1,13 @@
+kind: mixin
+name: go-sdk
+version: 1.0.0
+
+# The generated Go client of the service's own API: binding the mixin adds the go-sdk component, which makes the client
+# from the OpenAPI document of the service when the declaration gives no document (ST-DECL-UC09-R07,
+# ST-SUP-RC06-OC09).
+adds_components:
+  - go-sdk
+
+adds_slots: []
+
+overrides: none

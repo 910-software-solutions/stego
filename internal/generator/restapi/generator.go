@@ -229,7 +229,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	files = append(files, errorsFile)
 
 	// Generate OpenAPI spec.
-	openapiFile, err := generateOpenAPI(ctx.OutputNamespace, ctx.Entities, ctx.Collections, collectionMap, ctx.BasePath, ctx.Conventions.ResponseFormat, idempotencyKeys(ctx))
+	openapiFile, err := serviceOpenAPIFile(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating openapi spec: %w", err)
 	}
@@ -904,7 +904,8 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
-	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil {\n")
+	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53).
+	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] != nil {\n", commandMarker)
 	fmt.Fprintf(&buf, "\t\t\t\tnext.ServeHTTP(w, r)\n")
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
@@ -1075,7 +1076,7 @@ func generateValidation(ns string) (gen.File, error) {
 }
 
 // generateOpenAPI produces an OpenAPI 3.0 spec as JSON.
-func generateOpenAPI(ns string, entities []types.Entity, collections []types.Collection, collectionMap map[string]types.Collection, basePath string, responseFormat string, keys *idempotencyHeader) (gen.File, error) {
+func generateOpenAPI(ns string, entities []types.Entity, collections []types.Collection, collectionMap map[string]types.Collection, basePath string, responseFormat string, keys *idempotencyHeader, routes ...map[string]map[string]openAPIOperation) (gen.File, error) {
 	entityMap := make(map[string]types.Entity, len(entities))
 	for _, e := range entities {
 		entityMap[e.Name] = e
@@ -1492,6 +1493,12 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		}
 	}
 
+	// The command and query routes of the service (ST-SUP-RC20-OC53).
+	for _, r := range routes {
+		if err := mergeRoutes(&spec, r); err != nil {
+			return gen.File{}, err
+		}
+	}
 	if len(spec.Paths) > 0 {
 		spec.Paths[revocationRoute] = openAPIPathItem{Operations: map[string]openAPIOperation{"get": revocationStatusOperation()}}
 	}
@@ -2019,6 +2026,8 @@ type openAPIOperation struct {
 	Parameters  []openAPIParam             `json:"parameters,omitempty"`
 	RequestBody *openAPIRequestBody        `json:"requestBody,omitempty"`
 	Responses   map[string]openAPIResponse `json:"responses"`
+	// Command marks the operation of a command, whose body the request validation does not check (commandMarker).
+	Command bool `json:"x-stego-command,omitempty"`
 }
 
 type openAPIParam struct {
@@ -2072,6 +2081,8 @@ type openAPISchema struct {
 	Maximum     *float64                 `json:"maximum,omitempty"`
 	Default     any                      `json:"default,omitempty"`
 	AllOf       []openAPISchema          `json:"allOf,omitempty"`
+	// AdditionalProperties is the schema of each member of a map, as the protobuf JSON form of a map field writes it.
+	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
 }
 
 // validateCollectionOperations checks that every collection has at least one

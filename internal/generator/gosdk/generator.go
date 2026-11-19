@@ -78,7 +78,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	}
 	// The SDK runs inside someone else's program, so it keeps the established
 	// link behavior.
-	transport, err := httpclient.Render(path.Join(ctx.OutputNamespace, "internal/transport"), tracing, httpclient.FollowLinks)
+	transport, err := httpclient.RenderSDK(path.Join(ctx.OutputNamespace, "internal/transport"), tracing)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,7 +90,17 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	if err = gen.ValidateNamespace(ctx.OutputNamespace, files); err != nil {
 		return nil, nil, err
 	}
-	return files, &gen.Wiring{GoModRequires: map[string]string{"github.com/oapi-codegen/runtime": "v1.7.0", "github.com/oapi-codegen/nullable": "v1.1.0", "github.com/google/uuid": "v1.6.0"}}, nil
+	// A module is required only when a generated file imports it: go mod tidy, which stego deps runs, drops a
+	// requirement that no package imports, such as nullable for a document with no nullable property.
+	requires := map[string]string{}
+	for module, version := range map[string]string{"github.com/oapi-codegen/runtime": "v1.7.0", "github.com/oapi-codegen/nullable": "v1.1.0", "github.com/google/uuid": "v1.6.0"} {
+		for _, f := range files {
+			if bytes.Contains(f.Content, []byte(`"`+module)) {
+				requires[module] = version
+			}
+		}
+	}
+	return files, &gen.Wiring{GoModRequires: requires}, nil
 }
 
 func publicAPI(source string, expected int, pkg, wireImport string) (string, error) {
