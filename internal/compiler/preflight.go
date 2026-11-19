@@ -435,8 +435,8 @@ func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaCha
 
 // clientComponents are the components whose client is generated from the service's own OpenAPI document when the
 // declaration names no document of their own: the setting that names the document or the definitions, by component
-// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32).
-var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package"}
+// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32, ST-SUP-RC24-OC14).
+var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package", "typescript-sdk": "document"}
 
 // serviceOpenAPI gives each active client component whose declaration does not set its setting of clientComponents
 // the OpenAPI document of the service, in ServiceOpenAPI: the document that the rest-api component emits, made from

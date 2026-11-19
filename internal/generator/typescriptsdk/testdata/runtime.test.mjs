@@ -147,3 +147,30 @@ test('ST-SUP-RC24-OC12-T01 A trace context of the emitted client stays with one 
   }
   assert.equal(calls.length, count);
 });
+test('ST-SUP-RC24-OC15-T01 The emitted client sends a declared forwarded header from its input, checks it, and makes no request for a bad one', async () => {
+  const requests = [];
+  const sdk = client(async (url, options) => {
+    requests.push([url, options]);
+    if (url.endsWith('/auth/session')) return session();
+    return new Response(null, {status: 204});
+  });
+  await sdk.archiveRecord({id: 'r1', idempotencyKey: '"k-1"', prefer: 'wait=2'});
+  const [url, options] = requests[requests.length - 1];
+  assert.equal(url, origin + '/api/records/r1/archive');
+  assert.equal(options.headers['Idempotency-Key'], '"k-1"'); assert.equal(options.headers.Prefer, 'wait=2'); assert.equal(options.headers['X-CSRF-Token'], csrf);
+  await sdk.archiveRecord({id: 'r2', idempotencyKey: '"k-2"'});
+  assert.equal(requests[requests.length - 1][1].headers.Prefer, undefined);
+  const before = requests.length;
+  for (const input of [{id: 'r1'}, {id: 'r1', idempotencyKey: ''}, {id: 'r1', idempotencyKey: 'a b'}, {id: 'r1', idempotencyKey: 'k\r\nX-Evil: 1'}, {id: 'r1', idempotencyKey: 'k'.repeat(1025)}, {id: 'r1', idempotencyKey: 7}, {id: 'r1', idempotencyKey: '"k"', 'Idempotency-Key': '"k"'}]) await assert.rejects(sdk.archiveRecord(input), error('invalid_input'));
+  assert.equal(requests.length, before);
+});
+test('ST-SUP-RC24-OC14-T02 The emitted client checks the uuid, byte and decimal int64 forms of a service document in each direction', async () => {
+  const good = {...record, ref: '01A1F36A-1892-7268-b845-86cb7837c2c8', blob: 'aGk=', big: '-9223372036854775808'};
+  const ok = client(async () => json(good)); assert.equal((await ok.getRecord({id: 'r1'})).body.big, '-9223372036854775808');
+  for (const bad of [{ref: '01a1f36a18927268b84586cb7837c2c8'}, {ref: '01a1f36a-1892-7268-b845-86cb7837c2cz'}, {blob: 'aGk'}, {blob: 'a$k='}, {big: '9223372036854775808'}, {big: '01'}, {big: '1.5'}, {big: 7}]) {
+    const sdk = client(async () => json({...record, ...bad})); await assert.rejects(sdk.getRecord({id: 'r1'}), error('invalid_response'));
+  }
+  let calls = 0; const sdk = client(async () => { calls++; return json(record, 201); });
+  await assert.rejects(sdk.createRecord({body: {...requestRecord, big: '-9223372036854775809'}}), error('invalid_input'));
+  assert.equal(calls, 0);
+});

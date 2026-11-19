@@ -34,17 +34,18 @@ func TestServiceRouteDocument(t *testing.T) {
 			commandComponent:  {OutputNamespace: "commands"},
 			"go-sdk":          {ComponentConfig: map[string]any{}},
 			"cli-application": {ComponentConfig: map[string]any{}},
-			"typescript-sdk":  {ComponentConfig: map[string]any{"document": "api.yaml"}},
+			"typescript-sdk":  {ComponentConfig: map[string]any{"error_codes": []any{"x"}}},
+			"health-check":    {ComponentConfig: map[string]any{}},
 		}}
 		if err := serviceOpenAPI(input, resolved); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{commandComponent, "go-sdk", "cli-application"} {
+		for _, name := range []string{commandComponent, "go-sdk", "cli-application", "typescript-sdk"} {
 			if got := resolved.Contexts[name].ServiceOpenAPI; !bytes.Equal(got, provider.routes) {
 				t.Errorf("with no rest-api, %s gets the document %q, want the route document", name, got)
 			}
 		}
-		if got := resolved.Contexts["go-sdk-other"].ServiceOpenAPI; got != nil {
+		if got := resolved.Contexts["health-check"].ServiceOpenAPI; got != nil {
 			t.Errorf("a component that is not a client gets the service document %q", got)
 		}
 		if provider.calls != 1 {

@@ -1,0 +1,13 @@
+kind: mixin
+name: typescript-sdk
+version: 1.0.0
+
+# The generated TypeScript browser client of the service's own API: binding the mixin adds the typescript-sdk
+# component, which makes the client from the OpenAPI document of the service when the declaration gives no document
+# (ST-DECL-UC09-R07, ST-SUP-RC24-OC14).
+adds_components:
+  - typescript-sdk
+
+adds_slots: []
+
+overrides: none
