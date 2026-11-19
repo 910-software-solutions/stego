@@ -615,3 +615,28 @@ func TestServeSecretNeedsRing(t *testing.T) {
 		}
 	})
 }
+
+func TestNewToken(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC56-T01 NewToken gives new random bytes of each size from 16 to 64, and refuses each other size", func(t *testing.T) {
+		seen := map[string]bool{}
+		for size := MinTokenSize; size <= MaxTokenSize; size++ {
+			a, err := NewToken(size)
+			if err != nil || len(a) != size {
+				t.Fatalf("NewToken(%d) gives %d bytes and %v", size, len(a), err)
+			}
+			b, _ := NewToken(size)
+			if string(a) == string(b) || seen[string(a)] {
+				t.Fatalf("NewToken(%d) gives the same bytes twice", size)
+			}
+			seen[string(a)] = true
+			if string(a) == string(make([]byte, size)) {
+				t.Fatalf("NewToken(%d) gives only zero bytes", size)
+			}
+		}
+		for _, size := range []int{-1, 0, 1, MinTokenSize - 1, MaxTokenSize + 1, 1 << 20} {
+			if b, err := NewToken(size); err == nil || b != nil {
+				t.Errorf("NewToken(%d) gives %d bytes and %v, want a refusal and no bytes", size, len(b), err)
+			}
+		}
+	})
+}

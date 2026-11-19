@@ -723,6 +723,28 @@ func NewID() string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
+// The sizes of a token that NewToken gives, in bytes: at least 128 bits, so that no one can guess it, and at most 512.
+const (
+	MinTokenSize = 16
+	MaxTokenSize = 64
+)
+
+// NewToken gives size new random bytes from crypto/rand, for a secret that a command or a worker fill issues, such
+// as an API key or a one-time code (ST-SUP-RP10-LC56). The fill allow list keeps crypto/rand out, so NewToken and
+// NewID are the only sources of randomness of a fill. It refuses a size under MinTokenSize or over MaxTokenSize with
+// an error and no bytes. The fill encodes the bytes, such as with encoding/base64, and gives the secret only in a
+// member of the response message that the proto file marks debug_redact (ST-SUP-Q192).
+func NewToken(size int) ([]byte, error) {
+	if size < MinTokenSize || size > MaxTokenSize {
+		return nil, fmt.Errorf("a token has %d to %d bytes, not %d", MinTokenSize, MaxTokenSize, size)
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return b, nil
+}
+
 // ValidUUID tells whether id is a UUID in its text form, the key type of every entity.
 func ValidUUID(id string) bool {
 	if len(id) != 36 {
