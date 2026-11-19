@@ -13,9 +13,11 @@
 # Version 6.17.0 makes the row of the lease of the seal job in the transaction of the expand migration of a seal, so a
 # later migration job on a restored database makes it too, and the refusal of the seal contract names the migration
 # job of the release of the expand step (ST-SUP-RC01-OC49; walkthrough 14, W14-B7).
+# Version 6.19.0 keeps the search index of a field that a seal from public seals in 001_initial and on its clear
+# column until the contract step, as for a seal with no from (ST-SUP-RC01-OC49; walkthrough 15, W15-B1).
 kind: component
 name: postgres-adapter
-version: 6.17.0
+version: 6.19.0
 stage: ga
 output_namespace: internal/storage
 
