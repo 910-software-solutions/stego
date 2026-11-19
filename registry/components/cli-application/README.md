@@ -95,8 +95,8 @@ gives by `$ref` does not count. A command that is not a POST or a PATCH must
 not set the flag.
 
 With the flag, the CLI sends a write again one time, with the same key and
-body, after a transport failure, a request that expired, or a 5xx answer. It
-waits one second first, or follows a `Retry-After` of one to five seconds.
+body, after a transport failure, a request that expired, or a 5xx answer that
+carries the header `Idempotency-Kept: 1`. It waits one second first, or follows a `Retry-After` of one to five seconds.
 When the second request gets no success, the outcome is unknown: the first
 request can still be in its transaction, as a 409 answer shows. The service
 gives the stored answer of a write that it did, so the write does not occur
@@ -115,6 +115,18 @@ service stops to keep the key of a write, a CLI of an earlier release still
 sends that write again, and the write can then occur two times. Thus, build
 the CLI from the same release as the service that it calls, and build it again
 with each release of the service.
+
+The service tells on each answer to a write whose key it keeps that it keeps
+the key: the answer carries `Idempotency-Kept: 1`, also a problem and a 5xx
+answer. A 5xx answer with no such header, such as a 502 or a 504 of a proxy,
+or an answer of a service of another release, is not sent again: the command
+ends with an error that says that the write was not sent again and can have
+been done, so read the state of the resource before a new write. A transport
+failure or a request that expired gives no answer, so the flag decides there.
+When the flag says that the service keeps the key and a 2xx answer has no
+`Idempotency-Kept` header, the CLI writes a warning to standard error that the
+CLI and the service can be of different releases. The warning changes no
+answer and no exit code.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and

@@ -131,6 +131,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		}
 		op.Parameters = append(op.Parameters, revocationParameters()...)
 		refusals(op.Responses, c.Refusals)
+		op = withKeptHeader(op)
 		if err := add(ctx.BasePath+routePath, "post", op); err != nil {
 			return nil, err
 		}

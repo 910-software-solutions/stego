@@ -26,9 +26,11 @@
 # (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, ST-SUP-Q192).
 # Version 1.17.0 refuses a command route whose path parameter is a member that the proto marks debug_redact, also for
 # an archetype with no rest-api (ST-SUP-RC20-OC54; security review of PR #462, L2).
+# Version 1.18.0 puts Idempotency-Kept: 1 on each answer to a command request with a key, through the runtime's
+# Serve (ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
 kind: component
 name: command
-version: 1.17.0
+version: 1.18.0
 stage: ga
 output_namespace: commands
 

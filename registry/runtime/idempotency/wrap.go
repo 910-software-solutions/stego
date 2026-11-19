@@ -21,6 +21,13 @@ const (
 	KeyHeader = "Idempotency-Key"
 	// ReplayedHeader is the response header that marks a replay of a stored response.
 	ReplayedHeader = "Idempotent-Replayed"
+	// KeptHeader is the response header that the service puts, with the value KeptValue, on each answer to a request
+	// whose key it keeps: a success, a stored answer given again, a problem and a 5xx answer. A client of another
+	// release than the service thus knows from the answer that a second request with the same key is safe
+	// (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27).
+	KeptHeader = "Idempotency-Kept"
+	// KeptValue is the value of KeptHeader.
+	KeptValue = "1"
 	// ProblemMissing is the problem type of a 400 for an absent or malformed key.
 	ProblemMissing = "idempotency-key-missing"
 	// ProblemInProgress is the problem type of a 409 for a duplicate of a request that is not complete.
