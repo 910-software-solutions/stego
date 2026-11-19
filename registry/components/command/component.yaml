@@ -13,9 +13,12 @@
 # Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
 # compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
 # (ST-SUP-RC32-OC21).
+# Version 1.12.0 gives each entity with an open seal its statements, scan and values after the contract step, which
+# the runtime takes once the contract drops the clear column (ST-SUP-RC01-OC49, ST-SUP-RP10-LC49; walkthrough 14,
+# W14-B6).
 kind: component
 name: command
-version: 1.11.0
+version: 1.12.0
 stage: ga
 output_namespace: commands
 

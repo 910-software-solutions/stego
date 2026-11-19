@@ -229,7 +229,7 @@ var reservedTypeNames = map[string]bool{
 	"databaseUUID":       true,
 	"ErrMigrationLedger": true, "AppliedMigrations": true, "ApplyMigration": true, "RegisterSQL": true,
 	"Database": true, "inTransaction": true, "lockLedger": true, "recordMigration": true,
-	"refreshMarker": true, "RegisterStep": true, "RegisterValidateStep": true, "ValidateConstraint": true, "runtimetenant": true, "RegisterIndexStep": true, "applyPending": true,
+	"refreshMarker": true, "RegisterStep": true, "RegisterSealStep": true, "RegisterValidateStep": true, "ValidateConstraint": true, "runtimetenant": true, "RegisterIndexStep": true, "applyPending": true,
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
@@ -434,6 +434,27 @@ func RegisterSQL(name, body string) {
 func RegisterStep(name, body string, compatibleWith ...string) {
 	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: append([]string{}, compatibleWith...), StatementTimeout: stepStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, body)
+		return err
+	}})
+}
+
+// RegisterSealStep adds the SQL migration of the expand step of the seal change
+// change, as RegisterStep does. In the same transaction, after the body and
+// outside its digest, it makes the row of the lease stego.backfill.<change> of
+// the seal job when the lease table is there, so a database that the job of a
+// later release takes past the step, such as a restore of a backup from before
+// it, has the lease that the seal job holds (ST-SUP-RC01-OC49; walkthrough 14,
+// W14-B7). The migration job of a release with the seal open makes it too.
+func RegisterSealStep(name, body, change string) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, StatementTimeout: stepStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, body); err != nil {
+			return err
+		}
+		var leases bool
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('public.leases') IS NOT NULL").Scan(&leases); err != nil || !leases {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO public.leases (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", "stego.backfill."+change)
 		return err
 	}})
 }
@@ -1328,14 +1349,14 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 		}
 	}
 	if state != "" {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, state, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass", c.Change, state, c.Expand)}
 	}
 	left, err := rowsLeft(ctx, tx, c)
 	if err != nil {
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, left, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass", c.Change, left, c.Expand)}
 	}
 	return runningReleases(ctx, tx, c)
 }
@@ -1576,6 +1597,8 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 				drop = ", Seal: true"
 			}
 			fmt.Fprintf(&buf, "\t}%s})\n", drop)
+		case step.Seal:
+			fmt.Fprintf(&buf, "\tRegisterSealStep(%q, %q, %q)\n", step.Name, step.Body, step.Change.ID)
 		default:
 			fmt.Fprintf(&buf, "\tRegisterStep(%q, %q)\n", step.Name, step.Body)
 		}

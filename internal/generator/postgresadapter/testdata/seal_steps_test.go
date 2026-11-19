@@ -300,6 +300,38 @@ func TestSealSteps(t *testing.T) {
 		works(t, db, reader, "the release of the contract", "the contract", func(ctx context.Context, db *sql.DB) error { return sealc.VerifySchema(ctx, db) }, sealc.SchemaManifest)
 	})
 
+	t.Run("ST-SUP-RC01-OC49-T08 The job of a later release on a database from before the seal makes the lease of the seal job with the expand step", func(t *testing.T) {
+		// A restore of a backup of the release before: the lease table is there with no lease of a seal job, as the job
+		// of the release of the expand step made it (walkthrough 14, W14-B7).
+		own, db, reader := base(t)
+		if _, err := db.Exec(`DELETE FROM public.leases WHERE name LIKE 'stego.backfill.%'`); err != nil {
+			t.Fatal(err)
+		}
+		// The job of the release of the contract step applies the expand step and refuses at the contract.
+		var refused interface{ Refusal() string }
+		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); !errors.As(err, &refused) ||
+			!strings.Contains(refused.Refusal(), "has not completed a pass") || !strings.Contains(refused.Refusal(), "run the migration job of the release of the expand step") {
+			t.Fatalf("the job of the contract release on the database before the seal ends with %v, want the refusal of the contract with the remedy", err)
+		}
+		var leases int
+		if err := db.QueryRow(`SELECT count(*) FROM public.leases WHERE name IN ('stego.backfill.vault-note-seal', 'stego.backfill.vault-code-seal')`).Scan(&leases); err != nil {
+			t.Fatal(err)
+		}
+		if leases != 2 {
+			t.Fatalf("the expand steps made %d leases of the seal jobs, want 2", leases)
+		}
+		// The seal job of the release of the expand step runs on that database, and the contract then passes.
+		older(t, db)
+		for _, result := range job(t, reader) {
+			if !result.Completed {
+				t.Fatalf("the seal job on the database gives %+v, want a completed pass", result)
+			}
+		}
+		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); err != nil {
+			t.Fatalf("the job of the contract release after the pass: %v", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		own, db, reader := base(t)
 		expand(t, own, db)

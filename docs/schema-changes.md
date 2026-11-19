@@ -366,7 +366,15 @@ schema_history:
 ```
 
 `from` is the sensitivity of the field in the base: `public`, `pii`, or no
-`from` when the field had none. Give `from: secret` for a field that the base
+`from` when the field had none.
+
+The seal changes the Go type of the field in the generated code at once, in
+the release with the expand step: a fill of a command or a worker that reads or
+sets the field gets `sealed.Secret` in place of `string`, and reads its text
+with `Reveal()` and sets it with `sealed.SecretOf(text)` (see
+[sealed.Secret](fills.md#sealedsecret)). Change each such fill in the same
+release, or `stego test` and the build fail. A query fill does not read a
+secret field. Give `from: secret` for a field that the base
 already declared `sensitivity: secret` and that a release before runtime
 v0.135.0 (postgres-adapter 6.13.0) stored in clear; see [Seal the secret
 fields of a release before runtime v0.135.0](upgrade.md#seal-the-secret-fields-of-a-release-before-runtime-v01350). A seal is only of a
@@ -422,6 +430,15 @@ an open seal: give `--base` with the release that runs now. The first pass also 
 after the expand step, so that each running process of the release before
 reports itself first.
 
+The migration Job of the release with the expand step makes the row of the
+lease `stego.backfill.<change ID>` in the lease table. A later migration Job
+that applies the expand step, such as the Job of a later release on a restored
+database, makes it too, when the lease table is there. When the row is not
+there, the seal job cannot run: from runtime v0.141.0 each run logs `the lease
+of the seal job is not in the lease table` at the level error, with the lease,
+and the controller reports the job as failed. Run the migration Job of the
+release of the expand step, and the job runs at its next tick.
+
 The service needs its key ring: the api, worker and controller modes read
 `STEGO_SECRET_KEY_RING_FILE` (see [Rotate and back up the key ring of the
 secret fields](operations.md#rotate-and-back-up-the-key-ring-of-the-secret-fields)).
@@ -449,8 +466,9 @@ The contract migration refuses, changes no schema and writes no ledger row:
 - while a row of a tenant of the tenant list has a clear value and no sealed
   value.
 
-Each refusal names the change and the remedy: run the release of the expand
-step, with its controller, until the seal job completes a pass. A row of a
+Each refusal names the change and the remedy: run the migration Job of the
+release of the expand step and then that release, with its controller, until
+the seal job completes a pass. A row of a
 tenant that the tenant list does not hold is never sealed: the refusal names
 it, and you provision the tenant or remove its rows. Then the
 migration adds the CHECK `<table>_<column>_sealed_complete` NOT VALID and
@@ -460,9 +478,85 @@ in one transaction that checks the step again, it drops the CHECK and the
 clear column, which drops its CHECK and its indexes, and deletes the seal
 checkpoint. Each statement takes a short lock, with the lock timeout and the
 retries of the other contract steps, and a run again after a failure part
-way goes on. After the contract the field is in `<column>_sealed` alone. The
-release of the expand step needs the clear column, so do not go back to it
-after the contract.
+way goes on. After the contract the field is in `<column>_sealed` alone.
+
+The contract does not wait for the release of the expand step to stop, as the
+contract of a drop or a rename does not wait for the release of its expand
+step: deploy the release of the contract step in the usual order, its
+migration Job first and then its Deployments, while the release of the expand
+step serves. A process of the release of the expand step with runtime v0.141.0
+or later goes on after the contract: the first statement of the entity that
+fails because the clear column is gone makes the process read and write the
+sealed column alone from then on, and the call runs again once, so the client
+gets its answer. The process logs `the contract step of a seal dropped the
+clear columns` once for each entity, and its seal job logs that the seal has no
+checkpoint and does no more work. Each process of that release that starts
+after the contract logs the fault of the schema manifest for the clear column,
+which is an alert, and goes on in the same way. Thus you can also go back to
+the release of the expand step after the contract, but not past it.
+
+A process of a release of the expand step with a runtime before v0.141.0 needs
+the clear column: after the contract it answers 500 to each create, read and
+update of the entity until the release of the contract step replaces it
+(walkthrough 14). So `stego compat` and `stego plan` refuse the contract step
+over a base whose record names a runtime before v0.141.0, or no runtime: first
+deploy a release with runtime v0.141.0 or later and the seal still at expand,
+and then declare the contract step.
+
+### Where the values of the field stay after the contract
+
+The contract removes the value in clear from the table only. Each copy that a
+release wrote while the field was not secret stays where it is:
+
+- The audit rows in `public.audit_event`: the state before and after of each
+  create and update, and the state of each pii read, of each release before
+  the expand step. The audit rows are chained by hashes, so STEGO does not
+  change them. From the release of the expand step on, no audit row holds the
+  value.
+- The entries of the audit sink in `stego_audit_sink.entries` and the
+  messages of the outbox in `stego_outbox.messages` that a release before the
+  expand step wrote, until their own retention removes them, and each copy in
+  the systems that read them, such as the topics of a consumer and the store of
+  the audit sink.
+- The rows of the clear column in the WAL and in each backup taken before the
+  contract, until the retention of the WAL and of the backups ends. A restore
+  of such a backup brings the clear column back (see [Restore a database with
+  an open or finished seal](#restore-a-database-with-an-open-or-finished-seal)).
+
+Treat these copies as data of the class that the field had before the seal,
+such as `public` or `pii`, until their retention ends. To limit them, declare a
+field `sensitivity: secret` in its first release. How STEGO removes the copies
+in the audit, the audit sink and the outbox is an open question to the Product
+owner (ST-SUP-Q188).
+
+### Restore a database with an open or finished seal
+
+A backup holds the schema of the release that ran when you took it. When you
+restore a backup from before the contract step of a seal, or from before its
+expand step, the database goes back to that schema, and a later release must
+take it through the steps again:
+
+1. Restore the backup, as [Restore from a
+   backup](operations.md#restore-from-a-backup) tells, and keep the
+   Deployments stopped.
+2. Run the migration Job of the release that runs now. When the backup is from
+   before the contract step of a seal, the Job applies the steps up to that
+   contract step, makes the seal checkpoint and the lease of the seal job, and
+   then refuses: `the contract step of the schema change <change> waits for its
+   seal`. This is the expected result.
+3. Run the release of the expand step of the seal, with its controller, until
+   the seal job logs `seal of a secret column` with `completed=true`. The first
+   pass waits 3 minutes after the expand step, so that each process of a
+   release before reports itself. When the release of the expand step logs
+   that the lease of the seal job is not in the lease table, run its migration
+   Job first.
+4. Run the migration Job of the release that runs now again. It applies the
+   contract step and each later step. Then start its Deployments, and stop the
+   release of the expand step.
+
+A backup from after the contract step holds no clear column, and the
+migration Job of the release that runs now applies the later steps with no
+wait.
 
 ## The migrations of the steps
 

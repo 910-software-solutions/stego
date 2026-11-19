@@ -416,6 +416,97 @@ func (f *entityField) columns() []string {
 // sealed column, and a read resolves the two (ST-SUP-RP10-LC49).
 func (f *entityField) sealing() bool { return f.sealed && f.decl.SealedFrom != "" }
 
+// afterSeal gives the entity as the contract step of each of its open seals leaves it: each readable secret whose
+// seal step is open has its sealed column alone. It gives nil for an entity with no open seal. The runtime takes its
+// statements, its scan and its values when the contract has dropped the clear columns (ST-SUP-RP10-LC49,
+// ST-SUP-RC01-OC49).
+func (e *entity) afterSeal() *entity {
+	if !slices.ContainsFunc(e.fields, (*entityField).sealing) {
+		return nil
+	}
+	out := *e
+	out.fields = make([]*entityField, len(e.fields))
+	for i, f := range e.fields {
+		copied := *f
+		copied.decl.SealedFrom = ""
+		out.fields[i] = &copied
+	}
+	return &out
+}
+
+// clearColumns gives the clear column of each readable secret of the entity whose seal step is open, in field order.
+func (e *entity) clearColumns() []string {
+	var out []string
+	for _, f := range e.fields {
+		if f.sealing() {
+			out = append(out, f.decl.SealedFrom)
+		}
+	}
+	return out
+}
+
+// renderScanValues writes Scan, which reads the columns of the statements of e, and Values, which gives the values
+// of an insert and an update of e, each indented by indent.
+func renderScanValues(w *writer, e *entity, indent string) {
+	w.f("%sScan: func(row command.Scanner) (%s, command.Meta, error) {\n%s\tvar v %s\n%s\tvar m command.Meta\n", indent, e.goName, indent, e.goName, indent)
+	targets := []string{"&v.ID"}
+	for _, f := range e.fields {
+		switch {
+		case f.sealing():
+			// The runtime reads the clear value of an open seal when the two columns differ (ST-SUP-RP10-LC49).
+			w.f("%s\tsealing%s := command.SealingAt(%q, %q, &v.ID, &v.%s)\n", indent, f.goName, e.table, f.decl.ColumnName(), f.goName)
+			targets = append(targets, "sealing"+f.goName+".Clear()", "sealing"+f.goName+".Sealed()")
+		case f.sealed:
+			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
+			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
+		default:
+			targets = append(targets, "&v."+f.goName)
+		}
+	}
+	targets = append(targets, "&m.Version", "&m.Token")
+	w.f("%s\terr := row.Scan(%s)\n%s\tm.ID = v.ID\n%s\treturn v, m, err\n%s},\n", indent, strings.Join(targets, ", "), indent, indent, indent)
+	// Values gives the ID and the field values; a new row with no ID gets a new one.
+	values := []string{"id"}
+	for _, f := range e.fields {
+		switch {
+		case f.sealing():
+			// An open seal writes the clear column too, which a release before reads (ST-SUP-RP10-LC49).
+			values = append(values, fmt.Sprintf("command.ClearOf(v.%s)", f.goName), fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.sealed:
+			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
+			// compare-only secret as its hash (ST-SUP-RP10-LC44).
+			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
+		default:
+			values = append(values, "v."+f.goName)
+		}
+	}
+	w.f("%sValues: func(v %s) []any {\n%s\tid := v.ID\n%s\tif id == \"\" {\n%s\t\tid = command.NewID()\n%s\t}\n%s\treturn []any{%s}\n%s},\n", indent, e.goName, indent, indent, indent, indent, indent, strings.Join(values, ", "), indent)
+}
+
+// renderAfterSeal writes AfterSeal of an entity with an open seal: the clear columns, the statements, the scan and the
+// values of the entity after the contract step of each open seal, which the runtime takes once the contract has
+// dropped the clear columns (ST-SUP-RP10-LC49, ST-SUP-RC01-OC49).
+func renderAfterSeal(w *writer, e *entity, tenantKey string) {
+	after := e.afterSeal()
+	if after == nil {
+		return
+	}
+	selectRow, forUpdate, forDelete, insert, update, _ := after.statements(tenantKey)
+	clearColumns := make([]string, 0, len(e.fields))
+	for _, column := range e.clearColumns() {
+		clearColumns = append(clearColumns, fmt.Sprintf("%q", column))
+	}
+	w.f("\t// The statements after the contract step of each open seal, which the runtime takes once the contract has\n\t// dropped the clear columns (ST-SUP-RP10-LC49).\n")
+	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n", e.goName, "public."+e.table, strings.Join(clearColumns, ", "))
+	w.f("\t\tSelect: %q,\n\t\tSelectForUpdate: %q,\n\t\tSelectForDelete: %q,\n\t\tInsert: %q,\n\t\tUpdate: %q,\n", selectRow, forUpdate, forDelete, insert, update)
+	renderScanValues(w, after, "\t\t")
+	w.f("\t},\n")
+}
+
 // patternVar is the name of the package-level variable of the compiled pattern of field f of entity e.
 func patternVar(e *entity, f *entityField) string {
 	return "pattern" + e.goName + f.goName
@@ -628,44 +719,8 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	}
 	w.f("\tSelect: %q,\n\tSelectForUpdate: %q,\n\tSelectForDelete: %q,\n", selectRow, forUpdate, forDelete)
 	w.f("\tInsert: %q,\n\tUpdate: %q,\n\tDelete: %q,\n", insert, update, remove)
-	// Scan reads the columns of the statements.
-	w.f("\tScan: func(row command.Scanner) (%s, command.Meta, error) {\n\t\tvar v %s\n\t\tvar m command.Meta\n", e.goName, e.goName)
-	targets := []string{"&v.ID"}
-	for _, f := range e.fields {
-		switch {
-		case f.sealing():
-			// The runtime reads the clear value of an open seal when the two columns differ (ST-SUP-RP10-LC49).
-			w.f("\t\tsealing%s := command.SealingAt(%q, %q, &v.ID, &v.%s)\n", f.goName, e.table, f.decl.ColumnName(), f.goName)
-			targets = append(targets, "sealing"+f.goName+".Clear()", "sealing"+f.goName+".Sealed()")
-		case f.sealed:
-			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
-			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.compared:
-			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
-		default:
-			targets = append(targets, "&v."+f.goName)
-		}
-	}
-	targets = append(targets, "&m.Version", "&m.Token")
-	w.f("\t\terr := row.Scan(%s)\n\t\tm.ID = v.ID\n\t\treturn v, m, err\n\t},\n", strings.Join(targets, ", "))
-	// Values gives the ID and the field values; a new row with no ID gets a new one.
-	values := []string{"id"}
-	for _, f := range e.fields {
-		switch {
-		case f.sealing():
-			// An open seal writes the clear column too, which a release before reads (ST-SUP-RP10-LC49).
-			values = append(values, fmt.Sprintf("command.ClearOf(v.%s)", f.goName), fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.sealed:
-			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
-			// compare-only secret as its hash (ST-SUP-RP10-LC44).
-			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.compared:
-			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
-		default:
-			values = append(values, "v."+f.goName)
-		}
-	}
-	w.f("\tValues: func(v %s) []any {\n\t\tid := v.ID\n\t\tif id == \"\" {\n\t\t\tid = command.NewID()\n\t\t}\n\t\treturn []any{%s}\n\t},\n", e.goName, strings.Join(values, ", "))
+	// Scan reads the columns of the statements, and Values gives the values of an insert and an update.
+	renderScanValues(w, e, "\t")
 	state := []string{`"id": v.ID`}
 	for _, f := range e.fields {
 		// No audit row holds a secret field (ST-SUP-RP10-LC44).
@@ -717,6 +772,7 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	if e.sealed {
 		w.f("\tSealed: true,\n")
 	}
+	renderAfterSeal(w, e, tenantKey)
 	renderCheck(w, e)
 	if len(e.references) > 0 {
 		w.f("\tParent: []command.Reference[%s]{\n", e.goName)

@@ -514,7 +514,11 @@ Do these steps in this order:
 4. Run the migration Job of the release that you start. It checks the roles,
    the grants and the schema again, and it refuses a database that does not
    satisfy the schema manifest. When the dump is of an older release, it also
-   migrates the database to the release.
+   migrates the database to the release. When the dump is from before the
+   contract step of a seal, the Job refuses at that step until the seal job of
+   the release of its expand step completes a pass: see [Restore a database
+   with an open or finished seal](schema-changes.md#restore-a-database-with-an-open-or-finished-seal).
+   A dump from before the seal holds the field in clear.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
 6. List the messages of the destination `authz` that are not done, and review

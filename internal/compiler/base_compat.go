@@ -147,6 +147,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealContractFaults(state.LastApplied, declaration, head)...)
 	return check, nil
 }
 
@@ -211,6 +212,36 @@ func sealRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 		}
 		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
 			"the base runs a release whose processes do not report themselves (postgres-adapter before %s or runtime library before %s, or no pin), so the seal job and the contract of the seal %s cannot see its writes to the clear column; deploy a release with the runtime library %s or later, with no new schema step, first, and then declare the seal", ReportAdapterVersion, ReportRuntimeVersion, step.Change, ReportRuntimeVersion)}}
+	}
+	return nil
+}
+
+// SealSwitchRuntimeVersion is the first runtime library version whose release of the expand step of a seal goes on
+// after the contract step drops the clear column: it then reads and writes the sealed column alone
+// (ST-SUP-RP10-LC49; walkthrough 14, W14-B6).
+const SealSwitchRuntimeVersion = "v0.141.0"
+
+// sealContractFaults refuses a head with a new contract step of a seal when the record at the base names a runtime
+// library before SealSwitchRuntimeVersion, or none: the processes of that release, the release of the expand step,
+// need the clear column, so each of their writes and reads of the entity fails once the contract drops it
+// (ST-SUP-RC01-OC49). A pin that does not parse counts as such a release.
+func sealContractFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
+	if applied != nil && applied.Archetype != nil && applied.Archetype.Runtime != nil {
+		version := applied.Archetype.Runtime.Version
+		if semver.IsValid(version) && semver.Compare(version, SealSwitchRuntimeVersion) >= 0 {
+			return nil
+		}
+	}
+	kinds := map[string]string{}
+	for _, change := range head.SchemaChanges {
+		kinds[change.ID] = change.Kind
+	}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		if step.Phase != "contract" || kinds[step.Change] != "seal" {
+			continue
+		}
+		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
+			"the base runs a release with the runtime library before %s, or no pin, whose processes need the clear column of the seal %s, so each of their writes and reads of the entity would fail after its contract step drops the column; deploy a release with the runtime library %s or later, with the seal still at expand, first, and then declare the contract step", SealSwitchRuntimeVersion, step.Change, SealSwitchRuntimeVersion)}}
 	}
 	return nil
 }

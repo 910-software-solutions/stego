@@ -51,6 +51,9 @@ type schemaStep struct {
 	// check (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39); Expand is the migration of the expand step of its change.
 	Contract *contractStep
 	Expand   string
+	// Seal is true for the expand step of a seal: the ledger makes the row of the lease of its seal job in the
+	// transaction of its migration, outside its body (ST-SUP-RC01-OC49).
+	Seal bool
 }
 
 // contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, and its
@@ -288,7 +291,7 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
-			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body})
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body, Seal: true})
 			before = after
 			continue
 		}

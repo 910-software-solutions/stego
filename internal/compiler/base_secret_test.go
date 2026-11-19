@@ -94,7 +94,7 @@ func TestBaseSeal(t *testing.T) {
 		}
 		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
 			"  - {change: organization-description-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
-		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: adapterRecord(t, []byte(expand), SecretStorageVersion)}, parseHead(t, contract))
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: runtimeRecord(t, []byte(expand), SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, contract))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the contract of the seal is refused against its expand: %v %+v", err, check.Faults)
 		}
@@ -107,6 +107,12 @@ func TestBaseSeal(t *testing.T) {
 			t.Fatalf("a seal that also changes max_length is accepted: %v", err)
 		}
 	})
+}
+
+// runtimeRecord is adapterRecord with the archetype rest-crud on the runtime library runtime.
+func runtimeRecord(t *testing.T, declaration []byte, adapter, runtime string) []byte {
+	t.Helper()
+	return append(adapterRecord(t, declaration, adapter), []byte("  archetype:\n    name: rest-crud\n    version: 3.0.0\n    runtime:\n      version: "+runtime+"\n")...)
 }
 
 // adapterRecord is the record of a release of the declaration whose postgres-adapter is version, with the tenancy
@@ -193,6 +199,43 @@ func TestBaseSealReports(t *testing.T) {
 		check, err := CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, "dev")}, parseHead(t, declared))
 		if err != nil || !check.HasFaults() {
 			t.Fatalf("the same declaration over a base with a pin that does not parse is accepted: %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC49-T07 The contract of a seal is refused over a base whose release of the expand step needs the clear column", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		change := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
+		expand := withChanges(strings.Replace(td01, description, secret, 1), change, "  - {change: organization-description-seal, phase: expand}\n")
+		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
+			"  - {change: organization-description-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
+		for _, c := range []struct {
+			name, record string
+			refused      bool
+		}{
+			{"runtime v0.140.0", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "v0.140.0")), true},
+			{"no runtime pin", string(adapterRecord(t, []byte(expand), SecretStorageVersion)), true},
+			{"a runtime pin that does not parse", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "dev")), true},
+			{"runtime " + SealSwitchRuntimeVersion, string(runtimeRecord(t, []byte(expand), SecretStorageVersion, SealSwitchRuntimeVersion)), false},
+		} {
+			check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: []byte(expand), Record: []byte(c.record)}, parseHead(t, contract))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || (strings.Contains(fault.Message, "need the clear column of the seal organization-description-seal") &&
+					strings.Contains(fault.Message, "with the seal still at expand, first"))
+			}
+			if refused != c.refused {
+				t.Errorf("%s: the contract gives %+v, want refused %t", c.name, check.Faults, c.refused)
+			}
+		}
+		// The expand step itself is not refused over an older runtime: only the contract drops the clear column.
+		check, err := CheckBase(BaseSource{Ref: "r2", Commit: "c0ffee", Declaration: []byte(td01), Record: runtimeRecord(t, []byte(td01), SecretStorageVersion, "v0.140.0")}, parseHead(t, expand))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the expand of the seal over runtime v0.140.0 is refused: %v %+v", err, check.Faults)
 		}
 	})
 }
