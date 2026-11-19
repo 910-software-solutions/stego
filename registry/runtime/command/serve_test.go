@@ -407,6 +407,7 @@ func TestOutcomeTransient(t *testing.T) {
 		internal := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
 		unavailable := Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
 		notFound := Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
+		denied := Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 		for _, c := range []struct {
 			name string
 			err  error
@@ -424,6 +425,13 @@ func TestOutcomeTransient(t *testing.T) {
 			{"a not-found error with a SpiceDB that does not answer", errors.Join(ErrNotFound, decide(status.Error(codes.Unavailable, "connection refused"))), undecided},
 			{"a not-found error of a database that cannot serve now", errors.Join(fmt.Errorf("fill: %w", ErrNotFound), ErrUnavailable), unavailable},
 			{"a not-found error alone", fmt.Errorf("fill: %w", ErrNotFound), notFound},
+			// A denial with the same causes gets the same answer as a not-found error (security review of PR 449,
+			// INFO-1).
+			{"a denial with a decision that could not be made now", errors.Join(fmt.Errorf("fill: %w", ErrDenied), ErrUndecided), undecided},
+			{"a denial with a SpiceDB that does not answer", errors.Join(ErrDenied, decide(status.Error(codes.Unavailable, "connection refused"))), undecided},
+			{"a denial of a database that cannot serve now", errors.Join(fmt.Errorf("fill: %w", ErrDenied), ErrUnavailable), unavailable},
+			{"a denial with a refusal of SpiceDB", errors.Join(ErrDenied, decide(status.Error(codes.FailedPrecondition, "no relation"))), denied},
+			{"a denial alone", fmt.Errorf("fill: %w", ErrDenied), denied},
 		} {
 			if got := OutcomeOf(c.err); got != c.want {
 				t.Errorf("%s: OutcomeOf gave %+v, want %+v", c.name, got, c.want)
