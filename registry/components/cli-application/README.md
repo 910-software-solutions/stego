@@ -76,7 +76,8 @@ variable and application directory used to locate configuration.
 
 New directories use mode 0700. Configuration and token files must be owned by
 the effective user, as ssh checks for its keys, and must exclude group and other
-access. A body file that holds a secret member has the same rules. The configuration directory must exclude writes by other
+access. A body file that holds a secret member has the same rules. Thus a CLI
+that runs as root accepts only such files that root owns. The configuration directory must exclude writes by other
 users. Configuration reads reject leaf symlinks. Writes use an open directory
 handle, a random exclusive file, file sync, atomic rename, and directory sync.
 Failed writes do not replace configuration with partial JSON. Input files must
@@ -134,7 +135,8 @@ failure or a request that expired gives no answer, so the flag decides there.
 When the flag says that the service keeps the key and a 2xx answer has no
 `Idempotency-Kept` header, the CLI writes a warning to standard error that the
 CLI and the service can be of different releases. The warning changes no
-answer and no exit code.
+answer and no exit code. A proxy in front of the service must not add
+`Idempotency-Kept`: the CLI trusts the header to send a write again.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and

@@ -27,7 +27,9 @@ again, a problem and a 5xx answer. An answer to a request with no key, or to a
 get, a put or a delete, does not carry it. The OpenAPI document describes the
 header on each response of the create and the patch. Thus a client of another
 release than the service knows from the answer that a second request with the
-same key is safe (ST-SUP-RC30-OC08).
+same key is safe (ST-SUP-RC30-OC08). A proxy in front of the service must not
+add `Idempotency-Kept`, because a client then sends a write again that the
+service may do two times.
 
 The stage is alpha. A collection create or patch is a generated command
 (ST-SUP-RC20-OC37), so the wrapper is the one that command.Run calls. On the
