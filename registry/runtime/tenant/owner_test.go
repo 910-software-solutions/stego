@@ -223,6 +223,61 @@ func TestTenantConnectors(t *testing.T) {
 	})
 }
 
+func TestStalePlans(t *testing.T) {
+	t.Run("ST-SUP-RP04-LC11-T01 After a stale prepared statement each connection of the pool prepares its statements again", func(t *testing.T) {
+		env := newPG(t)
+		ctx := context.Background()
+		adminExec(t, env.ownerDB, "CREATE TABLE plans (id text NOT NULL, mark integer)", "INSERT INTO plans VALUES ('a', 1)",
+			"GRANT SELECT ON plans TO "+env.runtime)
+		db, err := Open(ctx, Config{InsecureLoopback: true, DSN: env.dsn(env.runtime), Pool: PoolBounds{MaxOpen: 2, MaxIdle: 2}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		// read reads the row on each of the two connections of the pool, which it holds together, and gives the
+		// error of each. The statement has a parameter, so the connection prepares it and keeps it in its cache.
+		read := func() [2]error {
+			var conns [2]*sql.Conn
+			var errs [2]error
+			for i := range conns {
+				c, err := db.Conn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				conns[i] = c
+				var mark any
+				errs[i] = c.QueryRowContext(ctx, "SELECT id, mark FROM plans WHERE id = $1", "a").Scan(new(string), &mark)
+			}
+			for _, c := range conns {
+				_ = c.Close()
+			}
+			return errs
+		}
+		if errs := read(); errs[0] != nil || errs[1] != nil {
+			t.Fatalf("the first reads fail: %v", errs)
+		}
+		// A person drops the column and adds it again with another type: the prepared statement of each
+		// connection is stale.
+		adminExec(t, env.ownerDB, "ALTER TABLE plans DROP COLUMN mark", "ALTER TABLE plans ADD COLUMN mark text")
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = c.QueryRowContext(ctx, "SELECT id, mark FROM plans WHERE id = $1", "a").Scan(new(string), new(any))
+		_ = c.Close()
+		if !StalePlan(err) {
+			t.Fatalf("the read after the change gives %v, not a stale prepared statement", err)
+		}
+		if StalePlan(errors.New("cached plan must not change result type")) || StalePlan(&pgconn.PgError{Code: "0A000", Message: "other"}) {
+			t.Fatal("StalePlan holds for an error that is not the refusal of a stale prepared statement")
+		}
+		ResetStatements()
+		if errs := read(); errs[0] != nil || errs[1] != nil {
+			t.Fatalf("after ResetStatements a connection of the pool still runs its stale statement: %v", errs)
+		}
+	})
+}
+
 func TestOpened(t *testing.T) {
 	t.Run("ST-SUP-RP04-LC08-T01 Opened is true only for an open pool of Open or OpenOwner", func(t *testing.T) {
 		env := newPG(t)
