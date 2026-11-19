@@ -8,6 +8,8 @@
 # Version 1.16.0 leaves out of the patch of apply each create-only field whose value is the stored one, and refuses
 # another value before any write, so an apply of the same documents again succeeds (ST-SUP-RC04-OC35). It gives no
 # flag for the member kind of a patch request or for a member marked x-kept, which a patch cannot change.
+# Version 1.20.0 states APPLY_CONFIG as read by the client alone (read_by_client): the CLI reads it, and no process
+# of the service does, so the platform requirements and the Kubernetes base no longer list it (walkthrough 17, W17-D2).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -23,7 +25,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.16.0
+version: 1.20.0
 stage: ga
 output_namespace: cli
 config:
@@ -46,6 +48,7 @@ environment:
   - name: APPLY_CONFIG
     type: path
     required: false
-    description: "The file of the configuration of the apply command. When it has no value, the CLI uses apply/config.json in the configuration folder of the user."
+    description: "The file of the configuration of the generated CLI. When it has no value, the CLI uses <service>/config.json in the configuration folder of the user."
     secret: false
+    read_by_client: true
     example: "/home/user/.config/apply/config.json"

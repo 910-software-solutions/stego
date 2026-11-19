@@ -60,3 +60,18 @@ func TestKeyRingNeed(t *testing.T) {
 		}
 	})
 }
+
+func TestClientVariables(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T07 The platform requirements leave out a variable that only a client program of the component reads", func(t *testing.T) {
+		pin := registry.RuntimePin{Module: "github.com/jsell-rh/stego/registry/runtime", Version: "v0.163.0", Sum: "h1:a"}
+		variables := []registry.EnvironmentVariable{{Name: "APPLY_CONFIG", ReadByClient: true}, {Name: "DATABASE_URL"}, {Name: "STEGO_WORKER_DATABASE_URL", ReadWith: "service"}}
+		service := []gen.File{{Path: "internal/stegoruntime/runtime.go", Content: []byte("package stegoruntime\n\nimport \"github.com/jsell-rh/stego/registry/runtime/service\"\n")}}
+		var names []string
+		for _, variable := range readVariables(variables, runtimePackages(service, pin)) {
+			names = append(names, variable.Name)
+		}
+		if !slices.Equal(names, []string{"DATABASE_URL", "STEGO_WORKER_DATABASE_URL"}) {
+			t.Errorf("the service lists %v, want DATABASE_URL and STEGO_WORKER_DATABASE_URL and not the variable of the CLI", names)
+		}
+	})
+}

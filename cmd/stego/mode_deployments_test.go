@@ -43,6 +43,26 @@ func TestModeDeploymentsOfScaffolds(t *testing.T) {
 		if strings.Contains(worker, "containerPort:") || strings.Contains(worker, "name: STEGO_MODE\n") {
 			t.Errorf("the Deployment of the worker modes has a container port or STEGO_MODE:\n%s", worker)
 		}
+		// The gRPC TLS files are read by the api mode alone: only the api Deployment and its mounts name them, and the
+		// worker Deployment, its mounts and the migration Job hold no entry and no volume of the Secret
+		// greeter-grpc-tls, which holds the private key of the gRPC server (walkthrough 17, W17-D1).
+		apiMounts, workerMounts := read(project, "deploy/components/secret-files/mount-files.yaml"), read(project, "deploy/components/secret-files/mount-worker-files.yaml")
+		for _, want := range []string{"name: STEGO_GRPC_TLS_CERT", "name: STEGO_GRPC_TLS_KEY"} {
+			if !strings.Contains(api, want) || !strings.Contains(apiMounts, want) {
+				t.Errorf("the api Deployment or its mounts do not hold %q", want)
+			}
+		}
+		if !strings.Contains(apiMounts, "secretName: greeter-grpc-tls") {
+			t.Errorf("the mounts of the api Deployment do not mount greeter-grpc-tls:\n%s", apiMounts)
+		}
+		job := read(project, "deploy/base/migration-job.yaml")
+		for name, text := range map[string]string{"the worker Deployment": worker, "the worker mounts": workerMounts, "the migration Job": job} {
+			for _, refused := range []string{"STEGO_GRPC_TLS_CERT", "STEGO_GRPC_TLS_KEY", "greeter-grpc-tls"} {
+				if strings.Contains(text, refused) {
+					t.Errorf("%s holds %q", name, refused)
+				}
+			}
+		}
 		if kustomization := read(project, "deploy/base/kustomization.yaml"); !strings.Contains(kustomization, "- worker-deployment.yaml") {
 			t.Errorf("the kustomization does not list the worker Deployment:\n%s", kustomization)
 		}

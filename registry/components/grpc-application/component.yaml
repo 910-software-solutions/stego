@@ -1,8 +1,10 @@
+# Version 2.4.0 states the gRPC TLS files as read by the api mode alone, so that the worker Deployment and the
+# migration Job do not mount the private key of the gRPC server (walkthrough 17, W17-D1).
 # Version 2.1.0 authenticates each call through the service runtime, which refuses a tenant that the tenant list does
 # not hold as active with PERMISSION_DENIED and the code tenant.not_provisioned (ST-SUP-RC27-OC11).
 kind: component
 name: grpc-application
-version: 2.3.0
+version: 2.4.0
 stage: ga
 output_namespace: grpcapi
 config:
@@ -64,17 +66,21 @@ environment:
     allowed: {min: "1s", max: "10s"}
   - name: STEGO_GRPC_TLS_CERT
     type: path
-    required: true
+    required: false
+    required_when: "the process runs the api mode"
     description: "The file of the PEM TLS certificate of the gRPC server. The server does not start when it has no value."
     secret: false
     secret_source: {name: "{service}-grpc-tls", key: tls-crt}
+    read_by_mode: api
     example: "/etc/stego/tls/tls.crt"
   - name: STEGO_GRPC_TLS_KEY
     type: path
-    required: true
+    required: false
+    required_when: "the process runs the api mode"
     description: "The file of the PEM TLS private key of the gRPC server. The server does not start when it has no value."
     secret: false
     secret_source: {name: "{service}-grpc-tls", key: tls-key}
+    read_by_mode: api
     example: "/etc/stego/tls/tls.key"
 # The platform needs (ST-SUP-EN09): the TLS certificate of the gRPC server, its port and the pod security level.
 needs:
