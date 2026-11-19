@@ -101,6 +101,10 @@ type EnvironmentVariable struct {
 	// requirements, the reference and the Kubernetes base list the variable only when the generated service imports
 	// that package.
 	ReadWith string `yaml:"read_with,omitempty"`
+	// RequiredWhen is, for a variable that is not required on its own, the condition in a short phrase under which the
+	// service that lists it does not start without a value, such as "the service has a secret or a pii field"
+	// (ST-SUP-EN14 field Required when; walkthrough 14). Only the environment variable reference shows it.
+	RequiredWhen string `yaml:"required_when,omitempty"`
 }
 
 // ReadByModes are the modes that a variable may state as its one reader: the migration job, the worker mode and
@@ -227,6 +231,9 @@ func declaresVariables(component *Component) error {
 		if variable.ReadWith != "" && !runtimePackagePath.MatchString(variable.ReadWith) {
 			return fault("read_with", "%q is not the path of a package under the runtime module, such as service or outbox/kafkaoutbox", variable.ReadWith)
 		}
+		if variable.RequiredWhen != "" && (variable.IsRequired() || !requiredWhen.MatchString(variable.RequiredWhen)) {
+			return fault("required_when", "a condition of required when is a phrase of at most 120 lower-case letters, digits, spaces and the characters -_., of a variable that is not required on its own")
+		}
 		if variable.OneOf != "" && !groupName.MatchString(variable.OneOf) {
 			return fault("one_of", "the group %q is not a name of at most 63 lower-case letters, digits and '-', such as database-url", variable.OneOf)
 		}
@@ -288,6 +295,10 @@ func holdsGoCode(folder string) bool {
 
 // groupName is the name of a group of one of: lower-case letters, digits and '-'.
 var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// requiredWhen is the form of the condition of a variable that is required when it holds: a short phrase, such as
+// "the service has a secret or a pii field".
+var requiredWhen = regexp.MustCompile(`^[a-z0-9][a-z0-9 _.,-]{0,119}$`)
 
 // checkGroups holds each group of one of of a component to at least two variables (ST-SUP-INV24, ST-DLV-Q09). The
 // group is the component's own: the platform requirements refuse one group name that two components state.

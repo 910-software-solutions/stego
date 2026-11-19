@@ -147,6 +147,32 @@ func TestEnvironmentList(t *testing.T) {
 			t.Fatal("the reference is not the rendering of the derived list")
 		}
 	})
+	t.Run("ST-DLV-UC01-R07-T05 The reference shows the condition of a variable that is required when it holds, and the list keeps it not required", func(t *testing.T) {
+		components := variableComponents()
+		components[0].Variables = append(components[0].Variables, Variable{Name: "KEY_RING_FILE", Type: "path", Description: "The key ring.",
+			RequiredWhen: "the service has a secret field or a pii field"})
+		files, err := WriteRequirements("orders", components)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(files.Reference), "| `KEY_RING_FILE` | path | yes, when the service has a secret field or a pii field | none | no | - | - | The key ring. |") {
+			t.Fatalf("the row of KEY_RING_FILE does not show its condition (walkthrough 14):\n%s", files.Reference)
+		}
+		// The platform requirements, which the environment check and the base read, keep the variable not required and
+		// hold no condition: a secret source gives its value.
+		if strings.Contains(string(files.Requirements), "secret field or a pii field") {
+			t.Fatalf("the platform requirements hold the condition:\n%s", files.Requirements)
+		}
+		requirements, err := DeriveRequirements("orders", components)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range requirements.Environment {
+			if v.Name == "KEY_RING_FILE" && v.Required {
+				t.Fatal("the list takes the variable as required")
+			}
+		}
+	})
 	t.Run("ST-DLV-UC01-R07-T02 A text of the list cannot break a row of the reference", func(t *testing.T) {
 		components := variableComponents()
 		components[1].Variables[1].Description = "The level | of the log `x` <b>."

@@ -58,6 +58,11 @@ func renderReference(service string, list []AcceptedVariable) []byte {
 				defaultText, example, allowed = "-", "-", "-"
 			}
 			required := yesNo(variable.Required)
+			if !variable.Required && variable.requiredWhen != "" {
+				// A variable that is not required on its own shows the condition under which the service needs it
+				// (ST-DLV-UC01-R07; walkthrough 14).
+				required = "yes, when " + cell(variable.requiredWhen)
+			}
 			if variable.OneOf != "" {
 				required = "one of " + code(variable.OneOf)
 			}
