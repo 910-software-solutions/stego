@@ -36,6 +36,8 @@ compatible_mixins:
   - durable-events
   - kafka-events
   - async-worker
+  - go-sdk
+  - cli-application
 
 bindings:
   durable-outbox: outbox

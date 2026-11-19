@@ -1,0 +1,13 @@
+kind: mixin
+name: cli-application
+version: 1.0.0
+
+# The generated command-line client of the service's own API: binding the mixin adds the cli-application component,
+# which makes its commands from the OpenAPI document of the service when the declaration gives no factory_package
+# (ST-DECL-UC09-R07, ST-SUP-RC04-OC32).
+adds_components:
+  - cli-application
+
+adds_slots: []
+
+overrides: none

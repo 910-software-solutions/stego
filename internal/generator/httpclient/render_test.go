@@ -55,8 +55,8 @@ func testStreams(t *testing.T, options bool) {
 }
 
 func TestIdempotencyKeyClients(t *testing.T) {
-	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy and of the CLI send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
-		for _, kind := range []string{"other", "proxy", "cli"} {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy, of the CLI and of the Go SDK send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
+		for _, kind := range []string{"other", "proxy", "cli", "sdk"} {
 			var file gen.File
 			var err error
 			switch kind {
@@ -66,13 +66,15 @@ func TestIdempotencyKeyClients(t *testing.T) {
 				file, err = RenderProxy("client", "", 0, FollowLinks)
 			case "cli":
 				file, err = RenderCLI("client", "")
+			case "sdk":
+				file, err = RenderSDK("client", "")
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			dir := t.TempDir()
 			files := map[string][]byte{"go.mod": []byte("module example.com/key-test\ngo 1.26.11\n"), "client.go": file.Bytes(), "isolation_test.go": isolationTests,
-				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\nconst keyWritesOnly = %t\n", kind != "other", kind == "cli"))}
+				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\nconst keyWritesOnly = %t\n", kind != "other", kind == "cli" || kind == "sdk"))}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
 					t.Fatal(err)
