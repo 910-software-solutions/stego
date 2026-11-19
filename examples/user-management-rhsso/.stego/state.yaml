@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119103444-829c5bda16bf
+        module_version: v0.0.0-20261119104502-2359ec0ca083
         vcs: git
-        revision: 829c5bda16bfb82716dee3f6126d6dd9036a9711
+        revision: 2359ec0ca083c2cd528cb9257d0b4cf9d2af4cb0
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -139,7 +139,7 @@ last_applied:
         internal/api/organizations_handler.go: 14f2d91fb93d55f333148339e0af178a253054df90db2a115b52aa37ead8807d
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
         internal/api/runtime.go: d640ea24a526b8d3cbde10e8dfa24af77a23cf800ee923c8f134c45336aef26e
-        internal/api/validation.go: 4a1b98a85802da3134ca394ce9f23968baaa18b3acdeb548087563da441ee308
+        internal/api/validation.go: 542c85665ebddf00f09f3ee7503b7a7dca591a882997219ae6b97db49b40aa15
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
         internal/authz/authz.go: c0294e18f637f00e7907a5481a5968ef518182cbe2b813b335954b62a71cb144
         internal/authz/schema.zed: dd0aeb78dcda920a7adf1c59f491c6104f10082df9c35ca6885f89d5ea0c5d5c
