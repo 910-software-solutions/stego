@@ -108,6 +108,46 @@ components:
         code: {type: string, x-kept: true, description: A patch cannot change this field.}
 `
 
+// strictSample is a document as the rest-api component writes it for a create (ST-SUP-RC20-OC55): a closed request
+// schema with kind, an x-kept member and x-output-only members, which have no type and take null.
+const strictSample = `openapi: 3.0.3
+info: {title: Strict, version: '1'}
+paths:
+  /widgets:
+    post:
+      operationId: createWidget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WidgetCreateRequest'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Widget'}
+components:
+  schemas:
+    Widget:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        state: {type: string, readOnly: true}
+    WidgetCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        kind: {type: string, enum: [Widget]}
+        name: {type: string}
+        state: {type: string, x-kept: true, description: The body may leave it out or give its default.}
+        id: {nullable: true, x-output-only: true, description: The server sets this member.}
+        created_time: {nullable: true, x-output-only: true, description: The server sets this member.}
+`
+
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{"document": "api.yaml"}, Inputs: map[string][]byte{"api.yaml": []byte(sample)}}
 }
@@ -396,6 +436,21 @@ func TestServiceDocument(t *testing.T) {
 		}
 		// Only the marks of the rest-api document are taken: another extension is still refused.
 		own.ServiceOpenAPI = []byte(strings.Replace(keptSample, "x-kept: true", "x-go-type: Unsafe", 1))
+		if err := new(Generator).ValidateContext(own); err == nil {
+			t.Error("a document with the extension x-go-type passed preflight")
+		}
+	})
+	t.Run("ST-SUP-RC20-OC55-T03 The Go client is made from a service document whose closed request schemas hold x-kept and x-output-only members", func(t *testing.T) {
+		own := gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(strictSample)}
+		if err := new(Generator).ValidateContext(own); err != nil {
+			t.Fatalf("the document of a rest-api service with closed request schemas is refused: %v", err)
+		}
+		files, _, err := new(Generator).Generate(own)
+		if err != nil || len(files) == 0 {
+			t.Fatalf("the client of a document with closed request schemas: %d files, %v", len(files), err)
+		}
+		// Only the marks of the rest-api document are taken: another extension is still refused.
+		own.ServiceOpenAPI = []byte(strings.Replace(strictSample, "x-kept: true", "x-go-type: Unsafe", 1))
 		if err := new(Generator).ValidateContext(own); err == nil {
 			t.Error("a document with the extension x-go-type passed preflight")
 		}

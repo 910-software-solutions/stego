@@ -8,6 +8,8 @@
 # Version 1.16.0 leaves out of the patch of apply each create-only field whose value is the stored one, and refuses
 # another value before any write, so an apply of the same documents again succeeds (ST-SUP-RC04-OC35). It gives no
 # flag for the member kind of a patch request or for a member marked x-kept, which a patch cannot change.
+# Version 1.19.0 gives no flag for a member of a create or an update request marked x-output-only, which the server
+# sets (ST-SUP-RC20-OC55, decision ST-SUP-Q195). Versions 1.17.0 and 1.18.0 are of another change.
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -23,7 +25,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.16.0
+version: 1.19.0
 stage: ga
 output_namespace: cli
 config:
