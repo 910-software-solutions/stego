@@ -565,6 +565,9 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T02 A seal at expand keeps the release before working, the seal job seals each row, and a roll back to the release before loses no write", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC49-T02")
 	})
+	t.Run("ST-SUP-RC01-OC49-T08 The job of a later release on a database from before the seal makes the lease of the seal job with the expand step", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC49-T08")
+	})
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
 	})

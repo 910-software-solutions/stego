@@ -490,6 +490,10 @@ var listOperators = map[string]string{types.ListEquals: "=", types.ListNotEquals
 // takes as typed Go arguments.
 type ListPlan struct {
 	Read, Lock string
+	// ReadAfterSeal and LockAfterSeal are Read and Lock with the sealed column alone of each readable secret whose
+	// seal step is open, which the runtime takes after the contract step drops the clear column (ST-SUP-RP10-LC49);
+	// empty for an entity with no open seal.
+	ReadAfterSeal, LockAfterSeal string
 	Values     []string
 	Params     []ListParam
 	// Child tells that the entity is a child: it has no resource type and References references to entities with a
@@ -588,11 +592,18 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(plan.Values)+2))
 	}
 	plan.Child, plan.References = e.resourceType == "" && len(e.references) > 0, len(e.references)
-	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
 	filter := " AND " + strings.Join(terms, " AND ")
-	plan.Read = from + filter + ` ORDER BY "id" LIMIT $2`
-	if list.Lock {
-		plan.Lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
+	statements := func(e *entity) (read, lock string) {
+		from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
+		read = from + filter + ` ORDER BY "id" LIMIT $2`
+		if list.Lock {
+			lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
+		}
+		return read, lock
+	}
+	plan.Read, plan.Lock = statements(e)
+	if after := e.afterSeal(); after != nil {
+		plan.ReadAfterSeal, plan.LockAfterSeal = statements(after)
 	}
 	return plan, nil
 }
@@ -655,6 +666,13 @@ func RenderList(w *bytes.Buffer, goName, name, owner, entity string, plan ListPl
 	fmt.Fprintf(w, "\nvar %s = command.Must(command.NewList(%sEntity, command.ListSpec{Name: %q,\n\tRead: %q,\n", goName, entity, name, plan.Read)
 	if plan.Lock != "" {
 		fmt.Fprintf(w, "\tLock: %q,\n", plan.Lock)
+	}
+	if plan.ReadAfterSeal != "" {
+		// The statements after the contract step of each open seal of the entity (ST-SUP-RP10-LC49).
+		fmt.Fprintf(w, "\tReadAfterSeal: %q,\n", plan.ReadAfterSeal)
+		if plan.LockAfterSeal != "" {
+			fmt.Fprintf(w, "\tLockAfterSeal: %q,\n", plan.LockAfterSeal)
+		}
 	}
 	fmt.Fprintf(w, "\tValues: command.DeclaredValues(%s)}))\n\n", strings.Join(plan.Values, ", "))
 	if len(plan.Params) == 0 {

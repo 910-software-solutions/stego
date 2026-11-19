@@ -332,12 +332,12 @@ func TestCompat(t *testing.T) {
 }
 
 // relaxNotes gives the declaration of ST-GEN-TD03 with the fields of Note before the relax steps: title of at most
-// 40 characters, the enum mood, the required size and the optional enum kind.
+// 40 characters, the enum mood, the required size and the optional enum shade.
 func relaxNotes(fields string) string {
 	return noteFields(fields)
 }
 
-const relaxBaseFields = "[{name: title, type: string, min_length: 1, max_length: 40}, {name: mood, type: enum, values: [calm, busy]}, {name: size, type: string, max_length: 8}, {name: kind, type: enum, optional: true, values: [a, b]}]"
+const relaxBaseFields = "[{name: title, type: string, min_length: 1, max_length: 40}, {name: mood, type: enum, values: [calm, busy]}, {name: size, type: string, max_length: 8}, {name: shade, type: enum, optional: true, values: [a, b]}]"
 
 func TestCompatRelax(t *testing.T) {
 	t.Run("ST-GEN-UC14-R03-T02 stego compat accepts each relax of a field of the base and refuses each narrowing", func(t *testing.T) {
@@ -367,15 +367,15 @@ func TestCompatRelax(t *testing.T) {
 			title = "{id: note-title-relax, kind: relax, entity: Note, field: title, definition: max_length 40}"
 			mood  = "{id: note-mood-relax, kind: relax, entity: Note, field: mood, definition: values calm busy}"
 			size  = "{id: note-size-relax, kind: relax, entity: Note, field: size, definition: \"required, no default\"}"
-			kind  = "{id: note-kind-relax, kind: relax, entity: Note, field: kind, definition: \"type enum, values a b\"}"
+			kind  = "{id: note-shade-relax, kind: relax, entity: Note, field: shade, definition: \"type enum, values a b\"}"
 		)
 		longer := field("max_length: 40", "max_length: 80")
 		more := field("values: [calm, busy]", "values: [calm, busy, sleepy]")
 		optional := field("{name: size, type: string, max_length: 8}", "{name: size, type: string, max_length: 8, optional: true, default: m}")
-		text := field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true}")
+		text := field("{name: shade, type: enum, optional: true, values: [a, b]}", "{name: shade, type: string, optional: true}")
 		all := strings.NewReplacer("max_length: 40", "max_length: 80", "values: [calm, busy]", "values: [calm, busy, sleepy]",
 			"{name: size, type: string, max_length: 8}", "{name: size, type: string, max_length: 8, optional: true, default: m}",
-			"{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true}").Replace(relaxBaseFields)
+			"{name: shade, type: enum, optional: true, values: [a, b]}", "{name: shade, type: string, optional: true}").Replace(relaxBaseFields)
 		for _, c := range []struct{ name, declaration string }{
 			{"a longer max_length", relaxed(longer, title)},
 			{"a new enum value", relaxed(more, mood)},
@@ -391,9 +391,9 @@ func TestCompatRelax(t *testing.T) {
 		for _, c := range []struct{ name, declaration, says string }{
 			{"a shorter max_length", relaxed(field("max_length: 40", "max_length: 20"), title), "only makes a max_length longer"},
 			{"an enum value taken away", relaxed(field("values: [calm, busy]", "values: [calm]"), mood), "only adds enum values"},
-			{"an optional field made required", relaxed(field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: enum, values: [a, b]}"),
-				"{id: note-kind-relax, kind: relax, entity: Note, field: kind, definition: required}"), "needs a require"},
-			{"a retype that needs a rewrite", relaxed(field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true, max_length: 9}"), kind), "no max_length"},
+			{"an optional field made required", relaxed(field("{name: shade, type: enum, optional: true, values: [a, b]}", "{name: shade, type: enum, values: [a, b]}"),
+				"{id: note-shade-relax, kind: relax, entity: Note, field: shade, definition: required}"), "needs a require"},
+			{"a retype that needs a rewrite", relaxed(field("{name: shade, type: enum, optional: true, values: [a, b]}", "{name: shade, type: string, optional: true, max_length: 9}"), kind), "no max_length"},
 			{"an undeclared shorter max_length", relaxNotes(field("max_length: 40", "max_length: 20")), "a relax only makes a max_length longer"},
 		} {
 			s.write(t, "service.yaml", c.declaration)

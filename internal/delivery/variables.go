@@ -38,6 +38,9 @@ type Variable struct {
 	// OneOf is the group of variables of the component of which the process needs exactly one value, such as
 	// DATABASE_URL and DATABASE_URL_FILE, or "" (ST-SUP-EN14 field One of, ST-DLV-Q09).
 	OneOf string
+	// RequiredWhen is the condition under which the service does not start without a value, for a variable that is
+	// not required on its own, or "" (ST-SUP-EN14 field Required when). Only the reference shows it.
+	RequiredWhen string
 }
 
 // SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
@@ -83,6 +86,9 @@ type AcceptedVariable struct {
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
+	// requiredWhen is the condition of Variable.RequiredWhen of the first reader, for the reference alone: the
+	// platform requirements, the environment check and the base take the variable as not required (ST-DLV-UC01-R07).
+	requiredWhen string
 }
 
 // VariableError is an environment variable that the platform requirements cannot list: the sources that state it,
@@ -174,6 +180,7 @@ func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVar
 		if accepted.ReadBy[0] < previous.first {
 			previous.first = accepted.ReadBy[0]
 			previous.variable.Description, previous.variable.example = accepted.Description, accepted.example
+			previous.variable.requiredWhen = accepted.requiredWhen
 		}
 		return nil
 	}
@@ -278,7 +285,7 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
 		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart,
-		ReadByMode: variable.ReadByMode, OneOf: variable.OneOf}
+		ReadByMode: variable.ReadByMode, OneOf: variable.OneOf, requiredWhen: variable.RequiredWhen}
 	if source := variable.SecretSource; source != nil {
 		if !variable.Secret && variable.Type != "path" {
 			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")

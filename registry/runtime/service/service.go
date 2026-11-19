@@ -359,7 +359,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		}
 	}
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
-		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
+		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, ServiceVersion: s.ServiceVersion,
+		DeclarationVersion: p.DeclarationVersion, CursorKey: s.CursorKey,
 		ExtraCursorKeys: extraKeys(s.ExtraCursorKey), ProblemBase: p.ProblemType,
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
 		return nil, err

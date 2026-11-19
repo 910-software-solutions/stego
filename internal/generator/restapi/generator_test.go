@@ -4822,3 +4822,39 @@ func TestRuntimeDelete(t *testing.T) {
 		inOrder(t, "writeResult", extractMethodBody(string(files["api/runtime.go"]), "func writeResult("), "w.WriteHeader(result.Response.Status)", "w.Write(result.Response.Body)")
 	})
 }
+
+func TestEnvelopeMembers(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC52-T01 A field named kind or href of a served entity is refused at checking with its path and the remedy", func(t *testing.T) {
+		for _, member := range []string{"kind", "href"} {
+			ctx := gen.Context{
+				Conventions: types.Convention{Layout: "flat", ResponseFormat: "envelope"},
+				Entities: []types.Entity{
+					{Name: "Clinic", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}}},
+					{Name: "Record", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: member, Type: types.FieldTypeString}}},
+				},
+				Collections: []types.Collection{
+					{Name: "clinics", Entity: "Clinic", Operations: []types.Operation{types.OpCreate, types.OpRead}},
+					{Name: "records", Entity: "Record", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate}},
+				},
+				OutputNamespace: "internal/api",
+			}
+			err := (&Generator{}).ValidateContext(onRuntime(ctx))
+			if err == nil {
+				t.Fatalf("a served entity with a field named %s is accepted", member)
+			}
+			for _, want := range []string{"entities[1].fields[1].name", "the collection records", `"` + member + `"`, "give the field another name", "ST-SUP-RC20-OC52"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the fault for %s does not hold %q: %v", member, want, err)
+				}
+			}
+			if _, _, err := (&Generator{}).Generate(onRuntime(ctx)); err == nil {
+				t.Errorf("generation of a served entity with a field named %s does not refuse it", member)
+			}
+			// An entity that no collection serves keeps the name: no handler sets a member beside its fields.
+			ctx.Collections = ctx.Collections[:1]
+			if err := (&Generator{}).ValidateContext(onRuntime(ctx)); err != nil {
+				t.Errorf("an entity that no collection serves is refused for its field %s: %v", member, err)
+			}
+		}
+	})
+}
