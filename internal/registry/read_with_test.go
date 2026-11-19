@@ -48,3 +48,35 @@ func TestReadWith(t *testing.T) {
 		}
 	})
 }
+
+func TestReadByClient(t *testing.T) {
+	t.Run("ST-SUP-UC01-R09-T06 The registry takes a variable that only a client program reads, and refuses one that is required, secret or read by a mode", func(t *testing.T) {
+		client := "    secret: false\n    read_by_client: true\n    example: \"2m\"\n"
+		if _, err := parseEnv(t, "    secret: false\n    example: \"2m\"\n", client); err != nil {
+			t.Fatalf("a variable that only a client program reads is refused: %v", err)
+		}
+		// Each case marks a variable read_by_client together with a fact that only a variable of the service has.
+		expectRefused(t, []refusal{
+			{"a secret", "    secret: true\n", "    secret: true\n    read_by_client: true\n", "ENV_A_DATABASE_URL", "read_by_client"},
+			{"a required variable", "    required: false\n    default: \"5m\"\n", "    required: true\n    read_by_client: true\n", "ENV_A_TIMEOUT", "read_by_client"},
+			{"a mode that reads it", "    example: \"2m\"\n", "    read_by_client: true\n    read_by_mode: api\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "read_by_client"},
+			{"a runtime package that reads it", "    example: \"2m\"\n", "    read_by_client: true\n    read_with: service\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "read_by_client"},
+			{"a condition of required when", "    example: \"2m\"\n", "    read_by_client: true\n    required_when: \"the service has a secret\"\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "read_by_client"},
+		})
+		// The shipped cli-application states APPLY_CONFIG, the file of the configuration of the CLI, as read by the
+		// client alone (walkthrough 17, W17-D2).
+		shipped, err := Load(filepath.Join("..", "..", "registry"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, variable := range shipped.Component("cli-application").Variables() {
+			if variable.Name == "APPLY_CONFIG" {
+				found = variable.ReadByClient
+			}
+		}
+		if !found {
+			t.Error("the shipped cli-application does not state APPLY_CONFIG with read_by_client: true")
+		}
+	})
+}

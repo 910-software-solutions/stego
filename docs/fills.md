@@ -394,12 +394,18 @@ worker, such as a report, write an entity with a secret field: put the secret
 in an entity of its own, which the worker does not write. A read-only access of
 a worker (`reads`) is decided (ST-SUP-Q186 (a)) and not built yet.
 
-Do not put a secret in the response message of a command: the idempotency
-store keeps each answer of a command for the retention of its key. Since
-runtime v0.138.0, a service with a `secret` or a `pii` field seals each stored
-answer with its key ring (see
-[Idempotency](commands-queries-workers.md#idempotency)), but the answer is still
-kept, and a reader of the answer gets the secret.
+Put a secret in the response message of a command only when the command
+issues it, such as an API key that the client gets one time, and only in a
+member that the proto file marks `debug_redact` (see [A secret
+member](commands-queries-workers.md#a-secret-member)). Never put a secret that
+the service stores, such as a secret field of an entity, in a response. The
+idempotency store keeps each answer of a command for the retention of its key,
+24 hours by default. With the mark, the runtime seals each stored answer with
+the key ring (see [Idempotency](commands-queries-workers.md#idempotency)), and
+the generated CLI writes the answer only to `--output-file`. A retry with the
+same key gets the same secret again, from the sealed answer. Without the mark,
+the answer goes to stdout, and a service with no `secret` or `pii` field keeps
+it in clear.
 
 A field with `writable: create` or `never` that is a secret is never compared:
 an update that gives it, also with the stored value, gets 400. An answer never
@@ -860,6 +866,28 @@ as `log.Fatal` and `slog.SetDefault`; and `time.AfterFunc` and
 `context.AfterFunc`, which start a goroutine. A test file, whose name ends in
 `_test.go`, is not built into the service, so it can import any module of
 `go.mod`.
+
+A fill does not import `crypto/rand` or `math/rand`, so that its review finds
+each source of randomness by name. To issue a secret, such as an API key or a
+one-time code, call `command.NewToken(size)` of the package
+`github.com/jsell-rh/stego/registry/runtime/command`, which the contract of a
+command fill and of a worker fill always imports (from runtime v0.163.0). It
+gives `size` new random bytes from `crypto/rand`, from 16 to 64, and refuses
+another size with an error. Encode the bytes with `encoding/base64` or
+`encoding/hex`, or take a code of digits with `math/big`:
+
+```go
+raw, err := command.NewToken(32)
+if err != nil {
+	return nil, err
+}
+apiKey := base64.RawURLEncoding.EncodeToString(raw)
+```
+
+`command.NewID()` gives a new random UUID in its text form, with 122 random
+bits. Use it for a new ID. Do not make a secret from an ID, the time or the
+input with `crypto/sha256`: each person who knows the inputs can make the
+same value again.
 
 Thus a fill cannot import `crypto/subtle` to compare two secret values.
 Prefer a compare-only field and `sealed.Compared` (see [Check a compare-only

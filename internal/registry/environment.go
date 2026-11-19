@@ -105,6 +105,11 @@ type EnvironmentVariable struct {
 	// service that lists it does not start without a value, such as "the service has a secret or a pii field"
 	// (ST-SUP-EN14 field Required when; walkthrough 14). Only the environment variable reference shows it.
 	RequiredWhen string `yaml:"required_when,omitempty"`
+	// ReadByClient marks a variable that only a client program that the component emits reads, such as the file of
+	// the configuration of the generated CLI, and never the service (ST-SUP-EN14 field Read by client; walkthrough
+	// 17, W17-D2). The platform requirements, the reference, stego env check and the Kubernetes base never list it,
+	// and the README of the component documents it.
+	ReadByClient bool `yaml:"read_by_client,omitempty"`
 }
 
 // ReadByModes are the modes that a variable may state as its one reader: the migration job, the worker mode and
@@ -224,6 +229,10 @@ func declaresVariables(component *Component) error {
 		}
 		if variable.ReadByMode != "" && !slices.Contains(ReadByModes, variable.ReadByMode) {
 			return fault("read_by_mode", "the mode %q is not one of %s", variable.ReadByMode, strings.Join(ReadByModes, ", "))
+		}
+		if variable.ReadByClient && (variable.IsRequired() || variable.IsSecret() || variable.SecretSource != nil || variable.ReadByMode != "" ||
+			variable.ReadWith != "" || variable.OneOf != "" || variable.RequiredWhen != "") {
+			return fault("read_by_client", "a variable that only a client program reads is not required and not secret, and states no secret_source, read_by_mode, read_with, one_of or required_when, because the service never reads it")
 		}
 		if variable.ReadByMode != "" && variable.IsRequired() {
 			return fault("read_by_mode", "a variable that one mode reads is not required by the service")

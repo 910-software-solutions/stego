@@ -311,7 +311,13 @@ has no mark.
 
 For example, write `string pin = 2 [debug_redact = true];` in the request
 message `IssueKeyRequest` and `string api_key = 1 [debug_redact = true];` in
-the response message `IssueKeyResponse`.
+the response message `IssueKeyResponse`. The fill makes the API key with
+`command.NewToken(32)` (from runtime v0.163.0), never from an ID or the time
+(see [The imports of a fill](fills.md#the-imports-of-a-fill)). A secret in a
+response is only for a secret that the command issues: the stored answer
+keeps it for the retention of the idempotency key, sealed with the key ring,
+and a retry with the same key gets it again. Never put a secret field of an
+entity in a response.
 
 From rest-api 4.22.0, cli-application 1.13.0 and command 1.16.0:
 
