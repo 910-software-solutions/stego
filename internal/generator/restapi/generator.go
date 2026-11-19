@@ -909,8 +909,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
-	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53).
-	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] != nil {\n", commandMarker)
+	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53). Only
+	// the marker true skips the check: a marker false, or one of another type, leaves it on (security review of PR
+	// #454, INFO).
+	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] == true {\n", commandMarker)
 	fmt.Fprintf(&buf, "\t\t\t\tnext.ServeHTTP(w, r)\n")
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")

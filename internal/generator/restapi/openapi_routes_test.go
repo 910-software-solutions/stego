@@ -122,8 +122,11 @@ func TestCommandAndQueryRoutes(t *testing.T) {
 		if page.Properties["items"] == nil || page.Properties["next"] == nil {
 			t.Errorf("the page of the list query has no items and next")
 		}
-		if !strings.Contains(string(validation), `route.Operation.Extensions["x-stego-command"] != nil`) {
-			t.Errorf("the request validation checks the body of a command:\n%s", validation)
+		// Only the marker true skips the check of the body; a marker false leaves it on (security review of PR #454,
+		// INFO).
+		if !strings.Contains(string(validation), `route.Operation.Extensions["x-stego-command"] == true`) ||
+			strings.Contains(string(validation), `route.Operation.Extensions["x-stego-command"] != nil`) {
+			t.Errorf("the request validation does not skip only a body of an operation with the marker true:\n%s", validation)
 		}
 		// OpenAPIDocument gives the same document, which the client components read.
 		same, err := new(Generator).OpenAPIDocument(onRuntime(routesContext()))
