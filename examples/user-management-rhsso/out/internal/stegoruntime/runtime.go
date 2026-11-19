@@ -432,7 +432,8 @@ func (rt *Runtime) Run(ctx context.Context) error {
 // that stopped and each job that is not healthy (ST-SUP-RP09-LC05); before Run started the workers they are not
 // ready. Each mode of the process, the api mode too, is not ready from the start when the database lacks a table or
 // a column of the schema manifest (ST-SUP-RP14-LC06). A process that runs neither the worker nor the controller mode
-// is ready here otherwise.
+// is ready here while its database answers a ping. Each reason is fixed text that names no table, column, host or
+// user (security review of PR #457, L3).
 func (rt *Runtime) Readiness() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt.mu.Lock()
@@ -446,6 +447,10 @@ func (rt *Runtime) Readiness() http.Handler {
 			err = workers.Ready(r.Context())
 		case rt.selection.Has(modes.Worker) || rt.selection.Has(modes.Controller):
 			err = errors.New("the workers have not started")
+		default:
+			// A process of the api mode alone starts no worker, so its readiness pings the database itself, with a
+			// fixed reason (ST-SUP-RP09-LC05; security review of PR #457, L3).
+			err = rt.svc.Ping(r.Context())
 		}
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
