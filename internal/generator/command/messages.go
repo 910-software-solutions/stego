@@ -241,6 +241,35 @@ func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullNam
 	return false
 }
 
+// opaqueTypes are the well-known protobuf types whose JSON form has no fixed members: the fill can put any value in
+// them at run time, a secret too, and no debug_redact mark reaches it (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+var opaqueTypes = map[protoreflect.FullName]bool{"google.protobuf.Any": true, "google.protobuf.Struct": true,
+	"google.protobuf.Value": true, "google.protobuf.ListValue": true}
+
+// HoldsOpaque tells whether the message m is, or holds at any depth, a member of a type of opaqueTypes. It is a mark
+// for the clients only: it asks no key ring of the service.
+func HoldsOpaque(m protoreflect.MessageDescriptor) bool {
+	return holdsOpaque(m, map[protoreflect.FullName]bool{})
+}
+
+func holdsOpaque(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if opaqueTypes[m.FullName()] {
+		return true
+	}
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f := fields.Get(i); f.Message() != nil && holdsOpaque(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // GoName gives the Go name of a declared command or query name, as the command and query contracts name it, such
 // as DischargePatient for discharge-patient.
 func GoName(name string) string { return mixedCase(name) }

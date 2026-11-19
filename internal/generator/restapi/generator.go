@@ -2252,6 +2252,9 @@ type openAPISchema struct {
 	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
 	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
 	Sensitive bool `json:"x-sensitive,omitempty"`
+	// Opaque marks the root of a command response that holds a google.protobuf.Any, Struct, Value or ListValue member
+	// at any depth, whose content the document cannot describe (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+	Opaque bool `json:"x-stego-opaque,omitempty"`
 	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
 	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
 	Kept bool `json:"x-kept,omitempty"`
@@ -3252,6 +3255,30 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent or malformed"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
+	op.Responses = responses
+	return withKeptHeader(op)
+}
+
+// keptHeader is the response header that tells that the service keeps the Idempotency-Key of the request
+// (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27).
+const keptHeader = "Idempotency-Kept"
+
+// withKeptHeader describes the header Idempotency-Kept on each response of an operation that keeps the key of its
+// request: a create and a patch with the idempotency component, and a command. The service writes it on each answer
+// to a request with a key, a problem and a 5xx answer too, so a client of another release than the service knows
+// from the answer that a second request with the same key is safe (ST-SUP-RC04-OC34).
+func withKeptHeader(op openAPIOperation) openAPIOperation {
+	responses := make(map[string]openAPIResponse, len(op.Responses))
+	for code, response := range op.Responses {
+		headers := make(map[string]openAPIHeader, len(response.Headers)+1)
+		for name, header := range response.Headers {
+			headers[name] = header
+		}
+		headers[keptHeader] = openAPIHeader{Description: "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+			Schema: openAPISchema{Type: "string", Enum: []string{"1"}}}
+		response.Headers = headers
+		responses[code] = response
+	}
 	op.Responses = responses
 	return op
 }

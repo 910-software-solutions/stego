@@ -1,3 +1,5 @@
+# Version 2.3.1 takes the boolean OpenAPI marks x-kept and x-stego-opaque of the rest-api document (security
+# review of PR #463, F1).
 kind: component
 name: http-application
 # Version 2.1.0: the common HTTPS client gives ErrTransport for a request that failed in transport or stopped
@@ -7,7 +9,7 @@ name: http-application
 # Version 2.3.0: a handshake or certificate alert from the service on a new connection, such as a refusal of a TLS
 # session with no client certificate, is ErrUntrusted too, not ErrTransport; each other alert, and each alert on a
 # reused connection, stays ErrTransport (security review of PR #456, I1, and of PR #458, L1).
-version: 2.3.0
+version: 2.3.1
 stage: ga
 output_namespace: application
 config:

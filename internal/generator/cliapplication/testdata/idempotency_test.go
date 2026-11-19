@@ -27,6 +27,16 @@ type keyFixture struct {
 	script    []string
 	requests  []keyRequest
 	directory string
+	// kept makes each answer to a POST or a PATCH with a key carry Idempotency-Kept: 1, as a service of this release
+	// that keeps the key does (ST-SUP-RC04-OC34).
+	kept bool
+}
+
+// keep sets whether each answer to a write with a key carries Idempotency-Kept: 1.
+func (f *keyFixture) keep(kept bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kept = kept
 }
 
 func (f *keyFixture) next(actions ...string) {
@@ -61,6 +71,9 @@ func keySetup(t *testing.T, app Application) *keyFixture {
 		action := ""
 		if len(f.script) > 0 {
 			action, f.script = f.script[0], f.script[1:]
+		}
+		if f.kept && (r.Method == "POST" || r.Method == "PATCH") && r.Header.Get("Idempotency-Key") != "" {
+			w.Header().Set("Idempotency-Kept", "1")
 		}
 		f.mu.Unlock()
 		if action == "drop" {
@@ -208,7 +221,10 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		if err := run(wrong, "get", "record", "one"); err == nil || !strings.Contains(err.Error(), "idempotent write") {
 			t.Errorf("a GET command with IdempotentWrites gave %v, want the definition refused", err)
 		}
-		// A service that keeps the key: an uncertain write is sent again one time with the same key and body.
+		// A service that keeps the key, and says so on each answer: an uncertain write is sent again one time with the
+		// same key and body.
+		f.keep(true)
+		check("create with 500 and the header, without IdempotentWrites", app, []string{"500"}, true, "POST", true, "create", "record", "--name", "first")
 		check("kept create with no answer", keeps, []string{"drop"}, false, "POST POST", true, "create", "record", "--name", "first")
 		check("kept create with 500 two times", keeps, []string{"500", "500"}, true, "POST POST", true, "create", "record", "--name", "first")
 		check("kept create with no answer two times", keeps, []string{"drop", "drop"}, true, "POST POST", true, "create", "record", "--name", "first")
@@ -368,6 +384,186 @@ func TestPrivateSecretBodyFile(t *testing.T) {
 		var output bytes.Buffer
 		if err := Run(context.Background(), app, []string{"label", "key", "--label", "b", "--output-file", "-"}, &output); err != nil || !strings.Contains(output.String(), `"id"`) {
 			t.Errorf("explicit stdout of a command that is not Sensitive gave %v and %q", err, output.String())
+		}
+	})
+}
+
+func TestWriteKeptHeader(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC34-T01 The emitted CLI sends a write again after a 5xx answer only with Idempotency-Kept, and warns when a 2xx answer has none", func(t *testing.T) {
+		previous, previousWarnings := writeRetryWait, warnings
+		writeRetryWait = time.Millisecond
+		var warned bytes.Buffer
+		warnings = &warned
+		defer func() { writeRetryWait, warnings = previous, previousWarnings }()
+		app := applyDefinition()
+		app.Commands = append(app.Commands, Command{Name: []string{"patch", "record"}, Method: "PATCH", Path: "/records/{id}", ID: true, Fields: []Field{{Flag: "name", Key: "name", Type: "string"}}, Success: []int{200}})
+		f := keySetup(t, app)
+		keeps, err := IdempotentWritesFrom(app, []byte(keyedDocument))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// run runs one command under a script, and gives its error, its output, the methods that the server got and
+		// whether each request of the write had one key, and the warning.
+		run := func(app Application, kept bool, script []string, args ...string) (error, string, string, string) {
+			t.Helper()
+			f.keep(kept)
+			f.next(script...)
+			warned.Reset()
+			var output bytes.Buffer
+			err := Run(context.Background(), app, args, &output)
+			var methods []string
+			for _, r := range f.got() {
+				methods = append(methods, r.method)
+				if r.key != f.got()[0].key {
+					t.Errorf("%q: the requests carried the keys %q and %q, want one key", args, f.got()[0].key, r.key)
+				}
+			}
+			return err, output.String(), strings.Join(methods, " "), warned.String()
+		}
+		create := []string{"create", "record", "--name", "first"}
+		patch := []string{"patch", "record", "one", "--name", "first"}
+		// A 5xx answer with the header is sent again one time; the second answer decides.
+		if err, _, methods, warning := run(keeps, true, []string{"500"}, create...); err != nil || methods != "POST POST" || warning != "" {
+			t.Errorf("a kept create answered 500 with the header gave %v after %q and the warning %q, want a success after two creates and no warning", err, methods, warning)
+		}
+		if err, _, methods, _ := run(keeps, true, []string{"503"}, patch...); err != nil || methods != "PATCH PATCH" {
+			t.Errorf("a kept patch answered 503 with the header gave %v after %q, want a success after two patches", err, methods)
+		}
+		// A 5xx answer with no header, such as of a proxy or of a service of another release, is not sent again, and
+		// the error says that the write can have been done.
+		for _, code := range []string{"500", "503"} {
+			for name, args := range map[string][]string{"create": create, "patch": patch} {
+				err, _, methods, _ := run(keeps, false, []string{code}, args...)
+				if err == nil || !strings.Contains(err.Error(), "not sent again") || !strings.Contains(err.Error(), "can have been done") || strings.Contains(methods, " ") {
+					t.Errorf("a kept %s answered %s with no header gave %v after %q, want one request and the error that the write was not sent again and can have been done", name, code, err, methods)
+				}
+			}
+		}
+		// Without IdempotentWrites, a 5xx answer with the header is not sent again (ST-SUP-RC04-OC31).
+		if err, _, methods, _ := run(app, true, []string{"500"}, create...); err == nil || !strings.Contains(err.Error(), "not sent again") || methods != "POST" {
+			t.Errorf("a create without IdempotentWrites answered 500 with the header gave %v after %q, want one create and the error", err, methods)
+		}
+		// A transport failure gives no answer: the CLI follows its definition and sends the write again.
+		if err, _, methods, _ := run(keeps, false, []string{"drop"}, create...); err != nil || methods != "POST POST" {
+			t.Errorf("a kept create with no answer from a service with no header gave %v after %q, want a success after two creates", err, methods)
+		}
+		// A 2xx answer with no header, when the definition states that the service keeps the key, gives a warning on
+		// standard error and keeps the answer and the success.
+		err, output, methods, warning := run(keeps, false, nil, create...)
+		if err != nil || methods != "POST" || !strings.Contains(output, `"id": "one"`) || !strings.HasPrefix(warning, "warning: ") || !strings.Contains(warning, "different releases") {
+			t.Errorf("a kept create answered 201 with no header gave %v after %q, the output %q and the warning %q, want a success, the answer and a warning", err, methods, output, warning)
+		}
+		if strings.Contains(output, "warning") {
+			t.Errorf("the warning went to the output: %q", output)
+		}
+		if _, _, _, warning := run(keeps, true, nil, create...); warning != "" {
+			t.Errorf("a kept create answered 201 with the header gave the warning %q, want none", warning)
+		}
+		if _, _, _, warning := run(app, false, nil, create...); warning != "" {
+			t.Errorf("a create without IdempotentWrites answered 201 with no header gave the warning %q, want none", warning)
+		}
+		// The apply command follows the same rules: a 503 with no header is one create and the status unknown; with
+		// the header, two creates with one key; a created resource with no header warns.
+		input := applyFile(t, filepath.Join(f.directory, "kept.yaml"), manifest("Record", "first", "{}"))
+		creates := func() (n int) {
+			for _, r := range f.got() {
+				if r.method == "POST" {
+					n++
+				}
+			}
+			return n
+		}
+		f.keep(false)
+		f.next("503")
+		warned.Reset()
+		results, _, err := runApplyTest(t, keeps, "apply", "-f", input, "-o", "json")
+		if err == nil || len(results) != 1 || results[0].Status != "unknown" || creates() != 1 {
+			t.Errorf("an apply answered 503 with no header gave %v %v after %d creates, want unknown after one", results, err, creates())
+		}
+		f.keep(true)
+		f.next("503")
+		results, _, err = runApplyTest(t, keeps, "apply", "-f", input, "-o", "json")
+		if err != nil || len(results) != 1 || results[0].Status != "created" || creates() != 2 {
+			t.Errorf("an apply answered 503 with the header gave %v %v after %d creates, want created after two", results, err, creates())
+		}
+		f.keep(false)
+		f.next()
+		warned.Reset()
+		results, _, err = runApplyTest(t, keeps, "apply", "-f", input, "-o", "json")
+		if err != nil || len(results) != 1 || results[0].Status != "created" || !strings.Contains(warned.String(), "different releases") {
+			t.Errorf("an apply answered 201 with no header gave %v %v and the warning %q, want created and a warning", results, err, warned.String())
+		}
+	})
+}
+
+// asOtherUser makes the CLI see each file as the file of another user until the test ends.
+func asOtherUser(t *testing.T) {
+	t.Helper()
+	previous := effectiveUser
+	effectiveUser = func() int { return os.Geteuid() + 1 }
+	t.Cleanup(func() { effectiveUser = previous })
+}
+
+func TestOwnedPrivateFiles(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T05 A body file that holds a secret field and that another user owns is refused, also with the mode 0600", func(t *testing.T) {
+		app := applyDefinition()
+		app.Commands = append(app.Commands, Command{Name: []string{"issue", "key"}, Method: "POST", Path: "/keys", Fields: []Field{{Flag: "label", Key: "label", Type: "string"}},
+			BodyFields: []Field{{Key: "pin", Type: "string"}}, Success: []int{201}})
+		f := keySetup(t, app)
+		secret := filepath.Join(f.directory, "secret.json")
+		if err := os.WriteFile(secret, []byte(`{"label":"a","pin":"482913"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		f.next()
+		if err := run2(app, "issue", "key", "--body", secret); err != nil {
+			t.Fatalf("a private body file of the user that holds the pin gave %v", err)
+		}
+		asOtherUser(t)
+		data, private, err := readBody(secret)
+		if err != nil || private || len(data) == 0 {
+			t.Errorf("readBody of a file of another user gave private %t and %v, want the file read and not private", private, err)
+		}
+		if err := run2(app, "issue", "key", "--body", secret); err == nil || !strings.Contains(err.Error(), "must be your own file") {
+			t.Errorf("a body file of another user that holds the pin gave %v, want the refusal", err)
+		}
+		if got := f.got(); len(got) != 1 {
+			t.Errorf("the server got %d requests, want only the first", len(got))
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC09-T02 A token file and a configuration file that another user owns are refused, also with the mode 0600", func(t *testing.T) {
+		app := applyDefinition()
+		f := keySetup(t, app)
+		token, config := filepath.Join(f.directory, "token"), filepath.Join(f.directory, "config.json")
+		if _, err := readToken(token); err != nil {
+			t.Fatalf("the token file of the user gave %v", err)
+		}
+		file, err := os.Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readRegular(file, 65536, true); err != nil {
+			t.Fatalf("the configuration file of the user gave %v", err)
+		}
+		file.Close()
+		asOtherUser(t)
+		if _, err := readToken(token); err == nil || !strings.Contains(err.Error(), "invalid token file") {
+			t.Errorf("a token file of another user gave %v, want the refusal", err)
+		}
+		file, err = os.Open(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		if _, err := readRegular(file, 65536, true); err == nil {
+			t.Error("a configuration file of another user was read")
+		}
+		f.next()
+		if err := run2(app, "get", "record", "one"); err == nil {
+			t.Error("a command with a token file and a configuration file of another user ran")
+		}
+		if got := f.got(); len(got) != 0 {
+			t.Errorf("a refused command reached the server: %+v", got)
 		}
 	})
 }
