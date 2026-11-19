@@ -359,3 +359,67 @@ func TestServiceDocument(t *testing.T) {
 		}
 	})
 }
+
+func TestRequiredSecretMember(t *testing.T) {
+	t.Run("ST-SUP-RC06-OC09-T02 A required secret member of a request is a plain field, and an optional one stays a pointer", func(t *testing.T) {
+		document := strings.Replace(sample, "  /uuid/{id}:\n", `  /people:
+    post:
+      operationId: createPerson
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonCreateRequest'}
+      responses:
+        '201': {description: Created}
+  /people/{id}:
+    put:
+      operationId: updatePerson
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                pin: {type: string, writeOnly: true}
+      responses:
+        '200': {description: Updated}
+  /uuid/{id}:
+`, 1)
+		document = strings.Replace(document, "components:\n  schemas:\n", `components:
+  schemas:
+    PersonCreateRequest:
+      type: object
+      required: [name, pin]
+      properties:
+        name: {type: string}
+        pin: {type: string, writeOnly: true}
+`, 1)
+		ctx := gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(document)}
+		files, _, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire string
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "internal/wire/api.go") {
+				wire = string(f.Bytes())
+			}
+		}
+		create := wire[strings.Index(wire, "type PersonCreateRequest struct"):]
+		create = create[:strings.Index(create, "\n}\n")]
+		if !strings.Contains(create, "Pin  string `json:\"pin,omitempty\"`") && !strings.Contains(create, "Pin string `json:\"pin,omitempty\"`") {
+			t.Errorf("the required secret pin of the create is not a plain string:\n%s", create)
+		}
+		update := wire[strings.Index(wire, "type UpdatePersonJSONBody struct"):]
+		update = update[:strings.Index(update, "\n}\n")]
+		if !strings.Contains(update, "*string `json:\"pin,omitempty\"`") {
+			t.Errorf("the optional secret pin of the update is not a pointer:\n%s", update)
+		}
+	})
+}

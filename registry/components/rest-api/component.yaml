@@ -50,9 +50,12 @@
 # write cannot change, in its exact letter case, with a 400 validation problem that names the member, and closes the
 # patch request of the OpenAPI document with additionalProperties: false (ST-SUP-RC20-OC15, security review of PR
 # #461, M1).
+# Version 4.28.0 gives the Idempotency-Key header parameter, not required, and the 422 response on each create and
+# patch of the OpenAPI document when the idempotency component is not active, since the handler keeps the key that a
+# request gives (ST-SUP-RC20-OC56).
 kind: component
 name: rest-api
-version: 4.24.0
+version: 4.28.0
 stage: ga
 output_namespace: internal/api
 

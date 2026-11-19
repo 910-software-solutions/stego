@@ -3153,10 +3153,11 @@ func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 
 // apply adds the Idempotency-Key header parameter to a create or patch operation, required when Required on names
 // the operation and accepted otherwise, with its 400, 409 and 422 problem responses. A GET, PUT or DELETE
-// operation never gets it, because the service ignores the key there.
+// operation never gets it, because the service ignores the key there. With no idempotency component (k nil), the
+// handler still keeps the key that a request gives, so the parameter is there, not required (ST-SUP-RC20-OC56).
 func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation) openAPIOperation {
 	if k == nil {
-		return op
+		return optionalKey(op)
 	}
 	op.Parameters = append(append([]openAPIParam{}, op.Parameters...), openAPIParam{
 		Name:        "Idempotency-Key",
@@ -3172,6 +3173,30 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent or malformed"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
+	op.Responses = responses
+	return op
+}
+
+// optionalKey adds the Idempotency-Key header parameter, not required, to a create or a patch operation of a service
+// with no idempotency component, with the 400 and 422 responses of the key: the handler keeps the key that the request
+// gives, gives the stored answer to a second request with the key and the same body, and refuses another body with
+// the key (ST-SUP-RC20-OC56). A generated client then takes the key as a parameter of the operation
+// (ST-SUP-RC06-OC10).
+func optionalKey(op openAPIOperation) openAPIOperation {
+	op.Parameters = append(append([]openAPIParam{}, op.Parameters...), openAPIParam{
+		Name:        "Idempotency-Key",
+		In:          "header",
+		Description: "A structured string of 1 to 255 characters, such as a quoted UUID. A second request with the same key and body gets the stored response with Idempotent-Replayed: true; with no key, the request runs once.",
+		Schema:      openAPISchema{Type: "string"},
+	})
+	responses := make(map[string]openAPIResponse, len(op.Responses)+2)
+	for code, response := range op.Responses {
+		responses[code] = response
+	}
+	if _, set := responses["400"]; !set {
+		responses["400"] = openAPIResponse{Description: "Bad request: the body or the Idempotency-Key header is not valid"}
+	}
+	responses["422"] = openAPIResponse{Description: "The Idempotency-Key was used with another request"}
 	op.Responses = responses
 	return op
 }

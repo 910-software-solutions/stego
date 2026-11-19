@@ -13,11 +13,19 @@ service. The package is `out/sdk`. To make a client of another API, set
 list its other files in `references`.
 
 A command, and a create of a service with the idempotency component, require
-the header `Idempotency-Key`. Give it in the parameters of the method, such as
-`DischargePatientParams{IdempotencyKey: key}`: a structured string, such as a
+the header `Idempotency-Key`. Each other create and each patch take it, not
+required: the service keeps the key and gives the stored answer to a second
+request with the same key and body. Give it in the parameters of the method,
+such as `DischargePatientParams{IdempotencyKey: key}` or
+`CreateApplicantsParams{IdempotencyKey: &key}`: a structured string, such as a
 quoted UUID. The SDK sends the key that you give, and never sends a request
 again. To send a write again after an unknown outcome, send it with the same
 key.
+
+A secret member of a request, such as a PIN, is never in an answer. When the
+request requires it, it is a plain field, such as `PortalPin string`; when the
+request does not require it, such as on an update that keeps the stored value,
+it is a pointer.
 
 STEGO supplies a bounded HTTPS transport. Select `otel-tracing` to include shared
 logs, metrics, and traces. The application supplies no client transport code.

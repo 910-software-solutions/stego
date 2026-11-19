@@ -123,12 +123,19 @@ func TestIdempotencyKeyHeader(t *testing.T) {
 				t.Errorf("%s carries the Idempotency-Key header", name)
 			}
 		}
-		// Without the idempotency component in the service, no operation carries the header.
+	})
+
+	t.Run("ST-SUP-RC20-OC56-T01 With no idempotency component, a create and a patch take the key, not required, and no other operation does", func(t *testing.T) {
 		ctx := todoIdempotencyContext(types.OpCreate, types.OpPatch)
 		ctx.PeerNamespaces = nil
 		for name, operation := range todoOperations(t, ctx) {
-			if _, found := keyHeader(operation); found {
-				t.Errorf("without the idempotency component, %s carries the Idempotency-Key header", name)
+			required, found := keyHeader(operation)
+			takes := name == "POST /api/todo/v1/todos" || name == "PATCH /api/todo/v1/todos/{id}"
+			if found != takes || required {
+				t.Errorf("without the idempotency component, %s: Idempotency-Key found %t, required %t; want found %t, not required", name, found, required, takes)
+			}
+			if _, refused := operation.Responses["422"]; takes && !refused {
+				t.Errorf("without the idempotency component, %s has no 422 response for a key used with another request", name)
 			}
 		}
 	})
