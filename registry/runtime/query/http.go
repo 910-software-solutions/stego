@@ -155,10 +155,11 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 	}), nil
 }
 
-// statusOf is the status of an error of Run.
+// statusOf is the status of an error of Run. An ErrNotFound that also holds a cause of a 503 answer is 503, as the
+// command runtime answers it (security review of PR #453, INFO).
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound) && !Transient(err):
 		return http.StatusNotFound
 	case errors.Is(err, ErrBadCursor), errors.Is(err, ErrBadRequest):
 		return http.StatusBadRequest

@@ -468,8 +468,10 @@ func (e *errTenantState) Error() string {
 var errAnswered = errors.New("command: the idempotency key of the request answered it")
 
 // tenantOutcome maps an error of a Provision or Retire to its answer: a deny is 404 denied, as every operation
-// answers a deny (ST-SUP-RC29-OC02); a change that the tenant list refuses is 409 with its code; any other error is
-// 500 internal. Each is audited as denied or failed (ST-SUP-RC27-OC10).
+// answers a deny (ST-SUP-RC29-OC02); a change that the tenant list refuses is 409 with its code; a permission that
+// the provider could not decide now is 503 undecided with Retry-After, as for each other command (ST-SUP-Q140;
+// security review of PR #453, INFO); any other error is 500 internal. Each is audited as denied or failed
+// (ST-SUP-RC27-OC10).
 func tenantOutcome(err error) Outcome {
 	var state *errTenantState
 	switch {
@@ -477,6 +479,8 @@ func tenantOutcome(err error) Outcome {
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 	case errors.As(err, &state):
 		return Outcome{Status: http.StatusConflict, Code: state.code, Audit: audit.OutcomeFailed}
+	case errors.Is(err, ErrUndecided):
+		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
 }
@@ -886,6 +890,10 @@ func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request
 	}
 	decision, allowed, err := handle.DecideTenantPermission(ctx, spec.Action, spec.Permission, req.Resource, resource, nil)
 	switch {
+	case authz.Transient(err):
+		// The provider could not decide now, such as for some seconds after a schema write: 503 with Retry-After
+		// (ST-SUP-Q140).
+		return nil, ErrUndecided
 	case err != nil:
 		return nil, internalf("the permission of the tenant provisioning was not decided")
 	case !allowed:
@@ -1066,6 +1074,10 @@ func ServeTenantList(rt *Runtime, spec TenantListSpec) (http.Handler, error) {
 		allowed, err := decideTenantList(r.Context(), rt, spec, b)
 		if err != nil {
 			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			if authz.Transient(err) {
+				// The provider could not decide now: 503 undecided with Retry-After (ST-SUP-Q140).
+				o = tenantOutcome(ErrUndecided)
+			}
 			outcome(o)
 			rt.writeProblem(w, o.Status, "", o.AnswerCode())
 			return
