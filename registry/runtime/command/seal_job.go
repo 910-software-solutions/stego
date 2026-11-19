@@ -89,6 +89,139 @@ func (s *Sealing) resolve(ctx context.Context, ring *sealed.Ring, at sealed.Plac
 	clear(plain)
 }
 
+// AfterSeal is an entity after the contract step of each of its open seals (ST-SUP-RP10-LC49, ST-SUP-RC01-OC49):
+// the generated statements, scan and values with the sealed column alone of each readable secret whose seal step is
+// open, which the runtime takes once the contract has dropped the clear columns, so a process of the release of the
+// expand step goes on after the contract (walkthrough 14, W14-B6). Table is the table of the entity with its schema,
+// such as public.patients, and Clear the clear columns that the contract steps drop. The statements take the
+// parameters of EntitySpec's statements of the same names.
+type AfterSeal[T any] struct {
+	Table string
+	Clear []string
+
+	Select, SelectForUpdate, SelectForDelete, Insert, Update string
+
+	Scan   func(row Scanner) (T, Meta, error)
+	Values func(value T) []any
+}
+
+// check refuses an AfterSeal with no table, no clear column, no scan or no values, a statement that does not take the
+// tenant as $1, and a locked read without its lock clause. A nil AfterSeal passes.
+func (a *AfterSeal[T]) check(entity string) error {
+	if a == nil {
+		return nil
+	}
+	if a.Table == "" || len(a.Clear) == 0 || a.Scan == nil || a.Values == nil {
+		return fmt.Errorf("command: the AfterSeal of %s needs its table, its clear columns, Scan and Values", entity)
+	}
+	for _, text := range []string{a.Select, a.SelectForUpdate, a.SelectForDelete, a.Insert, a.Update} {
+		if !strings.Contains(text, "$1") {
+			return fmt.Errorf("command: a statement of the AfterSeal of %s does not take the tenant as $1", entity)
+		}
+	}
+	upper := strings.ToUpper(a.SelectForDelete)
+	if !strings.Contains(strings.ToUpper(a.SelectForUpdate), "FOR NO KEY UPDATE") || !strings.Contains(upper, "FOR UPDATE") ||
+		strings.Contains(upper, "NO KEY") {
+		return fmt.Errorf("command: the locked reads of the AfterSeal of %s do not lock as SelectForUpdate and SelectForDelete do", entity)
+	}
+	return nil
+}
+
+// entityStatements are the statements, the scan and the values that an entity runs now.
+type entityStatements[T any] struct {
+	selectRow, forUpdate, forDelete, insert, update string
+	scan                                            func(row Scanner) (T, Meta, error)
+	values                                          func(value T) []any
+}
+
+// statements gives the statements of the entity: those of AfterSeal once the contract of its open seals dropped the
+// clear columns, else those of the spec.
+func (e *Entity[T]) statements() entityStatements[T] {
+	if a := e.spec.AfterSeal; a != nil && e.contracted.Load() {
+		return entityStatements[T]{a.Select, a.SelectForUpdate, a.SelectForDelete, a.Insert, a.Update, a.Scan, a.Values}
+	}
+	sp := &e.spec
+	return entityStatements[T]{sp.Select, sp.SelectForUpdate, sp.SelectForDelete, sp.Insert, sp.Update, sp.Scan, sp.Values}
+}
+
+// readStatement and lockStatement give the Read and the Lock of the list that the entity runs now.
+func (l *List[T]) readStatement() string {
+	if l.spec.ReadAfterSeal != "" && l.entity.contracted.Load() {
+		return l.spec.ReadAfterSeal
+	}
+	return l.spec.Read
+}
+
+func (l *List[T]) lockStatement() string {
+	if l.spec.LockAfterSeal != "" && l.entity.contracted.Load() {
+		return l.spec.LockAfterSeal
+	}
+	return l.spec.Lock
+}
+
+// undefinedColumn is the SQLSTATE undefined_column, which a statement of an open seal gives after the contract step
+// dropped its clear column.
+const undefinedColumn = "42703"
+
+// sealSwitch is an entity whose statements can move to those after the contract step of its open seals.
+type sealSwitch interface {
+	switchAfterSeal(ctx context.Context, db *sql.DB, err error) bool
+}
+
+// switchAfterSeal takes the statements of AfterSeal from now on, and reports true, when err of a statement of the
+// entity is SQLSTATE 42703 and the catalog shows that each clear column of AfterSeal is gone from its table, which is
+// there (ST-SUP-RP10-LC49). It reports false, and changes nothing, for any other error, an entity with no open seal or
+// that already took them, and a catalog that still shows a clear column or that it cannot read: an undefined column
+// of another cause keeps the statements, so no write of the seal goes to the sealed column alone while a release
+// before reads the clear column. The first switch of an entity logs it once, with no value.
+func (e *Entity[T]) switchAfterSeal(ctx context.Context, db *sql.DB, err error) bool {
+	a := e.spec.AfterSeal
+	if a == nil || db == nil || e.contracted.Load() || sqlState(err) != undefinedColumn {
+		return false
+	}
+	// The transaction of the statement failed, so the check reads the catalog on the pool, in a short time of its own.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), catalogWait)
+	defer cancel()
+	for _, column := range a.Clear {
+		var gone bool
+		if err := db.QueryRowContext(ctx, clearGoneQuery, a.Table, column).Scan(&gone); err != nil || !gone {
+			return false
+		}
+	}
+	if e.contracted.CompareAndSwap(false, true) {
+		slog.InfoContext(ctx, "command: the contract step of a seal dropped the clear columns; the entity reads and writes its sealed columns alone",
+			"entity", e.spec.Name, "table", a.Table)
+	}
+	return true
+}
+
+// catalogWait is the longest time that the catalog check of switchAfterSeal waits.
+const catalogWait = 2 * time.Second
+
+// clearGoneQuery tells whether the table $1 is there and has no column $2.
+const clearGoneQuery = `SELECT pg_catalog.to_regclass($1) IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a
+ WHERE a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass($1) AND a.attname OPERATOR(pg_catalog.=) $2 AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped)`
+
+// sealSwitched is the conflict of a call whose statement failed because the contract step of a seal dropped a clear
+// column: the entity took its statements after the contract, and Run runs the call again once, also when the command
+// declares no Retry on conflict (ST-SUP-RP10-LC49).
+func sealSwitched(err error) bool {
+	var c *conflictError
+	return errors.As(err, &c) && c.sealSwitch
+}
+
+// failOf is fail for a statement of the entity e: when the contract step of an open seal of e dropped its clear
+// columns (switchAfterSeal), the call is a conflict that Run runs again with the statements after the contract.
+func (s *state) failOf(ctx context.Context, e sealSwitch, step string, err error) error {
+	if e != nil && e.switchAfterSeal(ctx, s.rt.cfg.DB, err) {
+		if s.conflict == nil {
+			s.conflict = &conflictError{text: step + " ran before the entity took its statements after the seal contract", sealSwitch: true}
+		}
+		return s.conflict
+	}
+	return s.fail(ctx, step, err)
+}
+
 // SealColumn is one readable secret field whose seal step is open, which the seal job of the controller seals
 // (ST-SUP-RP10-LC50): its change, its entity, its table, its clear and its sealed column, and the generated statements
 // of the job, which take the tenant as $1:
@@ -130,6 +263,8 @@ type SealJob struct {
 	settings lease.Settings
 	tenants  func(ctx context.Context) ([]tenant.Tenant, error)
 	pause    time.Duration
+	// contracted holds the changes whose checkpoint row is gone, as after the contract step, which the job logged.
+	contracted map[string]bool
 	// batched, when a test sets it, runs after each batch that commits.
 	batched func()
 }
@@ -148,13 +283,20 @@ func NewSealJob(db *sql.DB, schema string, ring *sealed.Ring, columns []SealColu
 			return nil, fmt.Errorf("command: the seal column %s.%s lacks a name or a statement", c.Entity, c.Clear)
 		}
 	}
-	j := &SealJob{db: db, schema: schema, ring: ring, columns: columns, holder: holder, settings: settings, pause: SealPause}
+	j := &SealJob{db: db, schema: schema, ring: ring, columns: columns, holder: holder, settings: settings, pause: SealPause, contracted: map[string]bool{}}
 	j.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, db, schema) }
 	return j, nil
 }
 
 // SealLease gives the lease of the seal job of a change: the backfill lease stego.backfill.<change ID>.
 func SealLease(change string) string { return "stego.backfill." + change }
+
+// ErrSealLease is the failure of a run of the seal job for a change whose lease row is not in the lease table: the
+// migration job of the release makes it (ST-SUP-RP10-LC50, ST-SUP-RC01-OC49).
+var ErrSealLease = errors.New("the lease of the seal job is not in the lease table; run the migration job of this release")
+
+// leaseDeclared tells whether the lease table holds the row of the lease $1.
+const leaseDeclared = `SELECT EXISTS (SELECT 1 FROM public.leases l WHERE l.name OPERATOR(pg_catalog.=) $1)`
 
 // Run runs the pass of each change under its lease until the pass ends, the lease ends or ctx ends, and logs, for
 // each change, the rows that it sealed and checked and whether the pass completed, and no value. A change whose pass
@@ -164,6 +306,33 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 	var failed []error
 	for _, c := range j.columns {
 		result := SealResult{Change: c.Change}
+		// The contract step of the change deletes its checkpoint row with the clear column: the release of the
+		// expand step then has no work for it, and runs no statement on its columns (ST-SUP-RP10-LC50).
+		if _, err := lease.ReadSeal(ctx, j.db, c.Change); errors.Is(err, lease.ErrNoSeal) {
+			if !j.contracted[c.Change] {
+				j.contracted[c.Change] = true
+				slog.InfoContext(ctx, "command: the seal of a secret column has no checkpoint, as after its contract step; the seal job has no work for it",
+					"change", c.Change, "entity", c.Entity)
+			}
+			results = append(results, SealResult{Change: c.Change, Completed: true})
+			continue
+		} else if err != nil {
+			failed = append(failed, fmt.Errorf("command: the seal of the column %s of %s: read the checkpoint: %w", c.Clear, c.Entity, err))
+			continue
+		}
+		// The migration job makes the lease row (ST-SUP-RC01-OC49). With no row, a hold would wait for ever, so the
+		// run names the lease and the remedy, and fails (walkthrough 14, W14-B7).
+		var declared bool
+		if err := j.db.QueryRowContext(ctx, leaseDeclared, SealLease(c.Change)).Scan(&declared); err != nil {
+			failed = append(failed, fmt.Errorf("command: the seal of the column %s of %s: read the lease %s: %w", c.Clear, c.Entity, SealLease(c.Change), err))
+			continue
+		}
+		if !declared {
+			slog.ErrorContext(ctx, "command: the lease of the seal job is not in the lease table, so the seal job cannot run; run the migration job of this release, which makes it, and the job runs at its next tick",
+				"change", c.Change, "entity", c.Entity, "lease", SealLease(c.Change))
+			failed = append(failed, fmt.Errorf("command: the seal of the column %s of %s: %w: %s", c.Clear, c.Entity, ErrSealLease, SealLease(c.Change)))
+			continue
+		}
 		client, err := lease.New(j.db, SealLease(c.Change), j.holder, j.settings)
 		if err != nil {
 			return results, err

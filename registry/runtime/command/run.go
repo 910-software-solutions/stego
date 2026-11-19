@@ -530,10 +530,18 @@ func Run[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Requ
 	if req.RequestID == "" {
 		req.RequestID = uuid.NewString()
 	}
+	// switched is 1 once a statement failed because the contract step of a seal dropped a clear column: the entity
+	// took its statements after the contract, and the call runs again once with no wait, beyond the declared Retry on
+	// conflict (ST-SUP-RP10-LC49).
+	switched := 0
 	for reruns := 0; ; reruns++ {
 		result, err, conflict := runAttempt(ctx, rt, cmd, req, reruns, decode, fill)
 		result.Attempts = reruns + 1
-		if !conflict || reruns >= cmd.spec.RetryOnConflict || !waitRerun(ctx, rt, reruns+1) {
+		if conflict && switched == 0 && sealSwitched(err) && ctx.Err() == nil {
+			switched = 1
+			continue
+		}
+		if !conflict || reruns >= cmd.spec.RetryOnConflict+switched || !waitRerun(ctx, rt, reruns+1) {
 			return result, err
 		}
 	}

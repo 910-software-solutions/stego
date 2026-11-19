@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -119,6 +120,9 @@ type conflictError struct {
 	text string
 	// unique is true for a unique violation, which a consumer counts as an attempt (uniqueConflict).
 	unique bool
+	// sealSwitch is true for a statement that failed because the contract step of a seal dropped a clear column, after
+	// which the entity takes its statements after the contract (ST-SUP-RP10-LC49).
+	sealSwitch bool
 	// key is the declared fields of the unique key that a unique violation broke, or empty when the entity does not
 	// declare the index (ST-SUP-RP10-LC48). It names no value.
 	key string
@@ -276,6 +280,10 @@ type EntitySpec[T any] struct {
 	// Sealed is true when the entity has a readable secret field, which Values gives as SealAt and Scan reads into
 	// OpenAt: a runtime with no key ring refuses the entity (ST-SUP-RP10-LC44).
 	Sealed bool
+	// AfterSeal is the entity after the contract step of each of its open seals, with the sealed column alone of each
+	// readable secret whose seal step is open, or nil for an entity with no open seal: the runtime takes it when a
+	// statement fails because the contract dropped the clear columns (ST-SUP-RP10-LC49).
+	AfterSeal *AfterSeal[T]
 	// Tenant is true when the schema gives ResourceType the relation tenant of the subject type tenant: a create then
 	// touches the tuple <resource type>:<row>#tenant@tenant:<tenant resource ID> (authz.TenantResource), so a
 	// permission such as sync = tenant->worker_<name> reaches the rows of that tenant only. Only the runtime writes
@@ -546,6 +554,9 @@ func (e *Entity[T]) relationNames() []string {
 // Entity is the repository declaration of one entity, which NewEntity checks once.
 type Entity[T any] struct {
 	spec EntitySpec[T]
+	// contracted is set once the contract step of the open seals of the entity dropped their clear columns: the
+	// statements, the scan and the values of AfterSeal then run (ST-SUP-RP10-LC49).
+	contracted atomic.Bool
 	// owner is the runtime that registered the entity in its Config.Entities; an entity registers with one runtime
 	// only.
 	owner *Runtime
@@ -602,6 +613,9 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	}
 	if !strings.Contains(strings.ToUpper(spec.SelectForUpdate), "FOR NO KEY UPDATE") {
 		return nil, fmt.Errorf("command: the statement SelectForUpdate of %s does not lock FOR NO KEY UPDATE", spec.Name)
+	}
+	if err := spec.AfterSeal.check(spec.Name); err != nil {
+		return nil, err
 	}
 	upper := strings.ToUpper(spec.SelectForDelete)
 	if !strings.Contains(upper, "FOR UPDATE") || strings.Contains(upper, "NO KEY") {
@@ -694,6 +708,10 @@ type ListSpec struct {
 	Name string
 	Read string
 	Lock string
+	// ReadAfterSeal and LockAfterSeal are Read and Lock after the contract step of each open seal of the entity, with
+	// the sealed column alone, which the runtime takes once the contract dropped the clear columns; empty for an
+	// entity with no open seal (ST-SUP-RP10-LC49).
+	ReadAfterSeal, LockAfterSeal string
 	// Values are the declared values of the filter, for the parameters from $3 in their order: each a constant of
 	// the field type, or the time of the run. A list with Values takes no filter values from the fill: the handle
 	// binds them (ST-DECL-INV94, ST-SUP-RC35-OC15). DeclaredValues makes it; a pointer keeps ListSpec comparable.
@@ -776,17 +794,20 @@ type AnyList interface {
 // pointer, such as *commands.PlaceOrderOfOrder = *command.Must(command.NewList(...)), gets a list that the handle
 // refuses (security review of PR #421, L1).
 type listCopy struct {
-	entity           Declared
-	name, read, lock string
-	values           []ListValue
+	entity                       Declared
+	name, read, lock             string
+	readAfterSeal, lockAfterSeal string
+	values                       []ListValue
 }
 
 func (c listCopy) same(o listCopy) bool {
-	return c.entity == o.entity && c.name == o.name && c.read == o.read && c.lock == o.lock && slices.Equal(c.values, o.values)
+	return c.entity == o.entity && c.name == o.name && c.read == o.read && c.lock == o.lock &&
+		c.readAfterSeal == o.readAfterSeal && c.lockAfterSeal == o.lockAfterSeal && slices.Equal(c.values, o.values)
 }
 
 func (l *List[T]) listCopy() listCopy {
-	return listCopy{entity: l.entity, name: l.spec.Name, read: l.spec.Read, lock: l.spec.Lock, values: slices.Clone(l.spec.Values.all())}
+	return listCopy{entity: l.entity, name: l.spec.Name, read: l.spec.Read, lock: l.spec.Lock, readAfterSeal: l.spec.ReadAfterSeal,
+		lockAfterSeal: l.spec.LockAfterSeal, values: slices.Clone(l.spec.Values.all())}
 }
 
 func (l *List[T]) listHeld() (AnyList, listCopy) { return l, l.listCopy() }
@@ -881,12 +902,22 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 	if e == nil || spec.Name == "" || !strings.Contains(spec.Read, "$1") {
 		return nil, errors.New("command: a list needs its entity, a name and a Read statement that takes the tenant as $1")
 	}
-	if spec.Lock != "" {
-		upper := strings.ToUpper(spec.Lock)
-		if !strings.Contains(spec.Lock, "$1") || !strings.Contains(upper, "ORDER BY") ||
+	// The statements after the seal contract come with an entity with an open seal, and in the same shape.
+	if (spec.ReadAfterSeal != "") != (e.spec.AfterSeal != nil) || (spec.LockAfterSeal != "") != (spec.Lock != "" && e.spec.AfterSeal != nil) ||
+		(spec.ReadAfterSeal != "" && !strings.Contains(spec.ReadAfterSeal, "$1")) {
+		return nil, fmt.Errorf("command: the list %s gives its statements after the seal contract only for an entity with an open seal, and each takes the tenant as $1", spec.Name)
+	}
+	for _, lock := range []string{spec.Lock, spec.LockAfterSeal} {
+		if lock == "" {
+			continue
+		}
+		upper := strings.ToUpper(lock)
+		if !strings.Contains(lock, "$1") || !strings.Contains(upper, "ORDER BY") ||
 			!strings.Contains(upper, "FOR NO KEY UPDATE") {
 			return nil, fmt.Errorf("command: the Lock of the list %s does not take the tenant as $1, order by the key and lock FOR NO KEY UPDATE", spec.Name)
 		}
+	}
+	if spec.Lock != "" {
 		if e.spec.LockAtMost == 0 {
 			return nil, fmt.Errorf("command: the list %s locks rows of %s, which declares no Lock at most", spec.Name, e.spec.Name)
 		}
@@ -1299,7 +1330,7 @@ func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) e
 // that a unique violation (SQLSTATE 23505) broke in the conflict, when the entity declares the index in Unique
 // (ST-SUP-RP10-LC48). The first conflict of the transaction is the one that Run returns, so only it takes the key.
 func (r *Repository[T]) failUnique(ctx context.Context, step string, err error) error {
-	failed := r.st.fail(ctx, step, err)
+	failed := r.st.failOf(ctx, r.entity, step, err)
 	var pg *pgconn.PgError
 	var c *conflictError
 	if sqlState(err) == "23505" && errors.As(err, &pg) && errors.As(failed, &c) && c.unique && c.key == "" {
@@ -1841,7 +1872,8 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 	var meta Meta
 	err := sql.ErrNoRows
 	if e.spec.ValidID(id) {
-		value, meta, err = e.spec.Scan(s.opening(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id)))
+		st := e.statements()
+		value, meta, err = st.scan(s.opening(s.queryRow(ctx, st.selectRow, s.tenant.ID(), id)))
 		err = scanFailed(err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1854,7 +1886,7 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, e.spec.Name)
 	}
 	if err != nil {
-		return nil, s.fail(ctx, "read "+e.spec.Name, err)
+		return nil, s.failOf(ctx, e, "read "+e.spec.Name, err)
 	}
 	if err := s.decideRead(ctx, e.spec.ResourceType, e.spec.ReadPermission, e.spec.Name, meta); err != nil {
 		return nil, err
@@ -1866,9 +1898,9 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 		if err := r.decideParents(ctx, "locked read", parents, value); err != nil {
 			return nil, err
 		}
-		statement := e.spec.SelectForUpdate
+		statement := e.statements().forUpdate
 		if lock == lockDelete {
-			statement = e.spec.SelectForDelete
+			statement = e.statements().forDelete
 		}
 		value, meta, err = lockOne(ctx, s, e, statement, id, meta)
 		if err != nil {
@@ -1892,7 +1924,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 	if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 		return zero, Meta{}, s.fail(ctx, step, err)
 	}
-	value, meta, err := e.spec.Scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id)))
+	value, meta, err := e.statements().scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id)))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := s.release(ctx, step); err != nil {
@@ -1901,7 +1933,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 		return zero, Meta{}, fmt.Errorf("%w: %s", ErrNotFound, e.spec.Name)
 	}
 	if err != nil {
-		return zero, Meta{}, s.fail(ctx, step, err)
+		return zero, Meta{}, s.failOf(ctx, e, step, err)
 	}
 	if meta.Token != first.Token {
 		err := s.decideRead(ctx, e.spec.ResourceType, e.spec.ReadPermission, e.spec.Name, meta)
@@ -2030,7 +2062,7 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 		if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 			return nil, s.fail(ctx, step, err)
 		}
-		locked, err := r.scanAll(ctx, step, l.spec.Lock, append([]any{s.tenant.ID(), ids}, args...))
+		locked, err := r.scanAll(ctx, step, l.lockStatement(), append([]any{s.tenant.ID(), ids}, args...))
 		if err != nil {
 			return nil, err
 		}
@@ -2188,26 +2220,27 @@ type scanned[T any] struct {
 }
 
 func (r *Repository[T]) readList(ctx context.Context, l *List[T], limit int, args []any) ([]scanned[T], error) {
-	return r.scanAll(ctx, "read the list "+l.spec.Name, l.spec.Read, append([]any{r.st.tenant.ID(), limit}, args...))
+	return r.scanAll(ctx, "read the list "+l.spec.Name, l.readStatement(), append([]any{r.st.tenant.ID(), limit}, args...))
 }
 
 func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, args []any) ([]scanned[T], error) {
 	s := r.st
 	rows, err := s.query(ctx, statement, args...)
 	if err != nil {
-		return nil, s.fail(ctx, step, err)
+		return nil, s.failOf(ctx, r.entity, step, err)
 	}
 	defer rows.Close()
 	var out []scanned[T]
+	scan := r.entity.statements().scan
 	for rows.Next() {
-		value, meta, err := r.entity.spec.Scan(s.opening(rows))
+		value, meta, err := scan(s.opening(rows))
 		if err != nil {
-			return nil, s.fail(ctx, step, scanFailed(err))
+			return nil, s.failOf(ctx, r.entity, step, scanFailed(err))
 		}
 		out = append(out, scanned[T]{value: value, meta: meta})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, s.fail(ctx, step, err)
+		return nil, s.failOf(ctx, r.entity, step, err)
 	}
 	return out, nil
 }
@@ -2318,15 +2351,16 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
-	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	st := e.statements()
+	values, err := s.sealArgs(ctx, st.values(value))
 	if err != nil {
 		return nil, s.breakWith(err)
 	}
-	row, err := s.lockedRow(ctx, "create "+e.spec.Name, e.spec.Insert, append([]any{s.tenant.ID()}, values...)...)
+	row, err := s.lockedRow(ctx, "create "+e.spec.Name, st.insert, append([]any{s.tenant.ID()}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(s.opening(row))
+	stored, meta, err := st.scan(s.opening(row))
 	if err != nil {
 		return nil, r.failWrite(ctx, "create "+e.spec.Name, scanFailed(err))
 	}
@@ -2384,16 +2418,17 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		}
 	}
 	step := "update " + e.spec.Name
-	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	st := e.statements()
+	values, err := s.sealArgs(ctx, st.values(value))
 	if err != nil {
 		return nil, s.breakWith(err)
 	}
-	row, err := s.lockedRow(ctx, step, e.spec.Update,
+	row, err := s.lockedRow(ctx, step, st.update,
 		append([]any{s.tenant.ID(), from2.meta.ID, from2.meta.Version}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(s.opening(row))
+	stored, meta, err := st.scan(s.opening(row))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}

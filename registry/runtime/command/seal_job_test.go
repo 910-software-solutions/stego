@@ -3,7 +3,9 @@ package command
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -41,6 +43,19 @@ func noteSpec() EntitySpec[note] {
 		},
 		func(v note) map[string]any { return map[string]any{"id": v.ID, "label": v.Label} })
 	s.Sealed = true
+	// The entity after the contract step of the seal, with the sealed column alone, as the generator gives it
+	// (ST-SUP-RP10-LC49).
+	after := spec("Note", "", "notes", []string{"label", "body_sealed"},
+		func(row Scanner) (note, Meta, error) {
+			var v note
+			var m Meta
+			err := row.Scan(&v.ID, &v.Label, OpenAt("notes", "body_sealed", &v.ID, &v.Body), &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v note) []any { return []any{v.ID, v.Label, SealAt("notes", "body_sealed", v.ID, v.Body)} }, nil)
+	s.AfterSeal = &AfterSeal[note]{Table: "public.notes", Clear: []string{"body"}, Select: after.Select, SelectForUpdate: after.SelectForUpdate,
+		SelectForDelete: after.SelectForDelete, Insert: after.Insert, Update: after.Update, Scan: after.Scan, Values: after.Values}
 	return s
 }
 
@@ -292,6 +307,129 @@ func TestSealStep(t *testing.T) {
 			t.Fatal("the row that the release before cleared keeps its sealed value")
 		}
 		n.noSecretOutside(secret)
+	})
+}
+
+// TestSealContract holds the release of the expand step of a seal after its contract step (walkthrough 14, W14-B6
+// and W14-B7).
+func TestSealContract(t *testing.T) {
+	const secret = "member-0042@example.com"
+	t.Run("ST-SUP-RP10-LC49-T02 After the contract step drops the clear column, the release of the expand step reads and writes the sealed column alone", func(t *testing.T) {
+		n := newNoteEnv(t)
+		id := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: id, Label: "x", Body: sealed.SecretOf(secret + "-before")})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// A 42703 while the clear column is there changes nothing: an entity whose read names a column that the
+		// table does not have fails, and keeps its statements.
+		broken := noteSpec()
+		broken.Select = strings.Replace(broken.Select, "body_sealed", "missing_column", 1)
+		wrong, err := NewEntity(broken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := n.runtime(func(c *Config) { c.Entities = []Declared{wrong}; c.Ring = n.ring })
+		cmd := n.command("read-wrong", nil, wrong)
+		if _, err := n.runOn(rt, cmd, n.request("org-a", u7(t), "wrong", `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wrong)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_, err = r.Get(ctx, id)
+			return ok, err
+		}); !errors.Is(err, ErrInternal) || wrong.contracted.Load() {
+			t.Fatalf("a read of an undefined column while the clear column is there gives %v and takes the statements after the contract: %v", err, wrong.contracted.Load())
+		}
+		// The contract step drops the clear column and deletes the checkpoint of the change.
+		n.exec(`ALTER TABLE notes DROP COLUMN body`, `DELETE FROM stego_schema.seals WHERE change_id = '`+noteChange+`'`)
+		// The read, the create and the update of the release of the expand step go on, each in one call, with no
+		// declared Retry on conflict: the first statement fails, and the call runs again with the sealed column.
+		if got := n.read("org-a", id); got.Body.Reveal() != secret+"-before" {
+			t.Fatal("a read after the contract does not give the sealed value")
+		}
+		if !n.notes.contracted.Load() {
+			t.Fatal("the entity did not take its statements after the contract")
+		}
+		other := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: other, Label: "y", Body: sealed.SecretOf(secret + "-after")})
+			return err
+		}); err != nil {
+			t.Fatalf("a create after the contract fails: %v", err)
+		}
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			l, err := r.GetForUpdate(ctx, id)
+			if err != nil {
+				return err
+			}
+			v := l.Value()
+			v.Body = sealed.SecretOf(secret + "-updated")
+			_, err = r.Update(ctx, l, v)
+			return err
+		}); err != nil {
+			t.Fatalf("an update after the contract fails: %v", err)
+		}
+		for row, want := range map[string]string{id: secret + "-updated", other: secret + "-after"} {
+			var raw []byte
+			if err := n.admin.QueryRowContext(n.ctx, `SELECT body_sealed FROM notes WHERE tenant_id = 'org-a' AND id = $1`, row).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			plain, err := n.ring.Open(raw, sealed.Place{Tenant: "org-a", Table: "notes", Column: "body_sealed", Row: row})
+			if err != nil || string(plain) != want {
+				t.Fatalf("the row %s holds a sealed value that does not open to its value: %v", row, err)
+			}
+		}
+		// A second process of the same release starts with the statements of the spec, and takes the statements after
+		// the contract at its first statement too.
+		fresh, err := NewEntity(noteSpec())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt = n.runtime(func(c *Config) { c.Entities = []Declared{fresh}; c.Ring = n.ring })
+		cmd = n.command("read-fresh", nil, fresh)
+		var got note
+		if _, err := n.runOn(rt, cmd, n.request("org-a", u7(t), "fresh", `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, fresh)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			l, err := r.Get(ctx, other)
+			if err == nil {
+				got = l.Value()
+			}
+			return ok, err
+		}); err != nil || got.Body.Reveal() != secret+"-after" {
+			t.Fatalf("a new process of the release reads %v after the contract", err)
+		}
+		n.noSecretOutside(secret)
+	})
+
+	t.Run("ST-SUP-RP10-LC50-T02 The seal job has no work after the contract step and fails with the remedy when its lease row is missing", func(t *testing.T) {
+		n := newNoteEnv(t)
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '` + uuid.NewString() + `', 'x', '` + secret + `')`)
+		// The lease row is not there, as on a database that the job of a later release took past the expand step:
+		// the run fails at once and names the lease, and seals nothing.
+		n.exec(`DELETE FROM leases WHERE name = '` + SealLease(noteChange) + `'`)
+		if _, err := n.job().Run(n.ctx); !errors.Is(err, ErrSealLease) || !strings.Contains(err.Error(), SealLease(noteChange)) {
+			t.Fatalf("a run with no lease row gives %v, want ErrSealLease with the lease", err)
+		}
+		if sealedRows := n.count(`SELECT count(*) FROM notes WHERE body_sealed IS NOT NULL`); sealedRows != 0 {
+			t.Fatalf("the run with no lease row sealed %d rows", sealedRows)
+		}
+		n.exec(`INSERT INTO leases (name) VALUES ('` + SealLease(noteChange) + `')`)
+		if results, err := n.job().Run(n.ctx); err != nil || !results[0].Completed {
+			t.Fatalf("a run after the lease row is made gives %+v, %v, want the pass completed", results, err)
+		}
+		// The contract step drops the clear column and deletes the checkpoint: the run has no work and no error.
+		n.exec(`ALTER TABLE notes DROP COLUMN body`, `DELETE FROM stego_schema.seals WHERE change_id = '`+noteChange+`'`)
+		for range 2 {
+			if results, err := n.job().Run(n.ctx); err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 0 {
+				t.Fatalf("a run after the contract gives %+v, %v, want no work", results, err)
+			}
+		}
 	})
 }
 

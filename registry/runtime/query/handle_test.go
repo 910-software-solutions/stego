@@ -367,7 +367,7 @@ func (e *env) runtimeOf(t *testing.T, provider authz.Decision) *Runtime {
 		t.Fatal(err)
 	}
 	rt, err := New(Config{DB: e.db, AuditDB: e.auditDB, Audit: e.writer, AuditSettings: audit.Settings{Level: audit.LevelChange},
-		Authz: az, Service: "shop"})
+		Authz: az, Service: "shop", ServiceVersion: "1.4.2", DeclarationVersion: "7"})
 	if err != nil {
 		t.Fatal(err)
 	}
