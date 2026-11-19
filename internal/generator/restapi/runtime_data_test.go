@@ -974,12 +974,55 @@ func TestRequiredMember(t *testing.T) {
 }
 `
 
+// unknownMemberCheck is a test of the generated validation.go: a create, an update, an upsert and a patch whose body
+// holds a member that the closed schema does not take get a 400 validation problem whose entry names the member in its
+// field, before any decode of the handler, and the problem holds no value of the body.
+const unknownMemberCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestUnknownMember(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a body with an unknown member reached the handler")
+	}))
+	const todo = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	const ticket = "{\"folder_id\":\"0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69\",\"code\":\"c1\",\"title\":\"t\",\"sku\":\"s1\","
+	for _, c := range []struct{ method, path, body, member string }{
+		{http.MethodPost, "/api/v1/todos", "{\"title\":\"t\",\"Title\":\"value-x\"}", "Title"},
+		{http.MethodPut, todo, "{\"title\":\"t\",\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPatch, todo, "{\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPut, "/api/v1/tickets", ticket + "\"tenant_id\":\"value-x\"}", "tenant_id"},
+	} {
+		r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		var problem struct {
+			Errors []struct {
+				Field string \x60json:"field"\x60
+			} \x60json:"validation_errors"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil || len(problem.Errors) != 1 ||
+			problem.Errors[0].Field != c.member || strings.Contains(answer.Body.String(), "value-x") {
+			t.Fatalf("%s %s %s got %d (%v): %s, want one entry whose field is %s and no value", c.method, c.path, c.body, answer.Code, err, answer.Body, c.member)
+		}
+	}
+}
+`
+
 func TestValidationEveryField(t *testing.T) {
 	ctx := crudContext()
 	ctx.Conventions.RequestValidation = "openapi-schema"
 	p := newCrudProject(t, ctx, crudFiles(t, ctx))
 	p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
 	p.write("out/api/required_member_test.go", []byte(strings.ReplaceAll(requiredMemberCheck, "\\x60", "`")))
+	p.write("out/api/unknown_member_test.go", []byte(strings.ReplaceAll(unknownMemberCheck, "\\x60", "`")))
 	t.Run("ST-SUP-RC20-OC05-T04 A body with two bad members gets a validation problem with one entry for each", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestEveryField$", "./out/api"); err != nil {
 			t.Fatalf("the check of every field failed: %v\n%s", err, output)
@@ -988,6 +1031,11 @@ func TestValidationEveryField(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC05-T07 A create or a PUT that leaves out a required member gets a validation problem that names it", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestRequiredMember$", "./out/api"); err != nil {
 			t.Fatalf("the check of a missing required member failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC55-T06 The request check names an unknown member of a create, an update, an upsert and a patch in the field of its entry", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestUnknownMember$", "./out/api"); err != nil {
+			t.Fatalf("the check of an unknown member failed: %v\n%s", err, output)
 		}
 	})
 }
