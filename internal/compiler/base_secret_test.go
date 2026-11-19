@@ -214,7 +214,7 @@ func TestBaseSealReports(t *testing.T) {
 			name, record string
 			refused      bool
 		}{
-			{"runtime v0.146.0", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "v0.146.0")), true},
+			{"runtime v0.149.0", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "v0.149.0")), true},
 			{"no runtime pin", string(adapterRecord(t, []byte(expand), SecretStorageVersion)), true},
 			{"a runtime pin that does not parse", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "dev")), true},
 			{"runtime " + SealSwitchRuntimeVersion, string(runtimeRecord(t, []byte(expand), SecretStorageVersion, SealSwitchRuntimeVersion)), false},
@@ -233,9 +233,9 @@ func TestBaseSealReports(t *testing.T) {
 			}
 		}
 		// The expand step itself is not refused over an older runtime: only the contract drops the clear column.
-		check, err := CheckBase(BaseSource{Ref: "r2", Commit: "c0ffee", Declaration: []byte(td01), Record: runtimeRecord(t, []byte(td01), SecretStorageVersion, "v0.146.0")}, parseHead(t, expand))
+		check, err := CheckBase(BaseSource{Ref: "r2", Commit: "c0ffee", Declaration: []byte(td01), Record: runtimeRecord(t, []byte(td01), SecretStorageVersion, "v0.149.0")}, parseHead(t, expand))
 		if err != nil || check.HasFaults() {
-			t.Fatalf("the expand of the seal over runtime v0.146.0 is refused: %v %+v", err, check.Faults)
+			t.Fatalf("the expand of the seal over runtime v0.149.0 is refused: %v %+v", err, check.Faults)
 		}
 	})
 }
