@@ -361,7 +361,7 @@ func TestServiceDocument(t *testing.T) {
 }
 
 func TestRequiredSecretMember(t *testing.T) {
-	t.Run("ST-SUP-RC06-OC09-T02 A required secret member of a request is a plain field, and an optional one stays a pointer", func(t *testing.T) {
+	t.Run("ST-SUP-RC06-OC09-T03 A required secret member of a request is a plain field, and an optional one stays a pointer", func(t *testing.T) {
 		document := strings.Replace(sample, "  /uuid/{id}:\n", `  /people:
     post:
       operationId: createPerson
