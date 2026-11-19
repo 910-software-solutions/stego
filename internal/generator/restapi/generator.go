@@ -2149,6 +2149,8 @@ type openAPISchema struct {
 	AllOf       []openAPISchema          `json:"allOf,omitempty"`
 	// AdditionalProperties is the schema of each member of a map, as the protobuf JSON form of a map field writes it.
 	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
+	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
+	Sensitive bool `json:"x-sensitive,omitempty"`
 }
 
 // validateCollectionOperations checks that every collection has at least one

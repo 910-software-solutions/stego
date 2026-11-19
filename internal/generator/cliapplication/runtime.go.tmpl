@@ -29,7 +29,7 @@ type PathParameter struct {Flag,Key string}
 // operation carries the Idempotency-Key header parameter (the idempotency component). Then the CLI sends the write
 // again one time, with the same key, after a transport failure, an expired request or a 5xx answer. The CLI sends a
 // new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
-type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
+type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;BodyFields []Field;Success,EmptyResponses []int}
 type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
@@ -80,6 +80,12 @@ func validate(app Application)error{
     if f.Type!="string"||c.Query||(c.Method!="POST"&&c.Method!="PUT"&&c.Method!="PATCH")||!word.MatchString(f.RelativeFlag)||reservedFlag(f.RelativeFlag)||flags[f.RelativeFlag]||pathFlags[f.RelativeFlag]{return errors.New("invalid relative timestamp flag")}
     flags[f.RelativeFlag]=true
    }
+   switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
+  }
+  // A body field, a secret, has no flag: only --body FILE gives it (ST-SUP-RC04-OC32).
+  for _,f:=range c.BodyFields{
+   if f.Flag!=""||f.RelativeFlag!=""||!property.MatchString(f.Key)||keys[f.Key]||c.Query||(c.Method!="POST"&&c.Method!="PUT"&&c.Method!="PATCH"){return errors.New("invalid CLI body field")}
+   keys[f.Key]=true
    switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
   }
   if !c.Query&&len(c.Fields)>0&&(c.Method=="GET"||c.Method=="DELETE"){return errors.New("CLI read and delete fields require query mode")}
@@ -142,7 +148,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   raw:=[]byte(value);if field.Type=="string"{raw,_=json.Marshal(value)}
   body[field.Key]=raw
  }
- allowed:=map[string]Field{};for _,f:=range c.Fields{allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
  for key,raw:=range body{field,ok:=allowed[key];if !ok||!fieldValue(field,raw){return errors.New("invalid request field")}}
  var payload []byte
  if c.Query{

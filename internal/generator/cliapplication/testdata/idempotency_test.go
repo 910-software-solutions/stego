@@ -275,3 +275,48 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		}
 	})
 }
+
+func TestSecretBodyFields(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T03 A secret member has no flag, and --body FILE gives it", func(t *testing.T) {
+		app := applyDefinition()
+		app.Commands = append(app.Commands, Command{Name: []string{"issue", "key"}, Method: "POST", Path: "/keys", Fields: []Field{{Flag: "label", Key: "label", Type: "string"}},
+			BodyFields: []Field{{Key: "pin", Type: "string", Required: true}}, Success: []int{201}})
+		f := keySetup(t, app)
+		run := func(args ...string) error {
+			t.Helper()
+			var output bytes.Buffer
+			return Run(context.Background(), app, args, &output)
+		}
+		body := filepath.Join(f.directory, "body.json")
+		if err := os.WriteFile(body, []byte(`{"label":"a","pin":"482913"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		f.next()
+		if err := run("issue", "key", "--body", body); err != nil {
+			t.Fatalf("the secret member in --body FILE gave %v", err)
+		}
+		if got := f.got(); len(got) != 1 || !strings.Contains(got[0].body, `"pin":"482913"`) || !strings.Contains(got[0].body, `"label":"a"`) {
+			t.Errorf("the server got %+v, want one request with the pin of the body file and the label", got)
+		}
+		f.next()
+		for _, args := range [][]string{{"issue", "key", "--pin", "482913"}, {"issue", "key", "--label", "a"}} {
+			if err := run(args...); err == nil {
+				t.Errorf("%q was accepted: a secret member has no flag and is required", args)
+			}
+		}
+		if got := f.got(); len(got) != 0 {
+			t.Errorf("a refused command reached the server: %+v", got)
+		}
+		bad := app
+		bad.Commands = append([]Command(nil), app.Commands...)
+		bad.Commands[len(bad.Commands)-1].BodyFields = []Field{{Flag: "pin", Key: "pin", Type: "string"}}
+		if err := run2(bad, "issue", "key", "--body", body); err == nil || !strings.Contains(err.Error(), "invalid CLI body field") {
+			t.Errorf("a body field with a flag gave %v, want the refusal of the definition", err)
+		}
+	})
+}
+
+func run2(app Application, args ...string) error {
+	var output bytes.Buffer
+	return Run(context.Background(), app, args, &output)
+}

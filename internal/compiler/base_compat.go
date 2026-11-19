@@ -472,7 +472,7 @@ type baselineOutput struct {
 // 001_initial gives its search index (decision ST-DECL-Q46 (a)).
 const (
 	PublicSearchVersion        = "6.19.0"
-	PublicSearchRuntimeVersion = "v0.157.0"
+	PublicSearchRuntimeVersion = "v0.158.0"
 )
 
 // writtenPublic gives a copy of the entities with each field written sensitivity: public marked pii, which, as the
