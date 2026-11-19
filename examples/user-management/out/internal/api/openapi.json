@@ -2068,6 +2068,13 @@
             "minLength": 1,
             "maxLength": 100
           },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a patch may leave it out.",
+            "enum": [
+              "User"
+            ]
+          },
           "metadata": {
             "description": "Arbitrary JSON value"
           },
@@ -2079,7 +2086,8 @@
               "viewer"
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "Organization": {
         "type": "object",
