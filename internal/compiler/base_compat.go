@@ -446,27 +446,44 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	return faults
 }
 
-// openSealDropFaults refuses a drop that the head declares of a field whose seal the base holds open: the base has
-// the expand step of the seal and not its contract step, so the release that runs now reads and writes the clear
-// and the sealed column of the field. The fault names the seal and tells to contract it first
-// (ST-SUP-RC01-OC49-T10).
+// openSealDropFaults refuses a drop that the head declares of a field whose seal the base holds open, or of the
+// entity of such a field: the base has the expand step of the seal and not its contract step, so the release that
+// runs now reads and writes the clear and the sealed column of the field. The fault names the seal and tells to
+// contract it first (ST-SUP-RC01-OC49-T10, ST-SUP-RC01-OC49-T11). A drop of a field that the base stores secret,
+// whose definition gives the field in clear, has a fault that says to add the item secret.
 func openSealDropFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	for _, drop := range head.SchemaChanges {
-		if drop.Kind != "drop" || drop.Field == "" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == drop.ID }) {
+		if drop.Kind != "drop" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == drop.ID }) {
 			continue
 		}
+		sealed := false
 		for _, seal := range base.SchemaChanges {
-			if seal.Kind != "seal" || seal.Entity != drop.Entity || seal.Field != drop.Field ||
+			if seal.Kind != "seal" || seal.Entity != drop.Entity || (drop.Field != "" && seal.Field != drop.Field) ||
 				!slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "expand"}) ||
 				slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "contract"}) {
 				continue
 			}
+			sealed = true
+			removes := fmt.Sprintf("%s.%s", drop.Entity, drop.Field)
+			if drop.Field == "" {
+				removes = fmt.Sprintf("the entity %s with %s.%s", drop.Entity, drop.Entity, seal.Field)
+			}
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: drop.Entity, Field: drop.Field, Message: fmt.Sprintf(
-				"the drop %s removes %s.%s, whose seal %s is open in the base: the release that runs now reads and writes the clear and the sealed column of %s; "+
-					"contract the seal first, with the step {change: %s, phase: contract} in a release of its own, then drop the field in a later release",
-				drop.ID, drop.Entity, drop.Field, seal.ID, drop.Field, seal.ID),
+				"the drop %s removes %s, whose seal %s is open in the base: the release that runs now reads and writes the clear and the sealed column of %s; "+
+					"contract the seal first, with the step {change: %s, phase: contract} in a release of its own, then drop it in a later release, with the item secret in the definition of a sealed field",
+				drop.ID, removes, seal.ID, seal.Field, seal.ID),
 				Declare: []SuggestedChange{suggestion(base, seal.ID, "contract")}})
+		}
+		// A drop of a field that the base stores secret gives it in its Definition with the item secret, so the
+		// field that the drop brings back has the stored form of the base (security review of PR #468, I2).
+		if entity, found := findStoredEntity(base, drop.Entity); found && drop.Field != "" && !sealed {
+			at := slices.IndexFunc(entity.Fields, func(f types.Field) bool { return f.Name == drop.Field })
+			if dropped, reason := gen.DropDefinition(drop.Definition); at >= 0 && reason == "" && entity.Fields[at].Secret() && !entity.Fields[at].ClearStored && !dropped.Field.Secret() {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: drop.Entity, Field: drop.Field, Message: fmt.Sprintf(
+					"the definition of the drop %s gives %s.%s in clear, but the base stores it as a secret; add the item secret to the definition, before a pattern",
+					drop.ID, drop.Entity, drop.Field)})
+			}
 		}
 	}
 	return faults
