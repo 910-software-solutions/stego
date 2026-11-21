@@ -71,7 +71,7 @@ BEGIN
   END IF;
   IF $6 THEN
     UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp()
-     WHERE s.change_id = $1 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance();
+     WHERE s.change_id = $1 AND s.token <= $9 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance();
     IF FOUND THEN
       RETURN -1;
     END IF;

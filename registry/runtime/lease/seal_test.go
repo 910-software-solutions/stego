@@ -285,6 +285,15 @@ func TestSealCheckpoint(t *testing.T) {
 			}
 			return here, age
 		}
+		// A row with a higher token is fenced: the start does not set its guard time (security review of PR #471, I1).
+		d.exec(t, "UPDATE stego_schema.seals SET token = $1", held.Token()+10)
+		if err := start(); !errors.Is(err, ErrFenced) {
+			t.Fatalf("a start on a row with a higher token gives %v, want ErrFenced", err)
+		}
+		if here, _ := armed(); here {
+			t.Fatal("a start on a row with a higher token set its guard time")
+		}
+		d.exec(t, "UPDATE stego_schema.seals SET token = 0")
 		// The first start in this database sets the guard time of the row and waits.
 		if err := start(); !errors.Is(err, ErrSealWaiting) {
 			t.Fatalf("the first start of a restored seal gives %v, want ErrSealWaiting", err)
