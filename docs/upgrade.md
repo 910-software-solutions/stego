@@ -688,6 +688,25 @@ Do these steps:
    topic of the new subscription, `STEGO_KAFKA_CONSUMER_<S>_TOPIC` (see
    [Subscriptions](subscriptions.md)). The other subscriptions keep their
    settings and their groups.
+
+   In `authz/schema.zed`, give the type `tenant` the relation of the new
+   consuming worker, with its name in snake case, and point the permission
+   that its command checks at it, such as:
+
+   ```text
+   definition tenant {
+   	relation worker_record_payment: service_account
+   }
+
+   definition payment {
+   	relation tenant: tenant
+   	permission record = tenant->worker_record_payment
+   }
+   ```
+
+   Else `stego validate` refuses the declaration, and names the missing
+   relation `worker_<name>` of the type `tenant` (ST-SUP-RC35-OC13). See
+   [Worker grants in each tenant](workers.md).
 2. Choose where the group starts. To apply the backlog, do nothing. To skip
    the backlog, set the offsets of the group to the end of the topic before the
    first start:
