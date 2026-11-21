@@ -541,6 +541,16 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 					t.Errorf("%s: the refusal does not say %q: %s", name, text, refused.Refusal())
 				}
 			}
+			// The failure record of the process names the fault class, the ledger and the remedy, fixed texts.
+			var classified interface {
+				FaultClass() string
+				FaultObject() string
+				FaultRemedy() string
+			}
+			if !errors.As(err, &classified) || classified.FaultClass() != "migration_ledger.history" || classified.FaultObject() != "stego_schema.migrations" ||
+				!strings.Contains(classified.FaultRemedy(), "migrate: the step is refused names the row and the migration") {
+				t.Errorf("%s gave %v, whose failure record names no fault class, ledger and remedy", name, err)
+			}
 		}
 		row := fmt.Sprintf("the ledger row %d names the migration %s", len(applied), branch)
 		for name, check := range map[string]struct {
