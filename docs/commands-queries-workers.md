@@ -1424,6 +1424,22 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.177.0
+
+- The cause of `worker.run.failed` and of the log line
+  `command.consumer.run_failed` is `fill_json`, `fill_parse` or
+  `fill_canceled` for a fill error whose chain holds an `encoding/json` error,
+  a `strconv` `NumError` or a `time` `ParseError`, or `context.Canceled`, and
+  `fill_error` for another fill error. The runtime reads the type of the
+  error, never its text. The three new classes count for the poison bound as
+  `fill_error` does (ST-SUP-RC35-OC06, decision ST-SUP-Q203 (b)). New values
+  of `probe.WorkerCauses`. See [A failed run of a consuming
+  worker](#a-failed-run-of-a-consuming-worker).
+- The failure record of a migration Job step that SpiceDB failed gives the
+  cause class of the gRPC status code, such as `unavailable`, never the text
+  (ST-SUP-RP14-LC03). New method `service.StepError.CauseClass`, new function
+  `authz.CodeClass`. See [When the Job fails](delivery.md#when-the-job-fails).
+
 ### Release notes for runtime v0.176.0
 
 - A worker can declare `reads: [Entity]`. Its fill gets a read-only

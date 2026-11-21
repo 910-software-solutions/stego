@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/audit/auditsink"
@@ -149,6 +150,24 @@ type StepError struct {
 
 func (e *StepError) Error() string { return "migrate: " + e.Step + ": " + e.Err.Error() }
 func (e *StepError) Unwrap() error { return e.Err }
+
+// CauseClass gives the fixed class of a cause of the step that the standard library cannot class, for the cause of
+// the failure record of the job (ST-SUP-RP14-LC03): the class of an error in the chain that gives its own, such as a
+// refused call to SpiceDB (authz.CodeClass), or the class of the gRPC status code of the chain; and empty else, so
+// the record gives the class of the database, the network or the file that it reads itself. It never holds the
+// text of the cause (walkthrough 19, small items).
+func (e *StepError) CauseClass() string {
+	var classed interface{ CauseClass() string }
+	if errors.As(e.Err, &classed) {
+		if class := classed.CauseClass(); class != "" {
+			return class
+		}
+	}
+	if s, ok := status.FromError(e.Err); ok && e.Err != nil {
+		return authz.CodeClass(s.Code())
+	}
+	return ""
+}
 
 // failed gives the failure of a step of the migration job.
 func failed(step string, err error) error { return &StepError{Step: step, Err: err} }

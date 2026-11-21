@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,6 +24,8 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
@@ -3079,4 +3082,45 @@ func relateAsWorker(t *testing.T, f *fixture, endpoint, key string) {
 	if err := tenant.Commit(ctx, tx, tn); err != nil {
 		t.Fatalf("the commit of the worker's relate gave %v", err)
 	}
+}
+
+// TestMigrateCauseClass proves the cause class of a step that a gRPC server failed, which the failure record of the
+// job gives with the stage (walkthrough 19, small items).
+func TestMigrateCauseClass(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T31 A step that SpiceDB failed gives the fixed class of its status code, never its text, and another step none", func(t *testing.T) {
+		for _, c := range []struct {
+			err  error
+			want string
+		}{
+			{fmt.Errorf("authz: %w", status.Error(codes.Unavailable, "dial tcp 10.1.2.3:50051: connect: connection refused")), "unavailable"},
+			{status.Error(codes.Unauthenticated, "bad key k-secret"), "authentication_failed"},
+			{status.Error(codes.DeadlineExceeded, "late"), "timeout"},
+			{status.Error(codes.DataLoss, "lost"), "provider_error"},
+			{errors.New("no row for buyer@example.com"), ""},
+		} {
+			step := &StepError{Step: StepAuthorizationSchema, Err: c.err}
+			if got := step.CauseClass(); got != c.want {
+				t.Errorf("the cause %v gave the class %q, want %q", c.err, got, c.want)
+			}
+		}
+		// A real job whose SpiceDB refuses the connection fails at the step authorization_schema with the class
+		// unavailable, which names no address.
+		closed, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		endpoint := closed.Addr().String()
+		closed.Close()
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: "k-secret", InsecureLoopback: true}}
+		err = Migrate(context.Background(), settings, f.migration(nil))
+		var step *StepError
+		if !errors.As(err, &step) || Stage(err) != "migrate."+StepAuthorizationSchema {
+			t.Fatalf("a job whose SpiceDB refuses the connection gave %v, want a fault of the step %s", err, StepAuthorizationSchema)
+		}
+		var classed interface{ CauseClass() string }
+		if !errors.As(err, &classed) || classed.CauseClass() != "unavailable" {
+			t.Fatalf("the fault %v gives no class unavailable", err)
+		}
+	})
 }
