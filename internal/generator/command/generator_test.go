@@ -1065,6 +1065,89 @@ func TestSealingEmission(t *testing.T) {
 	})
 }
 
+// walletEntities are the entities of the tests of the counter and the event fields: Wallet with a compare-only secret
+// pin with the limit of 5 wrong attempts and no event fields, and Transaction with the event fields wallet_id,
+// kind and amount at version 2.
+func walletEntities() []types.Entity {
+	two := 2
+	return []types.Entity{
+		{Name: "Wallet", Fields: []types.Field{
+			{Name: "label", Type: types.FieldTypeString},
+			{Name: "pin", Type: types.FieldTypeString, Sensitivity: "secret", CompareOnly: true, Attempts: &types.FieldAttempts{Limit: 5}},
+		}},
+		{Name: "Transaction", Fields: []types.Field{
+			{Name: "wallet_id", Type: types.FieldTypeString},
+			{Name: "kind", Type: types.FieldTypeEnum, Values: []string{"deposit", "withdrawal"}},
+			{Name: "amount", Type: types.FieldTypeInt64},
+			{Name: "note", Type: types.FieldTypeString, Optional: true},
+		}, Events: &types.EntityEvents{Fields: []string{"wallet_id", "kind", "amount"}, Version: &two}},
+	}
+}
+
+// buildEntityFile compiles the entity file of the package data against the runtime library of this repository.
+func buildEntityFile(t *testing.T, source []byte) {
+	t.Helper()
+	p := &project{t: t, dir: t.TempDir()}
+	runtimeDir, err := filepath.Abs(filepath.Join("..", "..", "..", "registry", "runtime"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums, err := os.ReadFile(filepath.Join(runtimeDir, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.write("go.sum", sums)
+	p.write("go.mod", []byte("module example.com/wallets\n\ngo "+new(Generator).MinimumGoVersion()+
+		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("data/entities.go", source)
+	p.mustGo("mod", "tidy")
+	p.mustGo("vet", "./...")
+}
+
+func TestCounterEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC24-T01 A compare-only field with a limit gets its counter, CountedAt in the scan and HashCountedOf in the values", func(t *testing.T) {
+		source, err := EntityFile("data", []string{"Wallet", "Transaction"}, walletEntities(), "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		for _, want := range []string{
+			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5}))`,
+			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin)`,
+			`command.HashCountedOf(walletPinCounter, id, v.Pin)`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the entity file does not hold %s:\n%s", want, text)
+			}
+		}
+		buildEntityFile(t, source)
+	})
+}
+
+func TestEventDataEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC25-T01 An entity with Events gets EventData and EventVersion, and one with none gets neither", func(t *testing.T) {
+		source, err := EntityFile("data", []string{"Wallet", "Transaction"}, walletEntities(), "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		wallet, transaction, _ := strings.Cut(text, "// TransactionEntity is")
+		for _, want := range []string{
+			`EventData: func(v Transaction) map[string]any {`,
+			`return map[string]any{"wallet_id": v.WalletID, "kind": v.Kind, "amount": v.Amount}`,
+			"EventVersion: 2,",
+		} {
+			if !strings.Contains(transaction, want) {
+				t.Errorf("the declaration of Transaction does not hold %s:\n%s", want, transaction)
+			}
+		}
+		if strings.Contains(wallet, "EventData") || strings.Contains(wallet, "EventVersion") {
+			t.Errorf("the declaration of Wallet gives event data:\n%s", wallet)
+		}
+		buildEntityFile(t, source)
+	})
+}
+
 func TestTypedRepository(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC26-T01 A parent where the runtime refuses one does not compile, and a move takes its parents", func(t *testing.T) {
 		const head = "package %s\n\nimport (\n\t\"context\"\n\n\tcommands \"example.com/orders/out/commands\"\n)\n\n" +

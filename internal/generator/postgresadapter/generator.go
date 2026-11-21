@@ -1514,14 +1514,14 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 		}
 	}
 	if state != "" {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand)}
 	}
 	left, err := rowsLeft(ctx, tx, c)
 	if err != nil {
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand)}
 	}
 	return runningReleases(ctx, tx, c)
 }

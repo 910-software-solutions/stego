@@ -560,3 +560,111 @@ func TestChangeEventSpecs(t *testing.T) {
 		}
 	})
 }
+
+// txn is a test entity with event fields: wallet_id, kind, amount, an optional note and the time at.
+type txn struct {
+	ID, WalletID, Kind string
+	Amount             int64
+	Note               *string
+	At                 time.Time
+}
+
+const txnDDL = `CREATE TABLE txns (tenant_id text NOT NULL, id text NOT NULL, wallet_id text NOT NULL, kind text NOT NULL,
+  amount bigint NOT NULL, note text, at timestamptz NOT NULL, version bigint NOT NULL DEFAULT 1,
+  authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`
+
+func txnSpec() EntitySpec[txn] {
+	s := spec("Txn", "", "txns", []string{"wallet_id", "kind", "amount", "note", "at"},
+		func(row Scanner) (txn, Meta, error) {
+			var v txn
+			var m Meta
+			err := row.Scan(&v.ID, &v.WalletID, &v.Kind, &v.Amount, &v.Note, &v.At, &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v txn) []any { return []any{v.ID, v.WalletID, v.Kind, v.Amount, v.Note, v.At} },
+		func(v txn) map[string]any { return map[string]any{"id": v.ID} })
+	// As the generator gives the event fields of a declaration (ST-SUP-RC32-OC25).
+	s.EventData = func(v txn) map[string]any {
+		return map[string]any{"wallet_id": v.WalletID, "kind": v.Kind, "amount": v.Amount, "note": EventValue(StateOf(v.Note)), "at": EventValue(v.At)}
+	}
+	s.EventVersion = 2
+	return s
+}
+
+func TestEventFields(t *testing.T) {
+	e := newEnv(t)
+	e.exec(txnDDL, "GRANT SELECT, INSERT, UPDATE, DELETE ON txns TO "+e.roles[0],
+		"ALTER TABLE txns ENABLE ROW LEVEL SECURITY", "ALTER TABLE txns FORCE ROW LEVEL SECURITY",
+		"CREATE POLICY txns_tenant ON txns USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))")
+	txns, err := NewEntity(txnSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := e.runtime(func(c *Config) { c.Entities = []Declared{txns} })
+	cmd := e.command("record", func(s *CommandSpec[testProbe]) { s.ChangeEvents = changeEventsOf("Txn", "Order") }, txns, e.orders)
+	at := time.Date(2026, 11, 18, 9, 30, 0, 123456789, time.FixedZone("CET", 3600))
+	t.Run("ST-SUP-RP10-LC55-T01 A change event of an entity with Events carries its declared fields and their version", func(t *testing.T) {
+		_, err := e.runOn(rt, cmd, e.request("ev-1", u7(t), "k-ev1", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, txns)
+			x, err := r.Create(ctx, txn{ID: "x1", WalletID: "w1", Kind: "deposit", Amount: 40, At: at})
+			if err != nil {
+				return err
+			}
+			v := x.Value()
+			note := "rent"
+			v.Amount, v.Note = 45, &note
+			if x, err = r.Update(ctx, x, v); err != nil {
+				return err
+			}
+			if err := r.Delete(ctx, x); err != nil {
+				return err
+			}
+			_, err = repo(t, h, e.orders).Create(ctx, order{ID: "o-ev", Status: "new"})
+			return err
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		staged := e.staged("ev-1")
+		if len(staged) != 4 {
+			t.Fatalf("staged %s, want four change events", kinds(staged))
+		}
+		want := []string{
+			`{"entity":"Txn","action":"created","id":"x1","data":{"amount":40,"at":"2026-11-18T08:30:00.123456Z","kind":"deposit","note":null,"wallet_id":"w1"},"data_version":2}`,
+			`{"entity":"Txn","action":"updated","id":"x1","data":{"amount":45,"at":"2026-11-18T08:30:00.123456Z","kind":"deposit","note":"rent","wallet_id":"w1"},"data_version":2}`,
+			`{"entity":"Txn","action":"deleted","id":"x1","data":{"amount":45,"at":"2026-11-18T08:30:00.123456Z","kind":"deposit","note":"rent","wallet_id":"w1"},"data_version":2}`,
+			`{"entity":"Order","action":"created","id":"o-ev"}`,
+		}
+		for i, m := range staged {
+			if m.payload != want[i] {
+				t.Errorf("payload %d is %s, want %s", i, m.payload, want[i])
+			}
+		}
+	})
+	t.Run("ST-SUP-RP10-LC55-T01 EventData with no EventVersion, and an EventVersion with no EventData, are refused", func(t *testing.T) {
+		s := txnSpec()
+		s.EventVersion = 0
+		if _, err := NewEntity(s); err == nil {
+			t.Error("EventData with no EventVersion is accepted")
+		}
+		s = txnSpec()
+		s.EventData = nil
+		if _, err := NewEntity(s); err == nil {
+			t.Error("an EventVersion with no EventData is accepted")
+		}
+	})
+	t.Run("ST-SUP-RP10-LC55-T01 A create whose event is over the payload limit fails as internal with no value", func(t *testing.T) {
+		long := strings.Repeat("v", outbox.MaxPayloadBytes)
+		_, err := e.runOn(rt, cmd, e.request("ev-2", u7(t), "k-ev2", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, err := repo(t, h, txns).Create(ctx, txn{ID: "x2", WalletID: "w1", Kind: "deposit", Amount: 1, Note: &long, At: at})
+			return err
+		}))
+		if !errors.Is(err, ErrInternal) || strings.Contains(err.Error(), "vvvv") {
+			t.Fatalf("the large create gave %v, want an internal error with no value", err)
+		}
+		if n := len(e.staged("ev-2")); n != 0 {
+			t.Fatalf("the large create staged %d messages", n)
+		}
+	})
+}

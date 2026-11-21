@@ -141,7 +141,14 @@ func validateWorkerAuthorization(service *types.ServiceDeclaration, schema *Auth
 			continue
 		}
 		needs := workerPermissions(service, worker)
-		for wi, name := range worker.Writes {
+		// A worker decides its permission on each row that it reads too, also of an entity in its reads
+		// (decision ST-SUP-Q186 (a)).
+		named := append(append([]string(nil), worker.Writes...), worker.Reads...)
+		for wi, name := range named {
+			list, verb, at := "writes", "writes", wi
+			if wi >= len(worker.Writes) {
+				list, verb, at = "reads", "reads", wi-len(worker.Writes)
+			}
 			_, entity := entityIndex(service.Entities, name)
 			if entity == nil || entity.ResourceType == "" || entity.ResourceType == worker.ResourceType {
 				continue
@@ -154,8 +161,8 @@ func validateWorkerAuthorization(service *types.ServiceDeclaration, schema *Auth
 				if definition.permissions[need.permission] {
 					continue
 				}
-				faults = append(faults, ValidationError{Category: "authorization", Rule: "worker-authorization", Path: fmt.Sprintf("%s.writes[%d]", workerPath(i), wi), Found: name, Allowed: sortedKeys(definition.permissions),
-					Message: fmt.Sprintf("worker %q declares that it writes the entity %s, whose resource type %s lacks %s %q in the schema %s; a worker needs %s on each entity it declares it writes", worker.Name, name, entity.ResourceType, need.whose, need.permission, schema.Path, need.what)})
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "worker-authorization", Path: fmt.Sprintf("%s.%s[%d]", workerPath(i), list, at), Found: name, Allowed: sortedKeys(definition.permissions),
+					Message: fmt.Sprintf("worker %q declares that it %s the entity %s, whose resource type %s lacks %s %q in the schema %s; a worker needs %s on each entity it declares it %s", worker.Name, verb, name, entity.ResourceType, need.whose, need.permission, schema.Path, need.what, verb)})
 			}
 		}
 	}

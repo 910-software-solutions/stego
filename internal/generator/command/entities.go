@@ -73,6 +73,22 @@ func WritesSensitive(entities []types.Entity, names []string) bool {
 	return false
 }
 
+// ReadsPII tells whether one of the entities named in names has a pii field, which the view of a worker that reads it
+// holds, so that its read-only declaration imports the audit package (ST-SUP-RC35-OC19).
+func ReadsPII(entities []types.Entity, names []string) bool {
+	for _, e := range entities {
+		if !slices.Contains(names, e.Name) {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Sensitivity == "pii" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // entity is one entity that a command writes, with its repository declaration (ST-SUP-RP10-LC02).
 type entity struct {
 	decl         types.Entity
@@ -139,6 +155,8 @@ type entityField struct {
 	// sealed is a readable secret, of the Go type sealed.Secret, and compared a compare-only secret, of the Go type
 	// sealed.Compared (ST-SUP-RC32-OC20).
 	sealed, compared bool
+	// limit is the limit of wrong attempts of this compare-only field, or 0 for none (ST-SUP-RC32-OC24).
+	limit int
 }
 
 // goTypes are the Go types of the declared field types, as the PostgreSQL columns of ST-SUP-RC01-OC41 scan.
@@ -306,6 +324,28 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		}
 		p.fields = append(p.fields, ef)
 	}
+	// A compare-only field with a limit of wrong attempts gets a counter (ST-DECL-INV104, ST-SUP-RC32-OC24).
+	for _, f := range p.fields {
+		if a := f.decl.Attempts; a != nil {
+			if !f.compared || a.Limit < 1 || a.Limit > 100 {
+				return nil, fmt.Errorf("the field %s has a limit of wrong attempts and is not a compare-only secret with a limit from 1 to 100 (ST-DECL-INV104)", f.decl.Name)
+			}
+			f.limit = a.Limit
+		}
+	}
+	if ev := e.Events; ev != nil {
+		for _, name := range ev.Fields {
+			var field *entityField
+			for _, f := range p.fields {
+				if f.decl.Name == name {
+					field = f
+				}
+			}
+			if field == nil || field.sealed || field.compared {
+				return nil, fmt.Errorf("the event fields name %q, which is not a field of the entity that is not secret (ST-DECL-INV105)", name)
+			}
+		}
+	}
 	// Each reference to an entity with a resource type is a reference of the generated Parent list: a create and a
 	// move decide the permission that the declaration names for it on the referenced row, and the runtime writes its
 	// relation (ST-SUP-RP10-LC05, ST-DECL-EN02). The check of ST-DECL-INV85 holds every one to its References; a
@@ -460,6 +500,9 @@ func renderScanValues(w *writer, e *entity, indent string) {
 		case f.sealed:
 			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
 			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared && f.limit > 0:
+			// A counted compare-only value is bound to the counter of its row after the scan (ST-SUP-RP10-LC54).
+			targets = append(targets, fmt.Sprintf("command.CountedAt(%s, &v.ID, &v.%s)", counterVar(e, f), f.goName))
 		case f.compared:
 			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
 		default:
@@ -479,6 +522,9 @@ func renderScanValues(w *writer, e *entity, indent string) {
 			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
 			// compare-only secret as its hash (ST-SUP-RP10-LC44).
 			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared && f.limit > 0:
+			// A new value of a counted field resets the count of its row (ST-SUP-RP10-LC54).
+			values = append(values, fmt.Sprintf("command.HashCountedOf(%s, id, v.%s)", counterVar(e, f), f.goName))
 		case f.compared:
 			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
 		default:
@@ -684,6 +730,153 @@ func renderUnique(w *writer, e *entity) {
 	w.f("\tUnique: map[string]string{\n%s\t},\n", strings.Join(lines, ""))
 }
 
+// view gives the plan of the read-only declaration of e that a worker that reads it gets (ST-SUP-RC35-OC19): the
+// fields of e except the secret ones, under the Go name <Entity>View, and no write part.
+func (e *entity) view() *entity {
+	v := &entity{decl: e.decl, goName: e.goName + "View", table: e.table, resourceType: e.resourceType, read: e.read,
+		list: e.list, references: e.references}
+	for _, f := range e.fields {
+		if f.sealed || f.compared {
+			continue
+		}
+		v.fields = append(v.fields, f)
+		if f.sensitivity == "pii" {
+			v.pii = true
+		}
+		if f.pointer || f.slice {
+			v.deep = true
+		}
+	}
+	return v
+}
+
+// ViewColumns gives the columns of the table of the entity e that its read-only view reads, which the migration job
+// grants a consuming worker SELECT on and nothing more (ST-SUP-RC35-OC19, security review of PR #451, L4): the tenant
+// column, the ID, each field that is not secret, the version and, for an entity with a resource type, the token.
+func ViewColumns(e types.Entity, tenantKey string) []string {
+	columns := []string{tenantKey, "id"}
+	for _, f := range e.Fields {
+		if !f.Secret() {
+			columns = append(columns, f.ColumnName())
+		}
+	}
+	columns = append(columns, "version")
+	if e.ResourceType != "" {
+		columns = append(columns, "authz_token")
+	}
+	return columns
+}
+
+// renderView writes the read-only value, its loaded type, its read-only declaration and its Reader accessor of an
+// entity that a worker reads (ST-SUP-RC35-OC19, ST-SUP-RP10-LC53): its Select reads no secret column.
+func renderView(w *writer, e *entity, tenantKey string) {
+	w.f("// %s is a row of the entity %s as a worker that reads it gets it: it holds no secret field (ST-SUP-RC35-OC19).\ntype %s struct {\n\tID string\n", e.goName, e.decl.Name, e.goName)
+	for _, f := range e.fields {
+		w.f("\t%s %s\n", f.goName, f.goType)
+	}
+	w.f("}\n\n")
+	w.f("// Loaded%s is a loaded value of %s: only a read through a worker handle makes one.\ntype Loaded%s = command.Loaded[%s]\n\n", e.goName, e.goName, e.goName, e.goName)
+	selectRow, _, _, _, _, _ := e.statements(tenantKey)
+	w.f("// %sEntity is the read-only declaration of %s for a worker that reads it (ST-SUP-RP10-LC53).\n", e.goName, e.decl.Name)
+	w.f("var %sEntity = command.Must(command.NewEntity(command.EntitySpec[%s]{\n\tName: %q,\n\tReadOnly: true,\n", e.goName, e.goName, e.decl.Name)
+	if e.resourceType != "" {
+		w.f("\tResourceType: %q,\n\tReadPermission: %q,\n", e.resourceType, e.read)
+		if e.list != "" {
+			w.f("\tListPermission: %q,\n", e.list)
+		}
+	}
+	var sensitive []string
+	for _, f := range e.fields {
+		if f.sensitivity == "pii" {
+			sensitive = append(sensitive, fmt.Sprintf("%q: audit.PII", f.decl.ColumnName()))
+		}
+	}
+	if len(sensitive) > 0 {
+		w.f("\tFields: audit.Fields{%s},\n\tPII: true,\n", strings.Join(sensitive, ", "))
+	}
+	w.f("\tSelect: %q,\n", selectRow)
+	w.f("\tScan: func(row command.Scanner) (%s, command.Meta, error) {\n\t\tvar v %s\n\t\tvar m command.Meta\n", e.goName, e.goName)
+	targets := []string{"&v.ID"}
+	for _, f := range e.fields {
+		targets = append(targets, "&v."+f.goName)
+	}
+	targets = append(targets, "&m.Version", "&m.Token")
+	w.f("\t\terr := row.Scan(%s)\n\t\tm.ID = v.ID\n\t\treturn v, m, err\n\t},\n", strings.Join(targets, ", "))
+	if !e.deep {
+		w.f("\tClone: func(v %s) %s { return v },\n", e.goName, e.goName)
+	} else {
+		w.f("\tClone: func(v %s) %s {\n", e.goName, e.goName)
+		for _, f := range e.fields {
+			switch {
+			case f.slice:
+				w.f("\t\tv.%s = bytes.Clone(v.%s)\n", f.goName, f.goName)
+			case f.pointer:
+				w.f("\t\tv.%s = command.ClonePointer(v.%s)\n", f.goName, f.goName)
+			}
+		}
+		w.f("\t\treturn v\n\t},\n")
+	}
+	w.f("\tValidID: command.ValidUUID,\n")
+	if len(e.references) > 0 {
+		w.f("\tParent: []command.Reference[%s]{\n", e.goName)
+		for _, r := range e.references {
+			id := fmt.Sprintf("func(v %s) string { return v.%s }", e.goName, r.field.goName)
+			if r.field.pointer {
+				id = fmt.Sprintf("func(v %s) string {\n\t\tif v.%s == nil {\n\t\t\treturn \"\"\n\t\t}\n\t\treturn *v.%s\n\t}", e.goName, r.field.goName, r.field.goName)
+			}
+			w.f("\t\t{Entity: %q, ResourceType: %q, ID: %s},\n", r.entity, r.resourceType, id)
+		}
+		w.f("\t},\n")
+	}
+	w.f("}))\n\n")
+	w.f("// %sReader gives the read-only repository of %s of a worker handle; the handle refuses an entity that its worker\n// does not declare it reads (ST-SUP-RP10-LC53).\n", e.decl.Name, e.decl.Name)
+	w.f("func %sReader[P any](h *command.Handle[P]) (*command.Reader[%s], error) {\n\treturn command.ReadRepo(h, %sEntity)\n}\n\n", e.decl.Name, e.goName, e.goName)
+}
+
+// lowerFirst gives name with its first letter in lower case.
+func lowerFirst(name string) string { return strings.ToLower(name[:1]) + name[1:] }
+
+// counterVar is the name of the package-level counter of the compare-only field f of entity e.
+func counterVar(e *entity, f *entityField) string {
+	return lowerFirst(e.goName) + f.goName + "Counter"
+}
+
+// renderCounter writes the counter of the wrong attempts of the compare-only field f (ST-SUP-RC32-OC24): its entity,
+// its field and its limit; the runtime charges each check in its own table (ST-SUP-RP10-LC54).
+func renderCounter(w *writer, e *entity, f *entityField) {
+	w.f("// %s is the limit of wrong attempts of %s.%s: %d checks (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+}
+
+// renderEventData writes EventData and EventVersion of an entity that declares event fields (ST-SUP-RC32-OC25): each
+// declared field by its declared name, in the order of the list, as the change event holds it (ST-SUP-RP10-LC55).
+func renderEventData(w *writer, e *entity) {
+	ev := e.decl.Events
+	if ev == nil {
+		return
+	}
+	byName := map[string]*entityField{}
+	for _, f := range e.fields {
+		byName[f.decl.Name] = f
+	}
+	members := make([]string, 0, len(ev.Fields))
+	for _, name := range ev.Fields {
+		f := byName[name]
+		value := "v." + f.goName
+		switch {
+		case f.pointer:
+			value = fmt.Sprintf("command.EventValue(command.StateOf(v.%s))", f.goName)
+		case f.decl.Type == types.FieldTypeJsonb:
+			value = fmt.Sprintf("command.JSONValue(v.%s)", f.goName)
+		case f.decl.Type == types.FieldTypeTimestamp:
+			value = fmt.Sprintf("command.EventValue(v.%s)", f.goName)
+		}
+		members = append(members, fmt.Sprintf("%q: %s", name, value))
+	}
+	w.f("\t// The change event of each write holds these fields of the row (ST-SUP-RP10-LC55, decision ST-SUP-Q184 (c)).\n")
+	w.f("\tEventData: func(v %s) map[string]any {\n\t\treturn map[string]any{%s}\n\t},\n\tEventVersion: %d,\n", e.goName, strings.Join(members, ", "), ev.EventVersion())
+}
+
 // renderEntity writes the Go type, the repository declaration and the repository accessor of one entity.
 func renderEntity(w *writer, e *entity, tenantKey string) {
 	w.f("// %s is a row of the entity %s, as its command handle reads and writes it.\ntype %s struct {\n\tID string\n", e.goName, e.decl.Name, e.goName)
@@ -696,6 +889,11 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	for _, f := range e.fields {
 		if f.decl.Pattern != "" && f.goType != "" && strings.TrimPrefix(f.goType, "*") == "string" {
 			w.f("// %s is the declared pattern of %s.%s.\nvar %s = command.MustPattern(%q)\n\n", patternVar(e, f), e.decl.Name, f.decl.Name, patternVar(e, f), f.decl.Pattern)
+		}
+	}
+	for _, f := range e.fields {
+		if f.limit > 0 {
+			renderCounter(w, e, f)
 		}
 	}
 	w.f("// %sEntity is the repository declaration of %s (ST-SUP-RP10-LC02).\n", e.goName, e.decl.Name)
@@ -750,6 +948,7 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 		state = append(state, fmt.Sprintf("%q: v.%s", f.decl.ColumnName(), f.goName))
 	}
 	w.f("\tState: func(v %s) map[string]any {\n\t\treturn map[string]any{%s}\n\t},\n", e.goName, strings.Join(state, ", "))
+	renderEventData(w, e)
 	changed := []string{"before.ID != after.ID"}
 	for _, f := range e.keys {
 		if f.slice {
