@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -1100,6 +1101,39 @@ func TestSettings(t *testing.T) {
 					t.Fatalf("CheckSettings with %s gave %v", former.name, err)
 				}
 			})
+		}
+	})
+	t.Run("ST-SUP-RP14-LC08-T06 CheckSettings names the setting that cannot be read, the topic or the group setting or its _FILE form, with no value", func(t *testing.T) {
+		dir := t.TempDir()
+		badFile := filepath.Join(dir, "missing")
+		for _, c := range []struct{ name, pattern, value string }{
+			{"a topic file that is not there", SubscriptionTopicFileSetting, badFile},
+			{"a topic file path that is not clean", SubscriptionTopicFileSetting, "relative/topic"},
+			{"a group file that is not there", SubscriptionGroupFileSetting, badFile},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				t.Setenv(Setting(SubscriptionTopicSetting, "order-changes"), "")
+				t.Setenv(Setting(SubscriptionTopicFileSetting, "order-changes"), "")
+				t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), "")
+				t.Setenv(Setting(SubscriptionGroupFileSetting, "order-changes"), "")
+				if c.pattern != SubscriptionTopicFileSetting {
+					t.Setenv(Setting(SubscriptionTopicSetting, "order-changes"), "orders-events")
+				}
+				t.Setenv(Setting(c.pattern, "order-changes"), c.value)
+				want := Setting(c.pattern, "order-changes")
+				var setting *SettingError
+				err := CheckSettings("fulfilment", []string{"order-changes"})
+				if !errors.As(err, &setting) || setting.Variable != want || strings.Contains(err.Error(), c.value) {
+					t.Fatalf("CheckSettings with %s gave %v, want a refusal of the setting %s with no value", c.name, err, want)
+				}
+			})
+		}
+		t.Setenv(Setting(SubscriptionTopicSetting, "order-changes"), "orders-events")
+		t.Setenv(Setting(SubscriptionTopicFileSetting, "order-changes"), badFile)
+		var setting *SettingError
+		if err := CheckSettings("fulfilment", []string{"order-changes"}); !errors.As(err, &setting) ||
+			setting.Variable != Setting(SubscriptionTopicSetting, "order-changes")+" and "+Setting(SubscriptionTopicFileSetting, "order-changes") {
+			t.Fatalf("CheckSettings with a topic and its _FILE form gave %v, want a refusal that names the two", err)
 		}
 	})
 }
