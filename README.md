@@ -621,13 +621,50 @@ go build -o service ./out
 
 ## Work as a team
 
-Each person works on a feature branch, and runs the whole chain on it: the
-declaration change, `stego apply`, the fills, `stego test`,
-`stego fill sign <fill>` and a build. One person then merges the branches into
-`main`, one at a time. This section tells how to merge a branch when `main`
-changed after the branch started. In walkthrough 19, two feature branches that
-each added an entity, a collection and a command conflicted in 34 files: 28
-generated files and 6 written files.
+Each person works on a feature branch, and runs the whole chain on it (see
+[The chain on a branch](#the-chain-on-a-branch)). One person then merges the
+branches into `main`, one at a time. This section tells how to merge a branch
+when `main` changed after the branch started. In walkthrough 19, two feature
+branches that each added an entity, a collection and a command conflicted in
+34 files: 28 generated files and 6 written files.
+
+### The chain on a branch
+
+Do these steps in this order for a branch that adds a command with a fill. In
+the example, the branch `feature/reviews` adds the command `hide-review` and
+its fill:
+
+```sh
+git fetch origin
+git switch -c feature/reviews origin/main
+# 1. Change the declaration: add the entity, the collection and the command.
+# 2. Make the fill, then write its Go files and its tests in fills/hide-review.
+stego fill create hide-review --slot command.command
+# 3. Record the evidence and sign it.
+stego test
+stego fill sign hide-review
+# 4. Check, plan and apply.
+stego validate
+stego plan
+stego apply
+# 5. Test and sign again: current evidence stays, and a changed contract gets new evidence.
+stego test
+stego fill sign hide-review
+# 6. Resolve the dependencies and build.
+stego deps
+go build ./out
+```
+
+`stego apply` refuses a command whose fill has no `fill.yaml`, so make the
+fill before the apply. `stego plan` refuses a fill with no evidence or no
+sign-off, so run `stego test` and `stego fill sign` before the plan. When the
+declaration needs an add step, `stego plan` says so and saves no plan, and
+`stego apply` writes the add step. The apply can change the contract of the
+fill, such as with the add step, and then the evidence of the fill is stale:
+thus run `stego test` and `stego fill sign` again before `stego deps` and the
+build. When the evidence is current, they keep it and change no file. If the author of
+the fill is not in `SIGNERS`, see
+[Who signs the fills](#who-signs-the-fills).
 
 ### The files of a merge
 
@@ -666,13 +703,43 @@ merge, or the tag of the release that runs now (see [the upgrade
 procedure](docs/upgrade.md#the-procedure)). In the example, the branch
 `feature/reviews` adds the fill `hide-review`.
 
+First get the last state of the branches, and see if `main` changed after the
+branch started:
+
+```sh
+git fetch origin
+git switch main && git merge --ff-only origin/main
+git merge-base --is-ancestor main origin/feature/reviews && echo "fast-forward"
+```
+
+If the command prints `fast-forward`, `main` did not change after the branch
+started, and the branch already holds the files that STEGO writes from its
+declaration. Then do these steps, and not the steps below:
+
+1. See if the branch changes `SIGNERS`:
+
+   ```sh
+   git diff main origin/feature/reviews -- SIGNERS
+   ```
+
+   If the command shows a change, stop. Review the change of `SIGNERS` on its
+   own, before the merge (see [Who signs the fills](#who-signs-the-fills)).
+2. Review each fill that the branch changes:
+   `git diff --stat main origin/feature/reviews -- fills`.
+3. Merge the branch with `git merge --ff-only origin/feature/reviews`.
+4. Run `stego validate`, `stego drift` and `go build ./out`, and then the
+   tests of the service.
+
+Else do these steps:
+
 1. Start the merge, keep a copy of the fill folders of the branch, and take
    the generated files and the declaration files of `main`. `git restore`
    also removes the files that the branch added in these folders, such as
-   its migrations:
+   its migrations. `--no-ff` makes sure that Git does not move `main` to the
+   branch:
 
    ```sh
-   git merge --no-commit origin/feature/reviews
+   git merge --no-ff --no-commit origin/feature/reviews
    cp -r fills/hide-review ../keep-hide-review
    git restore --source=HEAD --staged --worktree -- out deploy architecture .stego/state.yaml go.mod go.sum service.yaml proto authz
    ```
@@ -760,6 +827,44 @@ it on its own before the merge, and protect `SIGNERS` with a CODEOWNERS rule.
 When your policy needs the reviewer's own signature on each merged fill, run
 `stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`:
 the check does not read the revocation or the expiry of a key.
+
+#### When the author of a fill is not in SIGNERS
+
+An author whom `SIGNERS` does not list cannot run `stego validate`,
+`stego plan`, `stego apply`, `stego deps` or a build of the service until a
+person in `SIGNERS` signs each new or changed fill. These commands refuse the
+fill, and name it. `stego fill sign <fill>` with the key of the author still
+signs and exits 0, but it prints a warning that names the fingerprint of the
+key and the two fixes. The sign-off names the fingerprint of the key, not the
+path of a key file.
+
+The `signer` of a sign-off in `fill.yaml` is only a label. Do not trust a fill
+because of it. `stego validate`, `stego plan` and the build make the trust
+decision: they verify the signature over the current evidence against the keys
+that `SIGNERS` lists.
+
+The author can do these steps:
+
+1. Change the declaration, run `stego fill create <fill> --slot <slot>`, and
+   write the Go files and the tests of the fill.
+2. Run `stego test`. It records the evidence of each fill whose tests pass.
+   Correct each fill until its tests pass.
+3. Optionally, run `stego fill sign <fill>`, and read the warning.
+4. Commit the written files (`service.yaml`, the proto files,
+   `authz/schema.zed` and `fills/`), push the branch, and ask a person in
+   `SIGNERS` to continue.
+
+The person in `SIGNERS` reviews the fills, and then runs the chain from
+step 3 of [The chain on a branch](#the-chain-on-a-branch) on the branch with
+their own key: `stego test`, `stego fill sign <fill>`, `stego validate`,
+`stego plan`, `stego apply`, `stego test`, `stego fill sign <fill>`,
+`stego deps` and the build. They commit the result and push it. Then the
+author can run all commands on the branch again, until a fill changes.
+
+To sign fills yourself, add your key to `SIGNERS` with the line that the
+warning shows, in a change that a person in `SIGNERS` reviews and merges on
+its own. When `SIGNERS` lists your key, your sign-offs count and you need not
+sign again.
 
 ## Commands
 

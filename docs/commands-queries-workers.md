@@ -1438,11 +1438,12 @@ worker mode, which runs the relay, runs.
   that a reset wrote between two attempts gets its own charges (security
   review of PR #479, L2).
 - The charge of a check waits at most 1 s for a lock, such as behind the reset
-  of a command that has not committed; then the command answers 503. When
-  each connection of the pool of the charges is in use, the runtime writes
-  the warn line `command.attempts.pool_saturated` with the entity and the
-  counts of the pool, and no value, at most once in 10 s (security review of
-  PR #479, L3).
+  of a command that has not committed; then the command answers 503, and the
+  line `command.attempts.failed` has the cause `lock_timeout`. When each
+  connection of the pool of the charges is in use, the runtime writes the warn
+  line `command.attempts.pool_saturated` through its log provider, with the
+  entity and the counts of the pool and no value, at most once in 10 s
+  (security review of PR #479, L3).
 
 ### Release notes for runtime v0.178.0
 
@@ -1953,4 +1954,6 @@ Upgrade: a project whose fills of commands, queries or workers have no
 signed evidence is refused at plan. Run `stego test`, then
 `stego fill sign <name>` for each fill that plan names. `stego fill sign` keeps a
 sign-off that already covers the current evidence with a key that `SIGNERS`
-lists, and writes nothing; give `--force` to sign it again with your key.
+lists, and writes nothing; give `--force` to sign it again with your key. When
+your key is not in `SIGNERS`, `stego fill sign` warns and names the fingerprint
+to list; the fill stays not qualified until a listed key signs.

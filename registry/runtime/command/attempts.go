@@ -12,6 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -210,7 +213,7 @@ func (k *rowCounter) Charge() bool {
 		if s.rt.chargeErr != nil {
 			s.rt.chargeErr(err)
 		}
-		slog.Error("command.attempts.failed", "action", s.action, "entity", k.key.counter.spec.Entity)
+		s.rt.logChargeFailure(s.action, k.key.counter.spec.Entity, err)
 		return false
 	}
 	if s.rt.charged != nil {
@@ -280,6 +283,47 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 	return charged, nil
 }
 
+// AttemptsFailedEvent is the event name of the error log line of a charge of a counted check that cannot commit.
+const AttemptsFailedEvent = "command.attempts.failed"
+
+// chargeCause gives the fixed cause class of a charge that cannot commit, and never the error text: unavailable for a
+// database that cannot serve now (tenant.Unavailable), deadline and canceled for the end of its context, and internal
+// for any other error.
+func chargeCause(err error) string {
+	var coded interface{ SQLState() string }
+	switch {
+	case tenant.Unavailable(err):
+		return "unavailable"
+	case errors.As(err, &coded) && coded.SQLState() == "55P03":
+		// The charge waited longer than chargeLockTimeout for the row of its count (security review of PR #479, L3).
+		return "lock_timeout"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return "internal"
+}
+
+// logChargeFailure logs the charge of a counted check that cannot commit, so the call answers 503: one error line
+// through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
+// entity and the cause class, and no value and no error text (ST-SUP-RP10-LC54; walkthrough 20, P-C). With no log
+// provider, it logs the same fields with log/slog.
+func (rt *Runtime) logChargeFailure(action, entity string, err error) {
+	cause := chargeCause(err)
+	if rt.logger == nil {
+		slog.Error(AttemptsFailedEvent, "action", action, "entity", entity, "cause", cause)
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(AttemptsFailedEvent)
+	record.SetSeverity(otellog.SeverityError)
+	record.SetSeverityText("ERROR")
+	record.SetBody(attribute.StringValue("the charge of a counted check did not commit, so the check fails and the call answers 503"))
+	record.AddAttributes(attribute.String("stego.action", action), attribute.String("stego.entity", entity), attribute.String("stego.cause", cause))
+	rt.logger.Emit(context.Background(), record)
+}
+
 // bindCounted binds the value of a counted target to the counter of its row after the scan of the row.
 func (s *state) bindCounted(t *countedTarget) {
 	if t.row == nil {
@@ -300,7 +344,8 @@ func (s *state) boundTo(c sealed.Compared, key attemptKey) bool {
 }
 
 // saturated logs, at most once in saturationLogEvery, that each connection of the pool of the charges is in use, so
-// the charge of key waits for one. The log names the counter and the counts of the pool, never a value.
+// the charge of key waits for one: through the log provider of the runtime, or with log/slog when it has none. The
+// log names the entity of the counter and the counts of the pool, never a value.
 func (rt *Runtime) saturated(db *sql.DB, key attemptKey) {
 	st := db.Stats()
 	if st.MaxOpenConnections <= 0 || st.InUse < st.MaxOpenConnections {
@@ -314,9 +359,24 @@ func (rt *Runtime) saturated(db *sql.DB, key attemptKey) {
 	if !rt.saturationLogged.CompareAndSwap(last, now) {
 		return
 	}
-	slog.Warn("command.attempts.pool_saturated", "entity", key.counter.spec.Entity, "in_use", st.InUse,
-		"max_open", st.MaxOpenConnections, "wait_count", st.WaitCount)
+	entity := key.counter.spec.Entity
+	if rt.logger == nil {
+		slog.Warn(PoolSaturatedEvent, "entity", entity, "in_use", st.InUse, "max_open", st.MaxOpenConnections,
+			"wait_count", st.WaitCount)
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(PoolSaturatedEvent)
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue("each connection of the pool of the charges is in use, so a charge of a counted check waits"))
+	record.AddAttributes(attribute.String("stego.entity", entity), attribute.Int("stego.pool.in_use", st.InUse),
+		attribute.Int("stego.pool.max_open", st.MaxOpenConnections), attribute.Int64("stego.pool.wait_count", st.WaitCount))
+	rt.logger.Emit(context.Background(), record)
 }
+
+// PoolSaturatedEvent is the event name of the warn log line of a full pool of the charges.
+const PoolSaturatedEvent = "command.attempts.pool_saturated"
 
 // countAttempts resets, in the transaction of a call that commits, the count of each row whose check matched or whose
 // field got a new value (ST-SUP-RP10-LC54).

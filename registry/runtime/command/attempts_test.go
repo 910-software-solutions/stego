@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
@@ -281,6 +284,45 @@ func TestAttempts(t *testing.T) {
 			t.Fatalf("the balance is %d after a failed charge, want 90", balance)
 		}
 	})
+	t.Run("ST-SUP-RP10-LC54-T04 A charge that cannot commit logs one error line through the log provider of the runtime, with the cause class and no value", func(t *testing.T) {
+		logs := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs))).Logger("test")
+		defer func() { rt.logger = nil }()
+		e.exec("REVOKE INSERT, UPDATE ON attempt_counts FROM " + e.roles[0])
+		defer e.exec("GRANT INSERT, UPDATE ON attempt_counts TO " + e.roles[0])
+		if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("a failed charge gave %v, want ErrUnavailable", err)
+		}
+		var lines []sdklog.Record
+		for _, r := range logs.all() {
+			if r.EventName() == AttemptsFailedEvent {
+				lines = append(lines, r)
+			}
+		}
+		if len(lines) != 1 || lines[0].SeverityText() != "ERROR" {
+			t.Fatalf("a failed charge logged %d lines of %s, want one ERROR line", len(lines), AttemptsFailedEvent)
+		}
+		got := map[string]string{}
+		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+			got[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		want := map[string]string{"stego.action": "withdraw", "stego.entity": "PinWallet", "stego.cause": "internal"}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("the line has the attributes %v, want %v", got, want)
+		}
+		if body := lines[0].Body().Emit(); strings.Contains(body, right) || strings.Contains(body, "permission") {
+			t.Errorf("the line holds a value or an error text: %q", body)
+		}
+		for _, c := range []struct {
+			err  error
+			want string
+		}{{context.DeadlineExceeded, "deadline"}, {fmt.Errorf("charge: %w", context.Canceled), "canceled"}, {errors.New("pin 1234 is wrong"), "internal"}} {
+			if got := chargeCause(c.err); got != c.want {
+				t.Errorf("chargeCause(%v) = %s, want %s", c.err, got, c.want)
+			}
+		}
+	})
 	t.Run("ST-SUP-RP10-LC54-T03 A rerun of the call after a conflict does not charge the checks of an earlier attempt again", func(t *testing.T) {
 		setPIN(right)
 		rerun := e.command("withdraw-rerun", func(s *CommandSpec[testProbe]) { s.RetryOnConflict = 2 }, wallets)
@@ -506,45 +548,71 @@ func TestAttemptPools(t *testing.T) {
 		mu.Lock()
 		got := append([]error(nil), chargeErrs...)
 		mu.Unlock()
-		if !errors.Is(err, ErrUnavailable) || len(got) != 1 || !errors.As(got[0], &state) || state.SQLState() != "55P03" {
+		if !errors.Is(err, ErrUnavailable) || len(got) != 1 || !errors.As(got[0], &state) || state.SQLState() != "55P03" || chargeCause(got[0]) != "lock_timeout" {
 			t.Fatalf("the charge behind the reset gave %v with the charge errors %v, want 503 after the lock timeout (55P03)", err, got)
 		}
 		// Each connection of the pool of the charges is in use: the charge waits for one, and the wait is logged.
-		var logs lockedBuffer
-		previous := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-		t.Cleanup(func() { slog.SetDefault(previous) })
-		held, err := chargeDB.Conn(e.ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		done := make(chan error, 1)
-		go func() { done <- check("full-1", "0000") }()
-		var result error
-		for waiting := true; waiting; {
-			select {
-			case result = <-done:
-				waiting = false
-			default:
-				if strings.Contains(logs.String(), "command.attempts.pool_saturated") {
+		// full holds the one connection of the pool until seen tells that the log came, and gives the result of the
+		// check, or fails when the check ends with no log.
+		full := func(key string, seen func() bool) error {
+			t.Helper()
+			held, err := chargeDB.Conn(e.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- check(key, "0000") }()
+			for {
+				select {
+				case result := <-done:
 					_ = held.Close()
-					held = nil
-					result = <-done
-					waiting = false
+					t.Fatalf("the charge ended with %v and logged no full pool of the charges", result)
+				default:
+				}
+				if seen() {
+					_ = held.Close()
+					return <-done
 				}
 				runtime.Gosched()
 			}
 		}
-		if held != nil {
-			_ = held.Close()
-			t.Fatalf("the charge ended with %v and logged no full pool of the charges", result)
-		}
+		var logs lockedBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		result := full("full-1", func() bool { return strings.Contains(logs.String(), PoolSaturatedEvent) })
 		if result == nil || errors.Is(result, ErrUnavailable) {
 			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
 		}
 		text := logs.String()
 		if !strings.Contains(text, "entity=PinWallet") || !strings.Contains(text, "max_open=1") || strings.Contains(text, "0000") || strings.Contains(text, "argon2") {
 			t.Fatalf("the log of the full pool is %q, want the entity and the counts of the pool and no value", text)
+		}
+		// With a log provider, the line goes through it, as each other log line of the runtime.
+		records := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(records))).Logger("test")
+		rt.saturationLogged.Store(0)
+		saturated := func() []sdklog.Record {
+			var lines []sdklog.Record
+			for _, r := range records.all() {
+				if r.EventName() == PoolSaturatedEvent {
+					lines = append(lines, r)
+				}
+			}
+			return lines
+		}
+		result = full("full-2", func() bool { return len(saturated()) > 0 })
+		if result == nil || errors.Is(result, ErrUnavailable) {
+			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
+		}
+		lines := saturated()
+		attrs := map[string]string{}
+		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		if len(lines) != 1 || lines[0].SeverityText() != "WARN" || attrs["stego.entity"] != "PinWallet" || attrs["stego.pool.max_open"] != "1" || strings.Contains(lines[0].Body().Emit(), "0000") {
+			t.Fatalf("the provider got %d lines of %s with the attributes %v, want one WARN line with the entity and the pool and no value", len(lines), PoolSaturatedEvent, attrs)
 		}
 	})
 }
