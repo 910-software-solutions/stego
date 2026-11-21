@@ -3263,7 +3263,7 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 		responses[code] = response
 	}
 	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent; problem " + k.invalid +
-		": the header is not one structured string of 1 to 255 characters (ST-SUP-RC30-OC02)"}
+		": the header is not one structured string of 1 to 255 characters"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
 	op.Responses = responses
