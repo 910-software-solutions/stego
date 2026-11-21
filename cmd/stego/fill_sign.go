@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -165,7 +166,10 @@ func (k signingKey) primaryFingerprint(projectDir, armored, digest string) strin
 	if err := file.Close(); err != nil {
 		return ""
 	}
-	cmd := exec.Command(k.program, "--batch", "--status-fd=1", "--verify", file.Name(), "-")
+	// The verify runs with the person's keyring only, and a short bound, so a gpg that waits does not hold fill sign.
+	ctx, cancel := context.WithTimeout(context.Background(), gpgVerifyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, k.program, "--batch", "--status-fd=1", "--verify", file.Name(), "-")
 	cmd.Dir = projectDir
 	cmd.Stdin = strings.NewReader(digest)
 	out, err := cmd.Output()
@@ -185,6 +189,9 @@ func (k signingKey) primaryFingerprint(projectDir, armored, digest string) strin
 	}
 	return primary
 }
+
+// gpgVerifyTimeout bounds the gpg --verify of primaryFingerprint; at the bound the signer is the key of SIG_CREATED.
+const gpgVerifyTimeout = 10 * time.Second
 
 // gitEmail gives user.email of the git configuration, or <your email> when
 // none is set, for the SIGNERS line that the warning of an unlisted key shows.

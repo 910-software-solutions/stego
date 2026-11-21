@@ -180,6 +180,14 @@ func TestCompat(t *testing.T) {
 		if result, code := s.compatJSON(t); code != 0 || len(result.Faults) != 0 {
 			t.Fatalf("compat --json gave exit %d and %d faults, want 0 and none", code, len(result.Faults))
 		}
+		// With a registry that does not resolve, compat notes a fixed cause class and never the error text, which can
+		// hold a URL with credentials (security review of PR #482, L2).
+		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
+		output, code = s.compat(t, "--base", "HEAD")
+		note := regexp.MustCompile(`(?m)^note: compat did not generate the head \(cause: (registry|generation)\).*$`).FindString(output)
+		if code != 0 || note == "" || strings.Contains(note, "s3cr3t-token") || strings.Contains(note, "nowhere") {
+			t.Fatalf("compat with a registry that does not resolve gave exit %d and the note %q, want 0 and a note with the cause class and no error text:\n%s", code, note, output)
+		}
 	})
 	t.Run("ST-GEN-INV38-T A seal expand step whose base body holds the seal checkpoints passes compat, plan and apply, and no other body does", func(t *testing.T) {
 		t.Parallel()

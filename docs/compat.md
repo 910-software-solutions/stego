@@ -80,7 +80,13 @@ the committed `migrate.go` and its digest in the record. When they are not the
 same, compat writes a warning on standard error that names the file and
 `stego plan --base <ref>`. The warning does not change the faults, the JSON
 output or the exit status. When compat cannot generate the head, such as with
-no registry, it writes a note that it did not compare.
+no registry, it writes a note that it did not compare. The note gives only a
+cause class, `registry` or `generation`, and never the error text. Run
+`stego plan --base <ref>` to see the cause.
+
+To generate the head, compat does what `stego plan` does: it resolves the
+registry, which can clone it into your cache, and runs `go list` on the fills.
+It writes nothing in the service folder.
 
 ## In CI
 

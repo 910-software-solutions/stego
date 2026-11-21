@@ -40,7 +40,9 @@ const compatGitTimeout = time.Minute
 // runCompat implements stego compat (ST-GEN-CLI07): it reads the declaration and the record at the base ref from
 // the service's repository, checks the head declaration in the working folder against them (ST-GEN-QRY04), and
 // prints the base ref and its commit and each fault. It exits 0 with no fault, 1 with a fault, and 2 for a usage
-// error or a ref that it cannot read. It writes nothing.
+// error or a ref that it cannot read. It writes nothing in the service folder. To compare the committed migrate.go
+// with a new generation (warnUngenerated), it resolves the registry, which can clone it into the cache of the user,
+// and runs go list, as stego plan does.
 func runCompat(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("compat", flag.ContinueOnError)
 	baseRef := fs.String("base", "", "the commit or branch of the version that runs now")
@@ -679,13 +681,17 @@ func recordedMigrateFiles(recorded map[string]string) map[string][]byte {
 // in CI is stego plan --base, which generates the head again. The warning changes no fault and no exit status. When
 // the head does not generate here, such as with no registry, compat says that it did not compare.
 func warnUngenerated(ref string, recorded map[string]string, stderr io.Writer) {
+	// The note gives a fixed class of the failure, never the error text, which can hold the URL of the registry with
+	// its credentials (security review of PR #482, L2).
 	input, err := buildReconcilerInput()
+	class := "registry"
 	var plan *compiler.Plan
 	if err == nil {
+		class = "generation"
 		plan, err = compiler.Reconcile(input)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "note: compat did not generate the head, so it did not compare the committed migrate.go with a new generation (%v); stego plan --base %s generates it and holds ST-GEN-INV38.\n", err, ref)
+		fmt.Fprintf(stderr, "note: compat did not generate the head (cause: %s), so it did not compare the committed migrate.go with a new generation; run stego plan --base %s, which generates it and holds ST-GEN-INV38, to see the cause.\n", class, ref)
 		return
 	}
 	var differ []string
