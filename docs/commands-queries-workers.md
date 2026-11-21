@@ -1789,7 +1789,8 @@ the slot `worker.worker`.
 
    `stego test` tests the fill against the contract that apply plans to write,
    so you can do this before the first apply. The project's files do not
-   change. `stego fill status` shows the fill as `qualified`.
+   change. When a fill records no evidence, `stego test` names it and exits
+   non-zero. `stego fill status` shows the fill as `qualified`.
 
 4. Generate the contract, resolve the dependencies and build:
 

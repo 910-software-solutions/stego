@@ -798,8 +798,8 @@ the evidence of each such fill is stale after the retype, also when its code
 does not use the field. `stego validate` names each one, such as `fill
 "share-member" is stale ... the contract command.command changed after its
 evidence`. For each fill that it names, change the code when it reads or
-writes the field, run `stego test`, and sign the evidence again with `stego
-fill sign <fill>`. Do this in the same change as the retype.
+writes the field, run `stego test` (it exits non-zero when a fill records no
+evidence), and sign the evidence again with `stego fill sign <fill>`. Do this in the same change as the retype.
 
 A require adds a required field with no default. Declare the value that
 each row there gets in `fill_value`:

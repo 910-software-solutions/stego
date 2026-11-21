@@ -38,6 +38,7 @@ through queries.
    ```
 
    Plan, apply, build and deps refuse a fill with no evidence or no sign-off.
+   `stego test` exits non-zero and names each fill that records no evidence.
 
 4. Generate, resolve the dependencies and build:
 
