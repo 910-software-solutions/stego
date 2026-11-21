@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	client "example.com/cli-test/out/cli/client"
 )
 
 func applyDefinition() Application {
@@ -55,6 +57,8 @@ type applyFixture struct {
 	// each patch.
 	after, prefer, ifMatch []string
 	conflicts              int
+	// state is the Authz-Revocation that a list answers to a request with Authz-Revocation-After, or none.
+	state string
 	// afterList runs, under the lock, after each list answer.
 	afterList func()
 }
@@ -130,6 +134,9 @@ func applySetup(t *testing.T) *applyFixture {
 			}
 			// A wait for a revocation completes it, as the list then reads at least as fresh as its token.
 			f.settled[r.Header.Get("Authz-Revocation-After")] = true
+			if f.state != "" && r.Header.Get("Authz-Revocation-After") != "" {
+				w.Header().Set("Authz-Revocation", f.state)
+			}
 			var items []map[string]any
 			for _, path := range slices.Sorted(maps.Keys(f.rows)) {
 				row := f.rows[path]
@@ -765,14 +772,14 @@ func TestApplyCreateConflict(t *testing.T) {
 		f.mu.Unlock()
 		other := applyFile(t, filepath.Join(f.directory, "other.yaml"), manifest("Record", "first", `{"count": 2}`))
 		results, output, err := runApplyTest(t, app, "apply", "-f", other, "-o", "json")
-		if err == nil || !strings.Contains(err.Error(), `Record "first": a resource of this name exists, and it has other values; apply again to patch it (HTTP 409)`) || results[0].Status != "failed" || f.writes != writes+1 || strings.Contains(err.Error()+output, "private-detail") {
+		if err == nil || !strings.Contains(err.Error(), `Record "first": a resource with a unique value of this document exists, and the resource of this name has other values; apply again to patch it (HTTP 409)`) || results[0].Status != "failed" || f.writes != writes+1 || strings.Contains(err.Error()+output, "private-detail") {
 			t.Fatal("a create that 409 refused for other values did not fail with no other write", results, err, f.writes)
 		}
 		f.mu.Lock()
 		f.hidden["/records/id-1"] = 2
 		f.mu.Unlock()
 		results, _, err = runApplyTest(t, app, "apply", "-f", path, "-o", "json")
-		if err == nil || !strings.Contains(err.Error(), "the lookup does not show it") || results[0].Status != "failed" || f.applyCount() != 1 {
+		if err == nil || !strings.Contains(err.Error(), "a resource with a unique value of this document exists, and the lookup does not find it by its name") || results[0].Status != "failed" || f.applyCount() != 1 {
 			t.Fatal("a create that 409 refused for a hidden resource did not fail", results, err)
 		}
 		// Apply keeps a kind whose name the service does not hold unique, and its help says what that leaves open.
@@ -819,6 +826,87 @@ func TestApplyConditionalPatch(t *testing.T) {
 		f.mu.Unlock()
 		if _, _, err := runApplyTest(t, app, "apply", "-f", stale, "-o", "json"); err == nil || !strings.Contains(err.Error(), "does not return the generation") || f.writes != writes {
 			t.Fatal("a resource with no generation was not refused before any write", err)
+		}
+	})
+}
+
+func TestApplyRevocationEnds(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC37-T02 A lookup answer that ends the revocation clears it, an old kept revocation is not sent, and a write of another configuration is not kept", func(t *testing.T) {
+		config := func(f *applyFixture) configuration {
+			t.Helper()
+			data, err := os.ReadFile(filepath.Join(f.directory, "config.json"))
+			var cfg configuration
+			if err != nil || json.Unmarshal(data, &cfg) != nil {
+				t.Fatal("cannot read the configuration", err)
+			}
+			return cfg
+		}
+		// sent applies once and gives the Authz-Revocation-After values that its lookups sent, the empty ones left out.
+		sent := func(f *applyFixture, app Application, path string) []string {
+			t.Helper()
+			f.mu.Lock()
+			from := len(f.after)
+			f.mu.Unlock()
+			if _, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err != nil {
+				t.Fatal(err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			var values []string
+			for _, value := range f.after[from:] {
+				if value != "" {
+					values = append(values, value)
+				}
+			}
+			return values
+		}
+		for _, state := range []string{"complete", "failed", "parked", "expired", "unknown"} {
+			f := applySetup(t)
+			f.lag, f.state = true, state
+			app := applyDefinition()
+			path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", `{"count": 1}`))
+			if _, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err != nil || config(f).Revocation == "" {
+				t.Fatal(state, "the create kept no revocation", err)
+			}
+			if values := sent(f, app, path); len(values) != 1 {
+				t.Fatal(state, "the second apply did not wait once, then stop", values)
+			}
+			if cfg := config(f); cfg.Revocation != "" || !cfg.RevocationAt.IsZero() {
+				t.Fatal(state, "a revocation that the answer ended stays kept", cfg.Revocation)
+			}
+			if values := sent(f, app, path); len(values) != 0 {
+				t.Fatal(state, "a lookup after the end sent the revocation", values)
+			}
+		}
+		// A pending answer keeps the revocation; one kept longer ago than revocationAge is not sent.
+		f := applySetup(t)
+		f.lag, f.state = true, "pending"
+		app := applyDefinition()
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", `{"count": 1}`))
+		if _, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err != nil {
+			t.Fatal(err)
+		}
+		f.mu.Lock()
+		f.settled[f.revocations["/records/id-1"]] = true
+		f.mu.Unlock()
+		if values := sent(f, app, path); len(values) == 0 || config(f).Revocation == "" {
+			t.Fatal("a pending revocation was not kept", values)
+		}
+		revocationNow = func() time.Time { return time.Now().Add(revocationAge + time.Minute) }
+		t.Cleanup(func() { revocationNow = time.Now })
+		if values := sent(f, app, path); len(values) != 0 {
+			t.Fatal("an old kept revocation was sent", values)
+		}
+		revocationNow = time.Now
+		// A write whose configuration was replaced, as by a login to another service, keeps nothing.
+		other := config(f)
+		other.URL = "https://other.example.test"
+		response := client.Response{Header: http.Header{"Authz-Revocation-Location": {"/authz/revocations/00000009-0000-4000-8000-000000000009"}}}
+		if got := keepRevocation(context.Background(), app, other, response); got == "" || config(f).Revocation == "/authz/revocations/00000009-0000-4000-8000-000000000009" {
+			t.Fatal("a revocation of another configuration was kept", got, config(f).Revocation)
+		}
+		if got := keepRevocation(context.Background(), app, config(f), response); got == "" || config(f).Revocation != "/authz/revocations/00000009-0000-4000-8000-000000000009" {
+			t.Fatal("a revocation of the same configuration was not kept", got, config(f).Revocation)
 		}
 	})
 }

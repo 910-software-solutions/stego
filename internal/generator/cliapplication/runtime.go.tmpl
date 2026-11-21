@@ -170,7 +170,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  if payload!=nil{headers.Set("Content-Type","application/json")}
  response,retried,err:=send(ctx,c.IdempotentWrites,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
- if success&&c.Method!="GET"{keepRevocation(ctx,app,response)}
+ if success&&c.Method!="GET"{keepRevocation(ctx,app,cfg,response)}
  if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
  // A 5xx answer to a write that was not sent again, such as one with no Idempotency-Kept header, can follow a write
  // that the service did (ST-SUP-RC04-OC34).

@@ -171,11 +171,11 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  headers:=http.Header{"Authorization":{"Bearer "+token},"Accept":{"application/json"}}
  // Each lookup waits for the revocation of the last write of this configuration, so the list shows a row that the
  // write made (ST-SUP-RC04-OC37).
- revocation:=&lookupRevocation{value:cfg.Revocation}
+ revocation:=newLookupRevocation(app,cfg)
  targets:=map[string]bool{}
  for i:=range plans{
   p:=&plans[i]
-  row,err:=applyLookup(ctx,transport,revocation.headers(headers),p);if err!=nil{return err}
+  row,err:=applyLookup(ctx,transport,headers,p,revocation);if err!=nil{return err}
   if row!=nil{if json.Unmarshal(row["id"],&p.id)!=nil{return errors.New("invalid apply resource identity")}}
   p.path=p.resource.Path;p.method="POST";fields:=p.resource.CreateFields
   if p.id!=""{
@@ -200,17 +200,17 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
    if !retried&&p.method=="POST"&&response.StatusCode==409{
     // The unique key of the identity refused the create: look the resource up again, and send no other write for
     // it (ST-SUP-RC04-OC27, ST-SUP-RC04-OC36).
-    row,lookupErr:=applyLookup(ctx,transport,revocation.headers(headers),&p)
+    row,lookupErr:=applyLookup(ctx,transport,headers,&p,revocation)
     if lookupErr==nil&&row!=nil&&(len(p.resource.ImmutableIdentity)>0||sameDocument(&p,row)){var id string;if json.Unmarshal(row["id"],&id)==nil{results[i].ID=id;results[i].Status="unchanged";continue}}
     if len(p.resource.ImmutableIdentity)==0&&lookupErr==nil{
-     results[i].Status="failed";reason:="the lookup does not show it, as of a resource that you may not read"
-     if row!=nil{reason="it has other values; apply again to patch it"}
-     outcomeErr=fmt.Errorf("%s %q: a resource of this name exists, and %s (HTTP 409)",p.resource.Kind,p.name,reason)
+     results[i].Status="failed";reason:="the lookup does not find it by its name, as for a resource that you may not read or of another unique value"
+     if row!=nil{reason="the resource of this name has other values; apply again to patch it"}
+     outcomeErr=fmt.Errorf("%s %q: a resource with a unique value of this document exists, and %s (HTTP 409)",p.resource.Kind,p.name,reason)
      if err:=writeApply(destination,format,results);err!=nil{return err};return fmt.Errorf("apply stopped at document %d; earlier writes remain: %w",i+1,outcomeErr)
     }
    }
    success:=response.StatusCode==200||(p.method=="POST"&&response.StatusCode==201)
-   if success{revocation.keep(ctx,app,response)}
+   if success{revocation.keep(ctx,response)}
    if !success&&!retried&&p.method=="PATCH"&&p.generation!=""&&response.StatusCode==412{results[i].Status="failed";outcomeErr=fmt.Errorf("%s %q: the resource changed after apply read it; apply again (HTTP 412)",p.resource.Kind,p.name)}else if !success{if !retried&&response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)%s",response.StatusCode,problemFacts(response))}else{
     row,decodeErr:=object(response.Body);var id,name string
     valid:=decodeErr==nil&&json.Unmarshal(row["id"],&id)==nil&&identifier.MatchString(id)&&(p.id==""||p.id==id)

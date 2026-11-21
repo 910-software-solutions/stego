@@ -298,10 +298,11 @@ delete the resource and apply again when the collection has a delete.
 A create that the service answers 409, because a resource of that name
 exists, is looked up again, and apply sends no other write for it. The status
 is `unchanged` when the lookup finds the resource with the values of the
-document. Otherwise the status is `failed`, and the error says that the
-resource has other values (apply again to patch it), or that the lookup does
-not show it, such as a resource of the name that you may not read
-(ST-SUP-RC04-OC36).
+document. Otherwise the status is `failed`, and the error says that a
+resource with a unique value of the document exists, and that the resource
+of this name has other values (apply again to patch it), or that the lookup
+does not find it by its name, such as a resource that you may not read or a
+resource with another unique value of the document (ST-SUP-RC04-OC36).
 
 The list of a service can show a new resource only after its relationships
 are written. So the CLI keeps the `Authz-Revocation-Location` of its last
@@ -309,7 +310,11 @@ successful write in its configuration file, and each apply lookup sends it in
 `Authz-Revocation-After` with `Prefer: wait=10`. The list then waits for that
 write before it reads, so an apply soon after a create finds the resource
 (ST-SUP-RC04-OC37). Each configuration file keeps its own value; a new login
-starts with none.
+starts with none. The CLI keeps the value only in the configuration that sent
+the write: after a login to another service, a write of the earlier one keeps
+nothing. A lookup no longer sends a value older than 10 minutes, or one whose
+`Authz-Revocation` answer is `complete`, `failed`, `parked`, `expired` or
+`unknown`; the CLI then removes it from the configuration.
 
 Apply decides each patch, and the status `unchanged`, from the resource as
 its lookup read it. When another writer changes the resource after that read,
