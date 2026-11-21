@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3180,3 +3181,67 @@ type ownClass string
 
 func (c ownClass) Error() string      { return "own class " + string(c) }
 func (c ownClass) CauseClass() string { return string(c) }
+
+// namedFault is a cause that names its own fault, as a refused unique step of the adapter does.
+type namedFault struct{}
+
+func (namedFault) Error() string       { return "the unique index of assets is not built: rows hold buyer@example.com" }
+func (namedFault) FaultClass() string  { return "schema_change.unique_duplicates" }
+func (namedFault) FaultObject() string { return "assets_asset_tag_key" }
+func (namedFault) FaultRemedy() string { return "correct or remove those rows" }
+
+// TestMigrateFaults proves the fault class, the object and the remedy of the steps of the job that the failure record
+// names (walkthrough 23, D-f).
+func TestMigrateFaults(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T33 A job that cannot open the database or reach SpiceDB, or whose schema SpiceDB refuses, names the fault, the object and the remedy", func(t *testing.T) {
+		fault := func(err error) [3]string {
+			var named interface {
+				FaultClass() string
+				FaultObject() string
+				FaultRemedy() string
+			}
+			if !errors.As(err, &named) {
+				return [3]string{}
+			}
+			return [3]string{named.FaultClass(), named.FaultObject(), named.FaultRemedy()}
+		}
+		for _, c := range []struct {
+			step         string
+			err          error
+			class, which string
+		}{
+			{StepOpen, fmt.Errorf("dial: %w", syscall.ECONNREFUSED), MigrateDatabaseFault, "database"},
+			{StepAuthorizationSchema, status.Error(codes.Unavailable, "dial tcp 10.1.2.3:50051"), MigrateSpiceDBFault, "spicedb"},
+			{StepSchemaAgain, status.Error(codes.InvalidArgument, "cannot delete relation `viewer`, as relationships exist under it"), MigrateSchemaRefusedFault, "spicedb"},
+			{StepAuthorizationSchema, status.Error(codes.FailedPrecondition, "Cannot delete relation `viewer`, as relationships exist"), MigrateSchemaRefusedFault, "spicedb"},
+			{StepSchemaServed, errors.New("job not served"), MigrateSchemaServedFault, "spicedb"},
+			{StepTables, namedFault{}, "schema_change.unique_duplicates", "assets_asset_tag_key"},
+			{StepLedgerCheck, errors.New("no ledger"), "", ""},
+		} {
+			got := fault(&StepError{Step: c.step, Err: c.err})
+			if got[0] != c.class || got[1] != c.which || (c.class != "" && got[2] == "") {
+				t.Errorf("the step %s with %v gave the fault %q, want the class %q and the object %q with a remedy", c.step, c.err, got, c.class, c.which)
+			}
+			if strings.Contains(got[2], "10.1.2.3") || strings.Contains(got[2], "buyer@") || strings.Contains(got[2], "viewer") {
+				t.Errorf("the remedy %q holds a text of the cause", got[2])
+			}
+		}
+		// A real job whose database refuses the connection fails at the step open with the fault of the database.
+		closed, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := closed.Addr().(*net.TCPAddr).Port
+		closed.Close()
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: fmt.Sprintf("postgres://migrator:pw@127.0.0.1:%d/app?sslmode=disable&connect_timeout=5", port),
+			SpiceDB: SpiceDB{Endpoint: "127.0.0.1:1", Key: "k-secret", InsecureLoopback: true}}
+		err = Migrate(context.Background(), settings, f.migration(nil))
+		if Stage(err) != "migrate."+StepOpen {
+			t.Fatalf("a job whose database refuses the connection gave the stage %s (%v), want migrate.%s", Stage(err), err, StepOpen)
+		}
+		if got := fault(err); got[0] != MigrateDatabaseFault || got[1] != "database" || got[2] == "" {
+			t.Fatalf("the job at the step open gave the fault %q", got)
+		}
+	})
+}

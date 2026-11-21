@@ -171,6 +171,65 @@ func (e *StepError) CauseClass() string {
 	return authz.StatusClass(e.Err)
 }
 
+// The fault classes of a step of the migration job that names its own fault for the failure record, with the object
+// and a fixed remedy (walkthrough 23, D-f): a database that the job cannot open, a SpiceDB that the job cannot
+// reach, a schema that SpiceDB refuses, and a schema that SpiceDB does not serve before the time limit of the job.
+const (
+	MigrateDatabaseFault      = "database.connection"
+	MigrateSpiceDBFault       = "spicedb.connection"
+	MigrateSchemaRefusedFault = "spicedb.schema_refused"
+	MigrateSchemaServedFault  = "spicedb.schema_not_served"
+)
+
+// The fixed remedies of the faults of the steps of the migration job.
+const (
+	migrateDatabaseRemedy = "the migration job cannot open the database: check that PostgreSQL runs and takes connections, that the key url of the Secret <service>-database-owner names it, and that its login may connect; then run the migration Job again"
+	migrateSpiceDBRemedy  = "the migration job cannot reach SpiceDB: check that SpiceDB runs, that STEGO_SPICEDB_ENDPOINT names it and that STEGO_SPICEDB_KEY_FILE holds its preshared key; then run the migration Job again"
+	migrateRefusedRemedy  = "SpiceDB refuses the authorization schema of the release: with the cause invalid_argument.relationships_exist, the schema removes a definition or a relation that still has relationships; delete them with zed relationship delete, or keep them in authz/schema.zed; then run the migration Job again"
+	migrateServedRemedy   = "SpiceDB does not serve each definition of the schema of the release within the time limit of the job: check the SpiceDB pods and their datastore, then run the migration Job again"
+)
+
+// faultOf gives the fault class, the object and the remedy of the step, fixed texts with no text of the cause: those
+// of a cause in the chain that names its own fault, such as a refused unique step of the adapter, else those of the
+// steps open and of the authorization schema, else none.
+func (e *StepError) faultOf() (class, object, remedy string) {
+	var named interface {
+		FaultClass() string
+		FaultObject() string
+	}
+	if errors.As(e.Err, &named) {
+		class, object = named.FaultClass(), named.FaultObject()
+		var remedied interface{ FaultRemedy() string }
+		if errors.As(e.Err, &remedied) {
+			remedy = remedied.FaultRemedy()
+		}
+		return class, object, remedy
+	}
+	switch e.Step {
+	case StepOpen:
+		return MigrateDatabaseFault, "database", migrateDatabaseRemedy
+	case StepAuthorizationSchema, StepSchemaAgain:
+		switch class := authz.StatusClass(e.Err); {
+		case class == "invalid_argument" || strings.HasPrefix(class, "invalid_argument.") ||
+			class == "precondition_failed" || strings.HasPrefix(class, "precondition_failed."):
+			return MigrateSchemaRefusedFault, "spicedb", migrateRefusedRemedy
+		}
+		return MigrateSpiceDBFault, "spicedb", migrateSpiceDBRemedy
+	case StepSchemaServed:
+		return MigrateSchemaServedFault, "spicedb", migrateServedRemedy
+	}
+	return "", "", ""
+}
+
+// FaultClass gives the fault class of the step for the failure record, or empty (walkthrough 23, D-f).
+func (e *StepError) FaultClass() string { class, _, _ := e.faultOf(); return class }
+
+// FaultObject gives the object of the fault of the step, such as database or spicedb, or empty.
+func (e *StepError) FaultObject() string { _, object, _ := e.faultOf(); return object }
+
+// FaultRemedy gives the fixed remedy of the fault of the step, or empty.
+func (e *StepError) FaultRemedy() string { _, _, remedy := e.faultOf(); return remedy }
+
 // causeName is the strict form of a cause class: a name of the generated code, as the failure record takes it.
 var causeName = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,127}$`)
 

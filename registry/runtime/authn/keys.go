@@ -66,10 +66,71 @@ type keyFault string
 func (k keyFault) Error() string        { return "authn: keys refused: " + string(k) }
 func (k keyFault) Is(target error) bool { return target == ErrKeys }
 
+// The fault classes of a key source that the key set refuses at start, which the failure record of the process names
+// with the object and a fixed remedy, texts with no key, URL, path or provider text (ST-SUP-RP14-LC05; walkthrough 23).
+const (
+	KeysLoadFault      = "authn.keys.load"
+	KeysFileFault      = "authn.keys.file"
+	KeysPEMFault       = "authn.keys.pem"
+	KeysDocumentFault  = "authn.keys.document"
+	KeysDiscoveryFault = "authn.discovery"
+)
+
+// FaultClass gives the fault class of the refusal: the load of the key document from its URL, the file of the key
+// document, the PEM file of the key, or the key document itself.
+func (k keyFault) FaultClass() string {
+	switch k {
+	case errLoad:
+		return KeysLoadFault
+	case errFile:
+		return KeysFileFault
+	case errPEM:
+		return KeysPEMFault
+	}
+	return KeysDocumentFault
+}
+
+// FaultObject gives the object of the refusal, a fixed name.
+func (k keyFault) FaultObject() string {
+	switch k {
+	case errLoad:
+		return "key_document_url"
+	case errFile:
+		return "key_document_file"
+	case errPEM:
+		return "key_pem_file"
+	}
+	return "key_document"
+}
+
+// FaultRemedy gives what to do, a fixed text for each fault class.
+func (k keyFault) FaultRemedy() string {
+	switch k {
+	case errLoad:
+		return "the service cannot load the key document from STEGO_AUTHN_KEYS_URL or from the jwks_uri of the issuer: check that the URL answers 200 over verified TLS with no redirect, and that STEGO_AUTHN_CA_FILE holds its certificate authority when it is not a public one; then start the service again"
+	case errFile:
+		return "the service cannot read the key document file of STEGO_AUTHN_KEYS_FILE: check that the file is mounted, is a regular file and that the service may read it; then start the service again"
+	case errPEM:
+		return "the PEM file of the key holds no single RSA public key of 2048 bits or more: write the public key of the issuer in PEM form to the file, then start the service again"
+	}
+	return "the key document is refused, such as one that is not a JSON key set, has no RSA or EC signing key, or has a key ID twice: give the key set of the issuer, then start the service again"
+}
+
 type discoveryFault string
 
 func (d discoveryFault) Error() string        { return "authn: keys refused: " + string(d) }
 func (d discoveryFault) Is(target error) bool { return target == ErrKeys || target == ErrDiscovery }
+
+// FaultClass gives the fault class of a refused discovery document.
+func (d discoveryFault) FaultClass() string { return KeysDiscoveryFault }
+
+// FaultObject gives the object of a refused discovery document.
+func (d discoveryFault) FaultObject() string { return "discovery_document" }
+
+// FaultRemedy gives what to do with a refused discovery document, a fixed text.
+func (d discoveryFault) FaultRemedy() string {
+	return "the discovery document of STEGO_AUTHN_ISSUER is refused or cannot be loaded: check that <issuer>/.well-known/openid-configuration answers over verified TLS, that its issuer is STEGO_AUTHN_ISSUER byte for byte, and that its jwks_uri is an HTTPS URL; then start the service again"
+}
 
 const (
 	errDocumentSize = keyFault("document size")

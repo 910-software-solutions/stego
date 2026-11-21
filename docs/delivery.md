@@ -330,7 +330,17 @@ record never holds the error text. It gives:
   `migration_ledger.digest` with `stego_schema.migrations` at the stage `migrate.ledger_check`, or
   `schema_change.seal_pending` with `stego_schema.seals` at the stage `migrate.tables`. The line
   `migrate: the step is refused` before the record, a JSON line with the event name `migrate.step.refused`, names
-  the migration or the change in its message, after `migrate: the step is refused: `.
+  the migration or the change in its message, after `migrate: the step is refused: `. From runtime v0.189.0 these
+  steps give a fault, an object and a remedy too:
+
+  | Stage | Fault | Object | When |
+  |---|---|---|---|
+  | `migrate.open` | `database.connection` | `database` | The job cannot open the database, such as with the cause `connection_refused`. |
+  | `migrate.authorization_schema`, `migrate.authorization_schema_again` | `spicedb.connection` | `spicedb` | The job cannot reach SpiceDB, such as with the cause `unavailable`. |
+  | `migrate.authorization_schema`, `migrate.authorization_schema_again` | `spicedb.schema_refused` | `spicedb` | SpiceDB refuses the schema, such as with the cause `invalid_argument.relationships_exist`. |
+  | `migrate.authorization_schema_served` | `spicedb.schema_not_served` | `spicedb` | SpiceDB does not serve each definition before the time limit of the job. |
+  | `migrate.tables` | `schema_change.unique_duplicates` | the unique index | Two or more rows hold one value of the key of a unique step (cause `constraint_violation`, SQLSTATE 23505). |
+  | `migrate.tables` | `schema_change.foreign_key_broken` | the foreign key | A row breaks the key of a `within` step (SQLSTATE 23503). |
 
 A start of the service whose database pool did not open gives the stage `service.start.database`, the fault
 `database.connection`, `database.settings` or `database.runtime_role`, the object `database`, a remedy and a cause,
@@ -338,8 +348,15 @@ such as `connection_closed` while the database server restarts. A pod that stops
 pass, do what the remedy says.
 
 For example, a Job whose SpiceDB refused the connection writes
-`{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","cause":"unavailable"}`
+`{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","fault":"spicedb.connection","object":"spicedb","remedy":"the migration job cannot reach SpiceDB: ...","cause":"unavailable"}`
 (with its time and message).
+
+A start whose key source the key set refused gives the stage
+`service.start.authn.keys`, or `service.start.authn.discovery` for the
+discovery document of the issuer, with the fault `authn.keys.load` (the URL
+of the key document), `authn.keys.file`, `authn.keys.pem`,
+`authn.keys.document` or `authn.discovery`, the object and a remedy. None of
+them holds a key, a URL or a path.
 
 ### With Argo CD
 
