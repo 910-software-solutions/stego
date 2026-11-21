@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261121102017-39b61cb53d35
+        module_version: v0.0.0-20261121102543-a12663ff242b
         vcs: git
-        revision: 39b61cb53d35357797d5aa11907add87f056e321
+        revision: a12663ff242b13ab2c046557070f4d3b4b91c803
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: fb0085be947458adb940a105443c8b4deeaded8726f4e2e4476797927182b52d
+    registry_content_sha256: 70115308359b25cf44cc145944481a2675a9bff95f5bc3a6e13702fe2f5b4124
     components:
         audit-log:
             version: 1.2.0
@@ -68,14 +68,14 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.21.0
-            sha: ef082e1f5cd91fe7410f5a7661b9a85a2d478e181e5b356c406967fae10f3dc3
+            version: 6.22.0
+            sha: 2d10b0121b1a791f3320a880d2a770d17dcee24c1c8a5a25e94208179c650456
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
             version: 4.34.0
-            sha: 4ee2fc1ec59aedeedd592ff65e38e72b9b4b504f5b2ef4a52fd8877c4485f9f9
+            sha: c42c9c7780ee89720dae1cda6c3224f1c5c5edf1e662b15def796388dbb5199f
         spicedb-authz:
             version: 1.4.0
             sha: bc44dfacc5b8c323ef4988fda14d223f7c66d02f30ffbe65ffdec2a094217010
@@ -161,9 +161,9 @@ last_applied:
         internal/outbox/outbox.go: c2957ac0acaf9f20e543beb6aa0297ea72a898a969fb43fd21d408dc42df6caf
         internal/stegoruntime/runtime.go: 407f1169607839c261fd593c78989cd24056fa9e05b79f5aa954f12a23c431f0
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
-        internal/storage/migrate.go: 973c3f4b06932eb843e00db298159e4e4b706a3db04f28e7ff3d08c1e1b0081d
+        internal/storage/migrate.go: b38d337cd74968eb0fe3cb6ff9a4bc68fad18a7352d849312c371706ff220552
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
-        internal/storage/runtime_access.go: 481fe15f6bbf782aad8cbdbbdafc9c0927577efa6636d79ed96d7cf83e1870c3
+        internal/storage/runtime_access.go: c4f0790a79fcb565ccaec23f6ece51d6d9c150a308ca5e4fb3bc0bac390abd19
         internal/storage/schema_generation.go: ff7f059441677f4253c98670350c304d3111b391d877ba049b943a4ae1d9671e
         internal/storage/schema_manifest.go: 927c002c8ceeb0ef98ac75a6113f146374f92b1166bdc486582a85338c0901d8
         internal/storage/tables.go: f3eaaff347c443b907317549ab299251599a0976e0796e2362e18b227f154ec3
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 92844e5b5bf016ec141eabf44bd44cd23473b2270ab54fff9d808461b0206ac1
-        architecture/index.html: 630d740edece70db8e1b6a357bd2b22edcb93e092719fa143fbfb89961831ba2
+        architecture/architecture.json: f4b5e6a7e8735acae19aa81481a46cb76ad406cd18103e2b84f35187b90895e3
+        architecture/index.html: 0369d775436411f61d42730324e518578a8264c2f32170bad8c084668724ef7d
         deploy/base/deployment.yaml: f757ac733f521f217e954f6df579a86bb2bb8c8a3438ac095a5f3803fa4db4b9
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: e3681602fa0a6415fc44b672bb4ac6229a5aee446206d1b55e4aebeee7b586e3
