@@ -874,8 +874,11 @@ stego validate --strict --base "$PR_BASE_SHA"
 For GitHub Actions, `PR_BASE_SHA` is `${{ github.event.pull_request.base.sha }}`,
 and the checkout needs that commit, such as with `fetch-depth: 0`.
 When your policy needs the reviewer's own signature on each merged fill, run
-`stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`:
-the check does not read the revocation or the expiry of a key.
+`stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`.
+A GPG key of `SIGNERS` that is revoked or expired, as its armored block in
+`SIGNERS` says, no longer qualifies a fill, also for a sign-off that it made
+before (STEGO 3.252.0): sign such fills again with a valid key. For an SSH
+key, the check reads only the options of its line, such as `valid-before`.
 
 #### When the author of a fill is not in SIGNERS
 

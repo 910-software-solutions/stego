@@ -138,7 +138,9 @@ func (e *conflictError) Is(target error) bool { return target == ErrConflict }
 // so a locked read of a denied row is not found as ST-SUP-RP10-LC23 states.
 type deniedError struct {
 	entity string
-	read   bool
+	// id is the ID of the denied row, or empty for a create decided on its parent or the tenant.
+	id   string
+	read bool
 	// staging is true when the staging principal of a consumer was denied, and its service account allowed.
 	staging bool
 }
@@ -1605,6 +1607,12 @@ type state struct {
 	// notGranted is set when a statement failed with SQLSTATE 42501: the role of the transaction lacks a privilege,
 	// which a dispatch again does not change (decision on ST-SUP-Q141).
 	notGranted bool
+	// pendingRows are the IDs of the rows that a decision of a consumer denied while their authorization token was
+	// still empty: the relay has not written the relations of the row yet, such as of a row that the run of the
+	// message before made, so the deny can be a lag and not the decision of the row; pendingHidden is set when a list
+	// left out such a row (ST-SUP-RP10-LC17; walkthrough 21).
+	pendingRows   map[string]bool
+	pendingHidden bool
 	// sealSwitches is the count of the switches of entities to their statements after a seal contract when the
 	// attempt began: a statement of an entity that switched later can still be one of the statements before the
 	// contract (ST-SUP-RP10-LC49; security review of PR #452, L2).

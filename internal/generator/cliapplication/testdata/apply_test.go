@@ -910,3 +910,84 @@ func TestApplyRevocationEnds(t *testing.T) {
 		}
 	})
 }
+
+func TestApplySecretField(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T06 Apply gives a secret field from a private file at create and in a patch, and refuses a file that other users can read before any request", func(t *testing.T) {
+		f := applySetup(t)
+		app := definition()
+		create := []Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Key: "pin", Type: "string", Required: true}}
+		patch := []Field{{Flag: "name", Key: "name", Type: "string"}, {Key: "pin", Type: "string"}}
+		app.Resources = append(app.Resources, ApplyResource{Kind: "Record", APIVersion: "example/v1", Path: "/records", CreateFields: create, PatchFields: patch})
+		document := manifest("Record", "first", `{"pin":"PIN-SECRET-1"}`)
+		// A file that the group can read is refused before any request, with no value of the secret.
+		shared := applyFile(t, filepath.Join(f.directory, "shared.yaml"), document)
+		if err := os.Chmod(shared, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"apply", "-f", shared}, {"apply", "-f", shared, "--dry-run"}} {
+			_, output, err := runApplyTest(t, app, args...)
+			if err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || strings.Contains(err.Error()+output, "PIN-SECRET") || f.calls != 0 {
+				t.Fatal("apply did not refuse a shared file that holds a secret field before any request", args, err, output, f.calls)
+			}
+		}
+		// A directory of files: the shared file is refused too.
+		folder := filepath.Join(f.directory, "folder")
+		if err := os.Mkdir(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		inFolder := applyFile(t, filepath.Join(folder, "record.yaml"), document)
+		if err := os.Chmod(inFolder, 0o604); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runApplyTest(t, app, "apply", "-f", folder); err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || f.calls != 0 {
+			t.Fatal("apply did not refuse a shared file of a directory", err)
+		}
+		// Standard input: a shared file redirected to it is refused; a pipe holds no file that another user can read
+		// (security review of PR #487, L2).
+		original := os.Stdin
+		defer func() { os.Stdin = original }()
+		redirected, err := os.Open(shared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer redirected.Close()
+		os.Stdin = redirected
+		if _, _, err := runApplyTest(t, app, "apply", "-f", "-", "--dry-run"); err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || f.calls != 0 {
+			t.Fatal("apply did not refuse a shared file on standard input", err)
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		if _, err := writer.WriteString(document); err != nil {
+			t.Fatal(err)
+		}
+		writer.Close()
+		os.Stdin = reader
+		if result, _, err := runApplyTest(t, app, "apply", "-f", "-", "--dry-run", "-o", "json"); err != nil || len(result) != 1 || result[0].Status != "validated" || f.calls != 0 {
+			t.Fatal("apply refused a secret field from a pipe", result, err)
+		}
+		os.Stdin = original
+		// From a private file, the create sends the secret field.
+		private := applyFile(t, filepath.Join(f.directory, "private.yaml"), document)
+		first, output, err := runApplyTest(t, app, "apply", "-f", private, "-o", "json")
+		f.mu.Lock()
+		sent := f.last["pin"]
+		// The service never answers a writeOnly member.
+		delete(f.rows["/records/"+first[0].ID], "pin")
+		f.mu.Unlock()
+		if err != nil || len(first) != 1 || first[0].Status != "created" || f.writes != 1 || sent != "PIN-SECRET-1" || strings.Contains(output, "PIN-SECRET") {
+			t.Fatal("apply did not create with the secret field", first, err, sent)
+		}
+		// A new value in a private file: the answer does not give the field, so apply sends the patch with it.
+		changed := applyFile(t, filepath.Join(f.directory, "changed.yaml"), manifest("Record", "first", `{"pin":"PIN-SECRET-2"}`))
+		second, _, err := runApplyTest(t, app, "apply", "-f", changed, "-o", "json")
+		f.mu.Lock()
+		sent = f.last["pin"]
+		f.mu.Unlock()
+		if err != nil || len(second) != 1 || second[0].Status != "configured" || second[0].ID != first[0].ID || f.writes != 2 || sent != "PIN-SECRET-2" {
+			t.Fatal("apply did not patch the secret field", second, err, sent)
+		}
+	})
+}

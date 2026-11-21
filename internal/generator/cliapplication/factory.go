@@ -390,14 +390,16 @@ func applyResource(doc *openapi3.T, p string, item *openapi3.PathItem, service s
 		return r, false
 	}
 	r.Kind = kind
-	r.CreateFields = bodyFields(media.Schema.Value, map[string]bool{})
+	// A secret member, writeOnly or x-sensitive, is a field with no flag, which only a private apply file gives, so
+	// apply can give it at create and in a patch, as --body FILE gives it to a command (ST-SUP-RC04-OC32).
+	r.CreateFields = append(bodyFields(media.Schema.Value, map[string]bool{}), secretFields(media.Schema.Value)...)
 	if !slicesContainsKey(r.CreateFields, "name") {
 		return r, false
 	}
 	one := doc.Paths.Value(p + "/{id}")
 	if one != nil && one.Patch != nil && one.Patch.RequestBody != nil && one.Patch.RequestBody.Value != nil {
 		if patch := one.Patch.RequestBody.Value.Content.Get("application/json"); patch != nil && patch.Schema != nil && patch.Schema.Value != nil {
-			r.PatchFields = bodyFields(patch.Schema.Value, map[string]bool{})
+			r.PatchFields = append(bodyFields(patch.Schema.Value, map[string]bool{}), secretFields(patch.Schema.Value)...)
 		}
 	}
 	r.IdempotentWrites = keyed(item, item.Post) && one != nil && one.Patch != nil && keyed(one, one.Patch)

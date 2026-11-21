@@ -182,9 +182,24 @@ func (s *state) decideRead(ctx context.Context, resourceType, permission, entity
 		return err
 	}
 	if !ok {
-		return &deniedError{entity: entity, read: true, staging: staging}
+		s.notePending(meta.ID, meta.Token)
+		return &deniedError{entity: entity, id: meta.ID, read: true, staging: staging}
 	}
 	return nil
+}
+
+// notePending records a row that a decision of a consumer denied while its authorization token was empty: the relay
+// has not written the relations of the row yet. RunConsumer then gives a failure that this deny caused the outcome
+// undecided and the cause relations_pending, within a bound (ST-SUP-RP10-LC17; walkthrough 21). A worker that is not
+// a consumer and a command record nothing.
+func (s *state) notePending(id, token string) {
+	if s.mode != modeConsumer || token != "" || id == "" {
+		return
+	}
+	if s.pendingRows == nil {
+		s.pendingRows = map[string]bool{}
+	}
+	s.pendingRows[id] = true
 }
 
 // decideWrite decides a write on one resource, before the write. A worker decides its own permission
@@ -202,7 +217,8 @@ func (s *state) decideWrite(ctx context.Context, resourceType, entity, id, token
 		return err
 	}
 	if !ok {
-		return &deniedError{entity: entity, staging: staging}
+		s.notePending(id, token)
+		return &deniedError{entity: entity, id: id, staging: staging}
 	}
 	return nil
 }
@@ -259,7 +275,16 @@ func (s *state) decideList(ctx context.Context, resourceType, permission string,
 	if s.mode != modeConsumer {
 		return allowed, nil
 	}
-	return s.batch(ctx, s.staging, s.stagingPermission, resourceType, metas, allowed, allowed)
+	allowed, err := s.batch(ctx, s.staging, s.stagingPermission, resourceType, metas, allowed, allowed)
+	if err != nil {
+		return nil, err
+	}
+	for i, meta := range metas {
+		if !allowed[i] && meta.Token == "" {
+			s.pendingHidden = true
+		}
+	}
+	return allowed, nil
 }
 
 // batch decides permission on the rows of metas in one batch evaluation and writes the answers to allowed. When only

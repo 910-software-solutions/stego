@@ -64,29 +64,37 @@ func applyJSON(n *yaml.Node,depth int,nodes *int)(any,error){
  }
  return nil,errApplyInput
 }
-func loadApply(ctx context.Context,name string)([]map[string]json.RawMessage,error){
- var data [][]byte;total:=0
- appendData:=func(value []byte)error{total+=len(value);if total>maxApplyBytes||len(data)>=maxApplyDocuments{return errApplyInput};data=append(data,value);return nil}
+// loadApply reads the apply documents of a file, of each file of a directory or of standard input, and tells for
+// each document whether it comes from a private file (ownedPrivate) or from standard input that is not a file that
+// another user can read, which a secret field needs (ST-SUP-RC04-OC32).
+func loadApply(ctx context.Context,name string)([]map[string]json.RawMessage,[]bool,error){
+ var data [][]byte;var privacy []bool;total:=0
+ appendData:=func(value []byte,private bool)error{total+=len(value);if total>maxApplyBytes||len(data)>=maxApplyDocuments{return errApplyInput};data=append(data,value);privacy=append(privacy,private);return nil}
+ readFile:=func(file *os.File)error{info,statErr:=file.Stat();value,readErr:=readRegular(file,65536,false);closeErr:=file.Close();if statErr!=nil||readErr!=nil||closeErr!=nil{return errApplyInput};return appendData(value,ownedPrivate(info))}
  if name=="-"{
   // Closing stdin makes pipe input interruptible without leaving a read worker.
   input:=os.Stdin;stop:=make(chan struct{});stopped:=make(chan struct{});defer func(){close(stop);<-stopped}()
   go func(){defer close(stopped);select{case <-ctx.Done():_ = input.Close();case <-stop:}}()
-  value,err:=io.ReadAll(io.LimitReader(input,maxApplyBytes+1));if ctx.Err()!=nil{return nil,ctx.Err()};if err!=nil{return nil,errApplyInput};if err:=appendData(value);err!=nil{return nil,err}
+  value,err:=io.ReadAll(io.LimitReader(input,maxApplyBytes+1));if ctx.Err()!=nil{return nil,nil,ctx.Err()};if err!=nil{return nil,nil,errApplyInput};
+  // Standard input from a pipe or a terminal holds no file that another user can read; a regular file redirected to
+  // it, such as < shared.yaml, is private only when ownedPrivate (security review of PR #487, L2).
+  private:=true;if info,err:=input.Stat();err==nil&&info.Mode().IsRegular(){private=ownedPrivate(info)}
+  if err:=appendData(value,private);err!=nil{return nil,nil,err}
  }else{
-  info,err:=os.Lstat(name);if err!=nil||info.Mode()&os.ModeSymlink!=0{return nil,errApplyInput}
-  if !info.IsDir(){file,err:=os.OpenFile(name,os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW,0);if err!=nil{return nil,errApplyInput};value,readErr:=readRegular(file,65536,false);closeErr:=file.Close();if readErr!=nil||closeErr!=nil{return nil,errApplyInput};if err:=appendData(value);err!=nil{return nil,err}}else{
-   root,err:=os.OpenRoot(name);if err!=nil{return nil,errApplyInput};defer root.Close()
+  info,err:=os.Lstat(name);if err!=nil||info.Mode()&os.ModeSymlink!=0{return nil,nil,errApplyInput}
+  if !info.IsDir(){file,err:=os.OpenFile(name,os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW,0);if err!=nil{return nil,nil,errApplyInput};if err:=readFile(file);err!=nil{return nil,nil,err}}else{
+   root,err:=os.OpenRoot(name);if err!=nil{return nil,nil,errApplyInput};defer root.Close()
    entries:=0
    err=fs.WalkDir(root.FS(),".",func(path string,entry fs.DirEntry,walkErr error)error{
     if ctx.Err()!=nil{return ctx.Err()};if walkErr!=nil{return errApplyInput};entries++;if entries>1024||strings.Count(path,"/")>16{return errApplyInput}
     if entry.Type()&os.ModeSymlink!=0{return errApplyInput};if entry.IsDir(){return nil}
     switch strings.ToLower(filepath.Ext(path)){case ".yaml",".yml",".json":default:return nil}
     file,err:=root.OpenFile(path,os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW,0);if err!=nil{return errApplyInput}
-    value,readErr:=readRegular(file,65536,false);closeErr:=file.Close();if readErr!=nil||closeErr!=nil{return errApplyInput};return appendData(value)
-   });if err!=nil{return nil,err}
+    return readFile(file)
+   });if err!=nil{return nil,nil,err}
   }
  }
- var result []map[string]json.RawMessage
- for _,value:=range data{if ctx.Err()!=nil{return nil,ctx.Err()};documents,err:=decodeApply(value);if err!=nil{return nil,err};result=append(result,documents...);if len(result)>maxApplyDocuments{return nil,errApplyInput}}
- if len(result)==0{return nil,errApplyInput};return result,nil
+ var result []map[string]json.RawMessage;var private []bool
+ for i,value:=range data{if ctx.Err()!=nil{return nil,nil,ctx.Err()};documents,err:=decodeApply(value);if err!=nil{return nil,nil,err};result=append(result,documents...);for range documents{private=append(private,privacy[i])};if len(result)>maxApplyDocuments{return nil,nil,errApplyInput}}
+ if len(result)==0{return nil,nil,errApplyInput};return result,private,nil
 }

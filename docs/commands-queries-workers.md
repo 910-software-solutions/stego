@@ -1353,6 +1353,26 @@ outbox, and a person can send it again or discard it. Until a person resolves
 it, a parked message holds back each later message of the same destination,
 tenant and resource key, so the later events of the same row wait.
 
+A row that a worker writes gets its relations in SpiceDB from the relay, a
+moment after the run commits. Until then the worker is denied on the row, so a
+list does not give it and a read is refused. Thus the run of an update event
+can miss the row that the run of its create event made. When the failure of a
+run comes from such a deny, the outcome is `undecided` and the cause is
+`relations_pending`: the refused error of the row, also inside a declared
+refusal, or a not-found error, a declared refusal or a fill error of a run
+whose list left out such a row. The message goes back to pending with the
+failure code `relations-pending.<n>.<time>`, the poison count does not count
+it, and it does not park. A later attempt sees the row (runtime v0.186.0).
+Any other failure of the run counts as before. The wait has a bound: after 10
+such attempts (`command.RelationsPendingAttempts`), or 5 minutes after the
+first (`command.RelationsPendingAge`), the next attempt counts as if the row
+had its relations, so a row whose relations never come parks its message or
+counts for poison. That attempt writes the warn line
+`command.consumer.relations_pending_past_bound` with the worker, the
+destination and the event ID. A run that commits does not change, so a fill that makes a
+row when a list does not give it can still make a second row: declare a unique
+key on the reference that it makes the row from.
+
 The log line and the alert of a parked message are also written to standard
 output as one JSON line each, also when no OpenTelemetry collector is set. The
 runtime writes each log record at the level warn or higher in this way, at most
@@ -1574,6 +1594,26 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.186.0
+
+- A consumer run that fails after a decision denied a row with an empty
+  authorization token, whose relations the relay has not written yet, is a
+  transient refusal with the outcome `undecided`, the new cause class
+  `relations_pending` in `probe.WorkerCauses` and the failure code
+  `relations-pending.<n>.<time>` (ST-SUP-RP10-LC17), only when its failure
+  comes from that deny. The poison count does not count it, and a declared
+  refusal or a deny of the staging principal of such a run does not park the
+  message, for at most `command.RelationsPendingAttempts` (10) attempts and
+  `command.RelationsPendingAge` (5 minutes); then the attempt is classed as
+  before and writes the warn line `command.consumer.relations_pending_past_bound`
+  (`command.RelationsPastBoundEvent`). A panic stays a panic, and a run that
+  commits does not change. Walkthrough 21: a consuming worker
+  failed about one first attempt in three with `fill_error`, as the list of
+  an update event did not give the row of its create event.
+- `command.NewStruct` refuses a value of more than `command.MaxStructNodes`
+  (100,000) values in all, counted at each place that holds a shared map or
+  list, before the conversion walks it (ST-SUP-RP10-LC57).
 
 ### Release notes for runtime v0.185.0
 

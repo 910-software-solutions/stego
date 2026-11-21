@@ -25,7 +25,9 @@ import (
 // An absent apiVersion is accepted for existing files. A supplied version must match.
 // IdempotentWrites states that the service keeps the Idempotency-Key of the create and the patch of the resource,
 // as for a Command. ConditionalPatch states that the patch takes If-Match with the generation of the resource, which
-// apply then sends as it read it (ST-SUP-RC04-OC38).
+// apply then sends as it read it (ST-SUP-RC04-OC38). A field with no flag is a secret member, writeOnly or
+// x-sensitive, which only a private apply file gives, as only a private --body FILE gives it to a command
+// (ST-SUP-RC04-OC32).
 type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field;IdempotentWrites,ConditionalPatch bool}
 type applyPlan struct {resource ApplyResource;name,id,method,path,generation string;body map[string]json.RawMessage;payload []byte}
 type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`}
@@ -41,7 +43,8 @@ func validateApply(resources []ApplyResource)error{
   if !property.MatchString(r.Kind)||seen[r.Kind]||len(r.APIVersion)>128||!utf8.ValidString(r.APIVersion)||strings.ContainsAny(r.APIVersion,"\x00\r\n\t "){return errors.New("invalid apply resource definition")};seen[r.Kind]=true
   fields:=map[string]Field{}
   for _,set:=range [][]Field{r.CreateFields,r.PatchFields}{
-   app:=Application{ConfigEnv:"APPLY_CONFIG",ConfigName:"apply",Commands:[]Command{ {Name:[]string{"resource"},Method:"POST",Path:r.Path,Fields:set,Success:[]int{201}}}}
+   var flagged,secret []Field;for _,f:=range set{if f.Flag==""{secret=append(secret,f)}else{flagged=append(flagged,f)}}
+   app:=Application{ConfigEnv:"APPLY_CONFIG",ConfigName:"apply",Commands:[]Command{ {Name:[]string{"resource"},Method:"POST",Path:r.Path,Fields:flagged,BodyFields:secret,Success:[]int{201}}}}
    if err:=validate(app);err!=nil{return err};hasName:=false
    for _,f:=range set{if previous,ok:=fields[f.Key];ok&&previous.Type!=f.Type{return errors.New("inconsistent apply field type")};fields[f.Key]=f;if f.Key=="name"&&f.Type=="string"{hasName=true};if f.Key=="id"{return errors.New("apply IDs belong in metadata")}}
    if !hasName&&len(r.ImmutableIdentity)==0{return errors.New("apply resources require a name field")}
@@ -110,6 +113,18 @@ func readGeneration(p *applyPlan,row map[string]json.RawMessage)error{
  value,err:=n.Int64();if err!=nil||value<0{return fmt.Errorf("%s %q: the service does not return the generation of the resource, which its patch needs in If-Match",p.resource.Kind,p.name)}
  p.generation=`"`+strconv.FormatInt(value,10)+`"`;return nil
 }
+// errApplySecretFile refuses an apply file that holds a secret field and that is not private: the effective user
+// owns it and it permits no group or other access, as a --body FILE with a secret field (ST-SUP-RC04-OC32).
+var errApplySecretFile=errors.New("an apply file that holds a secret field must be your own file and must not permit access by other users")
+// privateSecrets refuses each plan whose document gives a secret field, a field with no flag, from a file that is
+// not private. Standard input holds no file that another user can read. It runs before any request.
+func privateSecrets(plans []applyPlan,private []bool)error{
+ for i,p:=range plans{
+  if i<len(private)&&private[i]{continue}
+  for _,set:=range [][]Field{p.resource.CreateFields,p.resource.PatchFields}{for _,f:=range set{if _,ok:=p.body[f.Key];ok&&f.Flag==""{return errApplySecretFile}}}
+ }
+ return nil
+}
 func prepareApply(app Application,documents []map[string]json.RawMessage)([]applyPlan,error){
  definitions:=map[string]ApplyResource{};for _,r:=range app.Resources{definitions[r.Kind]=r}
  seen:=map[string]bool{};plans:=make([]applyPlan,0,len(documents))
@@ -161,8 +176,9 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  if len(app.Resources)==0{return errors.New("apply is not configured")}
  if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]\n"+applyNameWarning);return err}
  filename,format,outputFile,dry,err:=applyOptions(args);if err!=nil{return err}
- documents,err:=loadApply(ctx,filename);if err!=nil{return err}
+ documents,private,err:=loadApply(ctx,filename);if err!=nil{return err}
  plans,err:=prepareApply(app,documents);if err!=nil{return err}
+ if err:=privateSecrets(plans,private);err!=nil{return err}
  destination,err:=reserveOutput(outputFile,output);if err!=nil{return err};defer destination.close()
  results:=make([]ApplyResult,len(plans));for i,p:=range plans{results[i]=ApplyResult{Kind:p.resource.Kind,Name:p.name,ID:p.id,Status:"not_attempted"}}
  if dry{for i:=range results{results[i].Status="validated"};return writeApply(destination,format,results)}

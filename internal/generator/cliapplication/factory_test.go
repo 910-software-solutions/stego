@@ -243,6 +243,32 @@ func TestFactorySecrets(t *testing.T) {
 	})
 }
 
+func TestFactoryApplySecrets(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T07 An apply resource takes a secret member of its create and its patch as a field with no flag", func(t *testing.T) {
+		document := strings.Replace(strings.Replace(serviceDocument,
+			`"NoteCreateRequest": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "size": {"type": "integer"}}}`,
+			`"NoteCreateRequest": {"type": "object", "required": ["name", "pin"], "properties": {"name": {"type": "string"}, "size": {"type": "integer"}, "pin": {"type": "string", "writeOnly": true}}}`, 1),
+			`"NotePatchRequest": {"type": "object", "properties": {"name": {"type": "string"}, "pinned": {"type": "boolean"}}}`,
+			`"NotePatchRequest": {"type": "object", "properties": {"name": {"type": "string"}, "pinned": {"type": "boolean"}, "pin": {"type": "string", "x-sensitive": true}}}`, 1)
+		if strings.Count(document, `"pin"`) != 3 {
+			t.Fatal("the document has no secret member of the create and the patch")
+		}
+		ctx := gen.Context{Entities: noteEntities(types.Field{Name: "name", Type: "string", Unique: true})}
+		app := factoryApp(t, ctx, document)
+		for _, want := range []string{
+			`CreateFields: []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "size", Key: "size", Type: "integer", Required: false}, {Flag: "", Key: "pin", Type: "string", Required: true}}`,
+			`PatchFields: []command.Field{{Flag: "name", Key: "name", Type: "string", Required: false}, {Flag: "pinned", Key: "pinned", Type: "boolean", Required: false}, {Flag: "", Key: "pin", Type: "string", Required: false}}`,
+		} {
+			if !strings.Contains(app, want) {
+				t.Errorf("the apply resource does not hold %s:\n%s", want, app)
+			}
+		}
+		if strings.Contains(app, `Flag: "pin"`) {
+			t.Errorf("the secret member has a flag:\n%s", app)
+		}
+	})
+}
+
 // sensitiveDocument has a command whose answer holds a member marked x-sensitive in an item of a list of a nested
 // object, and a command whose answer holds none.
 const sensitiveDocument = `{"openapi": "3.0.3", "info": {"title": "Generated API", "version": "1.0.0"},

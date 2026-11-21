@@ -163,6 +163,8 @@ func assess(f *Fill, current Current, signers Signers) (Standing, string) {
 		switch {
 		case errors.Is(err, ErrUnlistedKey):
 			return Unsigned, "SIGNERS does not list its key"
+		case errors.Is(err, ErrKeyNotValid):
+			return Unsigned, "the key of its sign-off is revoked or expired"
 		default:
 			return Unsigned, "its sign-off does not sign its evidence"
 		}
