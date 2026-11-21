@@ -860,7 +860,11 @@ func generateRuntimeData(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	files = append(files, generateSteps(ctx.OutputNamespace, steps)...)
-	migrateFile, err := generateMigrate(ctx.OutputNamespace, rowSecurity, steps)
+	checkpoints, err := sealCheckpointsOf(ctx, steps)
+	if err != nil {
+		return nil, nil, err
+	}
+	migrateFile, err := generateMigrate(ctx.OutputNamespace, rowSecurity, steps, checkpoints)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating migrate: %w", err)
 	}

@@ -230,7 +230,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.171.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.172.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -568,6 +568,12 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T08 The job of a later release on a database from before the seal makes the lease of the seal job with the expand step", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC49-T08")
 	})
+	t.Run("ST-SUP-RC01-OC49-T12 A database whose seal expand ran with postgres-adapter 6.19.0 or 6.20.0 passes the ledger check, gets the functions of this release, and then seals and contracts", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC49-T12")
+	})
+	t.Run("ST-SUP-RC01-OC50-T05 The contract release as the first release of postgres-adapter 6.21.0 on a database of 6.19.0 or 6.20.0 puts the functions of this release in place, refuses with the remedy, and passes after a pass of the expand release", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T05")
+	})
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
 	})
@@ -576,6 +582,9 @@ func TestTables(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC01-OC50-T02 A database that the three releases of a seal migrated in turn and a new one get the same schema", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T02")
+	})
+	t.Run("ST-SUP-RC01-OC50-T04 The contract of a seal refuses a completed pass that did not run in this database instance until the seal job completes a new pass", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T04")
 	})
 	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })

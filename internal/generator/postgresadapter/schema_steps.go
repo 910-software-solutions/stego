@@ -54,6 +54,9 @@ type schemaStep struct {
 	// Seal is true for the expand step of a seal: the ledger makes the row of the lease of its seal job in the
 	// transaction of its migration, outside its body (ST-SUP-RC01-OC49).
 	Seal bool
+	// Earlier are the digests of the bodies that earlier versions of the adapter wrote for the migration, with the text
+	// of the seal checkpoints in them, which the ledger accepts as well as Digest(Body) (ST-SUP-RC01-OC51).
+	Earlier []string
 }
 
 // contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, and its
@@ -281,17 +284,21 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
-			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body})
+			earlier, err := sealsBefore(ctx, change.ID, body)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body, Earlier: earlier})
 			before = after
 			continue
 		}
 		if change.Kind == "seal" && step.Phase == "expand" {
 			// A seal at expand adds the sealed column beside the clear one (ST-SUP-RC01-OC49).
-			body, err := sealExpandSQL(ctx, i+1, before, after, change)
+			body, earlier, err := sealExpandSQL(ctx, i+1, before, after, change)
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
-			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body, Seal: true})
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body, Seal: true, Earlier: earlier})
 			before = after
 			continue
 		}
@@ -383,7 +390,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			steps = append(steps, schemaStep{Name: KeysMigrationName(name), Change: change, Phase: step.Phase, Body: added.keys.String()})
 		}
 		if added.sync.Len() > 0 {
-			steps = append(steps, schemaStep{Name: SyncMigrationName(name), Change: change, Phase: step.Phase, Body: added.sync.String()})
+			body := added.sync.String()
+			earlier, err := sealsBefore(ctx, change.ID, body)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			steps = append(steps, schemaStep{Name: SyncMigrationName(name), Change: change, Phase: step.Phase, Body: body, Earlier: earlier})
 		}
 		if len(added.validates) > 0 {
 			steps = append(steps, schemaStep{Name: ValidateMigrationName(name), Change: change, Phase: step.Phase, Body: validateBody(added.validates), Validate: true, Validations: added.validates})
@@ -777,7 +789,6 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	fmt.Fprintf(&out.sync, "INSERT INTO stego_schema.backfills (change_id) VALUES (%s) ON CONFLICT (change_id) DO NOTHING;\n", sqlString(change.ID))
 	// The table of the release reports, with EXECUTE on its two functions for the runtime role (ST-SUP-RP09-LC14).
 	fmt.Fprintf(&out.sync, releasesText, sqlIdentifier(runtime))
-	out.sync.WriteString(sealsAgain(ctx, change.ID, runtime))
 	if slices.Contains(next.search, pair.u) {
 		out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(searchName(next.name, pair.u)),
 			statement: concurrently(searchIndexSQL(next, pair.u)), definition: searchIndexDefinition(next, pair.u)})

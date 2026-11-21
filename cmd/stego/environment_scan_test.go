@@ -629,6 +629,14 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 			}
 		}
 	}
+	// serverRead gives the fault of a read of a client variable by server code, or nothing. This is the split of
+	// client and server code in the scan: a runtime package, a compiler file and a library are server code, so a
+	// read of a client variable by one of them is a fault. A generator package holds the code that emits both the
+	// service and the client program of its component, and the scan of the package as a whole cannot tell the two
+	// apart. So a generator unit (generator true) may read the variable when each of its owners declares it
+	// read_by_client, and emittedClientFaults then splits what that generator emits by path: a file under a folder
+	// with an emitted cmd/main.go is client code, and each other file is server code (security review of PR #468, L2,
+	// and of PR #471, I3).
 	serverRead := func(where, name string, owners []string, generator bool) string {
 		if readers, only := client[name]; only && (!generator || slices.ContainsFunc(owners, func(o string) bool { return !slices.Contains(readers, o) })) {
 			return where + " reads the environment variable " + name + ", which only a client program of " + strings.Join(readers, ", ") + " reads (read_by_client); the service never gets a value for it"
