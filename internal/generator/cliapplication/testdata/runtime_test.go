@@ -505,6 +505,66 @@ func TestProblemFacts(t *testing.T) {
 	})
 }
 
+func TestLocalRefusalNamesTheMember(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC11-T04 A body member that the command does not take is refused before a request, and the refusal names the member as short printable text in quotes", func(t *testing.T) {
+		dir := privateDir(t)
+		t.Setenv("TEST_CLI_CONFIG", filepath.Join(dir, "config.json"))
+		token := filepath.Join(dir, "token")
+		if err := os.WriteFile(token, []byte("private-token"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var calls atomic.Int32
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(201)
+			w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+		ca := filepath.Join(dir, "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if err := Run(context.Background(), definition(), []string{"login", "--url", server.URL, "--token-file", token, "--ca-file", ca}, &output); err != nil {
+			t.Fatal(err)
+		}
+		create := func(body string) error {
+			file := filepath.Join(dir, "body.json")
+			if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return Run(context.Background(), definition(), []string{"create", "record", "--body", file}, &output)
+		}
+		before := calls.Load()
+		// Three unknown members: the refusal names the first in sorted order at each run.
+		data, _ := json.Marshal(map[string]any{"name": "sample", "zz": 1, "Title": "x", "yy": 2})
+		for i := 0; i < 20; i++ {
+			if err := create(string(data)); err == nil || err.Error() != `invalid request field "Title": the command takes no such member` {
+				t.Fatalf("an unknown member gave %v, want the refusal that names \"Title\"", err)
+			}
+		}
+		// Client text with an escape sequence, a letter outside ASCII, a double quote and 200 letters.
+		member := "\x1b[31m\u00e9\"" + strings.Repeat("m", 200)
+		data, _ = json.Marshal(map[string]any{"name": "sample", member: 1})
+		err := create(string(data))
+		want := `invalid request field "?[31m?\"` + strings.Repeat("m", 113) + `": the command takes no such member`
+		if err == nil || err.Error() != want {
+			t.Fatalf("an unknown member with control text gave %q, want %q", err, want)
+		}
+		for _, r := range err.Error() {
+			if r < 0x20 || r > 0x7e {
+				t.Fatalf("the refusal holds the character %q", r)
+			}
+		}
+		if err := create(`{"name":"sample","count":"many"}`); err == nil || err.Error() != `invalid request field "count": the value is not a valid integer` {
+			t.Fatalf("a member of the wrong type gave %v, want the refusal that names \"count\"", err)
+		}
+		if calls.Load() != before {
+			t.Fatal("a refused body reached the server")
+		}
+	})
+}
+
 func runRecordCreate(t *testing.T) (string, error) {
 	t.Helper()
 	var output bytes.Buffer

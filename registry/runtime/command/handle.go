@@ -283,6 +283,15 @@ type EntitySpec[T any] struct {
 	// Sealed is true when the entity has a readable secret field, which Values gives as SealAt and Scan reads into
 	// OpenAt: a runtime with no key ring refuses the entity (ST-SUP-RP10-LC44).
 	Sealed bool
+	// ReadOnly marks the read-only declaration of an entity that a worker reads (ST-SUP-RP10-LC53, decision
+	// ST-SUP-Q186 (a)): it has only Select, Scan, Clone and ValidID, its value holds no secret field, and only ReadRepo
+	// reaches it, with Get and List.
+	ReadOnly bool
+	// EventData gives the declared event fields of a value by their declared names, and EventVersion their version
+	// from 1: the change event of each write of the entity then holds them as data and data_version
+	// (ST-SUP-RP10-LC55, decision ST-SUP-Q184 (c)). Nil is an event with no field value.
+	EventData    func(value T) map[string]any
+	EventVersion int
 	// AfterSeal is the entity after the contract step of each of its open seals, with the sealed column alone of each
 	// readable secret whose seal step is open, or nil for an entity with no open seal: the runtime takes it when a
 	// statement fails because the contract dropped the clear columns (ST-SUP-RP10-LC49).
@@ -574,6 +583,7 @@ type Entity[T any] struct {
 // Declared is an entity that a command or a worker declares it writes: an *Entity of any type.
 type Declared interface {
 	entityName() string
+	readOnly() bool
 	register(rt *Runtime) error
 	relations() []authz.Relation
 	runtimeRelations() []authz.Relation
@@ -613,6 +623,12 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	// would be that resource, and its delete would clear the tuple of each worker (ST-SUP-RC35-OC13, ST-SUP-Q132).
 	if spec.ResourceType == authz.TenantType {
 		return nil, fmt.Errorf("command: the entity %s has the resource type %s, which is reserved for the tenant resource that holds the tuple of each worker; give it another resource type", spec.Name, authz.TenantType)
+	}
+	if (spec.EventData == nil) != (spec.EventVersion == 0) || spec.EventVersion < 0 {
+		return nil, fmt.Errorf("command: the entity %s needs EventData with an EventVersion from 1, or neither", spec.Name)
+	}
+	if spec.ReadOnly {
+		return newReadOnly(spec)
 	}
 	statements := map[string]string{"Select": spec.Select, "SelectForUpdate": spec.SelectForUpdate,
 		"SelectForDelete": spec.SelectForDelete, "Insert": spec.Insert, "Update": spec.Update, "Delete": spec.Delete}
@@ -695,6 +711,42 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	spec.Relations = slices.Clone(spec.Relations)
 	return &Entity[T]{spec: spec}, nil
 }
+
+// newReadOnly checks the read-only declaration of an entity that a worker reads (ST-SUP-RP10-LC53): only Select, which
+// takes the tenant as $1, and Scan, Clone and ValidID; no write statement, no write function, no secret, no relation
+// and no lock.
+func newReadOnly[T any](spec EntitySpec[T]) (*Entity[T], error) {
+	if !strings.Contains(spec.Select, "$1") || spec.Scan == nil || spec.Clone == nil || spec.ValidID == nil {
+		return nil, fmt.Errorf("command: the read-only entity %s needs a Select that takes the tenant as $1, Scan, Clone and ValidID", spec.Name)
+	}
+	if spec.SelectForUpdate != "" || spec.SelectForDelete != "" || spec.Insert != "" || spec.Update != "" || spec.Delete != "" ||
+		spec.Values != nil || spec.State != nil || spec.KeyChanged != nil || spec.Sealed || len(spec.Relationships) > 0 ||
+		len(spec.Relations) > 0 || spec.Tenant || spec.LockAtMost != 0 || spec.EventData != nil {
+		return nil, fmt.Errorf("command: the read-only entity %s has a statement other than Select, a write function, a sealed field, a relation, events or a Lock at most", spec.Name)
+	}
+	if spec.ResourceType != "" && spec.ReadPermission == "" {
+		return nil, fmt.Errorf("command: the entity %s has a resource type and no read permission", spec.Name)
+	}
+	for _, r := range spec.Parent {
+		if r.Entity == "" || r.ID == nil {
+			return nil, fmt.Errorf("command: a reference of %s needs the referenced entity and the reader of its ID", spec.Name)
+		}
+	}
+	spec.Parent = slices.Clone(spec.Parent)
+	return &Entity[T]{spec: spec}, nil
+}
+
+// eventData gives the declared event fields of a value and their version, or nil for an entity that declares none
+// (ST-SUP-RP10-LC55).
+func (e *Entity[T]) eventData(value T) *eventData {
+	if e.spec.EventData == nil {
+		return nil
+	}
+	return &eventData{fields: e.spec.EventData(value), version: e.spec.EventVersion}
+}
+
+// readOnly tells whether the entity is the read-only declaration of an entity that a worker reads.
+func (e *Entity[T]) readOnly() bool { return e.spec.ReadOnly }
 
 // resourceType is the audit resource type of the entity.
 func (e *Entity[T]) auditType() string {
@@ -928,8 +980,8 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 		}
 	}
 	if spec.Lock != "" {
-		if e.spec.LockAtMost == 0 {
-			return nil, fmt.Errorf("command: the list %s locks rows of %s, which declares no Lock at most", spec.Name, e.spec.Name)
+		if e.spec.LockAtMost == 0 || e.spec.ReadOnly {
+			return nil, fmt.Errorf("command: the list %s locks rows of %s, which declares no Lock at most or is read-only", spec.Name, e.spec.Name)
 		}
 	}
 	params := map[string]bool{}
@@ -961,7 +1013,7 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 
 // checkLists gives the lists that the command or worker owner declares, by list. It refuses a nil list, a list with
 // bound parameters, which is not the declared list, and a list of an entity that the owner does not write.
-func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]listCopy, error) {
+func checkLists(owner string, lists []AnyList, writes ...map[Declared]bool) (map[AnyList]listCopy, error) {
 	out := make(map[AnyList]listCopy, len(lists))
 	for _, l := range lists {
 		if l == nil || l.listNil() {
@@ -970,7 +1022,11 @@ func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[An
 		if l.listBound() {
 			return nil, fmt.Errorf("command: %s declares the list %s with bound parameters; declare the list itself", owner, l.listName())
 		}
-		if !writes[l.listEntity()] {
+		declared := false
+		for _, set := range writes {
+			declared = declared || set[l.listEntity()]
+		}
+		if !declared {
 			return nil, fmt.Errorf("command: %s declares the list %s of %s, which it does not write", owner, l.listName(), l.listEntity().entityName())
 		}
 		list, held := l.listHeld()
@@ -1576,7 +1632,13 @@ type state struct {
 	// (ST-SUP-RP10-LC05); empty for a command without one and for a worker.
 	commandPermission string
 	writes            map[Declared]bool
-	destinations      map[string]Destination
+	// reads are the read-only entities that a worker declares it reads (ST-SUP-RP10-LC53).
+	reads map[Declared]bool
+	// attempts are the counts that the call resets when it commits, by row, and chargeFailed is set when a charge of a
+	// check of a counted value did not commit (ST-SUP-RP10-LC54).
+	attempts     map[attemptKey]*attemptRow
+	chargeFailed bool
+	destinations map[string]Destination
 	// lists are the lists that the command or the worker declares, which its handle takes only (ST-SUP-RP10-LC38).
 	lists map[AnyList]listCopy
 	// runTime is the time of the run that a list value RunTime binds: the due tick of a worker run, the start of a
@@ -1844,7 +1906,7 @@ func Repo[T, P any](h *Handle[P], e *Entity[T]) (*Repository[T], error) {
 		return nil, err
 	}
 	defer h.st.leave()
-	if e == nil || !h.st.writes[e] {
+	if e == nil || e.spec.ReadOnly || !h.st.writes[e] {
 		name := "<nil>"
 		if e != nil {
 			name = e.spec.Name
@@ -1852,6 +1914,50 @@ func Repo[T, P any](h *Handle[P], e *Entity[T]) (*Repository[T], error) {
 		return nil, fmt.Errorf("command: %s does not declare that it writes %s", h.st.action, name)
 	}
 	return &Repository[T]{st: h.st, entity: e}, nil
+}
+
+// Reader is the read-only repository of an entity that a worker reads (ST-SUP-RP10-LC53, decision ST-SUP-Q186 (a)):
+// it reads with no lock, and has no create, update, delete or locked read. Its value type holds no secret field.
+type Reader[T any] struct {
+	r *Repository[T]
+}
+
+// ReadRepo returns the read-only repository of e in h. It refuses, with an error that names the entity and with no
+// statement, an entity that the handle's worker does not declare it reads.
+func ReadRepo[T, P any](h *Handle[P], e *Entity[T]) (*Reader[T], error) {
+	if h == nil || h.st == nil {
+		return nil, ErrClosed
+	}
+	if err := h.st.enter(); err != nil {
+		return nil, err
+	}
+	defer h.st.leave()
+	if e == nil || !e.spec.ReadOnly || !h.st.reads[e] {
+		name := "<nil>"
+		if e != nil {
+			name = e.spec.Name
+		}
+		return nil, fmt.Errorf("command: %s does not declare that it reads %s", h.st.action, name)
+	}
+	return &Reader[T]{r: &Repository[T]{st: h.st, entity: e}}, nil
+}
+
+// Get reads the row of id with no lock, as Repository.Get does: a row that the tenant does not hold or that the
+// worker may not read is not found, and a read of an entity with a pii field is audited.
+func (r *Reader[T]) Get(ctx context.Context, id string) (Loaded[T], error) {
+	if r == nil || r.r == nil {
+		return nil, ErrClosed
+	}
+	return r.r.Get(ctx, id)
+}
+
+// List reads the allowed rows of the declared list l with the filter values args, at most limit of them, with no
+// lock, as Repository.List does.
+func (r *Reader[T]) List(ctx context.Context, l *List[T], limit int, args ...any) ([]Loaded[T], error) {
+	if r == nil || r.r == nil {
+		return nil, ErrClosed
+	}
+	return r.r.List(ctx, l, limit, args...)
 }
 
 // Get reads the row of id with no lock. It returns ErrNotFound with no data for a row that the tenant does not hold
@@ -2396,7 +2502,7 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err := s.buffer(e.auditType(), e.spec.Fields, meta.ID, nil, e.spec.State(stored)); err != nil {
 		return nil, err
 	}
-	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionCreated); err != nil {
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionCreated, e.eventData(stored)); err != nil {
 		return nil, err
 	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
@@ -2474,7 +2580,7 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 	if err := s.buffer(e.auditType(), e.spec.Fields, meta.ID, e.spec.State(from2.value), e.spec.State(stored)); err != nil {
 		return nil, err
 	}
-	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionUpdated); err != nil {
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionUpdated, e.eventData(stored)); err != nil {
 		return nil, err
 	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
@@ -2526,7 +2632,7 @@ func (r *Repository[T]) Delete(ctx context.Context, from Loaded[T], parent ...Re
 	if err := s.buffer(e.auditType(), e.spec.Fields, from2.meta.ID, e.spec.State(from2.value), nil); err != nil {
 		return err
 	}
-	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, from2.meta.ID, ActionDeleted); err != nil {
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, from2.meta.ID, ActionDeleted, e.eventData(from2.value)); err != nil {
 		return err
 	}
 	s.written[rowKey{e.spec.Name, from2.meta.ID}] = -1

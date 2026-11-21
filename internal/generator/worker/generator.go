@@ -47,12 +47,14 @@ const (
 // import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them also before out/workers is generated,
 // and admits no package that the contract does not import.
 func ContractRuntimeImports(entities []types.Entity, workers []types.Worker) []string {
-	var writes []string
+	var writes, reads []string
 	for _, w := range workers {
 		writes = append(writes, w.Writes...)
+		reads = append(reads, w.Reads...)
 	}
 	var out []string
-	if command.WritesSensitive(entities, writes) {
+	// The view of an entity that a worker reads holds its pii fields and no secret field (ST-SUP-RC35-OC19).
+	if command.WritesSensitive(entities, writes) || command.ReadsPII(entities, reads) {
 		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
 	}
 	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
@@ -92,7 +94,7 @@ func (*Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	if m == nil {
 		return nil, &gen.Wiring{}, nil
 	}
-	entities, err := command.EntityFile(m.pkg, m.entityNames, ctx.Entities, m.tenantKey, m.relations)
+	entities, err := command.EntityFileWithViews(m.pkg, m.entityNames, m.readNames, ctx.Entities, m.tenantKey, m.relations)
 	if err != nil {
 		return nil, nil, fmt.Errorf("worker: %w", err)
 	}
@@ -127,6 +129,7 @@ type model struct {
 	tenantKey      string
 	relations      command.Relations
 	entityNames    []string // the entities that a worker writes, in declaration order
+	readNames      []string // the entities that a worker reads, in declaration order (ST-SUP-RC35-OC19)
 	workers        []*worker
 	destinations   map[string]delivery
 }
@@ -159,6 +162,9 @@ type workerList struct {
 	decl   types.WorkerList
 	goName string // the exported name in the contract, such as StaleScanOpenTickets
 	plan   command.ListPlan
+	// entity is the Go name of the entity declaration that the list reads: the entity, or its view for an entity that
+	// the worker reads (ST-SUP-RC35-OC19).
+	entity string
 }
 
 // plan checks the context and builds the model. It refuses, naming the worker, each declaration that the generated
@@ -200,7 +206,7 @@ func plan(ctx gen.Context) (*model, error) {
 	for _, e := range ctx.Entities {
 		declared[e.Name] = true
 	}
-	writes := map[string]bool{}
+	writes, reads := map[string]bool{}, map[string]bool{}
 	for _, w := range ctx.Workers {
 		p, err := m.planWorker(w, declared)
 		if err != nil {
@@ -209,11 +215,17 @@ func plan(ctx gen.Context) (*model, error) {
 		for _, name := range w.Writes {
 			writes[name] = true
 		}
+		for _, name := range w.Reads {
+			reads[name] = true
+		}
 		m.workers = append(m.workers, p)
 	}
 	for _, e := range ctx.Entities {
 		if writes[e.Name] {
 			m.entityNames = append(m.entityNames, e.Name)
+		}
+		if reads[e.Name] {
+			m.readNames = append(m.readNames, e.Name)
 		}
 	}
 	if err := m.planStagers(); err != nil {
@@ -295,12 +307,17 @@ func (m *model) planWorker(w gen.Worker, declared map[string]bool) (*worker, err
 	} else {
 		return nil, fmt.Errorf("worker: the worker %s has the trigger %q; a trigger is every <interval> or consumes <destination>", decl.Name, decl.Trigger)
 	}
-	if len(decl.Writes) == 0 {
-		return nil, fmt.Errorf("worker: the worker %s writes no entity", decl.Name)
+	if len(decl.Writes) == 0 && len(decl.Reads) == 0 {
+		return nil, fmt.Errorf("worker: the worker %s writes and reads no entity", decl.Name)
 	}
 	for _, name := range decl.Writes {
 		if !declared[name] {
 			return nil, fmt.Errorf("worker: the worker %s writes the entity %s, which the declaration does not declare", decl.Name, name)
+		}
+	}
+	for _, name := range decl.Reads {
+		if !declared[name] || slices.Contains(decl.Writes, name) {
+			return nil, fmt.Errorf("worker: the worker %s reads the entity %s, which the declaration does not declare or the worker writes (ST-DECL-INV67)", decl.Name, name)
 		}
 	}
 	if !identifier.MatchString(decl.Permission) || !identifier.MatchString(decl.ResourceType) {
@@ -339,20 +356,30 @@ func (m *model) planLists(p *worker) error {
 			return fmt.Errorf("worker: the worker %s declares the list %q, whose name is not a lower-case name or is given twice", p.decl.Name, list.Name)
 		}
 		seen[list.Name] = true
-		if !slices.Contains(p.decl.Writes, list.Entity) {
-			return fmt.Errorf("worker: the list %s of the worker %s reads %s, which the worker does not write (ST-DECL-INV94)", list.Name, p.decl.Name, list.Entity)
+		read := slices.Contains(p.decl.Reads, list.Entity)
+		if !slices.Contains(p.decl.Writes, list.Entity) && !read {
+			return fmt.Errorf("worker: the list %s of the worker %s reads %s, which the worker does not write or read (ST-DECL-INV94)", list.Name, p.decl.Name, list.Entity)
 		}
 		if _, ok := declaration.LockAtMost(byName[list.Entity]); list.Lock && !ok {
 			return fmt.Errorf("worker: the list %s of the worker %s locks rows of %s, which declares no Lock at most (ST-DECL-INV81)", list.Name, p.decl.Name, list.Entity)
 		}
-		plan, err := command.ListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key)
+		var plan command.ListPlan
+		var err error
+		entity := list.Entity
+		if read {
+			// A list over an entity that the worker reads returns its view, with no secret column (ST-SUP-RC35-OC19).
+			plan, err = command.ViewListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key, p.decl.Reads)
+			entity += "View"
+		} else {
+			plan, err = command.ListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key)
+		}
 		if err != nil {
 			return fmt.Errorf("worker: the worker %s: %w", p.decl.Name, err)
 		}
-		if err := plan.CheckChild("worker: the worker "+p.decl.Name, list.Name, list.Entity, p.decl.Writes); err != nil {
+		if err := plan.CheckChild("worker: the worker "+p.decl.Name, list.Name, list.Entity, append(append([]string(nil), p.decl.Writes...), p.decl.Reads...)); err != nil {
 			return err
 		}
-		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), plan: plan})
+		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), plan: plan, entity: entity})
 	}
 	return nil
 }
@@ -438,6 +465,14 @@ func (m *model) checkNames() error {
 	for _, name := range m.entityNames {
 		for _, n := range []string{name, name + "Entity", name + "Repository", "Loaded" + name} {
 			taken[n] = "the entity " + name
+		}
+	}
+	for _, name := range m.readNames {
+		for _, n := range []string{name + "View", name + "ViewEntity", name + "Reader", "Loaded" + name + "View"} {
+			if other, ok := taken[n]; ok {
+				return fmt.Errorf("worker: %s and the view of the entity %s both need the Go name %s", other, name, n)
+			}
+			taken[n] = "the view of the entity " + name
 		}
 	}
 	taken["Refused"] = "the refusal helper"
@@ -550,7 +585,7 @@ func renderContract(m *model) []byte {
 	for _, wk := range m.workers {
 		names := make([]string, len(wk.lists))
 		for i, l := range wk.lists {
-			command.RenderList(&w.Buffer, l.goName, l.decl.Name, "the worker "+wk.decl.Name, l.decl.Entity, l.plan)
+			command.RenderList(&w.Buffer, l.goName, l.decl.Name, "the worker "+wk.decl.Name, l.entity, l.plan)
 			names[i] = l.goName
 		}
 		command.RenderDeclaredLists(&w.Buffer, wk.goName, "the worker "+wk.decl.Name, names)
@@ -595,6 +630,12 @@ func renderRunners(m *model) []byte {
 		}
 		w.f("%s.%sEntity", m.pkg, name)
 	}
+	for i, name := range m.readNames {
+		if i > 0 || len(m.entityNames) > 0 {
+			w.f(", ")
+		}
+		w.f("%s.%sViewEntity", m.pkg, name)
+	}
 	w.f("}\n}\n\n")
 	w.f("// Names are the names of the declared workers, the values of the field worker of the built-in worker\n// observations and the subjects of the worker tuples of each tenant (ST-SUP-RC35-OC13).\nfunc Names() []string {\n\treturn []string{")
 	for i, wk := range m.workers {
@@ -626,6 +667,36 @@ func renderRunners(m *model) []byte {
 				}
 				seen[name] = true
 				w.f("%q", command.TableName(name))
+			}
+		}
+	}
+	w.f("}\n}\n\n")
+	w.f("// ConsumerReadTables are the tables of the entities that the workers with a consumes trigger only read, by table, with\n// the columns of their views, which the migration job grants the worker role SELECT on, and nothing more\n// (ST-SUP-RC35-OC19).\nfunc ConsumerReadTables() map[string][]string {\n\treturn map[string][]string{")
+	first = true
+	for _, name := range m.readNames {
+		if seen[name] {
+			continue
+		}
+		for _, wk := range m.workers {
+			if wk.consumes != "" && slices.Contains(wk.decl.Reads, name) {
+				if !first {
+					w.f(", ")
+				}
+				first = false
+				seen[name] = true
+				var e types.Entity
+				for _, d := range m.ctx.Entities {
+					if d.Name == name {
+						e = d
+					}
+				}
+				cols := command.ViewColumns(e, m.tenantKey)
+				quoted := make([]string, len(cols))
+				for i, c := range cols {
+					quoted[i] = strconv.Quote(c)
+				}
+				w.f("%q: {%s}", command.TableName(name), strings.Join(quoted, ", "))
+				break
 			}
 		}
 	}
@@ -714,6 +785,17 @@ func renderWorker(w *writer, m *model, wk *worker) {
 		w.f("%s.%sEntity", m.pkg, name)
 	}
 	w.f("},\n")
+	if len(wk.decl.Reads) > 0 {
+		// The worker reads these entities through ReadRepo only, with no secret field (ST-SUP-RP10-LC53).
+		w.f("\tReads: []command.Declared{")
+		for i, name := range wk.decl.Reads {
+			if i > 0 {
+				w.f(", ")
+			}
+			w.f("%s.%sViewEntity", m.pkg, name)
+		}
+		w.f("},\n")
+	}
 	// With kafka-producer, the handle stages the change event of each write in RunWorker and RunConsumer
 	// (ST-SUP-RC35-OC14).
 	w.f("%s", command.ChangeEventsSpec(m.ctx, wk.decl.Writes))

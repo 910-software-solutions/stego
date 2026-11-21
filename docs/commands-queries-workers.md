@@ -1400,6 +1400,33 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.176.0
+
+- A worker can declare `reads: [Entity]`. Its fill gets a read-only
+  repository `<Entity>Reader`, of the new type `command.Reader`, with `Get` and
+  `List` only, and values `<Entity>View` with no secret field
+  (ST-SUP-RP10-LC53, ST-SUP-RC35-OC19, decision ST-SUP-Q186 (a)). New field
+  `command.WorkerSpec.Reads`, new field `command.EntitySpec.ReadOnly`, new
+  function `command.ReadRepo` and new field
+  `service.WorkerParts.ConsumerReadTables`, which the generated code fills. The
+  migration job gives the worker role of a consuming worker only `SELECT` on
+  the columns that the view reads.
+- A compare-only secret with `attempts: {limit: N}` has a limit of wrong
+  checks. The runtime charges each check in its own table `attempt_counts`
+  before it checks the value, so the count stays after a refusal and parallel
+  checks stop at the limit. A charge that cannot commit answers 503
+  (ST-SUP-RP10-LC54, decision ST-SUP-Q185 (a)). New `command.CounterSpec`,
+  `command.NewCounter`, `command.CountedAt`, `command.HashCountedOf`,
+  `idempotency.AttemptsTable`, `sealed.Counter`, `sealed.CountedBy` and
+  `sealed.Compared.IsNew`. See [Limit the wrong
+  attempts](fills.md#limit-the-wrong-attempts).
+- An entity with `events: {fields: [...]}` puts the declared fields of the row,
+  as `data`, and their version, as `data_version`, in each change event
+  (ST-SUP-RP10-LC55, decision ST-SUP-Q184 (c)). New fields
+  `command.EntitySpec.EventData` and `EventVersion`, and the functions
+  `command.EventValue` and `command.JSONValue`. See [The fields of a change
+  event](fills.md#the-fields-of-a-change-event).
+
 ### Release notes for runtime v0.139.0
 
 - A fill that returns `command.ErrNotFound` answers 404 with the code
@@ -1840,4 +1867,6 @@ and passed.
 
 Upgrade: a project whose fills of commands, queries or workers have no
 signed evidence is refused at plan. Run `stego test`, then
-`stego fill sign <name>` for each fill that plan names.
+`stego fill sign <name>` for each fill that plan names. `stego fill sign` keeps a
+sign-off that already covers the current evidence with a key that `SIGNERS`
+lists, and writes nothing; give `--force` to sign it again with your key.

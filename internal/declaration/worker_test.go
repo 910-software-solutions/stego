@@ -110,6 +110,18 @@ func TestWorkerWrites(t *testing.T) {
 	t.Run("ST-DECL-INV67-T A worker that writes Order and Invoice, which is not declared, is refused", func(t *testing.T) {
 		wantFault(t, workerFaults(t, with("[Order, Invoice]"), "worker-writes"), `"sync-partner-orders"`, `"Invoice"`)
 	})
+	reads := func(writes, reads string) string {
+		return workers(worker("sync-partner-orders", "trigger: every 1m", "writes: "+writes, "reads: "+reads, "fill: sync"))
+	}
+	t.Run("ST-DECL-INV67-T A worker that only reads Order is accepted", func(t *testing.T) {
+		wantNoFault(t, workerFaults(t, reads("[]", "[Order]")))
+	})
+	t.Run("ST-DECL-INV67-T A worker that writes Order and reads Invoice, which is not declared, is refused", func(t *testing.T) {
+		wantFault(t, workerFaults(t, reads("[Order]", "[Invoice]"), "worker-reads"), `"sync-partner-orders"`, `"Invoice"`)
+	})
+	t.Run("ST-DECL-INV67-T A worker that writes and reads Order is refused", func(t *testing.T) {
+		wantFault(t, workerFaults(t, reads("[Order]", "[Order]"), "worker-reads"), `"sync-partner-orders"`, `"Order"`, "both")
+	})
 }
 
 func TestWorkerFill(t *testing.T) {
@@ -349,6 +361,15 @@ func TestWorkerLists(t *testing.T) {
 			wantFault(t, workerFaults(t, commandLists(c.lists), "command-list", "worker-list"), `command "place-orders"`, `list "`, c.names)
 		})
 	}
+	readOrders := func(list string) string {
+		return strings.Replace(strings.Replace(listOrders(list), "writes: [Order]", "writes: []\n    reads: [Order]", 1), "scan-orders", "report-orders", 1)
+	}
+	t.Run("ST-DECL-INV94-T A list of an entity that the worker reads is accepted", func(t *testing.T) {
+		wantNoFault(t, workerFaults(t, readOrders("- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}")))
+	})
+	t.Run("ST-DECL-INV94-T A locked list of an entity that the worker reads is refused", func(t *testing.T) {
+		wantFault(t, workerFaults(t, readOrders("- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}]}"), "worker-list"), `"report-orders"`, `"due"`, "only reads")
+	})
 	t.Run("ST-DECL-INV94-T A locked list of an entity with no Lock at most is refused", func(t *testing.T) {
 		service := strings.Replace(listOrders("- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}]}"), "    lock_at_most: 50\n", "", 1)
 		wantFault(t, workerFaults(t, service, "worker-list"), `"scan-orders"`, `"due"`, "Lock at most")
@@ -402,7 +423,7 @@ func TestChildLists(t *testing.T) {
 		"a list of an entity with no authorization":  list("Note", types.ListTerm{Field: "body", Op: types.ListIsSet}),
 	} {
 		t.Run("ST-DECL-INV94-T "+name+" is accepted", func(t *testing.T) {
-			wantNoFault(t, validateLists("command", "place-order", "commands[0]", writes, lists, entities))
+			wantNoFault(t, validateLists("command", "place-order", "commands[0]", writes, nil, lists, entities))
 		})
 	}
 	for name, c := range map[string]struct {
@@ -420,9 +441,15 @@ func TestChildLists(t *testing.T) {
 			"needs a reference to an entity with a resource type, and Note has none"},
 	} {
 		t.Run("ST-DECL-INV94-T "+name+" is refused", func(t *testing.T) {
-			wantFault(t, validateLists("command", "place-order", "commands[0]", writes, c.lists, entities), `command "place-order"`, `list "rows"`, c.want)
+			wantFault(t, validateLists("command", "place-order", "commands[0]", writes, nil, c.lists, entities), `command "place-order"`, `list "rows"`, c.want)
 		})
 	}
+	t.Run("ST-DECL-INV94-T A child list of a worker that reads Line and Order is accepted", func(t *testing.T) {
+		wantNoFault(t, validateLists("worker", "report-orders", "workers[0]", nil, []string{"Order", "Line"}, list("Line", parent), entities))
+	})
+	t.Run("ST-DECL-INV94-T A child list whose parent the worker does not write or read is refused", func(t *testing.T) {
+		wantFault(t, validateLists("worker", "report-orders", "workers[0]", nil, []string{"Line"}, list("Line", parent), entities), `worker "report-orders"`, `list "rows"`, "does not write or read")
+	})
 }
 
 // TestWorkerRootCreate proves ST-SUP-RP10-LC17-T03: checking warns for each entity that a worker can create with no
