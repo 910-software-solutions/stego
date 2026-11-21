@@ -1428,11 +1428,14 @@ worker mode, which runs the relay, runs.
 
 - The charges of the checks of counted compare-only secrets of one tenant use
   at most half of the connections of the pool of the charges at one time, and
-  at least one. A charge of a tenant that uses its half waits for a slot of
-  that tenant, not for a connection that another tenant needs. Before, the
-  checks of one tenant could fill the pool of 4 connections, and the checks of
-  the other tenants waited up to 5 s and answered 503 (ST-SUP-RP10-LC54,
-  security review of PR #481, L1).
+  at least one. The charges of all the tenants use at most all but one
+  connection, and only a tenant with no charge in flight can take the last
+  one. A charge waits for a slot, not for a connection that another tenant
+  needs. Before, the checks of one tenant could fill the pool of 4
+  connections, and the checks of the other tenants waited up to 5 s and
+  answered 503 (ST-SUP-RP10-LC54, security review of PR #481, L1, and of PR
+  #482, L1). `command.New` writes the warn line `command.attempts.pool_small`
+  for a pool of the charges of fewer than 3 connections or with no bound.
 - The error line `command.attempts.failed` comes at most once in 10 s for
   each action, entity and cause class, with the new attribute
   `stego.held_back` (`held_back` with no log provider), the count of the lines

@@ -575,9 +575,12 @@ gives to the count of its row:
   the counts is in use, the runtime writes the warn line
   `command.attempts.pool_saturated`, with no value.
 - The counts of one tenant use at most half of the connections of that pool
-  at one time. A count of a tenant that uses its half waits for one of its
-  own connections, so the checks of one tenant do not make the checks of
-  another tenant wait (runtime v0.181.0).
+  at one time, and the counts of all tenants use at most all but one. Only a
+  tenant with no count in flight can take the last connection. Thus the
+  checks of one or two tenants do not make the checks of another tenant wait
+  (runtime v0.181.0). The runtime writes the warn line
+  `command.attempts.pool_small` when it starts with a pool of the counts of
+  fewer than 3 connections or with no bound.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.

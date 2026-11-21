@@ -552,7 +552,7 @@ func TestAttemptPools(t *testing.T) {
 			t.Fatalf("the pool of the charges has %d open connections, want the one of the charges", got)
 		}
 	})
-	t.Run("ST-SUP-RP10-LC54-T09 The charges of one tenant hold at most half of the pool of the charges, so another tenant's check runs", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T09 The charges of one or two tenants never hold the whole pool of the charges, so a third tenant's check runs", func(t *testing.T) {
 		const walletID, right = "0198a1b2-0000-7000-8000-000000000004", "4711"
 		e := newEnv(t)
 		pinWallets(t, e, walletID, right)
@@ -560,21 +560,42 @@ func TestAttemptPools(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) VALUES ('t2', $1, 100, $2)`, walletID, hash); err != nil {
-			t.Fatal(err)
+		for _, id := range []string{"t2", "t3"} {
+			if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) VALUES ($1, $2, 100, $3)`, id, walletID, hash); err != nil {
+				t.Fatal(err)
+			}
 		}
 		wallets := pinWalletEntity(t)
+		// A pool of the charges of fewer than 3 connections is warned of when the runtime starts.
+		var logs lockedBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		small := e.openPool(e.dsn(e.roles[0]))
+		small.SetMaxOpenConns(2)
+		e.runtime(func(c *Config) { c.ChargeDB = small })
+		slog.SetDefault(previous)
+		if text := logs.String(); !strings.Contains(text, PoolSmallEvent) || !strings.Contains(text, "max_open=2") {
+			t.Fatalf("a pool of the charges of 2 connections logged %q, want %s with max_open=2", text, PoolSmallEvent)
+		}
 		chargeDB := e.openPool(e.dsn(e.roles[0]))
 		chargeDB.SetMaxOpenConns(4)
 		rt := e.runtime(func(c *Config) { c.Entities, c.ChargeDB = []Declared{wallets}, chargeDB })
-		// The charges of t1 keep their connection until release closes; begun counts those that have one.
+		// The charges of t1 and t2 keep their connection until release closes; begun counts those that have one.
 		release := make(chan struct{})
-		var begun atomic.Int32
+		var mu sync.Mutex
+		begun := map[string]int{}
 		rt.chargeBegun = func(id string) {
-			if id == "t1" {
-				begun.Add(1)
+			if id == "t1" || id == "t2" {
+				mu.Lock()
+				begun[id]++
+				mu.Unlock()
 				<-release
 			}
+		}
+		began := func() (int, int) {
+			mu.Lock()
+			defer mu.Unlock()
+			return begun["t1"], begun["t2"]
 		}
 		cmd := e.command("withdraw", nil, wallets)
 		check := func(tenantID, key, pin string) error {
@@ -595,31 +616,44 @@ func TestAttemptPools(t *testing.T) {
 			return err
 		}
 		const flood = 4
-		results := make(chan error, flood)
+		results := make(chan error, 2*flood)
 		for i := range flood {
-			go func() { results <- check("t1", fmt.Sprintf("flood-%d", i), "0000") }()
+			go func() { results <- check("t1", fmt.Sprintf("flood-1-%d", i), "0000") }()
 		}
-		// Each check of t1 has a connection or waits for a slot of t1.
-		for begun.Load() < flood && (begun.Load() < 2 || rt.chargeSlots.waiting("t1") < flood) {
+		// t1 holds its two slots before t2 floods too, so the order of the two floods is fixed.
+		for n, _ := began(); n < 2; n, _ = began() {
 			runtime.Gosched()
 		}
-		if n := begun.Load(); n != 2 {
-			close(release)
-			t.Fatalf("%d charges of t1 hold a connection of the pool of 4, want 2", n)
+		for i := range flood {
+			go func() { results <- check("t2", fmt.Sprintf("flood-2-%d", i), "0000") }()
 		}
-		// The check of t2 gets a connection while the charges of t1 hold theirs.
-		if err := check("t2", "other", right); err != nil {
+		// Each check of t1 and t2 has a connection or waits for a slot.
+		for {
+			n1, n2 := began()
+			if n1+n2+rt.chargeSlots.blocked("t1")+rt.chargeSlots.blocked("t2") == 2*flood {
+				break
+			}
+			runtime.Gosched()
+		}
+		if n1, n2 := began(); n1 != 2 || n2 != 1 {
 			close(release)
-			t.Fatalf("the check of t2 behind the charges of t1 gave %v, want the match", err)
+			t.Fatalf("t1 and t2 hold %d and %d connections of the pool of 4, want 2 and 1, so one stays free", n1, n2)
+		}
+		// The check of t3 gets the last connection while the charges of t1 and t2 hold theirs.
+		if err := check("t3", "other", right); err != nil {
+			close(release)
+			t.Fatalf("the check of t3 behind the charges of t1 and t2 gave %v, want the match", err)
 		}
 		close(release)
-		for range flood {
+		for range 2 * flood {
 			if err := <-results; err == nil || errors.Is(err, ErrUnavailable) {
-				t.Fatalf("a check of t1 gave %v, want the refusal of the wrong PIN", err)
+				t.Fatalf("a check of t1 or t2 gave %v, want the refusal of the wrong PIN", err)
 			}
 		}
-		if n := rt.chargeSlots.waiting("t1"); n != 0 {
-			t.Fatalf("the slots of t1 keep %d charges after the checks, want none", n)
+		for _, id := range []string{"t1", "t2", "t3"} {
+			if n := rt.chargeSlots.waiting(id); n != 0 {
+				t.Fatalf("the slots of %s keep %d charges after the checks, want none", id, n)
+			}
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T07 A charge ends at its lock timeout behind a reset, and a full pool of the charges is logged with no value", func(t *testing.T) {

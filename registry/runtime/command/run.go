@@ -262,6 +262,7 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	if cfg.Logger != nil {
 		rt.logger = cfg.Logger.Logger("github.com/jsell-rh/stego/registry/runtime/command")
 	}
+	rt.warnSmallChargePool()
 	return rt, nil
 }
 
