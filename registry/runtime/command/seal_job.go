@@ -512,15 +512,21 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 			result.Waits = true
 			return result, nil
 		}
+		// A start that waits commits too: its first start in this database sets the guard time of the row, which a
+		// dump does not carry (security review of PR #470, sec-470).
 		err := inTx(ctx, held, func(tx *sql.Tx) error {
-			return lease.SealCheckpoint(ctx, tx, held, c.Change, "", "", 0, 0, true)
+			err := lease.SealCheckpoint(ctx, tx, held, c.Change, "", "", 0, 0, true)
+			if errors.Is(err, lease.ErrSealWaiting) {
+				result.Waits = true
+				return nil
+			}
+			return err
 		})
-		if errors.Is(err, lease.ErrSealWaiting) {
-			result.Waits = true
-			return result, nil
-		}
 		if err != nil {
 			return result, err
+		}
+		if result.Waits {
+			return result, nil
 		}
 		state = lease.SealState{Started: true}
 	}

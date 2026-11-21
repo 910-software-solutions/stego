@@ -310,6 +310,28 @@ func TestSealStep(t *testing.T) {
 		}
 		n.noSecretOutside(secret)
 	})
+	t.Run("ST-SUP-RP10-LC50-T04 After a restore the seal job waits 3 minutes from its first run in this database before a pass", func(t *testing.T) {
+		n := newNoteEnv(t)
+		n.exec(fmt.Sprintf(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '%s', 'x', '%s-restored')`, uuid.NewString(), secret))
+		// The row comes from a dump of another database: ten minutes old, and seen last in another instance.
+		n.exec(`UPDATE stego_schema.seals SET armed_in = '1/20261101000000000000', armed_at = clock_timestamp() - interval '9 minutes'`)
+		for run := range 2 {
+			results, err := n.job().Run(n.ctx)
+			if err != nil || len(results) != 1 || !results[0].Waits || results[0].Checked != 0 {
+				t.Fatalf("run %d of the job on a restored seal gave %+v, %v, want it to wait", run, results, err)
+			}
+		}
+		// The first run committed the guard time of this database: it is not the one of the dump.
+		if fresh := n.count(`SELECT count(*) FROM stego_schema.seals WHERE armed_in = stego_schema.seal_instance() AND armed_at > clock_timestamp() - interval '1 minute'`); fresh != 1 {
+			t.Fatalf("%d seal rows hold a guard time of this database after the first run, want 1", fresh)
+		}
+		n.exec(`UPDATE stego_schema.seals SET armed_at = armed_at - interval '4 minutes'`)
+		results, err := n.job().Run(n.ctx)
+		if err != nil || !results[0].Completed || results[0].Sealed != 1 {
+			t.Fatalf("the run 3 minutes after the first sight gave %+v, %v, want the pass completed", results, err)
+		}
+		n.noSecretOutside(secret)
+	})
 }
 
 // TestSealContract holds the release of the expand step of a seal after its contract step (walkthrough 14, W14-B6
