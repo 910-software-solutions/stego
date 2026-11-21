@@ -118,15 +118,28 @@ runtime v0.165.0, except for the cases below.
   the problem names the member, such as `carrier` or `address.zip`, as for a
   collection write. Before 3.245.0, the problem of a command did not name the
   member: look for the member in the body that the client sent.
-- **An idempotency key that is not a structured string.** From 3.235.0, a
-  request whose `Idempotency-Key` header is there, but is not one structured
-  string of 1 to 255 characters, gets 400 with the problem type
-  `idempotency-key-invalid`, and the write changes nothing. A gRPC command
-  gives the message `idempotency-key-invalid`. Before, such a key got
-  `idempotency-key-missing`, which is now only for a request with no header.
-  Send the key in double quotes, such as `"k-1"`. A client of the release
-  before that reads only `idempotency-key-missing` must also read the new
-  type.
+- **An idempotency key that is not a structured string.** A request whose
+  `Idempotency-Key` header is there, but is not one structured string of 1 to
+  255 characters, gets 400 with the problem type `idempotency-key-invalid`,
+  and the write changes nothing. A gRPC command gives the message
+  `idempotency-key-invalid`. The release that gives it depends on the
+  request:
+  - A command, and a collection write of a service with an `idempotency`
+    setting: from 3.235.0. Before, such a key got `idempotency-key-missing`,
+    which is now only for a request with no header.
+  - A collection create or patch of a service with no `idempotency` setting:
+    from 3.242.0, and a key used with another body gets 422 with
+    `idempotency-key-reused`. Before 3.242.0, the problem type of both was
+    `about:blank`.
+  - A collection create or patch whose body is not valid too: from 3.243.0
+    the key is checked first. Before, the body check answered first, with
+    `validation-error`.
+
+  The member `code` of the problem does not change: it stays
+  `<SVC>-VAL-001` for the 400 and `<SVC>-INT-001` for the 422. Send the key
+  in double quotes, such as `"k-1"`. A client of the release before that reads
+  only `idempotency-key-missing` or `about:blank` must also read the new
+  types; a client that reads only `code` sees no change.
 - **A repeated apply of the CLI.** From 3.235.0, an apply of the same
   document, whose values the service already stores, reports `unchanged` and
   sends no patch. A CLI of the release before reports `configured` and sends
@@ -155,6 +168,18 @@ runtime v0.165.0, except for the cases below.
     its answer to standard output.
   - A client that you built before a retype sends and reads the old JSON
     type of the field.
+  - A TypeScript SDK before typescript-sdk 1.4.0 (rest-crud 3.245.0) never
+    sets `SDKError.apiCode` for the refusal of a command, which answers
+    `application/problem+json`, and refuses an error code with a dot in
+    `error_codes`, such as `shipment.not_draft`. Such a client reads only
+    `status` and `code` of the error. Build it again, and list the codes that
+    the UI needs under `overrides.typescript-sdk.error_codes`.
+  - A TypeScript SDK before typescript-sdk 1.5.0 (rest-crud 3.250.0) gives
+    only `status`, `body` and `etag` in its result. It does not give
+    `authzRevocationLocation`, so a page cannot send `authzRevocationAfter`
+    on a write right after a create, and such a write can get 404 for about
+    one second. Build it again (see [the README of the
+    component](../registry/components/typescript-sdk/README.md)).
   - A TypeScript SDK that you built before the expand step of a seal fails
     each read and each list of the entity with `invalid_response`, because
     its schema requires the sealed field, and the new release does not give
@@ -214,7 +239,7 @@ archetype does not have the change.
 | 3.242.0 | 1.242.0 | 1.242.0 | rest-api 4.33.0 and postgres-adapter 6.22.0; no runtime change. A service whose history holds the expand step of a seal that postgres-adapter 6.14.0 to 6.20.0 wrote upgrades again: `stego plan --base`, `stego apply --base` and `stego compat` accept the earlier body of that step, with the functions of the seal checkpoints in it, because the release registers its digest as an earlier digest of the same migration. Before, they refused it with ST-GEN-INV38. Every other change of a released body is still refused. With no `idempotency` setting, a create or a patch with a malformed `Idempotency-Key` now gets 400 with the problem type `<problem base>idempotency-key-invalid`, and a key used with another body `idempotency-key-reused`, as a command does; before, the type was `about:blank` with the code `<SVC>-VAL-001`. A client that reads the type of these answers sees the new types. When the ledger of a database is not the history of the release, such as a shared preview database that ran the build of a branch, the migration Job logs a line that names the ledger row, the migration and the remedy. `stego test` now exits non-zero when it records no evidence for a fill, such as for a fill with no test file or a refused import, so a CI step of `stego test` fails then. | No change is needed: run step 3 with `--base <running tag>`, then the migration Job. A client that tells the faults of a key apart by the problem type reads the new types on a create and a patch. For a refused ledger, read the line of the Job and restore or make again the database that it names. When `stego test` fails with no evidence, correct each fill that its line names, then run `stego test` again. |
 | 3.243.0 | 1.243.0 | 1.243.0 | Runtime v0.177.0 and rest-api 4.34.0. A collection create or patch reads the `Idempotency-Key` header before the body, as a command does: a key that is not one structured string of 1 to 255 characters gets 400 with the problem type `idempotency-key-invalid`, also when the body is not valid, and an absent key that the service requires `idempotency-key-missing`. Before, the body check answered first. `worker.run.failed` and `command.consumer.run_failed` give the cause `fill_json`, `fill_parse` or `fill_canceled` for a fill error of `encoding/json`, of `strconv` or `time`, or of a canceled context, read from its type and never its text; `fill_error` stays for another error. The failure record of a migration Job step that SpiceDB failed gives the cause class of its status code, such as `unavailable`. | A client that sends a malformed key and a body that is not valid now reads `idempotency-key-invalid` first. A dashboard or an alert that counts `worker.run.failed` with the cause `fill_error` also counts `fill_json`, `fill_parse` and `fill_canceled`. A fill that must tell an operator more logs its own context with `log/slog`, names and counts only (see [A failed run of a consuming worker](commands-queries-workers.md#a-failed-run-of-a-consuming-worker)). |
 | 3.244.0 | 1.244.0 | 1.244.0 | Runtime v0.178.0 and postgres-adapter 6.23.0. Each process opens a small pool of its own, of at most 4 connections, for the charges of checks of a compare-only secret with `attempts`; a fill that holds the last connection of the main pool no longer makes its check wait 5 s and answer 503. A rerun of a command in the same request, such as after a conflict, does not count again the checks that an earlier attempt counted. `sealed.Compared.Stored` gives the error `sealed.ErrCounted` for a value of a field with `attempts` that a read gave, and no hash. The migration Job adds the columns and the default of `stego_schema.seals` only when they are not there, so it no longer takes an `ACCESS EXCLUSIVE` lock on that table at each run, and the check of the contract step of a seal puts the seal functions of the release in place in its own transaction. | Give the database at least one more connection for each process of the service, and at most 4 more under load, in `max_connections` or the connection limit of the pooler. A fill that calls `Stored` on such a value, such as to compare the hash itself, calls `Matches` instead. |
-| 3.245.0 | 1.245.0 | 1.245.0 | Runtime v0.179.0 and typescript-sdk 1.4.0. A command whose JSON body holds a member that its request message does not take gets 400 `bad-request` as before, and now the member `field` of the problem names the member, such as `carrier` or `address.zip`, at most 128 bytes and no value, as a collection write names it. A check of a counted secret whose charge cannot commit, which answers 503, now logs `command.attempts.failed` through the log provider of the runtime, in the same JSON format as each other line, with `stego.action`, `stego.entity` and the cause class `stego.cause` (`unavailable`, `deadline`, `canceled` or `internal`); before, it was a plain-text line with no cause. The TypeScript SDK reads the code of an error answer of the media type `application/problem+json` too, as a command refusal gives it, and `error_codes` takes a code with a dot, such as `shipment.not_draft`; before, `SDKError.apiCode` of a declared refusal was never set. `stego fill sign` with a key that `SIGNERS` does not list still signs, now prints a warning that names the fix, and writes the fingerprint of the key as the signer, not the path of the key file. | A client that reads the problem of a refused command body can read the member in `field`. A log alert on `command.attempts.failed` reads the JSON line and its attributes. To get `apiCode` of a refusal in the TypeScript SDK, list its code under `overrides.typescript-sdk.error_codes`, and build the SDK again. An author outside `SIGNERS` follows [When the author of a fill is not in SIGNERS](../README.md#when-the-author-of-a-fill-is-not-in-signers). |
+| 3.245.0 | 1.245.0 | 1.245.0 | Runtime v0.179.0 and typescript-sdk 1.4.0. A command whose JSON body holds a member that its request message does not take gets 400 `bad-request` as before, and now the member `field` of the problem names the member, such as `carrier` or `address.zip`, at most 128 bytes and no value, as a collection write names it. A check of a counted secret whose charge cannot commit, which answers 503, now logs `command.attempts.failed` through the log provider of the runtime, in the same JSON format as each other line, with `stego.action`, `stego.entity` and the cause class `stego.cause` (`unavailable`, `deadline`, `canceled` or `internal`, and from 3.246.0 also `lock_timeout` for a charge that waited 1 s for a lock); any other cause, such as a grant of `attempt_counts` that the database revoked, is `internal`. Before, it was a plain-text line with no cause. Until 3.250.0, a generated service gave its commands and collections no log provider, so the line stayed plain text in a service; from 3.250.0 it is JSON. The TypeScript SDK reads the code of an error answer of the media type `application/problem+json` too, as a command refusal gives it, and `error_codes` takes a code with a dot, such as `shipment.not_draft`; before, `SDKError.apiCode` of a declared refusal was never set. `stego fill sign` with a key that `SIGNERS` does not list still signs, now prints a warning that names the fix, and writes the fingerprint of the key as the signer, not the path of the key file. | A client that reads the problem of a refused command body can read the member in `field`. A log alert on `command.attempts.failed` reads the JSON line and its attributes. To get `apiCode` of a refusal in the TypeScript SDK, list its code under `overrides.typescript-sdk.error_codes`, and build the SDK again. An author outside `SIGNERS` follows [When the author of a fill is not in SIGNERS](../README.md#when-the-author-of-a-fill-is-not-in-signers). |
 | 3.246.0 | 1.246.0 | 1.246.0 | Runtime v0.180.0. The runtime writes the value of a field with `attempts` that a read gave only into that field of that row; a fill that gives it to a compare-only field with no `attempts`, or to another row, gets an internal error (500) and the command commits nothing. A rerun of a command does not count again only the checks of the same stored value, so a new value that a reset wrote between two attempts gets its own counts. A charge of a check waits at most 1 s for a lock, and then the command answers 503. A full pool of the charges writes the warn line `command.attempts.pool_saturated`, with no value. | A fill that copies the value of a field with `attempts` to another field or row gives a new value with `sealed.ComparedOf` instead. Alert on `command.attempts.pool_saturated` if you want to know when the pool of the charges is too small. |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 

@@ -571,9 +571,17 @@ gives to the count of its row:
   v0.180.0). To give a row a PIN, give it a new value with `sealed.ComparedOf`.
 - A count waits at most 1 s for a lock, such as behind a command that resets
   the count and has not committed. Then `Matches` gives `false` and the command
-  answers 503 (runtime v0.180.0). When each connection of the small pool of
-  the counts is in use, the runtime writes the warn line
-  `command.attempts.pool_saturated`, with no value.
+  answers 503 (runtime v0.180.0), and the runtime writes the error line
+  `command.attempts.failed` with the cause `lock_timeout`. When each
+  connection of the small pool of the counts is in use, the runtime writes the
+  warn line `command.attempts.pool_saturated`, with no value. Each line is a
+  JSON line of the log provider, with its attributes under `stego.`
+  (rest-crud 3.250.0).
+- Commands that check one row at the same time also wait for the lock of the
+  row that the read of the first takes, such as with `GetForUpdate`, before
+  their count. That wait is not the 1 s of the count: a command that waits
+  too long for the row gets 409 `conflict`, in walkthrough 21 after 2 to 4 s.
+  Send it again with the same idempotency key.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.

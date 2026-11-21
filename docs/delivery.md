@@ -311,12 +311,23 @@ record never holds the error text. It gives:
 
 - `stage`: the step that failed, such as `migrate.ledger_check` or `migrate.authorization_schema`.
 - `cause`: a fixed class of the cause, when the Job knows one. For the database, the class of its SQLSTATE, such as
-  `lock_timeout` or `authentication_failed`, with the SQLSTATE in `sqlstate`. For the network or a file, a class
-  such as `connection_refused`, `name_not_resolved`, `timeout` or `file_not_found`. For a call to SpiceDB, the class
-  of its gRPC status code: `unavailable` (SpiceDB is not there or refused the connection), `timeout`, `canceled`,
-  `authentication_failed` (the key is wrong), `permission_denied`, `insufficient_resources`,
-  `precondition_failed`, `invalid_argument`, `not_found`, `unimplemented`, or `provider_error` for another code.
-- `fault`, `object` and `remedy`: for a refused check, its fault class, the object and what to do.
+  `lock_timeout`, `authentication_failed`, `database_starting`, or `crash_shutdown` after a restart of the
+  database server, with the SQLSTATE in `sqlstate`. For the network or a file, a class such as
+  `connection_refused`, `connection_closed` (the connection ended in the middle of a message), `name_not_resolved`,
+  `timeout` or `file_not_found`. For a call to SpiceDB, the class of its gRPC status code: `unavailable` (SpiceDB is
+  not there or refused the connection), `timeout`, `canceled`, `authentication_failed` (the key is wrong),
+  `permission_denied`, `insufficient_resources`, `precondition_failed`, `invalid_argument`, `not_found`,
+  `unimplemented`, or `provider_error` for another code. For a check that refused the step, `refused`.
+- `fault`, `object` and `remedy`: for a refused check, its fault class, the object and what to do, such as
+  `migration_ledger.digest` with `stego_schema.migrations` at the stage `migrate.ledger_check`, or
+  `schema_change.seal_pending` with `stego_schema.seals` at the stage `migrate.tables`. The line
+  `migrate: the step is refused` before the record, a JSON line with the event name `migrate.step.refused`, names
+  the migration or the change in its attribute `stego.refusal`.
+
+A start of the service whose database pool did not open gives the stage `service.start.database`, the fault
+`database.connection`, `database.settings` or `database.runtime_role`, the object `database`, a remedy and a cause,
+such as `connection_closed` while the database server restarts. A pod that stops so starts again; when it does not
+pass, do what the remedy says.
 
 For example, a Job whose SpiceDB refused the connection writes
 `{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","cause":"unavailable"}`
