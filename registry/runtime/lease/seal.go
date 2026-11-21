@@ -33,6 +33,7 @@ ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz N
 CREATE OR REPLACE FUNCTION stego_schema.seal_instance()
  RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
  AS $stego_seal$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
+  || '/' || 'stego_schema.seals'::pg_catalog.regclass::pg_catalog.oid::text || '/' || pg_catalog.pg_relation_filenode('stego_schema.seals'::pg_catalog.regclass)::text
   FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$stego_seal$;
 REVOKE ALL ON FUNCTION stego_schema.seal_instance() FROM PUBLIC;
 ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
@@ -45,8 +46,8 @@ CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  AS $stego_seal$SELECT s.last_tenant, s.last_id::text, s.sealed_rows, s.checked_rows, s.pass_started IS NOT NULL, s.completed_at IS NOT NULL,
   GREATEST(s.created_at, s.armed_at) + interval '3 minutes' > pg_catalog.clock_timestamp() OR EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()),
-  s.pass_started IS NOT NULL AND EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
-   AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started)
+  s.pass_started IS NOT NULL AND (s.armed_in IS DISTINCT FROM stego_schema.seal_instance() OR EXISTS (SELECT 1 FROM stego_schema.releases r
+   WHERE r.release COLLATE "C" < s.expand COLLATE "C" AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started))
   FROM stego_schema.seals s WHERE s.change_id = $1$stego_seal$;
 CREATE OR REPLACE FUNCTION stego_schema.seal_checkpoint(text, text, uuid, bigint, bigint, boolean, text, text, bigint)
  RETURNS integer LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
@@ -57,7 +58,8 @@ BEGIN
     RETURN 0;
   END IF;
   IF $6 THEN
-    UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp()
+    UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp(),
+     last_tenant = NULL, last_id = NULL, sealed_rows = 0, checked_rows = 0, pass_started = NULL, completed_at = NULL
      WHERE s.change_id = $1 AND s.token <= $9 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance();
     IF FOUND THEN
       RETURN -1;
@@ -85,7 +87,8 @@ BEGIN
   IF NOT FOUND THEN
     RETURN 0;
   END IF;
-  IF EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
+  IF EXISTS (SELECT 1 FROM stego_schema.seals s WHERE s.change_id = $1 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance())
+   OR EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
    WHERE s.change_id = $1 AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started) THEN
     UPDATE stego_schema.seals s SET last_tenant = NULL, last_id = NULL, pass_started = NULL, completed_at = NULL, token = $4
      WHERE s.change_id = $1 AND s.token <= $4;
@@ -120,19 +123,26 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 // review of PR #443, L1) and whether one reported itself after the start of the pass
 // (stale); seal_checkpoint starts a pass, which it refuses with -1 while such a release reports itself, or moves its
 // position. A restore keeps created_at from the dump, so the row also keeps the database instance where a start
-// last saw it, armed_in (the OID of the database and the start time of the server, seal_instance), and the time of
-// that first sight, armed_at: a start in another instance, as after a restore or a restart of the server, sets the
-// two and refuses with -1, and the 3 minutes count from the later of created_at and armed_at (security review of
-// PR #470, sec-470); the caller commits that refusal; seal_complete marks the pass completed, or starts it again with -1 when such a release reported itself
-// after its start. seal_checkpoint and seal_complete change the row only under the lease stego.backfill.<change ID>
+// last saw it, armed_in (seal_instance: the OID of the database, the start time of the server, and the OID and the
+// file node of stego_schema.seals, so a restore into the same database, which makes the table again, is another
+// instance too; security review of PR #471, L1), and the time of that first sight, armed_at: a start in another
+// instance, as after a restore or a restart of the server, sets the two, makes the pass of the row, also a completed
+// pass, not started, and refuses with -1, and the 3 minutes count from the later of created_at and armed_at (security
+// review of PR #470, sec-470, and of PR #471, L3); the caller commits that refusal. seal_read gives a pass that
+// started in another instance as stale, so the seal job starts a new pass after each restore and each restart of the
+// server. A VACUUM FULL, CLUSTER or TRUNCATE of stego_schema.seals gives the table a new file node, so it has the
+// same effect. seal_complete marks the pass completed, or starts it again with -1 when such a release reported
+// itself after its start or the pass started in another instance. seal_checkpoint and seal_complete change the row only under the lease stego.backfill.<change ID>
 // of the holder with its token, as ST-SUP-RP09-LC07 states, and give 0 when they are fenced. All three are SECURITY
 // DEFINER functions of the owner role with the search path pg_catalog, pg_temp and a lock timeout of 1 s, and the
 // text grants EXECUTE on them to the runtime role alone and no right on the table. It also makes release_stop keep
 // the report of a process of a release before the expand migration of an open seal change, so the stop of such a
 // process, as at the end of a roll back, still marks the pass stale and the contract still sees it. The expand
-// migration of a seal runs it after the release reports (Releases), which the functions read, and each later step
-// that runs Releases runs it again after them. Each statement runs again with no error on
-// a database that it made.
+// migration of a seal makes the table, the first statement of the text, after the release reports (Releases), which
+// the functions read; the migration job runs the rest of the text outside each migration body and its digest, after
+// each migration that it applies and once at its end, so a step that runs Releases again cannot leave the release_stop
+// of Releases, and a database whose expand migration an earlier release applied gets the functions of this one
+// (ST-SUP-RC01-OC49). Each statement runs again with no error on a database that it made.
 func SealsText(runtimeRole string) (string, error) {
 	if !releaseRole.MatchString(runtimeRole) {
 		return "", fmt.Errorf("lease: the runtime role %q is not a lower-case SQL name of at most 63 characters", runtimeRole)
@@ -149,8 +159,10 @@ type SealState struct {
 	// Started tells that a pass runs or completed, and Completed that it completed.
 	Started, Completed bool
 	// Waiting tells that a release before the expand migration of the change reports itself now, or that the row
-	// is younger than 3 minutes, and Stale that one reported itself after the start of the pass. A row that no start
-	// saw in this database instance does not read as waiting: its first start refuses and sets its guard time.
+	// is younger than 3 minutes, and Stale that one reported itself after the start of the pass or that the pass
+	// started in another database instance, as before a restore or a restart of the server. A row that no start saw
+	// in this database instance does not read as waiting: its first start refuses, sets its guard time and makes the
+	// pass not started.
 	Waiting, Stale bool
 }
 
@@ -181,7 +193,8 @@ func ReadSeal(ctx context.Context, tx RowQuerier, change string) (SealState, err
 // SealCheckpoint moves the position of the pass of the change in tx under held: the last tenant and row that the pass
 // checked and its counts, or, with start, starts a new pass. It gives ErrFenced when the lease or the row refused the
 // write, and ErrSealWaiting for a start while a release before the expand migration reports itself, while the row is
-// younger than 3 minutes, or at the first start in this database instance, whose guard time the caller commits.
+// younger than 3 minutes, or at the first start in this database instance, whose guard time and the end of the pass
+// of the row the caller commits.
 func SealCheckpoint(ctx context.Context, tx RowQuerier, held *Held, change, lastTenant, lastID string, sealed, checked int64, start bool) error {
 	var tenant, id any
 	if lastTenant != "" {
@@ -206,7 +219,7 @@ func SealCheckpoint(ctx context.Context, tx RowQuerier, held *Held, change, last
 
 // SealComplete marks the pass of the change completed in tx under held. It gives ErrSealStale, and starts the pass
 // again, which the caller commits, when a release before the expand migration reported itself after the start of the
-// pass, and ErrFenced when the lease or the row refused the write.
+// pass or the pass started in another database instance, and ErrFenced when the lease or the row refused the write.
 func SealComplete(ctx context.Context, tx RowQuerier, held *Held, change string) error {
 	var n int64
 	if err := tx.QueryRowContext(ctx, `SELECT stego_schema.seal_complete($1, $2, $3, $4)`, change, held.Name(), held.client.holder, held.Token()).Scan(&n); err != nil {
