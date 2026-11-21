@@ -190,6 +190,45 @@ func TestAwaitRevocation(t *testing.T) {
 	})
 }
 
+func TestAwaitPreference(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC47-T04 A command that waited for a revocation with Prefer: wait=N answers Preference-Applied, and with no preference none", func(t *testing.T) {
+		r := newRevocationEnv(t, 5*time.Second, 0)
+		h, _ := r.amendServe()
+		location := r.placed("u-7@t1", "aw7")
+		r.startRelay()
+		send := func(prefer string, after ...string) *httptest.ResponseRecorder {
+			t.Helper()
+			request := httptest.NewRequestWithContext(r.identity["u-7@t1"], http.MethodPost, "/orders/aw7/amend", strings.NewReader(`{"order_id":"aw7"}`))
+			for _, value := range after {
+				request.Header.Add(authz.RevocationAfterHeader, value)
+			}
+			if prefer != "" {
+				request.Header.Set("Prefer", prefer)
+			}
+			answer := httptest.NewRecorder()
+			h.ServeHTTP(answer, request)
+			return answer
+		}
+		answer := send("wait=3", location)
+		if answer.Code != http.StatusOK || answer.Header().Get("Preference-Applied") != "wait=3" {
+			t.Fatalf("an amend with Prefer: wait=3 answered %d with Preference-Applied %q, want 200 with wait=3", answer.Code, answer.Header().Get("Preference-Applied"))
+		}
+		for name, a := range map[string]*httptest.ResponseRecorder{"no preference": send("", location),
+			"no revocation": send("wait=3"), "another tenant": func() *httptest.ResponseRecorder {
+				request := httptest.NewRequestWithContext(r.identity["u-7@t2"], http.MethodPost, "/orders/aw7/amend", strings.NewReader(`{"order_id":"aw7"}`))
+				request.Header.Set(authz.RevocationAfterHeader, location)
+				request.Header.Set("Prefer", "wait=3")
+				answer := httptest.NewRecorder()
+				h.ServeHTTP(answer, request)
+				return answer
+			}()} {
+			if got := a.Header().Get("Preference-Applied"); got != "" {
+				t.Errorf("an amend with %s answered Preference-Applied %q, want none", name, got)
+			}
+		}
+	})
+}
+
 // mustStruct makes a request message of fields.
 func mustStruct(t *testing.T, fields map[string]any) *structpb.Struct {
 	t.Helper()

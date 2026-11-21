@@ -1402,10 +1402,63 @@ func (r *Repository[T]) failUnique(ctx context.Context, step string, err error) 
 	var pg *pgconn.PgError
 	var c *conflictError
 	if sqlState(err) == "23505" && errors.As(err, &pg) && errors.As(failed, &c) && c.unique && c.key == "" {
-		c.key = r.entity.spec.Unique[pg.ConstraintName]
+		var declared bool
+		if c.key, declared = r.entity.spec.Unique[pg.ConstraintName]; !declared {
+			c.key = r.entity.uniqueFields(pg.TableName, pg.ConstraintName)
+		}
 	}
 	return failed
 }
+
+// uniqueFields gives the declared fields of the key of a unique index of table that the entity does not declare in
+// Unique, such as the index of a unique step of a newer release in a rolling release (walkthrough 23, D-g): from the
+// name that the postgres adapter gives the unique key of columns, <table>_<columns>_key, where each part of <columns>
+// is a column of the entity that Constraints names, in the order of the name. It gives empty for a name of another
+// form, for a part that is not a column of the entity, and for a name of 63 bytes or more, which the adapter shortens
+// with a hash. It reads names only, never a value of the row or the text of the database error.
+func (e *Entity[T]) uniqueFields(table, index string) string {
+	if table == "" || len(index) >= 63 {
+		return ""
+	}
+	middle, ok := strings.CutPrefix(index, table+"_")
+	if !ok {
+		return ""
+	}
+	if middle, ok = strings.CutSuffix(middle, "_key"); !ok || middle == "" {
+		return ""
+	}
+	parts := strings.Split(middle, "_")
+	var fields []string
+	// split takes the columns of parts from i on, the longest name of a column first, and backs off when the rest has
+	// no split.
+	var split func(i int) bool
+	split = func(i int) bool {
+		if i == len(parts) {
+			return true
+		}
+		for j := len(parts); j > i; j-- {
+			column := strings.Join(parts[i:j], "_")
+			field, known := e.spec.Constraints[column]
+			if !known || column == tenantColumnName || strings.HasPrefix(column, table+"_") {
+				continue
+			}
+			fields = append(fields, field)
+			if split(j) {
+				return true
+			}
+			fields = fields[:len(fields)-1]
+		}
+		return false
+	}
+	if !split(0) {
+		return ""
+	}
+	return strings.Join(fields, ", ")
+}
+
+// tenantColumnName is the tenant column of a table of the runtime data path, which leads each of its keys and is no
+// field of the entity.
+const tenantColumnName = "tenant_id"
 
 // UniqueKey gives the declared fields of the unique key that the conflict err broke, or empty for any other error and
 // for a unique violation of an index that the entity does not declare (ST-SUP-RP10-LC48).
