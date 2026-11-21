@@ -732,7 +732,9 @@ declaration. Then do these steps, and not the steps below:
    key, see that it changes nothing else:
    `git diff --stat main origin/<branch>` names only `SIGNERS`. Then a person
    whom the `SIGNERS` of `main` lists reviews the change, and you merge the
-   branch with step 3.
+   branch with step 3. A branch that also changes a `fill.yaml`, such as a
+   rotation of a key, does not merge: split it (see
+   [Who signs the fills](#who-signs-the-fills)).
 2. Review each fill that the branch changes:
    `git diff --stat main origin/feature/reviews -- fills`.
 3. Merge the branch with `git merge --ff-only origin/feature/reviews`.
@@ -911,6 +913,15 @@ stego drift
 - `stego drift` refuses a generated file that a person changed by hand, which
   a plan does not show.
 
+When the checks of a pull request need a change of `SIGNERS` that another
+pull request makes, such as the key of a new signer of a fill, merge the
+`SIGNERS` pull request first. Then run the checks of the other pull request
+again from a new event: push a new commit to its branch, such as with
+`git rebase origin/main` and `git push --force-with-lease`, or with
+`git commit --allow-empty`. A re-run of the old checks does not do this: it
+keeps the old `pull_request.base.sha`, whose `SIGNERS` does not list the new
+key, so the SIGNERS check refuses the fill again.
+
 In a release pipeline, the base of the SIGNERS check is the commit of the
 default branch that you release, such as `--base origin/main`: each pull
 request checked its change of `SIGNERS` before the merge. Do not give it the
@@ -921,20 +932,38 @@ When your policy needs the reviewer's own signature on each merged fill, run
 `stego fill sign --force <fill>`.
 
 To revoke a key, remove its line from `SIGNERS`, and sign each fill that it
-signed again with a key that `SIGNERS` lists, in the same change. Else each
-such fill is not qualified after the merge, and `stego validate`, `stego plan`
-and the build refuse it. To find the fills, remove the line, then run:
+signed again with a key that `SIGNERS` lists. Else each such fill is not
+qualified after the merge, and `stego validate`, `stego plan` and the build
+refuse it. To find the fills, remove the line in a working folder, then run:
 
 ```sh
 stego fill status
 ```
 
 Each fill whose sign-off only the removed key made shows `unsigned` with the
-reason `SIGNERS does not list its key`. Run `stego test` and
-`stego fill sign <fill>` for each, with your own key. The fault of such a fill
-says to sign it with a listed key. Do not add the removed key to `SIGNERS`
-again. A person whom the `SIGNERS` of the base lists reviews the change, as
-for each change of `SIGNERS`.
+reason `SIGNERS does not list its key`. The fault of such a fill says to sign
+it with a listed key. Do not add the removed key to `SIGNERS` again.
+
+A branch that changes `SIGNERS` and a `fill.yaml` together has no merge path:
+step 1 of [the order of a merge](#the-order-of-a-merge) merges a change of
+`SIGNERS` only when `git diff --stat` names only `SIGNERS`. Thus make a
+rotation of a key in three pull requests, and merge each one before you start
+the next:
+
+1. A pull request that changes only `SIGNERS`: it adds the line of the new key
+   and keeps the line of the old key. A person whom the `SIGNERS` of `main`
+   lists reviews it, and it merges by step 1.
+2. A pull request that changes only the `fill.yaml` of each fill that the old
+   key signed: run `stego test`, then `stego fill sign --force <fill>` with a
+   key that `SIGNERS` lists, such as the new key. The old key is still listed,
+   so each other fill stays qualified.
+3. A pull request that changes only `SIGNERS`: it removes the line of the old
+   key. `stego fill status` on its branch shows no fill as `unsigned`.
+
+When the old key must go at once, such as a key that was stolen, merge the
+pull request of step 3 first. Until the pull request of step 2 merges, each
+fill that only the old key signed is not qualified, and the build of `main`
+refuses it.
 
 A GPG key of `SIGNERS` that is revoked or expired, as its armored block in
 `SIGNERS` says, no longer qualifies a fill, also for a sign-off that it made
