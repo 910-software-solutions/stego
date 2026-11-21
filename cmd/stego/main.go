@@ -818,7 +818,8 @@ func runDrift(args []string) error {
 // runTest implements `stego test` (ST-EXT-CMD02): it runs the tests of each
 // fill and records the evidence of each fill whose tests pass in its fill
 // manifest. Arguments after -- go to go test. It names each fill for which
-// it records no evidence, and why, and exits non-zero when a test fails.
+// it records no evidence, and why, and exits non-zero when a test fails or
+// when it records no evidence for a fill.
 func runTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), testUsage) }
@@ -894,7 +895,7 @@ func runTest(args []string) error {
 	if err != nil {
 		return err
 	}
-	var failed []string
+	var failed, unrecorded []string
 	for _, result := range results {
 		switch {
 		case result.Kept:
@@ -904,12 +905,25 @@ func runTest(args []string) error {
 		default:
 			fmt.Printf("fill %s: no evidence recorded: %s\n", result.Fill, result.Reason)
 		}
-		if result.Failed {
+		switch {
+		case result.Failed:
 			failed = append(failed, result.Fill)
+		case result.Passed == nil:
+			unrecorded = append(unrecorded, result.Fill)
 		}
 	}
+	// A fill with no evidence is not proved, so a run that records none for it fails, as a failed test does: a CI
+	// step of stego test does not pass on a declaration that is not valid or on a refused import (walkthrough 19,
+	// W19-T3).
+	var faults []string
 	if len(failed) > 0 {
-		return fmt.Errorf("the tests of %d fill(s) failed: %s", len(failed), strings.Join(failed, ", "))
+		faults = append(faults, fmt.Sprintf("the tests of %d fill(s) failed: %s", len(failed), strings.Join(failed, ", ")))
+	}
+	if len(unrecorded) > 0 {
+		faults = append(faults, fmt.Sprintf("no evidence is recorded for %d fill(s): %s; correct each cause that its line names, then run stego test again", len(unrecorded), strings.Join(unrecorded, ", ")))
+	}
+	if len(faults) > 0 {
+		return errors.New(strings.Join(faults, "; "))
 	}
 	return nil
 }
@@ -921,7 +935,8 @@ const testUsage = `Usage: stego test [--] [go test flags]
 
 Runs the tests of each fill of the project with go test, against the generated
 code that apply plans to write, and records the evidence of each fill that
-passed in its fill.yaml. Then run stego fill sign <fill> for each fill.
+passed in its fill.yaml. Then run stego fill sign <fill> for each fill. It
+exits non-zero when a test fails or when it records no evidence for a fill.
 
 Only these go test flags are passed, before or after "--":
   -v              print each test

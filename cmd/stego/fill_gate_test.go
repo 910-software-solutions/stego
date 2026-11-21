@@ -91,7 +91,7 @@ func TestFillGate(t *testing.T) {
 			p.write(t, "fills/twin-fill/"+file, string(p.read(t, "fills/qualified-fill/"+file)))
 		}
 		p.replace(t, "fills/twin-fill/fill.yaml", "name: qualified-fill", "name: twin-fill")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		if err := fill.WriteSignOff(p.path("fills/twin-fill/fill.yaml"), *p.manifest(t, "qualified-fill").SignOff); err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestFillGate(t *testing.T) {
 		p.bind(t, slotBinding{"qualified-fill", "before_create", "org-users"})
 		signOff := *p.manifest(t, "qualified-fill").SignOff
 		p.replace(t, "fills/qualified-fill/policy.go", "// Evaluate allows the request.", "// Evaluate allows the request, as it did.")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		if err := fill.WriteSignOff(p.path("fills/qualified-fill/fill.yaml"), signOff); err != nil {
 			t.Fatal(err)
 		}
@@ -320,7 +320,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.addImport(t, "fills/untested-fill/policy.go", "github.com/lib/pq", "pq.Name")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "github.com/lib/pq")
 		if p.manifest(t, "untested-fill-2").Evidence == nil {
 			t.Fatal("untested-fill-2 got no evidence in the same run")
@@ -332,7 +332,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.addImport(t, "fills/untested-fill/policy.go", "github.com/google/uuidx", "uuidx.Name")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "github.com/google/uuidx")
 	})
 
@@ -341,7 +341,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.replace(t, "fills/untested-fill/policy.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t_ \"example.com/fills/out/internal/storage\"\n")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "example.com/fills/out/internal/storage")
 	})
 
@@ -350,7 +350,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.replace(t, "fills/untested-fill/policy_test.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t\"github.com/stretchr/testify/assert\"\n")
 		p.replace(t, "fills/untested-fill/policy_test.go", "\tif err != nil", "\tassert.True(t, err == nil)\n\tif err != nil")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatalf("untested-fill got no evidence:\n%s", stdout)
 		}
@@ -364,7 +364,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.write(t, "fills/untested-fill/testutil.go", "package untested_fill\n\nimport \"github.com/stretchr/testify/assert\"\n\nvar _ = assert.True\n")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "testutil.go", "github.com/stretchr/testify/assert")
 	})
 
@@ -408,7 +408,7 @@ func TestFillImports(t *testing.T) {
 			change(name)
 			before[name] = p.read(t, "fills/"+name+"/fill.yaml")
 		}
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		for i := range changes {
 			name := fmt.Sprintf("import-copy-%d", i+1)
 			if want, ok := refused[i+1]; ok {
@@ -647,7 +647,7 @@ func TestFillAllowList(t *testing.T) {
 		p.replace(t, "fills/untested-fill/policy.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"log\"\n\t\"log/slog\"\n\t\"time\"\n")
 		p.write(t, "fills/untested-fill/policy.go", string(p.read(t, "fills/untested-fill/policy.go"))+
 			"\nvar _ = json.Marshal\nvar _ = fmt.Sprint\nvar _ = log.Printf\nvar _ = slog.Info\nvar _ = time.Now\n")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatalf("untested-fill got no evidence:\n%s", stdout)
 		}
