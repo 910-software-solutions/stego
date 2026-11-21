@@ -1,3 +1,6 @@
+# Version 1.26.0 names the body member that a command does not take, or whose value is not of its type, when it
+# refuses the body before a request: the name is printable text of at most 120 characters in double quotes, as a
+# problem entry (ST-SUP-RC04-OC11; walkthrough 19, W19-P4). Version 1.25.0 is the version of PR #474.
 # Version 1.12.0 makes the definitions of the commands and the apply resources from the OpenAPI document of the
 # service when the declaration gives no factory_package (ST-SUP-RC04-OC32).
 # Version 1.13.0 makes a command Sensitive, so it writes its answer only to --output-file, when a success answer of
@@ -44,7 +47,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.25.0
+version: 1.26.0
 stage: ga
 output_namespace: cli
 config:

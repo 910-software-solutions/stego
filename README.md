@@ -619,6 +619,148 @@ stego deps
 go build -o service ./out
 ```
 
+## Work as a team
+
+Each person works on a feature branch, and runs the whole chain on it: the
+declaration change, `stego apply`, the fills, `stego test`,
+`stego fill sign <fill>` and a build. One person then merges the branches into
+`main`, one at a time. This section tells how to merge a branch when `main`
+changed after the branch started. In walkthrough 19, two feature branches that
+each added an entity, a collection and a command conflicted in 34 files: 28
+generated files and 6 written files.
+
+### The files of a merge
+
+A STEGO project holds two kinds of files.
+
+- **Generated files.** `stego apply` writes them from the declaration:
+  `out/`, `deploy/`, `architecture/`, `Containerfile`, the CI file and the
+  record `.stego/state.yaml`. `stego deps` writes `go.mod` and `go.sum`. Do
+  not merge them by hand: take the files of `main`, and let STEGO write them
+  again from the merged declaration. A merge by hand gives files that no
+  declaration makes, and `stego drift` and `stego apply` refuse them.
+- **Written files.** People write them: `service.yaml`, the proto files, the
+  SpiceDB schema (`authz/schema.zed`), the Go files and the tests of each fill,
+  and `SIGNERS`. The `fill.yaml` of each fill is written by `stego fill create`,
+  and `stego test` and `stego fill sign <fill>` add its evidence and its
+  sign-off.
+
+### Do not keep both sides of a conflict in service.yaml
+
+When two branches each add an entity at the end of the entity list, Git sees
+like lines in the two new entities, such as `fields:` and `- name: status`. It
+then lines up the two entities, and a resolution that keeps both sides mixes
+their fields. In walkthrough 19, such a resolution gave the first entity no
+fields and the second entity two `status` fields. It also gave two
+`schema_history` blocks, which the YAML parser refuses as a duplicate key, and
+two add steps at position 1. `stego plan --base` found the lost fields
+(ST-GEN-INV33: the head removes a field that no schema step declares), but
+only because it ran against the right base. Thus do not resolve a conflict of
+the declaration line by line. Take the declaration of `main`, and apply the
+change of the branch to it again.
+
+### The order of a merge
+
+Do these steps in this order. `<base>` is the commit of `main` before the
+merge, or the tag of the release that runs now (see [the upgrade
+procedure](docs/upgrade.md#the-procedure)). In the example, the branch
+`feature/reviews` adds the fill `hide-review`.
+
+1. Start the merge, keep a copy of the fill folders of the branch, and take
+   the generated files and the declaration files of `main`. `git restore`
+   also removes the files that the branch added in these folders, such as
+   its migrations:
+
+   ```sh
+   git merge --no-commit origin/feature/reviews
+   cp -r fills/hide-review ../keep-hide-review
+   git restore --source=HEAD --staged --worktree -- out deploy architecture .stego/state.yaml go.mod go.sum service.yaml proto authz
+   ```
+
+   Give `git restore` only the paths that the project holds, and add
+   `Containerfile` and the CI file when the project holds them. For each
+   other conflict in `fills/`, such as the `fill.yaml` of a fill that the
+   branch did not change, take the side of `main` with
+   `git checkout --ours -- <file>`.
+2. Apply the change of the branch to the declaration again. Read it with
+   `git diff HEAD...origin/feature/reviews -- service.yaml proto authz`, and
+   add its entities, collections, commands, proto messages and SpiceDB
+   definitions to the files of `main`. Do not copy its `schema_changes` add
+   step or its `schema_history` line: `stego apply` writes them again, after
+   the steps of `main`.
+3. Put the fill folders of the branch back, with their Go files and tests:
+   `rm -rf fills/hide-review && cp -r ../keep-hide-review fills/hide-review`.
+   The evidence in its
+   `fill.yaml` is now stale, because the contract of the fill changed.
+4. Run the chain:
+
+   ```sh
+   stego test
+   stego fill sign hide-review
+   stego validate
+   stego plan --base <base>
+   stego apply --base <base>
+   stego deps
+   go build ./out
+   ```
+
+   `stego test` records new evidence for each fill whose files or contract
+   changed, and keeps the current evidence of the other fills. Review each
+   fill whose evidence it recorded, then sign it. `stego plan` says that the
+   declaration needs the add step and saves no plan; `stego apply --base`
+   then writes the add step and its migration at the next position.
+5. Commit the merge only when the build passes, then run the tests of the
+   service.
+
+Merge the next branch in the same way, from the new `main`.
+
+### Migration numbers follow the merge order
+
+The migration of a schema step is `step_<position>_<change>_<phase>`, and the
+position is the place of the step in `schema_history` (see [The migrations of
+the steps](docs/schema-changes.md#the-migrations-of-the-steps)). Thus the
+position follows the merge order, not the order in which the branches were
+made. On its branch, the add step of `feature/reviews` was
+`step_0001_add-review_expand`. After `main` merged `feature/payouts` first, it
+is `step_0002_add-review_expand`, and `step_0001_add-payout_expand` holds
+another body.
+
+A database keeps the name and the digest of each migration that it ran in its
+ledger. A database that ran the build of a branch thus has a ledger that the
+build of `main` does not accept: the migration Job of `main` stops at its
+ledger check (stage `migrate.ledger_check`) and changes nothing. Thus:
+
+- Give each feature branch a preview database of its own, and remove it after
+  the merge.
+- Do not run the build of a branch on a database that `main` uses, such as a
+  shared preview database.
+- If a shared preview database ran the build of a branch, make it again: drop
+  it, create it, and run the migration Job of `main`, or restore a backup of
+  it that is older than the run of the branch. Do not change the ledger by
+  hand.
+
+### Who signs the fills
+
+Each person signs with their own key, which their git configuration names. A
+fill is qualified only when a key that `SIGNERS` lists signed its current
+evidence. STEGO never signs with a key of its own; do not sign with a shared
+key or a CI key. When the author of a fill is not in `SIGNERS`, a person in
+`SIGNERS` reviews the fill at the merge, and then runs `stego test` and
+`stego fill sign <fill>` with their own key. `stego validate` and `stego plan`
+name each fill that a key outside `SIGNERS` signed.
+
+`stego fill sign <fill>` keeps a sign-off that already signs the current
+evidence with a key that `SIGNERS` lists, writes nothing, and says so. Thus a
+fill that no branch changed keeps its `fill.yaml`, and gives no conflict at
+the merge. To sign such a fill again, such as with your own key in place of
+the key of another person, give `--force`.
+
+A change to `SIGNERS` in a branch is a change of who may qualify fills. Review
+it on its own before the merge, and protect `SIGNERS` with a CODEOWNERS rule.
+When your policy needs the reviewer's own signature on each merged fill, run
+`stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`:
+the check does not read the revocation or the expiry of a key.
+
 ## Commands
 
 This table comes from the CLI command records of the spec. Do not edit it by
@@ -640,7 +782,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego drift` | `stego drift` |
 | `stego env check` | `stego env check --requirements <platform-requirements.yaml> <environment-file>` |
 | `stego fill create` | `stego fill create <name> --slot <slot> [--component <component>] [--collection <collection>]` |
-| `stego fill sign` | `stego fill sign <name>` |
+| `stego fill sign` | `stego fill sign [--force] <name>` |
 | `stego fill status` | `stego fill status` |
 | `stego fleet` | `stego fleet --digest <digest> <checkout>...` |
 | `stego fleet vex` | `stego fleet vex --registry <folder> <checkout>...` |

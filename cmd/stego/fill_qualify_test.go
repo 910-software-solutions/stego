@@ -633,6 +633,33 @@ func TestFillQualification(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-EXT-UC02-R02-T14 stego fill sign keeps a current sign-off by a listed key unless --force is given, and signs over an unlisted one", func(t *testing.T) {
+		p := newFillProject(t)
+		before := p.read(t, "fills/qualified-fill/fill.yaml")
+		stdout := p.must(t, "listed-gpg", "fill", "sign", "qualified-fill")
+		if !strings.Contains(stdout, "already signs its current evidence") || !strings.Contains(stdout, "--force") {
+			t.Fatalf("fill sign of a fill with a current sign-off does not say that it keeps it and name --force:\n%s", stdout)
+		}
+		if !bytes.Equal(before, p.read(t, "fills/qualified-fill/fill.yaml")) {
+			t.Fatal("fill sign changed fill.yaml of qualified-fill, whose sign-off already signs its current evidence")
+		}
+		// --force, after the name, signs again with the person's own key.
+		p.must(t, "listed-gpg", "fill", "sign", "qualified-fill", "--force")
+		f := p.manifest(t, "qualified-fill")
+		if f.SignOff == nil || f.SignOff.Signature.KeyType != fill.KeyGPG || f.SignOff.EvidenceDigest != evidenceDigest(t, f) {
+			t.Fatalf("fill sign --force did not sign the current evidence again with listed-gpg: %+v", f.SignOff)
+		}
+		// A current sign-off by a key that SIGNERS does not list is not kept: the listed key signs over it.
+		p.must(t, "listed-ssh", "fill", "sign", "unlisted-fill")
+		u := p.manifest(t, "unlisted-fill")
+		if u.SignOff == nil || u.SignOff.EvidenceDigest != evidenceDigest(t, u) {
+			t.Fatalf("fill sign did not sign unlisted-fill: %+v", u.SignOff)
+		}
+		if err := sshVerify(t, p.keys.listedSSHPublic, u.SignOff, u.SignOff.EvidenceDigest); err != nil {
+			t.Fatalf("fill sign kept the sign-off of the unlisted key on unlisted-fill: %v", err)
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R02-T04 Plan accepts a fill signed by a key that SIGNERS lists", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"qualified-fill", "before_create", "org-users"})

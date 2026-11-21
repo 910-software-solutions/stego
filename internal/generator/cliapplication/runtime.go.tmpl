@@ -155,7 +155,11 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   body[field.Key]=raw
  }
  allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
- for key,raw:=range body{field,ok:=allowed[key];if !ok||!fieldValue(field,raw){return errors.New("invalid request field")}}
+ // A refusal names the member, as printable ASCII text of at most 120 characters in double quotes, as a problem entry
+ // of the service is given (ST-SUP-RC04-OC11; walkthrough 19, W19-P4: the CLI said invalid request field and did not
+ // name it). The members are taken in sorted order, so the CLI names the same member at each run.
+ keys:=make([]string,0,len(body));for key:=range body{keys=append(keys,key)};sort.Strings(keys)
+ for _,key:=range keys{field,ok:=allowed[key];if !ok{return fmt.Errorf("invalid request field %s: the command takes no such member",strconv.Quote(printableText(key)))};if !fieldValue(field,body[key]){return fmt.Errorf("invalid request field %s: the value is not a valid %s",strconv.Quote(printableText(key)),field.Type)}}
  var payload []byte
  if c.Query{
   query:=url.Values{}

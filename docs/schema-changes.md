@@ -260,23 +260,24 @@ Each statement takes a short lock and reads no row.
 
 #### A client that still sends the dropped field
 
-The API of the expand release does not know the field. When a create or an
-update body holds it, the API ignores that member, as it ignores each member
-that the entity does not declare, and answers as for a body without it: a
-create gives 201, and the row has no value of the field. The API sends no
-message about it.
+The API of the expand release does not know the field. From rest-crud
+3.227.0, a create, an update and an upsert whose body holds the field refuse
+it with 400 and the problem type `validation-error`, which names the member,
+and the write changes nothing. A patch refuses it in the same way from
+3.215.0. Before 3.227.0, a create and an update ignored the member, and a
+create gave 201 with no value of the field.
 
-This is intentional. In the time between the two releases, the release before
-and the new release serve the same routes, and a client that the release
-before knows still sends the field. A refusal (400) from the new release would
-make the writes of such a client fail by chance, at each request that the new
-release gets. The release before keeps the field: it writes the value, and
-the old column keeps it until the contract step.
+In the time between the two releases, the release before and the new release
+serve the same routes. A client that the release before knows, and that still
+sends the field, thus fails at each request that the new release gets, and
+passes at each request that the release before gets. The release before keeps
+the field: it writes the value, and the old column keeps it until the
+contract step.
 
-Thus, before the contract step, change each client to stop sending the field.
-A value that a client sends to the new release is lost. If a client must not
-lose it, keep the field in the API until each client stops sending it, and
-only then declare the drop.
+Thus, before you deploy the release with the expand step, change each client
+to stop sending the field, and build the CLI and the SDKs again. If a client
+must keep sending the field for a time, keep the field in the API until each
+client stops sending it, and only then declare the drop.
 
 ### Remove an entity
 

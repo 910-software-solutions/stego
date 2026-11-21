@@ -1841,4 +1841,6 @@ and passed.
 
 Upgrade: a project whose fills of commands, queries or workers have no
 signed evidence is refused at plan. Run `stego test`, then
-`stego fill sign <name>` for each fill that plan names.
+`stego fill sign <name>` for each fill that plan names. `stego fill sign` keeps a
+sign-off that already covers the current evidence with a key that `SIGNERS`
+lists, and writes nothing; give `--force` to sign it again with your key.
