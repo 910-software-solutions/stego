@@ -37,34 +37,22 @@ func factoryApp(t *testing.T, ctx gen.Context, document string) string {
 }
 
 func TestFactoryApplyIdentity(t *testing.T) {
-	t.Run("ST-SUP-RC04-OC36-T01 A collection gets an apply resource only when its entity holds the name unique within the scope of the collection", func(t *testing.T) {
-		resource := `{Kind: "Note", APIVersion: "notes/v1"`
+	t.Run("ST-SUP-RC04-OC36-T01 A collection gets its apply resource whether or not its entity holds the name unique", func(t *testing.T) {
+		resource := `{Kind: "Note", APIVersion: "notes/v1", Path: "/api/notes/v1/notes"`
 		for _, c := range []struct {
 			about     string
 			name      types.Field
 			composite []string
-			implicit  map[string]string
-			applies   bool
 		}{
-			{"a unique name", types.Field{Name: "name", Type: "string", Unique: true}, nil, nil, true},
-			{"a name that is not unique", types.Field{Name: "name", Type: "string"}, nil, nil, false},
-			{"a name unique with an implicit field", types.Field{Name: "name", Type: "string"}, []string{"owner", "name"}, map[string]string{"owner": "caller"}, true},
-			{"a name unique with a field that is not implicit", types.Field{Name: "name", Type: "string"}, []string{"owner", "name"}, nil, false},
-			{"a unique composite without the name", types.Field{Name: "name", Type: "string"}, []string{"owner", "size"}, map[string]string{"owner": "caller", "size": "1"}, false},
+			{"a unique name", types.Field{Name: "name", Type: "string", Unique: true}, nil},
+			{"a name that is not unique", types.Field{Name: "name", Type: "string"}, nil},
+			{"a name unique with another field", types.Field{Name: "name", Type: "string"}, []string{"owner", "name"}},
 		} {
 			entities := noteEntities(c.name)
-			if c.composite != nil {
-				entities[0].Fields[2].UniqueComposite = c.composite
-			}
-			app := factoryApp(t, gen.Context{Entities: entities, Collections: []types.Collection{{Name: "notes", Entity: "Note", Implicit: c.implicit}}}, serviceDocument)
-			if strings.Contains(app, resource) != c.applies {
-				t.Errorf("%s: apply resource %t, want %t:\n%s", c.about, strings.Contains(app, resource), c.applies, app)
-			}
-			if strings.Contains(app, `UnappliedKinds: []string{"Note"}`) == c.applies {
-				t.Errorf("%s: the definitions do not name the kind that apply does not manage:\n%s", c.about, app)
-			}
-			if !strings.Contains(app, `{Name: []string{"create-notes"}`) {
-				t.Errorf("%s: the create command is missing", c.about)
+			entities[0].Fields[2].UniqueComposite = c.composite
+			app := factoryApp(t, gen.Context{Entities: entities, Collections: []types.Collection{{Name: "notes", Entity: "Note"}}}, serviceDocument)
+			if !strings.Contains(app, resource) {
+				t.Errorf("%s: no apply resource:\n%s", c.about, app)
 			}
 		}
 	})

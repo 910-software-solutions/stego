@@ -24,9 +24,8 @@
 # (ST-SUP-RC04-OC23); gives the last segment of the problem type and at most five failed fields of a problem answer
 # as printable text of at most 120 characters (ST-SUP-RC04-OC11); and reports unchanged, with no patch, when each field
 # of the patch of a found resource has the stored value (ST-SUP-RC04-OC35). Walkthrough 18.
-# Version 1.25.0 makes an apply resource only for a collection whose entity holds its name unique, and names the
-# reason when a document has another kind (UnappliedKinds); looks a resource up again after a create that 409 refuses
-# (ST-SUP-RC04-OC36); keeps the Authz-Revocation-Location of the last write in the configuration and sends it in
+# Version 1.25.0 looks a resource up again after a create that 409 refuses, and warns in apply --help that two
+# clients can make two resources of one new name when the service does not hold the name unique (ST-SUP-RC04-OC36); keeps the Authz-Revocation-Location of the last write in the configuration and sends it in
 # Authz-Revocation-After on each apply lookup (ST-SUP-RC04-OC37); sends If-Match with the read generation when the
 # patch takes it (ConditionalPatch, ST-SUP-RC04-OC38); and quotes each problem entry (ST-SUP-RC04-OC11). Security
 # review of PR #473, L1, L2 and I2.

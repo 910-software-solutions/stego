@@ -743,7 +743,7 @@ func TestApplyWaitsForLastWrite(t *testing.T) {
 }
 
 func TestApplyCreateConflict(t *testing.T) {
-	t.Run("ST-SUP-RC04-OC36-T02 A create that the unique name refuses is looked up again with no other write: unchanged for the same values, failed for other values or a resource that the lookup does not show", func(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC36-T02 A create that the unique name refuses is looked up again with no other write: unchanged for the same values, failed for other values or a resource that the lookup does not show, and apply --help warns about a name that is not unique", func(t *testing.T) {
 		f := applySetup(t)
 		f.unique, f.hide = true, 1
 		app := applyDefinition()
@@ -775,11 +775,10 @@ func TestApplyCreateConflict(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "the lookup does not show it") || results[0].Status != "failed" || f.applyCount() != 1 {
 			t.Fatal("a create that 409 refused for a hidden resource did not fail", results, err)
 		}
-		// A kind whose name the service does not hold unique has no apply resource, and apply names why.
-		app.UnappliedKinds = []string{"Gadget"}
-		gadget := applyFile(t, filepath.Join(f.directory, "gadget.yaml"), manifest("Gadget", "first", `{}`))
-		if _, _, err := runApplyTest(t, app, "apply", "-f", gadget, "--dry-run"); err == nil || !strings.Contains(err.Error(), "apply does not manage the kind Gadget: the service does not hold its name unique") {
-			t.Fatal("apply did not name why it does not manage a kind", err)
+		// Apply keeps a kind whose name the service does not hold unique, and its help says what that leaves open.
+		var help bytes.Buffer
+		if err := Run(context.Background(), app, []string{"apply", "--help"}, &help); err != nil || !strings.Contains(help.String(), "Two clients that apply one new name at the same time can make two resources, unless the service holds the name unique (unique: true on the field name).") {
+			t.Fatal("apply --help does not warn about a name that is not unique", help.String(), err)
 		}
 	})
 }

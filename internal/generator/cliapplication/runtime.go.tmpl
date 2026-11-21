@@ -31,9 +31,7 @@ type PathParameter struct {Flag,Key string}
 // again one time, with the same key, after a transport failure, an expired request or a 5xx answer that carries
 // Idempotency-Kept: 1. The CLI sends a new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
 type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;BodyFields []Field;Success,EmptyResponses []int}
-// UnappliedKinds are the kinds of the collections that apply does not manage, because the service does not hold their
-// name unique; apply names the reason when a document has such a kind (ST-SUP-RC04-OC36).
-type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource;UnappliedKinds []string}
+type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
 var property=regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
@@ -48,8 +46,6 @@ func validate(app Application)error{
  }
  if app.OIDCClientID!=""&&!safeClientID(app.OIDCClientID){return errors.New("invalid OIDC client ID")}
  if !envName.MatchString(app.ConfigEnv)||!word.MatchString(app.ConfigName)||(len(app.Commands)==0&&len(app.Resources)==0&&app.IdentityPath==""&&!app.VersionCommand)||len(app.Commands)>128{return errors.New("invalid CLI definition")}
- if len(app.UnappliedKinds)>64{return errors.New("invalid CLI definition")}
- for _,kind:=range app.UnappliedKinds{if !property.MatchString(kind){return errors.New("invalid CLI definition")}}
  seen:=map[string]bool{}
  for _,c:=range app.Commands{
   if len(c.Name)<1||len(c.Name)>4 {return errors.New("invalid CLI command name")}

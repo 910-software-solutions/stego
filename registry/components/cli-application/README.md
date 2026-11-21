@@ -49,16 +49,12 @@ component writes (`<out>/commands/openapi.json`), in the package
   name of the entity, and the API version is `<service>/v1`, such as
   `sellers/v1` for the service `sellers`. A scoped collection, whose path
   names its parent, gets no apply resource: use its create and patch
-  commands. The entity must hold its `name` unique: the field `name` is
+  commands. When the entity holds its `name` unique (the field `name` is
   `unique: true`, or a `unique_composite` holds `name` and, apart from it,
-  only `implicit` fields of the collection. Then the service answers 409 to
-  a second create of a name (ST-SUP-RC04-OC36). A collection whose entity
-  does not hold its name unique gets no apply resource; the definitions name
-  its kind in `UnappliedKinds`, and apply refuses its documents with
-  `apply does not manage the kind <kind>: the service does not hold its name
-  unique`. To get apply for such a kind, declare `unique: true` on its field
-  `name` and generate again. On an entity of the base this is a change of
-  the stored shape that no schema step makes yet.
+  only `implicit` fields of the collection), the service answers 409 to a
+  second create of a name (ST-SUP-RC04-OC36). Warning: when the name is not
+  unique, two clients that apply one new name at the same time can make two
+  resources; `unique: true` on the field `name` closes this.
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as

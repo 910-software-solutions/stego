@@ -30,6 +30,10 @@ type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []strin
 type applyPlan struct {resource ApplyResource;name,id,method,path,generation string;body map[string]json.RawMessage;payload []byte}
 type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`}
 
+// applyNameWarning is the warning of apply --help: a service that does not hold the name of a kind unique cannot refuse
+// a second create of one name, so two clients that apply one new name at the same time can make two resources
+// (ST-SUP-RC04-OC36).
+const applyNameWarning="Two clients that apply one new name at the same time can make two resources, unless the service holds the name unique (unique: true on the field name)."
 func validateApply(resources []ApplyResource)error{
  if len(resources)>64{return errors.New("too many apply resource definitions")}
  seen:=map[string]bool{}
@@ -112,9 +116,7 @@ func prepareApply(app Application,documents []map[string]json.RawMessage)([]appl
  for _,document:=range documents{
   for key:=range document{switch key{case "apiVersion","kind","metadata","spec":default:return nil,errApplyInput}}
   var kind,version string
-  if json.Unmarshal(document["kind"],&kind)!=nil{return nil,errApplyInput};r,ok:=definitions[kind]
-  if !ok&&slices.Contains(app.UnappliedKinds,kind){return nil,fmt.Errorf("apply does not manage the kind %s: the service does not hold its name unique, so two creates of one name could make two resources; declare the field name of %s unique: true and generate the CLI again (ST-SUP-RC04-OC36)",kind,kind)}
-  if !ok{return nil,errors.New("unsupported apply kind")}
+  if json.Unmarshal(document["kind"],&kind)!=nil{return nil,errApplyInput};r,ok:=definitions[kind];if !ok{return nil,errors.New("unsupported apply kind")}
   if raw,ok:=document["apiVersion"];ok{if bytes.Equal(raw,[]byte("null"))||json.Unmarshal(raw,&version)!=nil||version==""||version!=r.APIVersion{return nil,errors.New("unsupported apply API version")}}
   metadata,err:=object(document["metadata"]);if err!=nil{return nil,errApplyInput}
   var name,id string
@@ -157,7 +159,7 @@ func writeApply(destination *reservedOutput,format string,results []ApplyResult)
 func runApply(ctx context.Context,app Application,args []string,output io.Writer)error{
  ctx,cancel:=context.WithTimeout(ctx,5*time.Minute);defer cancel()
  if len(app.Resources)==0{return errors.New("apply is not configured")}
- if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]");return err}
+ if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]\n"+applyNameWarning);return err}
  filename,format,outputFile,dry,err:=applyOptions(args);if err!=nil{return err}
  documents,err:=loadApply(ctx,filename);if err!=nil{return err}
  plans,err:=prepareApply(app,documents);if err!=nil{return err}
