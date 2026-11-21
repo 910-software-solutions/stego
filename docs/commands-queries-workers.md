@@ -1600,8 +1600,11 @@ curl -X POST https://<host>/api/projects/v1/projects/$PROJECT/tasks \
 The write waits for that revocation before it decides, as a read does: at
 most N seconds, the wait cap (10 seconds) and half the time that the deadline
 leaves. Over gRPC, send the request metadata `authz-revocation-after`. Each
-generated CRUD write and each declared command takes it. The answer does not
-report the wait: its `Authz-Revocation` names the revocation of its own write.
+generated CRUD write and each declared command takes it. Its `Authz-Revocation`
+names the revocation of its own write, not of the wait. From runtime v0.189.0,
+a write that waited with `Prefer: wait=N` answers `Preference-Applied:
+wait=<seconds>`, with the whole seconds that the wait allowed, as the status
+route does.
 A revocation of another tenant, or one that is still pending at the end of the
 wait, does not fail the write: the write is then decided as with no header. A
 value that is not a revocation is 400, or `InvalidArgument` over gRPC. The
