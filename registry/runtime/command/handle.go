@@ -1649,6 +1649,8 @@ type state struct {
 	// resets are the counters, as <entity>.<field>, whose attempts the fill of the command may reset
 	// (ST-DECL-INV104, decision ST-SUP-Q205 (c)).
 	resets map[string]bool
+	// resetGuards are the permissions that a caller of a reset may not hold on the row (CommandSpec.ResetGuards).
+	resetGuards []string
 	// checks count the checks of each stored value of a counted row in this attempt, and charges are the checks that
 	// the attempts of the call charged, which a rerun does not charge again for the same stored value (security
 	// review of PR #451, second review, I1; of PR #479, L2).

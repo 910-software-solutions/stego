@@ -189,8 +189,11 @@ type command struct {
 	// lists are the declared lists of the command, which the contract emits from the entity of the release
 	// (ST-SUP-RC32-OC16).
 	lists []*commandList
-	// resets are the declared step-up resets of the attempts of counted fields (ST-SUP-RC32-OC24, ST-DECL-INV104).
-	resets []resetHelper
+	// resets are the declared step-up resets of the attempts of counted fields (ST-SUP-RC32-OC24, ST-DECL-INV104), and
+	// resetGuards the permissions of the other commands on its resource type that write their entities, which a caller
+	// of the reset may not hold on the row (ST-SUP-RP10-LC54).
+	resets      []resetHelper
+	resetGuards []string
 }
 
 // resetHelper is the typed helper of one declared reset of attempts: the written entity, its counted field, and the
@@ -298,6 +301,7 @@ func plan(ctx gen.Context) (*model, error) {
 		}
 		m.commands = append(m.commands, cmd)
 	}
+	m.planResetGuards()
 	for _, e := range ctx.Entities {
 		if p := planned[e.Name]; p != nil {
 			m.entities = append(m.entities, p)
@@ -461,6 +465,36 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 		return nil, err
 	}
 	return cmd, nil
+}
+
+// planResetGuards gives each command that declares a reset of attempts the permissions of the other commands on its
+// resource type that write an entity of its resets, and so may check the field: the runtime refuses the reset of a
+// caller who holds one on the row (security review of PR #489, second review, M2b).
+func (m *model) planResetGuards() {
+	for _, c := range m.commands {
+		if len(c.resets) == 0 {
+			continue
+		}
+		reset := map[string]bool{}
+		for _, r := range c.resets {
+			reset[r.entity.decl.Name] = true
+		}
+		seen := map[string]bool{}
+		for _, other := range m.commands {
+			p := other.decl.Permission
+			if other == c || p == "" || p == c.decl.Permission || other.decl.ResourceType != c.decl.ResourceType || seen[p] {
+				continue
+			}
+			for _, e := range other.writes {
+				if reset[e.decl.Name] {
+					seen[p] = true
+					c.resetGuards = append(c.resetGuards, p)
+					break
+				}
+			}
+		}
+		sort.Strings(c.resetGuards)
+	}
 }
 
 // planResets plans the declared resets of attempts of the command (ST-DECL-INV104, decision ST-SUP-Q205 (c)): each

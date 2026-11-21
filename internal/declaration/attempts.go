@@ -174,9 +174,13 @@ func AttemptsWarnings(service *types.ServiceDeclaration) []ValidationError {
 }
 
 // validateResetSchema enforces the permission of its own of ST-DECL-INV104 on the compiled schema (security review of
-// PR #489, M2): the permission of a command that declares resets_attempts names no permission that another operation
-// on its resource type checks, and has no union arm, a relation, an arrow or a permission, that such a permission also
-// has. Thus a schema such as unlock_pin = customer->edit, where operate = customer->edit, is refused.
+// PR #489, M2 and second review, M2b). It expands the permission of a command that declares resets_attempts, and each
+// permission that another operation on its resource type checks, into their leaves: each relation, and each arrow
+// with the relations and arrows that its computed name expands to on each subject type of its tupleset, one level
+// deep; a permission that an expression names is expanded in its place, once, so a cycle ends. It refuses the reset
+// permission when its expansion names a checking permission, when a checking permission's expansion names the reset
+// permission, and when the two expansions share a leaf. Thus unlock_pin = customer->edit beside operate =
+// customer->edit, an alias of a part of operate, and operate = parent->viewer + unlock_pin are all refused.
 func validateResetSchema(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	if schema == nil {
 		return nil
@@ -186,34 +190,109 @@ func validateResetSchema(service *types.ServiceDeclaration, schema *AuthzSchema)
 		if len(c.ResetsAttempts) == 0 || c.Permission == "" || c.ResourceType == "" {
 			continue
 		}
-		rewrite, ok := schema.PermissionRewrite(c.ResourceType, c.Permission)
-		if !ok {
+		if _, ok := schema.PermissionRewrite(c.ResourceType, c.Permission); !ok {
 			continue
 		}
-		own := unionArms(rewrite)
+		own := schema.expandPermission(c.ResourceType, c.Permission)
 		for _, other := range checkingPermissions(service, i, c.ResourceType) {
 			if other == c.Permission {
 				continue
 			}
+			theirs := schema.expandPermission(c.ResourceType, other)
 			shared := ""
-			if own["relation:"+other] {
-				shared = "names " + other
-			} else if theirs, ok := schema.PermissionRewrite(c.ResourceType, other); ok {
-				for arm := range unionArms(theirs) {
-					if own[arm] {
-						shared = "shares the arm " + arm[strings.Index(arm, ":")+1:] + " with " + other
+			switch {
+			case own.permissions[other]:
+				shared = "names " + other + ","
+			case theirs.permissions[c.Permission]:
+				shared = "is named by " + other + ","
+			default:
+				for _, leaf := range sortedKeys(own.leaves) {
+					if theirs.leaves[leaf] {
+						shared = "shares " + leaf + " with " + other + ","
 						break
 					}
 				}
 			}
 			if shared != "" {
 				faults = append(faults, ValidationError{Category: "command", Rule: "resets-attempts", Path: commandPath(i) + ".permission", Found: c.Permission,
-					Message: fmt.Sprintf("the command %q resets attempts with the permission %s, which in the schema %s, a permission that another operation on %s checks; give the reset a permission with arms of its own, such as a support relation (ST-DECL-INV104)", c.Name, c.Permission, shared, c.ResourceType)})
+					Message: fmt.Sprintf("the command %q resets attempts with the permission %s, which in the schema %s a permission that another operation on %s checks; give the reset a permission with relations of its own, such as a support relation (ST-DECL-INV104)", c.Name, c.Permission, shared, c.ResourceType)})
 				break
 			}
 		}
 	}
 	return faults
+}
+
+// expansion is what a permission expands to: its leaves, each relation as <type>#<relation> and each arrow as
+// <type>#<tupleset>-><computed>, and the permissions of its own type that it names on the way.
+type expansion struct {
+	leaves      map[string]bool
+	permissions map[string]bool
+}
+
+// expandPermission expands the permission of the type into its leaves (validateResetSchema): through each permission
+// of the type that it names, once each, and through each arrow one level into each subject type of its tupleset. The
+// arms of an intersection and of an exclusion count too, so the check refuses rather than misses a shared leaf.
+func (s *AuthzSchema) expandPermission(typeName, permission string) expansion {
+	x := expansion{leaves: map[string]bool{}, permissions: map[string]bool{}}
+	var walk func(typeName, name string, follow bool, visited map[string]bool)
+	walk = func(typeName, name string, follow bool, visited map[string]bool) {
+		definition, ok := s.definitions[typeName]
+		if !ok {
+			return
+		}
+		if !definition.permissions[name] {
+			x.leaves[typeName+"#"+name] = true
+			return
+		}
+		if visited[typeName+"#"+name] {
+			return
+		}
+		visited[typeName+"#"+name] = true
+		var rewrite func(r *core.UsersetRewrite)
+		rewrite = func(r *core.UsersetRewrite) {
+			var children []*core.SetOperation_Child
+			switch {
+			case r.GetUnion() != nil:
+				children = r.GetUnion().GetChild()
+			case r.GetIntersection() != nil:
+				children = r.GetIntersection().GetChild()
+			case r.GetExclusion() != nil:
+				children = r.GetExclusion().GetChild()
+			}
+			for _, c := range children {
+				var tupleset, computed string
+				switch {
+				case c.GetComputedUserset() != nil:
+					computed := c.GetComputedUserset().GetRelation()
+					if follow && definition.permissions[computed] {
+						x.permissions[computed] = true
+					}
+					walk(typeName, computed, follow, visited)
+					continue
+				case c.GetTupleToUserset() != nil:
+					tupleset, computed = c.GetTupleToUserset().GetTupleset().GetRelation(), c.GetTupleToUserset().GetComputedUserset().GetRelation()
+				case c.GetFunctionedTupleToUserset() != nil:
+					f := c.GetFunctionedTupleToUserset()
+					tupleset, computed = f.GetTupleset().GetRelation(), f.GetComputedUserset().GetRelation()
+				case c.GetUsersetRewrite() != nil:
+					rewrite(c.GetUsersetRewrite())
+					continue
+				default:
+					continue
+				}
+				x.leaves[typeName+"#"+tupleset+"->"+computed] = true
+				if follow {
+					for _, subject := range definition.subjects[tupleset] {
+						walk(subject.namespace, computed, false, map[string]bool{})
+					}
+				}
+			}
+		}
+		rewrite(definition.rewrites[name])
+	}
+	walk(typeName, permission, true, map[string]bool{})
+	return x
 }
 
 // checkingPermissions gives the permissions on resourceType that another operation than the command at index self
@@ -257,38 +336,4 @@ func checkingPermissions(service *types.ServiceDeclaration, self int, resourceTy
 		}
 	}
 	return out
-}
-
-// unionArms gives the arms of a permission expression: each computed relation or permission as relation:<name>, and
-// each arrow as arrow:<tupleset>-><computed>, through nested expressions. The arms of an intersection and of an
-// exclusion count too, so the check refuses rather than misses a shared arm.
-func unionArms(rewrite *core.UsersetRewrite) map[string]bool {
-	arms := map[string]bool{}
-	var walk func(r *core.UsersetRewrite)
-	walk = func(r *core.UsersetRewrite) {
-		var children []*core.SetOperation_Child
-		switch {
-		case r.GetUnion() != nil:
-			children = r.GetUnion().GetChild()
-		case r.GetIntersection() != nil:
-			children = r.GetIntersection().GetChild()
-		case r.GetExclusion() != nil:
-			children = r.GetExclusion().GetChild()
-		}
-		for _, c := range children {
-			switch {
-			case c.GetComputedUserset() != nil:
-				arms["relation:"+c.GetComputedUserset().GetRelation()] = true
-			case c.GetTupleToUserset() != nil:
-				arms["arrow:"+c.GetTupleToUserset().GetTupleset().GetRelation()+"->"+c.GetTupleToUserset().GetComputedUserset().GetRelation()] = true
-			case c.GetFunctionedTupleToUserset() != nil:
-				f := c.GetFunctionedTupleToUserset()
-				arms["arrow:"+f.GetTupleset().GetRelation()+"->"+f.GetComputedUserset().GetRelation()] = true
-			case c.GetUsersetRewrite() != nil:
-				walk(c.GetUsersetRewrite())
-			}
-		}
-	}
-	walk(rewrite)
-	return arms
 }

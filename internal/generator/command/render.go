@@ -440,6 +440,17 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 			w.f("%q", r.entity.decl.Name+"."+r.field.decl.Name)
 		}
 		w.f("},\n")
+		if len(c.resetGuards) > 0 {
+			// The permissions that a caller of the reset may not hold on the row (ST-SUP-RP10-LC54).
+			w.f("\tResetGuards: []string{")
+			for i, p := range c.resetGuards {
+				if i > 0 {
+					w.f(", ")
+				}
+				w.f("%q", p)
+			}
+			w.f("},\n")
+		}
 	}
 	w.f("\tRetryOnConflict: %d,\n", c.retry)
 	if c.lock != "" {

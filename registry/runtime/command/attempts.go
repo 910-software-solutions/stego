@@ -49,8 +49,8 @@ import (
 // whose count was last charged UnlockAfter or longer before, on the clock of the database, starts the count again at
 // 1, so a row at its limit opens again after the declared window, which a client cannot make shorter: the window is
 // the declaration's, the time is the database's, and a check at the limit charges nothing, so it moves the time of
-// the last charge neither back nor forward. A counter with no UnlockAfter does not decay. A second count, failures,
-// never decays: the checks since the last match or new value. At FailureCap of them, min(10 x limit, 100) as NIST SP
+// the last charge neither back nor forward. A counter with no UnlockAfter does not decay. The checks of the windows
+// before, failures, never decay: with checks, they count the checks since the last match or new value. At FailureCap of them, min(10 x limit, 100) as NIST SP
 // 800-63B 5.2.2 caps the consecutive failures of one account, the row stays locked until a reset or a new value. A
 // count with no time, as a charge of a release before leaves it, counts as charged at its next charge. A command that
 // declares the reset of the field (CommandSpec.Resets) sets both counts to 0 with ResetAttempts, decided with its own
@@ -140,18 +140,21 @@ func (c *charges) pay(key chargeKey, n int) {
 // failures never start again (decision ST-SUP-Q207 (a)). At the limit and at the cap it changes nothing, so checks
 // there never move the end of the window. stampStatement runs first: it gives a count with no time, as a charge of a
 // release before leaves it, the time of this charge, so such a count is charged now and not past its window
-// (security review of PR #489, L1). A count of a release before has no failures, and counts its checks as them.
+// (security review of PR #489, L1). failures holds the checks of the windows before the current one, which the decay
+// adds to it, and the cap holds on failures and checks together, so each check counts toward the cap, also one of a
+// pod of a release before, which raises only checks (security review of PR #489, second review, L3).
 const (
 	stampStatement = `UPDATE public.attempt_counts SET charged_at = pg_catalog.statement_timestamp()
 WHERE tenant_id = $1 AND counter = $2 AND row_id = $3 AND charged_at IS NULL`
 	chargeStatement = `INSERT INTO public.attempt_counts AS a (tenant_id, counter, row_id, checks, failures, charged_at)
-VALUES ($1, $2, $3, 1, 1, pg_catalog.statement_timestamp())
+VALUES ($1, $2, $3, 1, 0, pg_catalog.statement_timestamp())
 ON CONFLICT (tenant_id, counter, row_id) DO UPDATE SET
 checks = CASE WHEN $5::double precision > 0 AND a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)
 THEN 1 ELSE a.checks + 1 END,
-failures = COALESCE(a.failures, a.checks) + 1,
+failures = CASE WHEN $5::double precision > 0 AND a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)
+THEN COALESCE(a.failures, 0) + a.checks ELSE a.failures END,
 charged_at = pg_catalog.statement_timestamp()
-WHERE COALESCE(a.failures, a.checks) < $6 AND (a.checks < $4 OR ($5::double precision > 0
+WHERE COALESCE(a.failures, 0) + a.checks < $6 AND (a.checks < $4 OR ($5::double precision > 0
 AND a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)))
 RETURNING a.checks`
 	resetStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1 AND counter = $2 AND row_id = $3`
@@ -327,6 +330,18 @@ func ResetAttempts[P any](ctx context.Context, h *Handle[P], c *Counter, on Ref)
 	if err := s.decideCommandOn(ctx, r.resourceType, r.entity, r.id, r.token); err != nil {
 		return err
 	}
+	// A caller who may also run a command that checks the field on this row would get checks with no limit, a reset
+	// after each: the reset is refused for such a caller, whatever the shape of the schema (security review of PR #489,
+	// second review, M2b).
+	for _, permission := range s.resetGuards {
+		allowed, err := s.evaluate(ctx, s.az, permission, r.resourceType, r.id, r.token, nil)
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return fmt.Errorf("%w: the caller may also check %s with %s on this row, so it may not reset its attempts", ErrDenied, c.name(), permission)
+		}
+	}
 	// The reset is audited as a write of the row: the action is the command, the resource the row, and the only
 	// state is the marker of the field, so the chain records each reset with the command (security review of PR #489,
 	// M1). Run records the event just before COMMIT, so a reset that rolls back writes no row.
@@ -344,9 +359,17 @@ const AttemptsResetMarker = "attempts_reset"
 // checkResets checks the declared resets of the attempts of a command: each names <entity>.<field> of an entity that
 // the command writes, and the command decides a permission of its own on a row, not on the service-level resource
 // (ST-DECL-INV104).
-func checkResets(name, permission string, resource *Resource, resets []string, writes []Declared) (map[string]bool, error) {
+func checkResets(name, permission string, resource *Resource, resets, guards []string, writes []Declared) (map[string]bool, error) {
 	if len(resets) == 0 {
+		if len(guards) > 0 {
+			return nil, fmt.Errorf("command: %s declares reset guards and no reset of attempts", name)
+		}
 		return nil, nil
+	}
+	for _, g := range guards {
+		if g == "" || g == permission {
+			return nil, fmt.Errorf("command: %s declares the reset guard %q, which is empty or its own permission", name, g)
+		}
 	}
 	if permission == "" || resource == nil || resource.Service != "" {
 		return nil, fmt.Errorf("command: %s declares a reset of attempts and no permission on a row", name)

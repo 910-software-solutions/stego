@@ -354,6 +354,10 @@ type CommandSpec[P any] struct {
 	// ResetAttempts: the declared step-up reset of a command (ST-DECL-INV104, decision ST-SUP-Q205 (c)). Each is of an
 	// entity in Writes, and the command decides its permission on a row.
 	Resets []string
+	// ResetGuards are the permissions on the resource type of the command of the other commands that write the
+	// entities of Resets, and so may check their fields: ResetAttempts refuses a caller who holds one of them on the
+	// row (security review of PR #489, second review, M2b).
+	ResetGuards []string
 }
 
 // Resource is the generated declaration of the resource of a command (ST-SUP-RP10-LC31): its resource type at the
@@ -417,7 +421,7 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	if err != nil {
 		return nil, err
 	}
-	resets, err := checkResets(spec.Name, spec.Permission, spec.Resource, spec.Resets, spec.Writes)
+	resets, err := checkResets(spec.Name, spec.Permission, spec.Resource, spec.Resets, spec.ResetGuards, spec.Writes)
 	if err != nil {
 		return nil, err
 	}
@@ -686,6 +690,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	s.lists, s.runTime = cmd.lists, rt.clock().Now()
 	s.commandPermission = cmd.spec.Permission
 	s.resets = cmd.resets
+	s.resetGuards = cmd.spec.ResetGuards
 	s.lockTimeout = cmd.spec.LockTimeout
 	if s.lockTimeout == 0 {
 		s.lockTimeout = DefaultLockTimeout

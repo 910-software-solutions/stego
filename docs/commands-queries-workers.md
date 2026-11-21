@@ -1637,15 +1637,19 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   in whole seconds. The charge counts again from 1 when the last charge of the
   row is the window or longer before on the clock of the database, and changes
   nothing at the limit. New method `command.(*Counter).UnlockAfter`.
-- A second count of the checks since the last match or new value never
-  decays. New function `command.FailureCap`: min(10 x limit, 100). At the cap
+- The checks of the windows before, `failures`, never decay: with the checks
+  of the window, they count the checks since the last match or new value,
+  also those of a pod of a release before. New function `command.FailureCap`: min(10 x limit, 100). At the cap
   the row stays locked until a new value or a reset.
 - New function `command.ResetAttempts` and new field
   `command.CommandSpec.Resets`: a command that declares the reset of a field
   sets the counts of a row to 0 when it commits, after a decision of its own
   permission on that row, and writes an audit row with the marker
   `attempts_reset` (`command.AttemptsResetMarker`). It gives only an error.
-  `Matches` on that field in that command fails the call.
+  `Matches` on that field in that command fails the call. New field
+  `command.CommandSpec.ResetGuards`: the permissions of the other commands
+  that write the entity; a caller who holds one of them on the row gets
+  `ErrDenied`, and the counts stay.
 - The migration of the key table adds the nullable columns `charged_at` and
   `failures` to `attempt_counts`, only when the catalog does not hold them.
   The manifest of a release before still holds the table. A charge gives a

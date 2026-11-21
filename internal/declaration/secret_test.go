@@ -297,31 +297,43 @@ func TestResetsAttemptsSchema(t *testing.T) {
 		"resource_type: document", "resource_member: todoId", "permission: operate") +
 		command("unlock-pin", "writes: [Todo]", "fill: unlock-pin", "route: POST /todos/{todoId}/pin:unlock",
 			"resource_type: document", "resource_member: todoId", "permission: unlock_pin", "resets_attempts: [Todo.pin]")
-	schema = change(t, schema, "\tpermission edit = owner\n", "\tpermission edit = owner\n\trelation support: user\n\trelation parent: folder\n\tpermission operate = parent->viewer\n\tpermission unlock_pin = %s\n")
-	faults := func(t *testing.T, expression string) []ValidationError {
+	schema = change(t, schema, "\tpermission edit = owner\n", "\tpermission edit = owner\n\trelation support: user\n\trelation parent: folder\n\tpermission operate = %o\n\tpermission unlock_pin = %s\n")
+	schema = change(t, schema, "definition folder {\n\trelation viewer: user\n", "definition folder {\n\trelation viewer: user\n\trelation helper: user\n\tpermission see = viewer\n\tpermission help = helper\n")
+	faults := func(t *testing.T, operate, expression string) []ValidationError {
 		t.Helper()
 		decl := readTD03(t, service)
+		text := strings.Replace(strings.Replace(schema, "%s", expression, 1), "%o", operate, 1)
 		var out []ValidationError
-		for _, f := range CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(strings.Replace(schema, "%s", expression, 1))}}) {
+		for _, f := range CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(text)}}) {
 			if f.Rule == "resets-attempts" {
 				out = append(out, f)
 			}
 		}
 		return out
 	}
-	t.Run("ST-DECL-INV104-T A reset permission with arms of its own in the schema is accepted", func(t *testing.T) {
-		if got := faults(t, "support"); len(got) != 0 {
-			t.Fatalf("want no fault, got %+v", got)
-		}
-	})
-	for name, c := range map[string]struct{ expression, names string }{
-		"that shares the relation owner with edit":          {"owner + support", "owner"},
-		"that names the permission edit":                    {"edit + support", "edit"},
-		"that shares the arrow parent->viewer with operate": {"parent->viewer", "parent->viewer"},
-		"that shares the relation viewer with view":         {"viewer", "viewer"},
+	for name, c := range map[string]struct{ operate, expression string }{
+		"a relation of its own":             {"parent->viewer", "support"},
+		"an arrow to a relation of its own": {"parent->viewer", "parent->help"},
+		"an alias of a relation of its own": {"parent->viewer", "alias\n\tpermission alias = support"},
+	} {
+		t.Run("ST-DECL-INV104-T A reset permission with "+name+" in the schema is accepted", func(t *testing.T) {
+			if got := faults(t, c.operate, c.expression); len(got) != 0 {
+				t.Fatalf("want no fault, got %+v", got)
+			}
+		})
+	}
+	for name, c := range map[string]struct{ operate, expression, names string }{
+		"that shares the relation owner with edit":                           {"parent->viewer", "owner + support", "document#owner"},
+		"that names the permission edit":                                     {"parent->viewer", "edit + support", "edit"},
+		"that shares the arrow parent->viewer with operate":                  {"parent->viewer", "parent->viewer", "document#parent->viewer"},
+		"that shares the relation viewer with view":                          {"parent->viewer", "viewer", "document#viewer"},
+		"that is an alias of the arrow of operate":                           {"parent->viewer", "alias\n\tpermission alias = parent->viewer", "document#parent->viewer"},
+		"that is an alias of the relation of edit":                           {"parent->viewer", "alias2\n\tpermission alias2 = owner", "document#owner"},
+		"that operate names":                                                 {"parent->viewer + unlock_pin", "support", "operate"},
+		"whose arrow reaches the relation that the arrow of operate reaches": {"parent->viewer", "parent->see", "folder#viewer"},
 	} {
 		t.Run("ST-DECL-INV104-T A reset permission "+name+" is refused", func(t *testing.T) {
-			got := faults(t, c.expression)
+			got := faults(t, c.operate, c.expression)
 			if len(got) != 1 || !strings.Contains(got[0].Message, c.names) || !strings.Contains(got[0].Message, `"unlock-pin"`) || !strings.Contains(got[0].Message, "ST-DECL-INV104") {
 				t.Fatalf("want one fault of resets-attempts that names %s, unlock-pin and the rule, got %+v", c.names, got)
 			}

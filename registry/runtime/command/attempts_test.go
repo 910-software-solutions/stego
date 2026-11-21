@@ -1020,7 +1020,8 @@ func newDecayWallet(t *testing.T, counter *Counter, walletID, right string) deca
 	}
 	w.failures = func() int {
 		t.Helper()
-		return e.count(`SELECT coalesce(sum(failures), 0) FROM attempt_counts WHERE counter = 'PinWallet.pin' AND row_id = $1`, walletID)
+		// The checks since the last match or new value: the checks of the windows before and of this one.
+		return e.count(`SELECT coalesce(sum(coalesce(failures, 0) + checks), 0) FROM attempt_counts WHERE counter = 'PinWallet.pin' AND row_id = $1`, walletID)
 	}
 	w.chargedAt = func() string {
 		t.Helper()
@@ -1132,6 +1133,23 @@ func TestAttemptDecay(t *testing.T) {
 			t.Fatal("the right PIN after the reset gave no match")
 		}
 	})
+	t.Run("ST-SUP-RP10-LC54-T17 The checks that a pod of a release before adds count toward the cap of the failures", func(t *testing.T) {
+		const walletID = "0198a1b2-0000-7000-8000-000000000017"
+		counter := Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 2, UnlockAfter: time.Minute}))
+		w := newDecayWallet(t, counter, walletID, right)
+		// A row of failures 18 whose two checks of this window a pod of a release before charged, which raises only
+		// checks: 20 checks since the last match, the cap of the limit 2.
+		w.e.exec(`INSERT INTO attempt_counts (tenant_id, counter, row_id, checks, failures, charged_at) VALUES ('t1', 'PinWallet.pin', '` + walletID + `', 2, 18, pg_catalog.statement_timestamp() - interval '61 seconds')`)
+		if w.check(right) || w.failures() != 20 {
+			t.Fatalf("the right PIN after the window of a row at the cap matched, or left the checks %d, want no match and 20", w.failures())
+		}
+		// Below the cap, the decay keeps the checks of the window before in failures.
+		w.e.exec(`UPDATE attempt_counts SET failures = 10 WHERE row_id = '` + walletID + `'`)
+		w.age("61 seconds")
+		if w.check("0000") || w.failures() != 13 || w.count() != 1 {
+			t.Fatalf("a wrong PIN after the window left the checks %d and the count %d, want 13 and 1", w.failures(), w.count())
+		}
+	})
 }
 
 // lockedWallet is a test entity of the resource type locked_wallet with a counted PIN of limit 2, which the command
@@ -1196,15 +1214,31 @@ func TestAttemptResets(t *testing.T) {
 				t.Fatalf("NewCommand takes a reset with %s", name)
 			}
 		}
+		for name, change := range map[string]func(*CommandSpec[testProbe]){
+			"a guard with no reset": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.ResetGuards = "unlock", resource, []string{"operate"}
+			},
+			"its own permission as a guard": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", resource, []string{"LockedWallet.pin"}, []string{"unlock"}
+			},
+		} {
+			spec := CommandSpec[testProbe]{Name: "unlock", Writes: []Declared{wallets}, Probe: newTestProbe}
+			change(&spec)
+			if _, err := NewCommand(spec); err == nil {
+				t.Fatalf("NewCommand takes %s", name)
+			}
+		}
 		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "operate", resource }, wallets)
 		unlock := e.command("unlock", func(s *CommandSpec[testProbe]) {
-			s.Permission, s.Resource, s.Resets = "unlock", resource, []string{"LockedWallet.pin"}
+			s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", resource, []string{"LockedWallet.pin"}, []string{"operate"}
 		}, wallets)
 		// u-1 owns a; u-2 may unlock b and view a; u-3 is the support desk, which may unlock a.
 		e.decision.setRelations(relation(t, "user:u-1", "operate", "t1", "locked_wallet", a), relation(t, "user:u-1", "view", "t1", "locked_wallet", a),
 			relation(t, "user:u-2", "unlock", "t1", "locked_wallet", b), relation(t, "user:u-2", "view", "t1", "locked_wallet", a),
 			relation(t, "user:u-2", "view", "t1", "locked_wallet", b),
-			relation(t, "user:u-3", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-3", "view", "t1", "locked_wallet", a))
+			relation(t, "user:u-3", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-3", "view", "t1", "locked_wallet", a),
+			relation(t, "user:u-4", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-4", "operate", "t1", "locked_wallet", a),
+			relation(t, "user:u-4", "view", "t1", "locked_wallet", a))
 		n := 0
 		errFill := errors.New("the fill fails")
 		// call runs cmd as subject on the resource, with a fill that reads the wallet a and then runs body.
@@ -1264,6 +1298,11 @@ func TestAttemptResets(t *testing.T) {
 		// u-2 may unlock b, and may only view a: the reset of a is decided with unlock on a, and denied.
 		if err := call(unlock, "user:u-2", b, reset); !errors.Is(err, ErrNotFound) || count() != 2 || resets() != 0 {
 			t.Fatalf("the reset of a by a caller who may unlock only b gave %v and left the count %d, want ErrNotFound and 2", err, count())
+		}
+		// u-4 may unlock a and also operate it, so it could check the PIN and reset it after each check: the reset is
+		// refused, whatever the schema (security review of PR #489, second review, M2b).
+		if err := call(unlock, "user:u-4", a, reset); !errors.Is(err, ErrDenied) || count() != 2 || resets() != 0 {
+			t.Fatalf("the reset of a caller who may also operate a gave %v, left the count %d and wrote %d audit rows, want ErrDenied, 2 and none", err, count(), resets())
 		}
 		// The reset of the support desk commits only with its command.
 		if err := call(unlock, "user:u-3", a, func(ctx context.Context, h *Handle[testProbe], w Loaded[lockedWallet]) error {

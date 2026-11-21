@@ -683,15 +683,21 @@ A support desk can unlock a row before `unlock_after`. Declare a command with
 - its permission is also the permission of an operation of the entity, or of
   another command, query or worker on the resource type, such as `operate` of
   `withdraw`;
-- in the schema, its permission names such a permission, or has a part, a
-  relation or an arrow, that such a permission has too, such as
-  `unlock_pin = customer->edit` beside `operate = customer->edit`, or
-  `unlock_pin = owner + support` beside `edit = owner`.
+- in the schema, its permission and such a permission share a relation or an
+  arrow, or one names the other. Validate expands each permission that an
+  expression names, and follows each arrow one level into the types of its
+  relation. Thus it refuses `unlock_pin = customer->edit` beside
+  `operate = customer->edit`, `unlock_pin = owner + support` beside
+  `edit = owner`, `unlock_pin = alias` with `alias = owner`, and
+  `operate = customer->edit + unlock_pin`.
 
 The reset needs a permission of its own, so a caller who can check the PIN
 cannot also reset its count. In the schema above, only a support agent of the
-tenant or an admin has `unlock_pin`. Keep it so: validate compares the parts
-of the expressions, not who holds each relation.
+tenant or an admin has `unlock_pin`. Validate compares the expressions, not who
+holds each relation, so the runtime also checks each reset: a caller who has
+the permission of another command that writes the wallet, such as `operate` of
+`withdraw` or `edit` of `change-pin`, on that wallet gets 404 `denied`, and
+the count stays. Give the reset to people who do not operate the wallets.
 
 The code of the command gets one helper for each field, such as
 `UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of

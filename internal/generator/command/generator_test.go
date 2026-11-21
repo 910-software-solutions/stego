@@ -1149,6 +1149,9 @@ func TestResetEmission(t *testing.T) {
 				t.Errorf("the generated code does not hold %s", want)
 			}
 		}
+		if !regexp.MustCompile(`ResetGuards:\s+\[\]string\{"reserve"\},`).MatchString(text) {
+			t.Error("the declaration of unlock-pin does not give the permission reserve of reserve-and-charge, which writes Order, as its reset guard")
+		}
 		if n := len(regexp.MustCompile(`Resets:\s+\[\]string\{"Order.pin"\},`).FindAllString(text, -1)); n != 1 || strings.Count(text, "Resets:") != 1 || strings.Contains(text, "func ReserveAndChargeReset") {
 			t.Errorf("the generated code holds %d declarations of resets, or a reset helper of reserve-and-charge, want one and none", n)
 		}
