@@ -38,11 +38,16 @@ var ErrForeignTables = errors.New("the database holds tables of the declaration 
 // foreignLedger is the refusal of CheckLedger of a ledger that is not the history of this release: its text names
 // the ledger row, the migration and the remedy, and no part of a body, so the migration job logs it (Refusal). It
 // matches ErrForeignTables.
-type foreignLedger struct{ text string }
+// The failure record of the process names its fault class, the ledger and its remedy (FaultClass, FaultObject,
+// FaultRemedy), fixed texts with no name of a row.
+type foreignLedger struct{ text, remedy string }
 
 func (r *foreignLedger) Error() string        { return ErrForeignTables.Error() + ": " + r.text }
 func (r *foreignLedger) Refusal() string      { return r.text }
 func (r *foreignLedger) Is(target error) bool { return target == ErrForeignTables }
+func (r *foreignLedger) FaultClass() string   { return "migration_ledger.history" }
+func (r *foreignLedger) FaultObject() string  { return "stego_schema.migrations" }
+func (r *foreignLedger) FaultRemedy() string  { return r.remedy }
 
 // declaredTables are the tables of the entities of the declaration.
 var declaredTables = []string{"organizations", "users", "org_settings", "activity_entries"}
@@ -86,7 +91,7 @@ func CheckLedger(ctx context.Context, db Database) error {
 			// stays ErrForeignTables (walkthrough 19, W19-T2).
 			var other *ledgerRefusal
 			if errors.As(err, &other) {
-				return &foreignLedger{text: other.text}
+				return &foreignLedger{text: other.text, remedy: other.remedy}
 			}
 			return ErrForeignTables
 		}
