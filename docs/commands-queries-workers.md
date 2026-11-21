@@ -1625,6 +1625,30 @@ Thus the location never reads data of another tenant and never tells that a
 row exists. Give it only to users who may know when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.187.0
+
+- `AwaitRevocation`, `AwaitRevocationRPC`, `AwaitWrite` and `AwaitWriteRPC`
+  wait for a revocation that any principal of the caller's tenant made, so a
+  second user who has the location of a create acts at once on the new row
+  (walkthrough 22, P3-A; recommendation (a) of ST-SUP-Q206, open for the
+  Product owner). New method `authz.Runtime.WaitInTenant`, which tells
+  whether the caller made the write. A read answers `unknown` for a
+  revocation of another principal, also after the wait. `WaitFor`, `Status`
+  and the status route do not change. A revocation of another tenant is not
+  found at once.
+- `command.attempts.pool_saturated` comes when a charge of a counted check
+  must wait for a slot while the charges hold each shared slot of the pool of
+  the charges (ST-SUP-RP10-LC54; walkthrough 22, P1-PS). Before, the line
+  could not come: the slots keep the connections in use under the size of
+  the pool. The line gives `stego.pool.in_use` (the slots in use),
+  `stego.pool.max_open` and `stego.pool.waiting` (the charges that wait), and
+  no value and no tenant. A charge that waits only for the limit of its own
+  tenant does not write it.
+- New function `authz.StatusClass`: the class of a gRPC status code, and for
+  a refusal the fixed class of its reason after a period, such as
+  `invalid_argument.relationships_exist`. The failure record of the migration
+  Job gives it as its cause (ST-SUP-RP14-LC03).
+
 ### Release notes for runtime v0.186.0
 
 - A consumer run that fails after a decision denied a row with an empty
