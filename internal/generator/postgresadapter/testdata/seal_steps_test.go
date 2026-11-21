@@ -332,6 +332,69 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC49-T12 A database whose seal expand ran with postgres-adapter 6.19.0 or 6.20.0 passes the ledger check, gets the functions of this release, and then seals and contracts", func(t *testing.T) {
+		earlier := seal.EarlierMigrationDigests()
+		for i, version := range []string{"6.19.0", "6.20.0"} {
+			t.Run(version, func(t *testing.T) {
+				own, db, reader := base(t)
+				expand(t, own, db)
+				for _, r := range job(t, reader) {
+					if !r.Completed {
+						t.Fatalf("the seal job gave %+v, want the pass completed", r)
+					}
+				}
+				// The database as the migration job of that version left it: the ledger rows of the expand steps hold
+				// the digests of the bodies of that version, and the functions of the seal checkpoints are its own.
+				for _, name := range []string{"step_0001_vault-note-seal_expand", "step_0002_vault-code-seal_expand"} {
+					if len(earlier[name]) != 2 {
+						t.Fatalf("the release gives the earlier digests %v of %s, want 2", earlier[name], name)
+					}
+					if _, err := db.Exec(`UPDATE stego_schema.migrations SET digest = $1 WHERE version = $2`, earlier[name][i], name); err != nil {
+						t.Fatal(err)
+					}
+				}
+				old := []string{
+					// 6.20.0: the database instance is the database and the start of its server alone.
+					`CREATE OR REPLACE FUNCTION stego_schema.seal_instance() RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
+  AS $f$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$f$`,
+					`UPDATE stego_schema.seals SET armed_in = stego_schema.seal_instance()`,
+				}
+				if version == "6.19.0" {
+					// 6.19.0: no record of the database instance at all.
+					old = []string{`ALTER TABLE stego_schema.seals DROP COLUMN armed_in, DROP COLUMN armed_at`, `DROP FUNCTION stego_schema.seal_instance()`}
+				}
+				for _, statement := range old {
+					if _, err := db.Exec(statement); err != nil {
+						t.Fatalf("%.60s: %v", statement, err)
+					}
+				}
+				// The migration job of this release passes the ledger check and puts the functions of this release in place.
+				migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return seal.Migrate(ctx, conn) }, "seal_access.json")
+				var current bool
+				if err := db.QueryRow(`SELECT pg_catalog.pg_get_functiondef('stego_schema.seal_instance()'::regprocedure) LIKE '%pg_relation_filenode%'`).Scan(&current); err != nil || !current {
+					t.Fatalf("after the migration job the database instance is not the one of this release (%v, %v)", current, err)
+				}
+				// The pass of the earlier version does not count: the first run waits, and the next completes a new pass.
+				for _, r := range job(t, reader) {
+					if r.Completed || !r.Waits {
+						t.Fatalf("the first run of the seal job after the upgrade gave %+v, want it to wait", r)
+					}
+				}
+				if _, err := db.Exec(`UPDATE stego_schema.seals SET armed_at = armed_at - interval '4 minutes'`); err != nil {
+					t.Fatal(err)
+				}
+				for _, r := range job(t, reader) {
+					if !r.Completed {
+						t.Fatalf("the seal job 3 minutes after the first sight gave %+v, want a new pass completed", r)
+					}
+				}
+				if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); err != nil {
+					t.Fatalf("the contract after the new pass: %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		own, db, reader := base(t)
 		expand(t, own, db)

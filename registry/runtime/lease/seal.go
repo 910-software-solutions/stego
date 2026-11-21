@@ -138,9 +138,11 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 // text grants EXECUTE on them to the runtime role alone and no right on the table. It also makes release_stop keep
 // the report of a process of a release before the expand migration of an open seal change, so the stop of such a
 // process, as at the end of a roll back, still marks the pass stale and the contract still sees it. The expand
-// migration of a seal runs it after the release reports (Releases), which the functions read, and each later step
-// that runs Releases runs it again after them. Each statement runs again with no error on
-// a database that it made.
+// migration of a seal makes the table, the first statement of the text, after the release reports (Releases), which
+// the functions read; the migration job runs the rest of the text outside each migration body and its digest, after
+// each migration that it applies and once at its end, so a step that runs Releases again cannot leave the release_stop
+// of Releases, and a database whose expand migration an earlier release applied gets the functions of this one
+// (ST-SUP-RC01-OC49). Each statement runs again with no error on a database that it made.
 func SealsText(runtimeRole string) (string, error) {
 	if !releaseRole.MatchString(runtimeRole) {
 		return "", fmt.Errorf("lease: the runtime role %q is not a lower-case SQL name of at most 63 characters", runtimeRole)

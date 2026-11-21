@@ -1,6 +1,10 @@
 package postgresadapter_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,12 +84,19 @@ func TestSealSteps(t *testing.T) {
 			"ALTER TABLE public.\"vaults\" ADD COLUMN \"note_sealed\" bytea;\n",
 			"CREATE TABLE IF NOT EXISTS stego_schema.releases",
 			"CREATE TABLE IF NOT EXISTS stego_schema.seals",
-			"GRANT EXECUTE ON FUNCTION stego_schema.seal_checkpoint(text, text, uuid, bigint, bigint, boolean, text, text, bigint) TO \"seal_runtime\";",
 			"INSERT INTO stego_schema.seals (change_id, expand) VALUES ('vault-note-seal', 'step_0001_vault-note-seal_expand') ON CONFLICT (change_id) DO NOTHING;",
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("the expand of the seal of note does not hold %s:\n%s", want, note)
 			}
+		}
+		// The functions of the seal checkpoints are in no body: the migration job runs them (RegisterSealCheckpoints).
+		if strings.Contains(note, "FUNCTION stego_schema.seal_") {
+			t.Errorf("the expand of the seal of note holds a function of the seal checkpoints:\n%s", note)
+		}
+		if migrate := generated(t, files[1], "seal/migrate.go"); !strings.Contains(migrate, "RegisterSealCheckpoints(") ||
+			!strings.Contains(migrate, `GRANT EXECUTE ON FUNCTION stego_schema.seal_checkpoint(text, text, uuid, bigint, bigint, boolean, text, text, bigint) TO \"seal_runtime\";`) {
+			t.Error("the migrate.go of the release of the seals does not register the seal checkpoints with EXECUTE for the runtime role")
 		}
 		for _, gone := range []string{"DROP", "ALTER COLUMN", "CHECK", "TRIGGER"} {
 			if strings.Contains(strings.ReplaceAll(note, "DROP OWNED", ""), "ALTER TABLE public.\"vaults\" "+gone) {
@@ -234,6 +245,53 @@ func TestSealSteps(t *testing.T) {
 		ctx.Entities = entities
 		if _, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "note_sealed") {
 			t.Errorf("a seal whose sealed column the entity declares gives %v", err)
+		}
+	})
+}
+
+func TestSealEarlierDigests(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC51-T02 The steps of a seal accept the digests of the bodies that postgres-adapter 6.19.0 and 6.20.0 wrote, and their bodies hold no function of the seal checkpoints", func(t *testing.T) {
+		// The digests that the generators of main at postgres-adapter 6.19.0 (8c4bce8c1) and 6.20.0 (5ca603ad2) give
+		// these steps, with these roles: the follow-up worker, run 31, generated them with those trees.
+		want := map[string][]string{
+			"step_0001_vault-note-seal_expand":  {"17bd5249f9112ebc5e517b6d0a5ed93465285405ac06f4411f410cf61fb6a23f", "7634675da1fb0439a74e05c63f70df1086e0e6255d6a6b44a8a9d3dcdc14cfb6"},
+			"step_0002_vault-code-seal_expand":  {"a0ec45294f1f5143b8542b735dc3328105a472847f495632fdce80fbd3c3a612", "26aea3a0e490d4a59935b7791666d42ba3a2d8491fe10c95cba25dec41298c48"},
+			"step_0003_vault-title-drop_expand": {"3a5e7cffb05a1e2f0434215fa079f470fe2d7721d1857f4491c22e6475fdb513", "adf56403884c4acf7bddba040ce4f09d6cdf9a138456fe4f8b93d96538d60a82"},
+		}
+		ctx := sealSteps("seal", "sealtenancy", false)
+		ctx.SchemaChanges = append(ctx.SchemaChanges, types.SchemaChange{ID: "vault-title-drop", Kind: "drop", Entity: "Vault", Field: "title", Definition: "string, first"})
+		ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "vault-title-drop", Phase: "expand"})
+		ctx.Entities[0].Fields = ctx.Entities[0].Fields[1:]
+		ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "probe_runtime", "owner_role": "probe_owner"}}
+		files, _, err := new(postgresadapter.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrate := generated(t, files, "seal/migrate.go")
+		for name, digests := range want {
+			call := "RegisterEarlierDigests(" + strconv.Quote(name) + ", " + strconv.Quote(digests[0]) + ", " + strconv.Quote(digests[1]) + ")"
+			if !strings.Contains(migrate, call) {
+				t.Errorf("migrate.go does not hold %s", call)
+			}
+			body := generated(t, files, "seal/migrations/"+name+".sql")
+			if strings.Contains(body, "FUNCTION stego_schema.seal_") {
+				t.Errorf("the body of %s holds a function of the seal checkpoints:\n%s", name, body)
+			}
+			// The digest of the body is none of the earlier digests: the body changed, and the rest of the step is still
+			// in it.
+			sum := sha256.Sum256([]byte(body))
+			if slices.Contains(digests, hex.EncodeToString(sum[:])) {
+				t.Errorf("the body of %s has an earlier digest", name)
+			}
+		}
+		for _, want := range []string{"ALTER TABLE public.\"vaults\" ADD COLUMN \"note_sealed\" bytea;", "CREATE TABLE IF NOT EXISTS stego_schema.releases", "CREATE TABLE IF NOT EXISTS stego_schema.seals",
+			"INSERT INTO stego_schema.seals (change_id, expand) VALUES ('vault-note-seal', 'step_0001_vault-note-seal_expand')"} {
+			if body := generated(t, files, "seal/migrations/step_0001_vault-note-seal_expand.sql"); !strings.Contains(body, want) {
+				t.Errorf("the body of the expand of the seal of note does not hold %s", want)
+			}
+		}
+		if strings.Count(migrate, "\tRegisterEarlierDigests(") != len(want) {
+			t.Errorf("migrate.go registers earlier digests for %d migrations, want %d", strings.Count(migrate, "\tRegisterEarlierDigests("), len(want))
 		}
 	})
 }

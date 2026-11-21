@@ -770,7 +770,7 @@ func TestStartRelease(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = closed.Close()
-		if err := checkRelease(ctx, closed, "todo-svc", "002_release", nil); err == nil || errors.Is(err, ErrMigrationPending) ||
+		if err := checkRelease(ctx, closed, "todo-svc", "002_release", nil, nil); err == nil || errors.Is(err, ErrMigrationPending) ||
 			!strings.Contains(err.Error(), "read the migration ledger "+LedgerTable+" in the catalog") {
 			t.Errorf("the check on a closed pool gave %v, want an error of the catalog read that is not ErrMigrationPending", err)
 		}
@@ -864,6 +864,20 @@ CREATE TABLE IF NOT EXISTS stego_schema.migrations (version text PRIMARY KEY, di
 			var digest string
 			if err := f.admin.QueryRow("SELECT digest FROM stego_schema.migrations WHERE version = '001_initial'").Scan(&digest); err != nil || digest != "d" {
 				t.Fatalf("the refused start changed the ledger row to %q (%v)", digest, err)
+			}
+		})
+		t.Run("ST-SUP-RP14-LC13-T02 New accepts a ledger row that holds an earlier digest of a migration of the release, and no other digest", func(t *testing.T) {
+			defer func() { declared.Migrations, declared.EarlierMigrations = nil, nil }()
+			// The ledger rows hold the digest d, which an earlier version of the adapter gave the body of 002_release.
+			declared.Migrations = map[string]string{"001_initial": "d", "002_release": "e3b0c4"}
+			declared.EarlierMigrations = map[string][]string{"002_release": {"c0ffee", "d"}}
+			if logs, err := start(); err != nil {
+				t.Fatalf("New with an earlier digest of 002_release in the ledger gave %v:\n%s", err, logs)
+			}
+			// An earlier digest of another migration does not count.
+			declared.EarlierMigrations = map[string][]string{"001_initial": {"d"}}
+			if _, err := start(); !errors.Is(err, ErrMigrationChanged) || !strings.Contains(err.Error(), "002_release") {
+				t.Fatalf("New with the earlier digest of another migration gave %v, want ErrMigrationChanged that names 002_release", err)
 			}
 		})
 	})

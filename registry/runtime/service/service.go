@@ -56,6 +56,10 @@ type Parts struct {
 	// the generated code gives (MigrationDigests of the adapter). New refuses a database whose ledger row of one of
 	// these names holds another digest (ST-SUP-RP14-LC13); nil checks no digest.
 	Migrations map[string]string
+	// EarlierMigrations are the earlier digests of a migration of Migrations by name, which New accepts as well: the
+	// digests of the bodies that earlier versions of the adapter wrote for the migration, before a part of the body
+	// moved out of it and out of its digest (EarlierMigrationDigests of the adapter, ST-SUP-RC01-OC51).
+	EarlierMigrations map[string][]string
 	// SubjectType is the subject type of the schema that a verified identity maps to, and TenantClaim the dotted path
 	// of the claim that names the caller's tenant.
 	SubjectType, TenantClaim string
@@ -228,7 +232,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	// Job of the release: the process stops, and starts again until the Job is done (ST-SUP-RP14-LC07). The check
 	// runs before the release report, so a process that stops never reports its release.
 	if p.Release != "" {
-		if err := checkRelease(ctx, svc.pool, p.Service, p.Release, p.Migrations); err != nil {
+		if err := checkRelease(ctx, svc.pool, p.Service, p.Release, p.Migrations, p.EarlierMigrations); err != nil {
 			return nil, err
 		}
 	}
@@ -398,7 +402,7 @@ var ErrMigrationPending = errors.New("the migration Job of this release has not 
 // release can start first: it stops, and Kubernetes starts it again until the Job is done. The refusal names the
 // ledger, the migration and what to do, on a log line of the level error and in its error, because the failure record
 // of the process names the stage only. Neither holds a value of a setting.
-func checkRelease(ctx context.Context, db *sql.DB, service, release string, digests map[string]string) error {
+func checkRelease(ctx context.Context, db *sql.DB, service, release string, digests map[string]string, earlier map[string][]string) error {
 	// The catalog alone tells whether the ledger is there and readable, so that no name resolution in a schema
 	// without USAGE fails the read.
 	var present, readable bool
@@ -417,7 +421,7 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 	var state string
 	switch {
 	case applied:
-		return checkDigests(ctx, db, release, digests)
+		return checkDigests(ctx, db, release, digests, earlier)
 	case !present:
 		state = "is not in the database, so no migration Job has run on it"
 	case !readable:
@@ -441,8 +445,8 @@ var ErrMigrationChanged = errors.New("the ledger holds another body of a migrati
 // migration Job of this release writes a row for each (ErrMigrationPending; security review of PR 448, I1). A row of
 // a name that digests does not give, such as a step of a later release, passes. The refusal names the migration and
 // the digests, no part of a body, and the remedy, on a log line of the level error and in its error; New writes
-// nothing before it.
-func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[string]string) error {
+// nothing before it. A row that holds an earlier digest of its migration (earlier) passes.
+func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[string]string, earlier map[string][]string) error {
 	if len(digests) == 0 {
 		return nil
 	}
@@ -460,7 +464,7 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 		}
 		want, ok := digests[name]
 		seen[name] = ok
-		if ok && digest != want {
+		if ok && digest != want && !slices.Contains(earlier[name], digest) {
 			text := fmt.Sprintf("the migration ledger %s holds the digest %q for the migration %s, and this release gives the digest %q for its body. "+
 				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)

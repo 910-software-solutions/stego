@@ -233,7 +233,7 @@ var reservedTypeNames = map[string]bool{
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
-	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
+	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
 	"stegotenancy":             true,
@@ -322,9 +322,16 @@ type MigrationFunc func(ctx context.Context, tx *sql.Tx) error
 // checks and runs, each statement in its own short transaction outside the
 // transaction of the ledger row (applyContract, ST-SUP-RC01-OC24,
 // ST-SUP-RC01-OC39).
+//
+// Earlier are the digests of bodies that earlier versions of the adapter
+// wrote for the same migration, with the text of the seal checkpoints in
+// them, which now runs outside each body (RegisterSealCheckpoints): the
+// ledger accepts a row with one of them as well as Digest
+// (ST-SUP-RC01-OC51).
 type Migration struct {
 	Name             string
 	Digest           string
+	Earlier          []string
 	Func             MigrationFunc
 	Step             bool
 	CompatibleWith   []string
@@ -440,14 +447,23 @@ func RegisterStep(name, body string, compatibleWith ...string) {
 
 // RegisterSealStep adds the SQL migration of the expand step of the seal change
 // change, as RegisterStep does. In the same transaction, after the body and
-// outside its digest, it makes the row of the lease stego.backfill.<change> of
-// the seal job when the lease table is there, so a database that the job of a
-// later release takes past the step, such as a restore of a backup from before
-// it, has the lease that the seal job holds (ST-SUP-RC01-OC49; walkthrough 14,
-// W14-B7). The migration job of a release with the seal open makes it too.
+// outside its digest, it runs the seal checkpoints (applySealCheckpoints),
+// records the row of the change as seen in this database instance, as the
+// default of the column did when the body held the functions, and makes the
+// row of the lease stego.backfill.<change> of the seal job when the lease
+// table is there, so a database that the job of a later release takes past
+// the step, such as a restore of a backup from before it, has the lease that
+// the seal job holds (ST-SUP-RC01-OC49; walkthrough 14, W14-B7). The
+// migration job of a release with the seal open makes it too.
 func RegisterSealStep(name, body, change string) {
 	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, StatementTimeout: stepStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, body); err != nil {
+			return err
+		}
+		if err := applySealCheckpoints(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE stego_schema.seals SET armed_in = stego_schema.seal_instance() WHERE change_id = $1 AND armed_in IS NULL AND pass_started IS NULL", change); err != nil {
 			return err
 		}
 		var leases bool
@@ -457,6 +473,51 @@ func RegisterSealStep(name, body, change string) {
 		_, err := tx.ExecContext(ctx, "INSERT INTO public.leases (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", "stego.backfill."+change)
 		return err
 	}})
+}
+
+// sealCheckpoints is the text of the functions of the seal checkpoints, their
+// grants and release_stop, which RegisterSealCheckpoints sets, or empty.
+var sealCheckpoints string
+
+// RegisterSealCheckpoints sets the text of the functions of the seal
+// checkpoints of a service whose schema history holds a seal
+// (ST-SUP-RC01-OC49). The text is in no migration body and no digest: each
+// statement runs again with no error, and the migration job runs it after
+// each migration that it applies, in the transaction of that migration, and
+// once at its end (applySealCheckpoints), as a repeatable migration of Flyway
+// or a change set with runOnChange of Liquibase. So a new version of the
+// functions takes effect on a database whose expand migration ran with an
+// older one, and a step whose body makes release_stop again cannot leave the
+// release_stop that deletes the report of a release before an open seal.
+func RegisterSealCheckpoints(text string) {
+	sealCheckpoints = text
+}
+
+// applySealCheckpoints runs sealCheckpoints in tx when the table of the seal
+// checkpoints and the table of the release reports are there, and does
+// nothing else.
+func applySealCheckpoints(ctx context.Context, tx *sql.Tx) error {
+	if sealCheckpoints == "" {
+		return nil
+	}
+	var there bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.seals') IS NOT NULL AND pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&there); err != nil || !there {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, sealCheckpoints)
+	return err
+}
+
+// RegisterEarlierDigests adds digests to the earlier digests of the registered
+// migration name, which the ledger accepts as well as the digest of its body:
+// the digests of the bodies that earlier versions of the adapter wrote for it,
+// with the text of the seal checkpoints in them (ST-SUP-RC01-OC51).
+func RegisterEarlierDigests(name string, digests ...string) {
+	for i := range migrations {
+		if migrations[i].Name == name {
+			migrations[i].Earlier = append(migrations[i].Earlier, digests...)
+		}
+	}
 }
 
 // ValidateConstraint is one constraint that a validate migration validates:
@@ -618,6 +679,9 @@ func Migrate(ctx context.Context, db Database) error {
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
 			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("migration %s: the seal checkpoints: %w", m.Name, err)
+			}
 			if err := recordMigration(ctx, tx, m); err != nil {
 				return err
 			}
@@ -694,6 +758,19 @@ func MigrationDigests() map[string]string {
 	digests := map[string]string{}
 	for _, m := range orderedMigrations() {
 		digests[m.Name] = m.Digest
+	}
+	return digests
+}
+
+// EarlierMigrationDigests gives the earlier digests of each migration that
+// has them by name (Migration.Earlier), which the service runtime accepts at
+// each start as well as MigrationDigests (ST-SUP-RP14-LC13).
+func EarlierMigrationDigests() map[string][]string {
+	digests := map[string][]string{}
+	for _, m := range orderedMigrations() {
+		if len(m.Earlier) > 0 {
+			digests[m.Name] = append([]string{}, m.Earlier...)
+		}
 	}
 	return digests
 }
@@ -808,7 +885,7 @@ func checkLedger(applied, registered []Migration) error {
 		if row.Name != registered[i].Name {
 			return ErrMigrationLedger
 		}
-		if row.Digest != registered[i].Digest {
+		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
 			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
 				"the body of an applied migration never changes, so a change comes as a new schema step. Deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; the job changed nothing, and nothing repairs the digest (ST-SUP-RC01-OC51)",
@@ -816,6 +893,16 @@ func checkLedger(applied, registered []Migration) error {
 		}
 	}
 	return nil
+}
+
+// earlierDigest tells whether digest is one of the earlier digests of m.
+func earlierDigest(m Migration, digest string) bool {
+	for _, d := range m.Earlier {
+		if d == digest {
+			return true
+		}
+	}
+	return false
 }
 
 // digestRefusal is the refusal of a ledger row whose digest is not the body
@@ -860,6 +947,18 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			}
 			if len(applied) >= len(ordered) {
 				done = true
+				// The seal checkpoints run once more at the end of each job, so a
+				// database whose migrations an earlier release applied gets the
+				// functions of this release (RegisterSealCheckpoints).
+				if sealCheckpoints == "" {
+					return nil
+				}
+				if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, stepStatementTimeout); err != nil {
+					return err
+				}
+				if err := applySealCheckpoints(ctx, tx); err != nil {
+					return fmt.Errorf("the seal checkpoints: %w", err)
+				}
 				return nil
 			}
 			m := ordered[len(applied)]
@@ -874,6 +973,9 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			}
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
+			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("migration %s: the seal checkpoints: %w", m.Name, err)
 			}
 			return recordMigration(ctx, tx, m)
 		})
@@ -1527,7 +1629,7 @@ func dropInvalid(ctx context.Context, conn *sql.Conn, index string) error {
 // migration of InitialTables (ST-SUP-RC01-OC41), in a pooled service the row-level security of the tenancy
 // component after it, and then the migration of each schema step (ST-SUP-RC01-OC22). The ledger refuses every row that is not the registered history, in order and with the body
 // digest (ST-SUP-RC01-OC11).
-func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.File, error) {
+func generateMigrate(ns string, rowSecurity string, steps []schemaStep, checkpoints string) (gen.File, error) {
 	var buf bytes.Buffer
 
 	fmt.Fprintf(&buf, "package %s\n\n", path.Base(ns))
@@ -1575,6 +1677,11 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 		// The row-level security of the tenancy component comes after every table it covers (ST-SUP-RC27-OC03).
 		fmt.Fprintf(&buf, "\tRegisterSQL(%q, stegotenancy.RowSecurity)\n", tenancyMigration)
 	}
+	// The functions of the seal checkpoints, which each migration job runs outside the bodies when the schema history
+	// holds a seal (ST-SUP-RC01-OC49).
+	if checkpoints != "" {
+		fmt.Fprintf(&buf, "\tRegisterSealCheckpoints(%q)\n", checkpoints)
+	}
 	// Each schema step comes after the component's own migrations, in the order of the schema history, with the
 	// empty compatible_with set of a step at expand (ST-SUP-RC01-OC22, ST-SUP-RC01-OC27).
 	// A step on a table with rows is its migration, with its constraints NOT VALID, then one migration for each
@@ -1617,6 +1724,13 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 			fmt.Fprintf(&buf, "\tRegisterSealStep(%q, %q, %q)\n", step.Name, step.Body, step.Change.ID)
 		default:
 			fmt.Fprintf(&buf, "\tRegisterStep(%q, %q)\n", step.Name, step.Body)
+		}
+		if len(step.Earlier) > 0 {
+			quoted := make([]string, len(step.Earlier))
+			for i, d := range step.Earlier {
+				quoted[i] = strconv.Quote(d)
+			}
+			fmt.Fprintf(&buf, "\tRegisterEarlierDigests(%q, %s)\n", step.Name, strings.Join(quoted, ", "))
 		}
 	}
 	fmt.Fprintf(&buf, "}\n")

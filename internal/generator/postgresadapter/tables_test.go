@@ -568,6 +568,9 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T08 The job of a later release on a database from before the seal makes the lease of the seal job with the expand step", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC49-T08")
 	})
+	t.Run("ST-SUP-RC01-OC49-T12 A database whose seal expand ran with postgres-adapter 6.19.0 or 6.20.0 passes the ledger check, gets the functions of this release, and then seals and contracts", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC49-T12")
+	})
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
 	})
