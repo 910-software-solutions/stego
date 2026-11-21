@@ -624,6 +624,10 @@ gives to the count of its row:
   check at the limit counts nothing, so it does not make the lock longer or
   shorter, and no request can make the time shorter. A count that a release
   before v0.188.0 wrote has no time, and the next check counts as the first.
+  The decay also lets a caller try the limit again after each window: with
+  `limit: 5` and `unlock_after: 15m`, at most 480 checks of one row in a day.
+  For a PIN of 4 digits, give a longer `unlock_after`, such as `24h`, or a
+  longer PIN.
 - In a worker, `Matches` gives `false` and counts nothing.
 - The count is not a field of the entity: the runtime keeps it in a table of
   its own, `attempt_counts`, which the migration job makes. A count never
