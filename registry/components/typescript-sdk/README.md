@@ -33,7 +33,35 @@ characters. A command requires `idempotencyKey`, such as
 a key and never sends a request again: to send a write again after an unknown
 outcome, send it with the same key. The optional second
 argument supplies an abort signal and trace context. Results contain `status`,
-`body`, and `etag`.
+`body`, `etag`, and these response headers, each a string or `null`:
+
+- `authzRevocation`: the state of the revocation of the write, such as
+  `pending` or `complete` (`Authz-Revocation`).
+- `authzRevocationLocation`: the path of the revocation of the write
+  (`Authz-Revocation-Location`).
+- `preferenceApplied`: the wait that the service took from `prefer`, such as
+  `wait=5` (`Preference-Applied`).
+- `idempotentReplayed`: set when the answer is the stored answer of an earlier
+  request with the same key (`Idempotent-Replayed`).
+
+A value that is longer than 1024 characters or that is not visible ASCII is
+`null`. `SDKError.retryAfter` gives the seconds of `Retry-After` of an error
+answer, such as a 503, or `undefined`.
+
+A create answers `authzRevocation: "pending"` until the service has written
+the permissions of the new row, often for less than one second. Until then, a
+write that the service decides on the new row, such as a command on it or the
+create of a child, gets 404. To send such a write at once, give it the
+location of the create:
+
+```ts
+const bid = await client.createBids({body, idempotencyKey: JSON.stringify(crypto.randomUUID())});
+await client.submitBid({id: bid.body.id, idempotencyKey: JSON.stringify(crypto.randomUUID()),
+  authzRevocationAfter: bid.authzRevocationLocation ?? undefined});
+```
+
+Give `prefer: "wait=N"` too for a shorter wait. A result with no location
+needs no `authzRevocationAfter`.
 `RequestSchemas` contains request models. `Schemas` contains response models.
 Runtime checks enforce the supported schema constraints in each direction.
 
