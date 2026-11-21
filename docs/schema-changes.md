@@ -426,6 +426,15 @@ accepts the new column. The migration also makes the table of the release
 reports, `stego_schema.releases`, and the seal checkpoint of the change in
 `stego_schema.seals`.
 
+The functions of the seal checkpoints, which the seal job calls, are not in
+the body of the migration, and not in its digest. Each migration Job runs
+them again with `CREATE OR REPLACE` after each migration that it applies and
+once at its end (postgres-adapter 6.21.0 or later). So a new release can
+change these functions on a database where an earlier release applied the
+expand step, and the ledger check still passes. The ledger accepts the
+digests that postgres-adapter 6.19.0 and 6.20.0 wrote for the steps of a
+seal.
+
 While the step is open:
 
 - The release of the step writes each value twice: in clear in the old column,
