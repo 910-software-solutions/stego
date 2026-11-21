@@ -13,6 +13,12 @@ and limit, and its response message has the fields items and next. The
 service serves gRPC in the api mode only, at STEGO_GRPC_ADDR with the TLS
 certificate STEGO_GRPC_TLS_CERT and its key STEGO_GRPC_TLS_KEY.
 
+A command over gRPC takes its idempotency key from the metadata
+idempotency-key. The answer header Idempotency-Kept is for HTTP only: a gRPC
+answer has no such metadata (ST-SUP-Q199 (d)). After a failure, send the
+command again with the same key only: the service gives the stored answer,
+or runs the command once.
+
 Version 2.0.0 removes the bridge that bound a hand-written factory to the
 GORM store, and its settings factory_package, watch_events, processes and
 response_mappings: STEGO no longer generates the GORM store

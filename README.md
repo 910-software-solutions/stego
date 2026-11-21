@@ -282,6 +282,16 @@ listing, gets 404 for `/listings/{listing_id}/variants`, and 200 for
 are shared with the user, also declare a collection of the entity with no
 scope: its list gives each row that the caller may view, from all parents.
 
+The body of a create, an update, an upsert and a patch of a collection is a
+JSON object. Send it with the header `Content-Type: application/json`. A body
+with no `Content-Type`, or with another media type, such as
+`application/merge-patch+json`, gets a 400 validation problem with the
+message `the request body is not valid`, and the request changes nothing.
+The answer of a row holds the members `kind` (the name of the entity) and
+`href` (the path of the row), which the API sets. Thus a field of an entity
+that a collection serves must not have the name `kind` or `href`: checking
+refuses such a field and names the remedy.
+
 The operations of a collection are `create`, `read`, `update`, `delete`,
 `list`, `upsert` and `patch`. An update (`PUT <path>/{id}`) takes the whole
 row. A patch (`PATCH <path>/{id}`) changes only the fields that

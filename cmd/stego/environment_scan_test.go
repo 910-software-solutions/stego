@@ -609,18 +609,32 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 	t.Helper()
 	generators, compilerUnits, runtimeUnits := scanUnits(t, root)
 	declared := map[string]map[string]bool{}
+	// client are the variables that only a client program of a component reads (read_by_client), by name: no
+	// runtime package, no compiler file, no library and no generator of another component may read one, because
+	// the service never gets a value for it (security review of PR #465, I2).
+	client := map[string][]string{}
 	for name, component := range reg.Components() {
 		declared[name] = map[string]bool{}
 		for _, variable := range component.Variables() {
 			declared[name][variable.Name] = true
+			if variable.ReadByClient {
+				client[variable.Name] = append(client[variable.Name], name)
+			}
 		}
+	}
+	serverRead := func(where, name string, owners []string, generator bool) string {
+		if readers, only := client[name]; only && (!generator || slices.ContainsFunc(owners, func(o string) bool { return !slices.Contains(readers, o) })) {
+			return where + " reads the environment variable " + name + ", which only a client program of " + strings.Join(readers, ", ") + " reads (read_by_client); the service never gets a value for it"
+		}
+		return ""
 	}
 	read := map[string]map[string]bool{}
 	var faults []string
 	for _, group := range []struct {
-		units []scanUnit
-		emits bool
-	}{{generators, true}, {compilerUnits, true}, {runtimeUnits, false}} {
+		units     []scanUnit
+		emits     bool
+		generator bool
+	}{{generators, true, true}, {compilerUnits, true, false}, {runtimeUnits, false, false}} {
 		for _, unit := range group.units {
 			for _, r := range unitReads(t, unit, group.emits) {
 				relative, _ := filepath.Rel(root, r.file)
@@ -635,6 +649,9 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 				case len(unit.owners) == 0:
 					faults = append(faults, relative+": reads the environment variable "+r.name+", but no component owns the file")
 					continue
+				}
+				if fault := serverRead(relative, r.name, unit.owners, group.generator); fault != "" {
+					faults = append(faults, fault)
 				}
 				found := false
 				for _, owner := range unit.owners {
@@ -656,6 +673,9 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 				read[owner] = map[string]bool{}
 			}
 			for _, name := range library.names {
+				if fault := serverRead("the library "+library.label, name, library.owners, false); fault != "" {
+					faults = append(faults, fault)
+				}
 				read[owner][name] = true
 				if !declared[owner][name] {
 					faults = append(faults, "component "+owner+": the library "+library.label+" reads the environment variable "+name+", which the component does not declare")
@@ -714,6 +734,31 @@ func TestEnvironmentScan(t *testing.T) {
 			if !strings.Contains(faults, part) {
 				t.Errorf("the scan does not name %s:\n%s", part, faults)
 			}
+		}
+	})
+}
+
+func TestEnvironmentScanClient(t *testing.T) {
+	t.Run("ST-SUP-UC01-R10-T06 The release scan names a server package that reads a variable that only a client program reads", func(t *testing.T) {
+		root := filepath.Join("..", "..")
+		copied := shippedRegistryCopy(t)
+		// The runtime package otel reads OTEL_SERVICE_NAME: state it as read by a client program only.
+		path := filepath.Join(copied, "components", "otel-tracing", "component.yaml")
+		data, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(data), "  - name: OTEL_SERVICE_NAME\n") {
+			t.Fatalf("the component otel-tracing does not declare OTEL_SERVICE_NAME: %v", err)
+		}
+		marked := strings.Replace(string(data), "  - name: OTEL_SERVICE_NAME\n", "  - name: OTEL_SERVICE_NAME\n    read_by_client: true\n", 1)
+		if err := os.WriteFile(path, []byte(marked), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reg, err := registry.Load(copied)
+		if err != nil {
+			t.Fatal(err)
+		}
+		faults := strings.Join(checkScan(t, root, reg), "\n")
+		if !strings.Contains(faults, "registry/runtime/otel") || !strings.Contains(faults, "OTEL_SERVICE_NAME, which only a client program of otel-tracing reads") {
+			t.Errorf("the scan does not name the runtime package that reads the client variable OTEL_SERVICE_NAME:\n%s", faults)
 		}
 	})
 }
