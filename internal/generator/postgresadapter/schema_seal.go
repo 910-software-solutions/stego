@@ -23,7 +23,7 @@ import (
 //     can seal, since the database has no key, and the schema check of the release before accepts no new trigger;
 //     so a pass completes only when no release before ran during it (ST-SUP-RP09-LC15).
 //  2. At contract, in a later release, the migration refuses while a release before runs, while the pass is not
-//     complete or a release before ran after its start, and while a row has a clear value and no sealed value; it
+//     complete, did not start in this database instance or a release before ran after its start, and while a row has a clear value and no sealed value; it
 //     validates the completeness CHECK, makes the sealed column of a required field NOT NULL, and then drops the
 //     clear column in one transaction that checks the step again.
 
@@ -46,6 +46,7 @@ ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz N
 CREATE OR REPLACE FUNCTION stego_schema.seal_instance()
  RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
  AS $stego_seal$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
+  || '/' || 'stego_schema.seals'::pg_catalog.regclass::pg_catalog.oid::text || '/' || pg_catalog.pg_relation_filenode('stego_schema.seals'::pg_catalog.regclass)::text
   FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$stego_seal$;
 REVOKE ALL ON FUNCTION stego_schema.seal_instance() FROM PUBLIC;
 ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
@@ -58,8 +59,8 @@ CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  AS $stego_seal$SELECT s.last_tenant, s.last_id::text, s.sealed_rows, s.checked_rows, s.pass_started IS NOT NULL, s.completed_at IS NOT NULL,
   GREATEST(s.created_at, s.armed_at) + interval '3 minutes' > pg_catalog.clock_timestamp() OR EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()),
-  s.pass_started IS NOT NULL AND EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
-   AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started)
+  s.pass_started IS NOT NULL AND (s.armed_in IS DISTINCT FROM stego_schema.seal_instance() OR EXISTS (SELECT 1 FROM stego_schema.releases r
+   WHERE r.release COLLATE "C" < s.expand COLLATE "C" AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started))
   FROM stego_schema.seals s WHERE s.change_id = $1$stego_seal$;
 CREATE OR REPLACE FUNCTION stego_schema.seal_checkpoint(text, text, uuid, bigint, bigint, boolean, text, text, bigint)
  RETURNS integer LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
@@ -70,7 +71,8 @@ BEGIN
     RETURN 0;
   END IF;
   IF $6 THEN
-    UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp()
+    UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp(),
+     last_tenant = NULL, last_id = NULL, sealed_rows = 0, checked_rows = 0, pass_started = NULL, completed_at = NULL
      WHERE s.change_id = $1 AND s.token <= $9 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance();
     IF FOUND THEN
       RETURN -1;
@@ -98,7 +100,8 @@ BEGIN
   IF NOT FOUND THEN
     RETURN 0;
   END IF;
-  IF EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
+  IF EXISTS (SELECT 1 FROM stego_schema.seals s WHERE s.change_id = $1 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance())
+   OR EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
    WHERE s.change_id = $1 AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started) THEN
     UPDATE stego_schema.seals s SET last_tenant = NULL, last_id = NULL, pass_started = NULL, completed_at = NULL, token = $4
      WHERE s.change_id = $1 AND s.token <= $4;
@@ -241,7 +244,8 @@ func sealExpandSQL(ctx gen.Context, position int, before, after []tableModel, ch
 // sealContractSQL gives the contract step of a seal (ST-SUP-RC01-OC50): before is the tables of the step before the
 // contract, with the clear column and the nullable sealed column, and after the tables after it, with the sealed
 // column alone, NOT NULL for a required field. The check of the step (checkContract of the ledger, Seal) refuses
-// while a release before runs, while the seal pass is not complete or a release before ran after its start, and
+// while a release before runs, while the seal pass is not complete, did not start in this database instance or a
+// release before ran after its start, and
 // while a row of a listed tenant has a clear value and no sealed value; the statements then add the completeness
 // CHECK NOT VALID and validate it, which reads every row past row-level security; for a required field make the
 // sealed column NOT NULL as the contract of a require does; and in one transaction, after the check again, drop the

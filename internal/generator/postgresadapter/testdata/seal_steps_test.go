@@ -426,6 +426,52 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC50-T04 The contract of a seal refuses a completed pass that did not run in this database instance until the seal job completes a new pass", func(t *testing.T) {
+		own, db, reader := base(t)
+		expand(t, own, db)
+		for _, r := range job(t, reader) {
+			if !r.Completed {
+				t.Fatalf("the seal job gave %+v, want the pass completed", r)
+			}
+		}
+		// A restore brings the completed passes from a dump of another database instance (security review of PR #471,
+		// L3).
+		if _, err := db.Exec(`UPDATE stego_schema.seals SET armed_in = '1/20261101000000000000/1/1', armed_at = clock_timestamp() - interval '9 minutes'`); err != nil {
+			t.Fatal(err)
+		}
+		contract := func() error {
+			return release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) })
+		}
+		var refused interface{ Refusal() string }
+		before := catalog(t, db)
+		if err := contract(); !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "this database instance") || !strings.Contains(refused.Refusal(), "vault-note-seal") {
+			t.Fatalf("the contract over a pass of another instance ends with %v, want a refusal that names the change and the instance", err)
+		}
+		if after := catalog(t, db); !slices.Equal(before, after) {
+			t.Errorf("the refused contract changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+		// The first run of the seal job ends the passes and waits; the contract still refuses.
+		for _, r := range job(t, reader) {
+			if r.Completed || !r.Waits {
+				t.Fatalf("the first run of the seal job after the restore gave %+v, want it to wait", r)
+			}
+		}
+		if err := contract(); !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "has not completed a pass") {
+			t.Fatalf("the contract after the first run ends with %v, want a refusal that names the pass", err)
+		}
+		if _, err := db.Exec(`UPDATE stego_schema.seals SET armed_at = armed_at - interval '4 minutes'`); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range job(t, reader) {
+			if !r.Completed {
+				t.Fatalf("the seal job 3 minutes after the first sight gave %+v, want a new pass completed", r)
+			}
+		}
+		if err := contract(); err != nil {
+			t.Fatalf("the contract after the new pass: %v", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T02 A database that the three releases of a seal migrated in turn and a new one get the same schema", func(t *testing.T) {
 		own, db, reader := base(t)
 		expand(t, own, db)

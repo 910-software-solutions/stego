@@ -332,6 +332,35 @@ func TestSealStep(t *testing.T) {
 		}
 		n.noSecretOutside(secret)
 	})
+	t.Run("ST-SUP-RP10-LC50-T05 After a restore of a completed pass the seal job starts a new pass and seals the rows again", func(t *testing.T) {
+		n := newNoteEnv(t)
+		id := uuid.NewString()
+		n.exec(fmt.Sprintf(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '%s', 'x', '%s-first')`, id, secret))
+		results, err := n.job().Run(n.ctx)
+		if err != nil || !results[0].Completed || results[0].Sealed != 1 {
+			t.Fatalf("the first pass gave %+v, %v, want it completed", results, err)
+		}
+		// A restore brings the completed pass from a dump of another database instance, and a process of a release
+		// before that has not reported itself yet writes the clear column alone.
+		n.exec(`UPDATE stego_schema.seals SET armed_in = '1/20261101000000000000/1/1', armed_at = clock_timestamp() - interval '9 minutes'`)
+		n.exec(fmt.Sprintf(`UPDATE notes SET body = '%s-after' WHERE id = '%s'`, secret, id))
+		results, err = n.job().Run(n.ctx)
+		if err != nil || len(results) != 1 || results[0].Completed || !results[0].Waits {
+			t.Fatalf("the first run after the restore gave %+v, %v, want it to wait and not to report the pass completed", results, err)
+		}
+		if state := n.sealState(); state.Started || state.Completed {
+			t.Fatalf("the checkpoint after the first run is %+v, want no pass", state)
+		}
+		n.exec(`UPDATE stego_schema.seals SET armed_at = armed_at - interval '4 minutes'`)
+		results, err = n.job().Run(n.ctx)
+		if err != nil || !results[0].Completed || results[0].Sealed != 1 || results[0].Checked != 1 {
+			t.Fatalf("the run 3 minutes after the first sight gave %+v, %v, want a new pass that seals the row again", results, err)
+		}
+		if clear, _, opened, _ := n.opened("org-a", id); opened != secret+"-after" || clear != opened {
+			t.Fatalf("the row holds the clear %q and the sealed %q after the new pass", clear, opened)
+		}
+		n.noSecretOutside(secret)
+	})
 }
 
 // TestSealContract holds the release of the expand step of a seal after its contract step (walkthrough 14, W14-B6

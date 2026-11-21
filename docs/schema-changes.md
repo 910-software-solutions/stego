@@ -528,6 +528,10 @@ The contract migration refuses, changes no schema and writes no ledger row:
 - while a process of a release before the expand step reports itself;
 - while the seal job has not completed a pass, or a release before reported
   itself after the start of the last pass;
+- while the last pass did not run in this database instance: the database,
+  the start of its server and the table of the seal checkpoints. A restore
+  and a restart of the database server make a new instance, so the seal job
+  must complete a new pass after each (postgres-adapter 6.21.0 or later);
 - while a row of a tenant of the tenant list has a clear value and no sealed
   value.
 
@@ -639,7 +643,11 @@ take it through the steps again:
    pass waits until the checkpoint row of the seal is 3 minutes old, so that
    each process of a release before reports itself. A backup from after the
    expand step holds an older row, but the first run on the restored database
-   waits too, so the pass runs at the next run, 10 minutes later (see [Restore from a backup](operations.md#restore-from-a-backup)). When the release of the expand step logs
+   waits too, so the pass runs at the next run, 10 minutes later (see [Restore from a backup](operations.md#restore-from-a-backup)).
+   A pass that completed before the backup does not count: the first run ends
+   it, and the contract step refuses until the new pass completes. A restore
+   in place with no `--create` and a restart of the database server have the
+   same effect, so expect one more pass after each. When the release of the expand step logs
    that the lease of the seal job is not in the lease table, run its migration
    Job first.
 4. Run the migration Job of the release that runs now again. It applies the

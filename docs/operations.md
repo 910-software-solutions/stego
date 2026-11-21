@@ -530,18 +530,37 @@ Do these steps in this order:
    seals nothing, and the next run is 10 minutes later. The age of the row is
    the time since the migration Job first applied the expand step on the
    database, or since the first run of the seal job saw the row on this
-   database and this start of the server, whichever is later. A restore keeps
-   the row of the dump with its time, but not the database and the server
-   where the job saw it (runtime v0.168.0 or later):
+   database instance, whichever is later. The database instance is the
+   database, the start of its server, and the table of the seal checkpoints.
+   A restore keeps the row of the dump with its time, but not the database
+   instance where the job saw it (runtime v0.168.0 or later):
    - When the dump is from after the expand step, the first run after the
      restore records that it saw the row, and waits. The pass runs at the next
      run, 10 minutes later, when no process of the release before reported
      itself in its last three report intervals. Before you start the worker
      Deployment, stop each process of the release before and make sure that
-     its Deployments have no pods. A restart of the database server also
-     makes the first pass that has not started wait 3 minutes. With a runtime
-     before v0.168.0, the 3-minute wait does not apply after a restore, and
-     the stop of the release before is the only guard.
+     its Deployments have no pods. With a runtime before v0.168.0, the
+     3-minute wait does not apply after a restore, and the stop of the release
+     before is the only guard.
+   - A pass that completed before the dump does not count after the restore
+     (runtime v0.170.0 and postgres-adapter 6.21.0 or later). The first run
+     after the restore ends that pass and waits, and the next run does a new
+     pass. Until the new pass completes, the migration Job of the contract
+     step refuses with `the last pass of the seal job did not run in this
+     database instance`. Thus each restore costs one more pass of the seal
+     job.
+   - A restore in place, with `pg_restore --clean` and no `--create`, keeps
+     the database and the server. It makes the table of the seal checkpoints
+     again, so it is a new database instance too, and gets the same wait and
+     the same new pass (postgres-adapter 6.21.0 or later).
+   - A restart of the database server also makes a new database instance. The
+     first run after the restart waits, and the next run does a new pass, also
+     when a pass completed before the restart. A `VACUUM FULL`, `CLUSTER` or
+     `TRUNCATE` of `stego_schema.seals` has the same effect. When the server
+     restarts more often than each 10 minutes, the seal job never starts a
+     pass, because each run sees a new database instance and waits. A pass
+     completes only when the server stays up for two runs of the seal job, at
+     most 20 minutes, and then for the time of the pass.
    - When the dump is from before the expand step, the migration Job of that
      release makes a new row. Wait 3 minutes after the Job before you start
      the worker Deployment, or the first pass runs only 10 minutes later.
