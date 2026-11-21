@@ -564,6 +564,13 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		if failure.conflict && !uniqueConflict(failure.err) {
 			return outbox.Conflict(failure.err)
 		}
+		// A decision of the run denied a row whose relations the relay has not written yet, such as the row that the
+		// run of the message before made: the fill can have failed or refused only because of that lag, so the run is
+		// undecided, the message goes back to pending and the poison count does not count it; a later attempt decides
+		// the row with its relations (ST-SUP-RP10-LC17; walkthrough 21). A panic stays a panic.
+		if s.pendingRelations() && !errors.Is(failure.err, errPanic) {
+			return outbox.TransientRefusal(&relationsPendingError{err: failure.err})
+		}
 		// A deny of the staging principal and a declared refusal give the same answer on every dispatch: the
 		// message is parked, so it does not hold back its key without end (ST-SUP-RP10-LC26, ST-SUP-RC35-OC06).
 		var denied *deniedError
@@ -595,6 +602,28 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// errRelationsPending matches the error of a consumer run that failed after a decision denied a row whose relations
+// the relay has not written yet (ST-SUP-RP10-LC17).
+var errRelationsPending = errors.New("command: a row that the run read has no relations yet")
+
+// relationsPendingError is the transient refusal of such a run: it matches errRelationsPending first, so the outcome
+// is undecided and not the class of the fill error, a declared refusal or a deny, and it unwraps to the error of the
+// fill.
+type relationsPendingError struct{ err error }
+
+func (e *relationsPendingError) Error() string {
+	return errRelationsPending.Error() + ": " + e.err.Error()
+}
+func (e *relationsPendingError) Unwrap() error        { return e.err }
+func (e *relationsPendingError) Is(target error) bool { return target == errRelationsPending }
+
+// pendingRelations tells whether a decision of the run denied a row with an empty authorization token (notePending).
+func (s *state) pendingRelations() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.relationsPending
 }
 
 // PoisonAttempts is the number of attempts in a row of one consumed message that end with the same fill error or
@@ -668,6 +697,10 @@ func consumerOutcome(err error) (probe.WorkerOutcome, string) {
 	}
 	var denied *deniedError
 	switch {
+	case errors.Is(err, errRelationsPending):
+		// First, as the error of the fill that it wraps can be a declared refusal or a deny: not counted for poison, a
+		// later attempt runs when the relay wrote the relations of the row (ST-SUP-RP10-LC17).
+		return probe.WorkerUndecided, "relations_pending"
 	case errors.Is(err, ErrNotGranted):
 		return probe.WorkerNotGranted, "not_granted"
 	case outbox.IsConflict(err):

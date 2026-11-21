@@ -1605,6 +1605,10 @@ type state struct {
 	// notGranted is set when a statement failed with SQLSTATE 42501: the role of the transaction lacks a privilege,
 	// which a dispatch again does not change (decision on ST-SUP-Q141).
 	notGranted bool
+	// relationsPending is set in a consumer when a decision denied a row whose authorization token is still empty: the
+	// relay has not written the relations of the row yet, such as of a row that the run of the message before made, so
+	// the deny can be a lag and not the decision of the row (ST-SUP-RP10-LC17; walkthrough 21).
+	relationsPending bool
 	// sealSwitches is the count of the switches of entities to their statements after a seal contract when the
 	// attempt began: a statement of an entity that switched later can still be one of the statements before the
 	// contract (ST-SUP-RP10-LC49; security review of PR #452, L2).

@@ -144,10 +144,12 @@ var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanic
 // the staging principal; tenant a message of a tenant that is not active or a tenant list that was not read;
 // message a message that the runtime cannot take, such as a payload that is not one JSON value; fenced a run that
 // its lease fenced; create_without_parent a worker's create of a row with a resource type and no parent to decide on
-// (command.ErrNoParent); and unknown a run whose class the observer did not get.
+// (command.ErrNoParent); relations_pending a consumer run that failed after a decision denied a row whose relations
+// the relay had not written yet; and unknown a run whose class the observer did not get.
 var WorkerCauses = []string{"invalid", "not_found", "refused", "conflict", "closed", "internal", "deadline", "panic",
 	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "statement", "data", "unknown",
-	"create_without_parent", "worker_tuple_missing", "fill_json", "fill_parse", "fill_canceled"}
+	"create_without_parent", "worker_tuple_missing", "fill_json", "fill_parse", "fill_canceled",
+	"relations_pending"}
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
 type SchemaChange struct {

@@ -689,9 +689,16 @@ func TestConsumers(t *testing.T) {
 	var mode atomic.Value
 	mode.Store("ok")
 	var calls atomic.Int64
+	// pendingOrders lists the orders of ST-SUP-RP10-LC17-T06, whose relations the relay writes late.
+	pendingOrders, err := NewList(e.orders, ListSpec{Name: "pending-orders",
+		Read: `SELECT id, status, version, authz_token FROM orders WHERE tenant_id = $1 AND id LIKE 'o-rp%' ORDER BY id LIMIT $2`})
+	if err != nil {
+		t.Fatal(err)
+	}
 	w := e.worker("apply-partner-replies", "apply", func(s *WorkerSpec[testProbe]) {
 		s.Interval = 0
 		s.Stagers = map[string]string{"reserve-and-charge": "reserve"}
+		s.Lists = []AnyList{pendingOrders}
 	}, e.orders, e.chargeE, e.reservationE)
 	// The tenant list of the consumers: every tenant is active but the ones a subtest retires.
 	retired := &retiredTenants{}
@@ -1440,6 +1447,9 @@ func TestConsumers(t *testing.T) {
 			return !(subject == "user:u-7" && action == "reserve" && resource == "order:o-2")
 		})
 		defer e.decision.setAllow(nil)
+		// The relay wrote the relations of o-2, so the deny is the decision of the row and not a lag
+		// (ST-SUP-RP10-LC17).
+		e.exec(`UPDATE orders SET authz_token = 'zt-o-2' WHERE tenant_id = 't1' AND id = 'o-2'`)
 		cases.Store("denied", func(ctx context.Context, m map[string]string, h *Handle[testProbe]) error {
 			_, err := updateOrder(ctx, h, e.orders, "o-2", "never")
 			return err
@@ -1457,6 +1467,75 @@ func TestConsumers(t *testing.T) {
 			e.waitState(t, m, "parked")
 			if calls.Load() != 1 || e.count(`SELECT count(*) FROM orders WHERE status = 'never'`) != 0 || e.keyRows(m.String()) != 0 {
 				t.Fatalf("%s: parked after %d calls, with a write or a key row left", name, calls.Load())
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC17-T06 A consumer run that fails after a deny of a row with no relations yet is undecided, never parks, and passes once the relay wrote them", func(t *testing.T) {
+		// o-rp1 and o-rp2 are rows that the run of an earlier message made: their authorization token is empty
+		// until the relay writes their relations, and until then SpiceDB denies the worker on them.
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-rp1', 'new'), ('t1', 'o-rp2', 'new')`)
+		var relayed sync.Map
+		e.decision.setAllow(func(subject, action, resource string) bool {
+			id, pending := strings.CutPrefix(resource, "order:o-rp")
+			if !pending || subject != "service_account:apply-partner-replies" {
+				return true
+			}
+			_, done := relayed.Load(id)
+			return done
+		})
+		defer e.decision.setAllow(nil)
+		relay := func(id string) {
+			e.exec(`UPDATE orders SET authz_token = 'zt-o-rp` + id + `' WHERE tenant_id = 't1' AND id = 'o-rp` + id + `'`)
+			relayed.Store(id, true)
+		}
+		// The fill of a list, as bill-bids of walkthrough 21 does: a change event of a row that the list does not
+		// give is an error of the fill.
+		cases.Store("relations-list", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			r := repo(t, h, e.orders)
+			rows, err := r.List(ctx, pendingOrders, 10)
+			if err != nil {
+				return err
+			}
+			for _, o := range rows {
+				if o.ID() == "o-rp1" {
+					_, err := updateOrderFrom(ctx, r, o, "applied-rp")
+					return err
+				}
+			}
+			return errors.New("the order has no row yet")
+		})
+		// The fill of a read, which returns the refused error of the deny; a declared refusal of it would park the
+		// message without the rule.
+		cases.Store("relations-get", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			if _, err := updateOrder(ctx, h, e.orders, "o-rp2", "applied-rp"); err != nil {
+				return Refused(err)
+			}
+			return nil
+		})
+		defer clock.hold()()
+		for name, id := range map[string]string{"relations-list": "1", "relations-get": "2"} {
+			from := len(e.consumed.causeList(0))
+			// Each message has a key of its own, as a parked message holds back the later messages of its key.
+			m := e.stage("t1", "o-rp"+id, map[string]string{"case": name})
+			// More attempts than the poison bound: each one is undecided, so none is counted and none parks.
+			for i := 1; i <= PoisonAttempts+1; i++ {
+				r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+				if r.state != "pending" || strings.HasPrefix(r.code, streakPrefix) || r.code == PoisonCode {
+					t.Fatalf("%s: after attempt %d the message is %s with %q, want pending with no count", name, i, r.state, r.code)
+				}
+				clock.add(time.Second)
+			}
+			got := e.consumed.causeList(from)
+			if len(got) != PoisonAttempts+1 || slices.ContainsFunc(got, func(c string) bool { return c != "undecided/relations_pending" }) {
+				t.Fatalf("%s: worker.run.failed sent %v, want undecided/relations_pending for each attempt", name, got)
+			}
+			// The relay writes the relations of the row: the next attempt decides the row with them and commits.
+			relay(id)
+			clock.add(time.Second)
+			awaitRow(t, m, func(r row) bool { return r.state == "done" })
+			if n := e.count(`SELECT count(*) FROM orders WHERE tenant_id = 't1' AND id = 'o-rp` + id + `' AND status = 'applied-rp'`); n != 1 {
+				t.Fatalf("%s: the run after the relay did not write the row", name)
 			}
 		}
 	})
