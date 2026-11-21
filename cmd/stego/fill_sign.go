@@ -112,6 +112,11 @@ func runFillSign(args []string) error {
 			if !gpgFingerprint.MatchString(fingerprint) {
 				return fmt.Errorf("%s gave no SIG_CREATED status line with a fingerprint of 40 or 64 hexadecimal digits, so the fingerprint of the key is not known, and fill.yaml stays as it is", key.program)
 			}
+			// SIGNERS and stego validate name the primary key, and SIG_CREATED can name a signing subkey: the
+			// warning names the primary key from VALIDSIG (security review of PR #480, I1b).
+			if primary := key.primaryFingerprint(input.ProjectDir, signature.Armored, digest); primary != "" {
+				fingerprint = primary
+			}
 			addLine = fmt.Sprintf("the line %q, and below it the output of gpg --armor --export %s", gitEmail(input.ProjectDir)+" gpg", fingerprint)
 		}
 		signature.Signer = fingerprint
@@ -136,12 +141,50 @@ func runFillSign(args []string) error {
 	return nil
 }
 
-// gpgFingerprint is the form of the fingerprint of the status line SIG_CREATED: 40 hexadecimal digits (a version 4
-// key) or 64 (a version 5 or 6 key), in upper case. fill sign refuses another value, so the program that
-// gpg.program names cannot put any other text into fill.yaml (security review of PR #480, I1). It is the fingerprint
-// of the key that signed, which can be a signing subkey; the signer is a label only, and stego validate decides the
-// trust from the signature and SIGNERS.
+// gpgFingerprint is the form of the fingerprint of the status lines SIG_CREATED and VALIDSIG: 40 hexadecimal digits
+// (a version 4 key) or 64 (a version 5 or 6 key), in upper case. fill sign refuses another value, so the program
+// that gpg.program names cannot put any other text into fill.yaml (security review of PR #480, I1). The signer of an
+// unlisted key is the primary key of VALIDSIG, as SIGNERS names it, and else the key of SIG_CREATED, which can be a
+// signing subkey; the signer is a label only, and stego validate decides the trust from the signature and SIGNERS.
 var gpgFingerprint = regexp.MustCompile(`^[0-9A-F]{40}([0-9A-F]{24})?$`)
+
+// primaryFingerprint gives the fingerprint of the primary key of the GPG signature armored over digest, from the
+// last field of the status line VALIDSIG of gpg --verify with the person's keyring, in upper case: the key that
+// SIGNERS names, also when a signing subkey signed (security review of PR #480, I1b). It gives "" when gpg does not
+// verify the signature or gives no fingerprint of the form gpgFingerprint.
+func (k signingKey) primaryFingerprint(projectDir, armored, digest string) string {
+	file, err := os.CreateTemp("", "stego-fill-sign-*.asc")
+	if err != nil {
+		return ""
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.WriteString(armored); err != nil {
+		_ = file.Close()
+		return ""
+	}
+	if err := file.Close(); err != nil {
+		return ""
+	}
+	cmd := exec.Command(k.program, "--batch", "--status-fd=1", "--verify", file.Name(), "-")
+	cmd.Dir = projectDir
+	cmd.Stdin = strings.NewReader(digest)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	primary := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		// [GNUPG:] VALIDSIG <fingerprint> <date> <timestamp> <expires> <version> <reserved> <pk algo> <hash algo>
+		// <class> <primary fingerprint>
+		if fields := strings.Fields(line); len(fields) == 12 && fields[0] == "[GNUPG:]" && fields[1] == "VALIDSIG" {
+			primary = strings.ToUpper(fields[11])
+		}
+	}
+	if !gpgFingerprint.MatchString(primary) {
+		return ""
+	}
+	return primary
+}
 
 // gitEmail gives user.email of the git configuration, or <your email> when
 // none is set, for the SIGNERS line that the warning of an unlisted key shows.

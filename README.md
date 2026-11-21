@@ -836,7 +836,9 @@ person in `SIGNERS` signs each new or changed fill. These commands refuse the
 fill, and name it. `stego fill sign <fill>` with the key of the author still
 signs and exits 0, but it prints a warning that names the fingerprint of the
 key and the two fixes. The sign-off names the fingerprint of the key, not the
-path of a key file.
+path of a key file. For a GPG key that signs with a subkey, the warning and the
+sign-off name the fingerprint of the primary key, as `SIGNERS` and
+`gpg --armor --export` name it.
 
 The `signer` of a sign-off in `fill.yaml` is only a label. Do not trust a fill
 because of it. `stego validate`, `stego plan` and the build make the trust
