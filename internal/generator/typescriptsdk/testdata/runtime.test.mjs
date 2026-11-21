@@ -62,6 +62,11 @@ test('ST-SUP-RC24-OC07-T02 The result gives the documented response headers that
   await assert.rejects(client(async () => json({}, 503, {'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT'})).getRecord({id: 'r1'}),
     e => e instanceof SDKError && e.retryAfter === undefined);
 });
+test('ST-SUP-RC24-OC07-T03 SDKError.retryAfter is at most 3600 seconds', async () => {
+  for (const [value, want] of [['3600', 3600], ['3601', 3600], ['999999999', 3600], ['0', 0]]) {
+    await assert.rejects(client(async () => json({}, 503, {'Retry-After': value})).getRecord({id: 'r1'}), e => e instanceof SDKError && e.retryAfter === want);
+  }
+});
 test('ST-SUP-RC24-OC09-T01 HTTP errors and exceptions of the emitted client expose no private data', async () => {
   for (const status of [401, 403, 404, 409, 503]) { const sdk = client(async () => json({private: 'private'}, status)); await assert.rejects(sdk.getRecord({id: 'r1'}), error(status === 401 ? 'reauth_required' : 'http_error', status)); }
   const sdk = client(async () => { throw new Error('private'); }); await assert.rejects(sdk.getRecord({id: 'r1'}), error('request_failed'));

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,9 +28,11 @@ var eventName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`)
 // each record of level INFO or higher as one JSON line on its output, in the format of the console lines of the log
 // provider, so that no line of the runtime is plain text. The line holds the timestamp, the severity, the event
 // name, the message and the attributes. The event name is the value of the attribute SlogEventKey when it has the
-// form of an event name; else the message, when it has that form, such as command.fill.failed; else SlogEvent. Each
+// form of an event name; else the message, when it has that form, such as command.fill.failed; else SlogEvent. Only a
+// line of a package of the runtime names its event: a line of other code, such as a fill, gets SlogEvent. Each
 // attribute key gets the prefix stego., as the attributes of the runtime's records have it, and the keys of a group
-// are joined with a dot. The handler writes the values that the caller gives, so a caller gives no value of a
+// are joined with a dot. A line holds at most SlogAttributeLimit attributes of at most SlogValueLimit characters each.
+// The handler writes the values that the caller gives, so a caller gives no value of a
 // setting, no payload and no error text, as for a record of the log provider. One write of out takes each line.
 type SlogHandler struct {
 	out    *lockedWriter
@@ -90,8 +93,11 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 	event := ""
 	attrs := append([]slog.Attr{}, h.attrs...)
 	var own []slog.Attr
+	// Only a line of a package of the runtime names its event: a line of other code, such as a fill, keeps the event
+	// name stego.log, so it cannot pass as an event of the runtime (security review of PR #485, I1).
+	runtimeLine := fromRuntime(record.PC)
 	record.Attrs(func(a slog.Attr) bool {
-		if len(h.groups) == 0 && a.Key == SlogEventKey && event == "" {
+		if runtimeLine && len(h.groups) == 0 && a.Key == SlogEventKey && event == "" {
 			if v := a.Value.Resolve(); v.Kind() == slog.KindString && eventName.MatchString(v.String()) {
 				event = v.String()
 				return true
@@ -103,7 +109,7 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 	attrs = append(attrs, qualified(h.groups, own)...)
 	if event == "" {
 		event = SlogEvent
-		if eventName.MatchString(record.Message) {
+		if runtimeLine && eventName.MatchString(record.Message) {
 			event = record.Message
 		}
 	}
@@ -120,9 +126,9 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 	b = appendJSONText(b, event)
 	b = append(b, `,"message":`...)
 	b = appendJSONText(b, record.Message)
-	first := true
+	first, written := true, 0
 	for _, a := range attrs {
-		b = appendSlogAttr(b, "stego", a, &first)
+		b = appendSlogAttr(b, "stego", a, &first, &written)
 	}
 	if !first {
 		b = append(b, '}')
@@ -150,7 +156,7 @@ func slogSeverity(level slog.Level) string {
 // appendSlogAttr appends the attribute a under the key prefix: a group gives each of its attributes under the prefix
 // and its key, and an empty attribute gives nothing. first tells whether no attribute is written yet, which opens the
 // object of the attributes.
-func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool) []byte {
+func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool, written *int) []byte {
 	v := a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
 		return b
@@ -165,10 +171,15 @@ func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool) []byte {
 	}
 	if v.Kind() == slog.KindGroup {
 		for _, member := range v.Group() {
-			b = appendSlogAttr(b, key, member, first)
+			b = appendSlogAttr(b, key, member, first, written)
 		}
 		return b
 	}
+	// At most SlogAttributeLimit attributes, as the log provider keeps (security review of PR #485, L2).
+	if *written >= SlogAttributeLimit {
+		return b
+	}
+	*written++
 	if *first {
 		b = append(b, `,"attributes":{`...)
 		*first = false
@@ -191,5 +202,37 @@ func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool) []byte {
 	case slog.KindTime:
 		return appendJSONText(b, v.Time().UTC().Format(time.RFC3339Nano))
 	}
-	return appendJSONText(b, v.String())
+	return appendJSONText(b, limitText(v.String()))
+}
+
+// The limits of a line of SlogHandler, as the log provider of the runtime holds them: at most SlogAttributeLimit
+// attributes, and at most SlogValueLimit characters of each value; the rest is dropped.
+const (
+	SlogAttributeLimit = 12
+	SlogValueLimit     = 256
+)
+
+// limitText gives the first SlogValueLimit characters of text.
+func limitText(text string) string {
+	n := 0
+	for i := range text {
+		if n == SlogValueLimit {
+			return text[:i]
+		}
+		n++
+	}
+	return text
+}
+
+// runtimePackages is the prefix of the functions of the packages of the runtime.
+const runtimePackages = "github.com/jsell-rh/stego/registry/runtime/"
+
+// fromRuntime tells whether the program counter of a record is in a package of the runtime. A record with no
+// program counter is not.
+func fromRuntime(pc uintptr) bool {
+	if pc == 0 {
+		return false
+	}
+	frame, _ := runtime.CallersFrames([]uintptr{pc}).Next()
+	return strings.HasPrefix(frame.Function, runtimePackages)
 }

@@ -11,7 +11,8 @@ export class SDKError extends Error {
     this.code = code;
     this.status = status;
     this.apiCode = contract.errorCodes.includes(apiCode) ? apiCode : undefined;
-    this.retryAfter = typeof retryAfter === "string" && /^[0-9]{1,9}$/.test(retryAfter) ? Number(retryAfter) : undefined;
+    // At most one hour, so a service cannot make a client wait for days (security review of PR #485, I2).
+    this.retryAfter = typeof retryAfter === "string" && /^[0-9]{1,9}$/.test(retryAfter) ? Math.min(Number(retryAfter), 3600) : undefined;
   }
 }
 // The documented response headers that a client needs (walkthrough 21, P-D): each value has 1 to 1024 visible ASCII

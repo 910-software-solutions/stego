@@ -323,8 +323,9 @@ func secretChecks(t *testing.T, s *service, owner caller) {
 			}
 		}
 		for _, l := range lines("the refused migration job", s.foreignMigration.output+s.legacyMigration.output, "migrate: the step is refused") {
-			if l.Event != "migrate.step.refused" || l.Attributes["stego.step"] != "ledger_check" || l.Attributes["stego.refusal"] == "" {
-				t.Errorf("the line of a refused step is %+v, want the event migrate.step.refused, the step ledger_check and the refusal", l)
+			if l.Event != "migrate.step.refused" || l.Attributes["stego.step"] != "ledger_check" || !strings.HasPrefix(l.Message, "migrate: the step is refused: ") ||
+				len(l.Message) < len("migrate: the step is refused: ")+40 {
+				t.Errorf("the line of a refused step is %+v, want the event migrate.step.refused, the step ledger_check and the refusal in the message", l)
 			}
 		}
 		if strings.Contains(log, pin) || strings.Contains(log, nextToken) {

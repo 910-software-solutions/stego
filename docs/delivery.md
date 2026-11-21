@@ -324,7 +324,7 @@ record never holds the error text. It gives:
   `migration_ledger.digest` with `stego_schema.migrations` at the stage `migrate.ledger_check`, or
   `schema_change.seal_pending` with `stego_schema.seals` at the stage `migrate.tables`. The line
   `migrate: the step is refused` before the record, a JSON line with the event name `migrate.step.refused`, names
-  the migration or the change in its attribute `stego.refusal`.
+  the migration or the change in its message, after `migrate: the step is refused: `.
 
 A start of the service whose database pool did not open gives the stage `service.start.database`, the fault
 `database.connection`, `database.settings` or `database.runtime_role`, the object `database`, a remedy and a cause,

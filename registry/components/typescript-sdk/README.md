@@ -46,7 +46,8 @@ argument supplies an abort signal and trace context. Results contain `status`,
 
 A value that is longer than 1024 characters or that is not visible ASCII is
 `null`. `SDKError.retryAfter` gives the seconds of `Retry-After` of an error
-answer, such as a 503, or `undefined`.
+answer, such as a 503, at most 3600, or `undefined` for no value or for a
+value that is not a number of seconds, such as a date.
 
 A create answers `authzRevocation: "pending"` until the service has written
 the permissions of the new row, often for less than one second. Until then, a

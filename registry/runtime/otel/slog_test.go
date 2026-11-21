@@ -2,11 +2,14 @@ package otel
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSlogHandler(t *testing.T) {
@@ -63,6 +66,47 @@ func TestSlogHandler(t *testing.T) {
 		if text := out.String(); !strings.Contains(text, `"event.name":"stego.log"`) || !strings.Contains(text, `"stego.event.name":"Not An Event"`) ||
 			!strings.Contains(text, `"stego.cause":"internal"`) {
 			t.Errorf("the line of a bad event name is %s", text)
+		}
+	})
+	t.Run("ST-SUP-RP03-LC16-T04 A log/slog line holds at most 12 attributes of at most 256 characters each", func(t *testing.T) {
+		var out bytes.Buffer
+		logger := slog.New(NewSlogHandler(&out))
+		args := []any{"long", strings.Repeat("é", 300)}
+		for i := range 14 {
+			args = append(args, fmt.Sprintf("a%02d", i), i)
+		}
+		logger.Warn("command: a line with many attributes", args...)
+		var got struct {
+			Attributes map[string]any `json:"attributes"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("the line is not JSON: %v\n%s", err, out.String())
+		}
+		if len(got.Attributes) != SlogAttributeLimit {
+			t.Errorf("the line has %d attributes, want %d: %v", len(got.Attributes), SlogAttributeLimit, got.Attributes)
+		}
+		if long, _ := got.Attributes["stego.long"].(string); long != strings.Repeat("é", SlogValueLimit) {
+			t.Errorf("the long value has %d characters, want %d", len([]rune(long)), SlogValueLimit)
+		}
+		if _, ok := got.Attributes["stego.a11"]; ok {
+			t.Error("the line holds the 13th attribute")
+		}
+	})
+	t.Run("ST-SUP-RP03-LC16-T05 A log/slog line of code outside the runtime does not name its event", func(t *testing.T) {
+		var out bytes.Buffer
+		h := NewSlogHandler(&out)
+		// A record with no program counter, as of code outside the packages of the runtime, such as a fill.
+		for _, r := range []slog.Record{slog.NewRecord(time.Now(), slog.LevelError, "command.attempts.failed", 0),
+			slog.NewRecord(time.Now(), slog.LevelError, "a fill line", 0)} {
+			r.AddAttrs(slog.String(SlogEventKey, "command.attempts.failed"))
+			if err := h.Handle(context.Background(), r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+			if !strings.Contains(line, `"event.name":"stego.log"`) || !strings.Contains(line, `"stego.event.name":"command.attempts.failed"`) {
+				t.Errorf("a line of code outside the runtime names an event of the runtime: %s", line)
+			}
 		}
 	})
 }
