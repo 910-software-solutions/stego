@@ -57,6 +57,14 @@ component writes (`<out>/commands/openapi.json`), in the package
   resources; `unique: true` on the field `name` closes this. On an entity
   of the base, declare it with a unique step of the field `name` (see
   [Unique steps](../../../docs/schema-changes.md#unique-steps)).
+  A secret member of the create or the patch, such as a PIN, is a field of
+  the resource with no flag: give it in the `spec` of a document in a file
+  that only you can read, or on standard input. Apply refuses a file that
+  holds a secret field when the group or other users have access to it,
+  before any request. The service never answers a secret field, so apply
+  cannot compare it: each apply of a document with a secret field sends the
+  patch and reports `configured`. A secret field that only the create takes
+  cannot be in a document of a resource that exists (cli-application 1.28.0).
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
