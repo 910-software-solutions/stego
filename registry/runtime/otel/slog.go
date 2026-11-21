@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,7 +94,7 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 	var own []slog.Attr
 	// Only a line of a package of the runtime names its event: a line of other code, such as a fill, keeps the event
 	// name stego.log, so it cannot pass as an event of the runtime (security review of PR #485, I1).
-	runtimeLine := fromRuntime(record.PC)
+	runtimeLine := fromRuntime(record)
 	record.Attrs(func(a slog.Attr) bool {
 		if runtimeLine && len(h.groups) == 0 && a.Key == SlogEventKey && event == "" {
 			if v := a.Value.Resolve(); v.Kind() == slog.KindString && eventName.MatchString(v.String()) {
@@ -227,12 +226,10 @@ func limitText(text string) string {
 // runtimePackages is the prefix of the functions of the packages of the runtime.
 const runtimePackages = "github.com/jsell-rh/stego/registry/runtime/"
 
-// fromRuntime tells whether the program counter of a record is in a package of the runtime. A record with no
+// fromRuntime tells whether a record is of a function of a package of the runtime, by its source (slog.Record.Source,
+// with no import of the package runtime, which the fill rules refuse in the closure of a fill). A record with no
 // program counter is not.
-func fromRuntime(pc uintptr) bool {
-	if pc == 0 {
-		return false
-	}
-	frame, _ := runtime.CallersFrames([]uintptr{pc}).Next()
-	return strings.HasPrefix(frame.Function, runtimePackages)
+func fromRuntime(record slog.Record) bool {
+	source := record.Source()
+	return source != nil && strings.HasPrefix(source.Function, runtimePackages)
 }
