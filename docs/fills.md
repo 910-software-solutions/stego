@@ -578,6 +578,18 @@ gives to the count of its row:
   its own, `attempt_counts`, which the migration job makes. A count never
   changes the row, its version, an audit row or a change event.
 
+The runtime keeps the stored hash of a counted PIN from the fill with a store
+key: a Go value of the runtime package that fill code cannot name. The store
+key stops a fill that uses the types of the runtime in a way that they do not
+allow, such as `Stored` on a counted PIN or a copy of the PIN to another field.
+It does not stop code that reads the memory of the process past the Go types:
+`reflect`, `unsafe` and the directive `//go:linkname` can read the hash and the
+store key. The fill rules refuse these in each fill and in each fill module
+(see [The imports of a fill](#the-imports-of-a-fill)), so `stego validate` and
+`stego test` refuse a fill that uses them. The store key does not protect a
+service whose fill code goes past these checks. It is not a cryptographic key,
+and a review of the fill code is still necessary.
+
 Read the row through the handle, such as with `GetForUpdate`, before you call
 `Matches`: the read decides the permission of the caller on the row, so a
 caller who may not operate the wallet cannot use its checks. Then check the PIN
@@ -945,7 +957,11 @@ refuse a database driver in it. Some functions of the allowed packages are
 refused too: `fmt.Print`, `fmt.Printf` and `fmt.Println`; the functions of
 `log` and `log/slog` that change, stop or go past the standard logger, such
 as `log.Fatal` and `slog.SetDefault`; and `time.AfterFunc` and
-`context.AfterFunc`, which start a goroutine. A test file, whose name ends in
+`context.AfterFunc`, which start a goroutine. They also refuse, in the fill
+and in each fill module, a function with no body and the directives
+`//go:linkname`, `//go:cgo_` and `//go:embed`. Thus a fill cannot use
+`reflect`, `unsafe` or `//go:linkname` to read the memory of the runtime,
+such as the stored hash of a counted PIN. A test file, whose name ends in
 `_test.go`, is not built into the service, so it can import any module of
 `go.mod`.
 
