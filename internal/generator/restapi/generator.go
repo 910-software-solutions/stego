@@ -1251,7 +1251,10 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				continue
 			}
 			createSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
-			if !f.Optional {
+			// A create that leaves out a field with a declared default stores the default, which the decode writes
+			// first (presetsDefault, ST-DECL-EN03), so the create-request schema does not require the field
+			// (ST-SUP-RC20-OC47; walkthrough 18, step 38).
+			if !f.Optional && !presetsDefault(f) {
 				createRequired = append(createRequired, f.Name)
 			}
 		}
@@ -3219,8 +3222,8 @@ func generateDiscovery(ns string, serviceName string, basePath string, collectio
 // idempotencyHeader is what the OpenAPI document states of the Idempotency-Key header (ST-SUP-RC30-OC01): the
 // operations that require it, and the problem type URIs of its 400, 409 and 422 responses. Nil states nothing.
 type idempotencyHeader struct {
-	required             map[types.Operation]bool
-	missing, busy, reuse string
+	required                      map[types.Operation]bool
+	missing, invalid, busy, reuse string
 }
 
 // idempotencyKeys reads the declaration's idempotency setting when the idempotency component is in the service,
@@ -3231,6 +3234,7 @@ func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 	}
 	keys := &idempotencyHeader{required: map[types.Operation]bool{},
 		missing: ctx.ErrorTypeBase + "idempotency-key-missing",
+		invalid: ctx.ErrorTypeBase + "idempotency-key-invalid",
 		busy:    ctx.ErrorTypeBase + "idempotency-key-in-progress",
 		reuse:   ctx.ErrorTypeBase + "idempotency-key-reused"}
 	for _, op := range ctx.Idempotency.RequiredOn {
@@ -3258,7 +3262,8 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	for code, response := range op.Responses {
 		responses[code] = response
 	}
-	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent or malformed"}
+	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent; problem " + k.invalid +
+		": the header is not one structured string of 1 to 255 characters (ST-SUP-RC30-OC02)"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
 	op.Responses = responses

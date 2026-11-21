@@ -30,6 +30,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
@@ -236,6 +237,35 @@ func TestServe(t *testing.T) {
 		if !strings.Contains(w.Body.String(), `"type":"https://errors.example.com/orders/idempotency-key-missing"`) {
 			t.Fatalf("a request with no key gave the problem %s, want the type under the problem base", w.Body.String())
 		}
+		t.Run("ST-SUP-RC30-OC02-T02 A command whose Idempotency-Key is not a structured string gets idempotency-key-invalid over HTTP and gRPC", func(t *testing.T) {
+			for _, value := range []string{`abc`, `""`, `"` + strings.Repeat("k", 256) + `"`} {
+				r := httptest.NewRequest(http.MethodPost, "/commands/reserve", strings.NewReader(`{"order_id":"o5"}`))
+				r.Header.Set("Authorization", "Bearer "+token)
+				r.Header.Set(idempotency.KeyHeader, value)
+				w := httptest.NewRecorder()
+				verifier.Middleware(h).ServeHTTP(w, r)
+				if w.Code != http.StatusBadRequest || calls != 0 || !strings.Contains(w.Body.String(), `"type":"https://errors.example.com/orders/idempotency-key-invalid"`) {
+					t.Fatalf("the key %.20s gave %d %s, want 400 idempotency-key-invalid with no fill call", value, w.Code, w.Body.String())
+				}
+				ctx, err := verifier.Authenticate(context.Background(), "Bearer "+token)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(RPCKeyMetadata, value))
+				request, _ := structpb.NewStruct(map[string]any{"order_id": "o5"})
+				if _, err := rpc(ctx, request); status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != idempotency.ProblemInvalid || calls != 0 {
+					t.Fatalf("the key %.20s over gRPC gave %v, want INVALID_ARGUMENT %s with no fill call", value, err, idempotency.ProblemInvalid)
+				}
+			}
+			ctx, err := verifier.Authenticate(context.Background(), "Bearer "+token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, _ := structpb.NewStruct(map[string]any{"order_id": "o5"})
+			if _, err := rpc(ctx, request); status.Convert(err).Message() != idempotency.ProblemMissing {
+				t.Fatalf("a call with no key over gRPC gave %v, want %s", err, idempotency.ProblemMissing)
+			}
+		})
 		e.rt.cfg.ProblemBase = ""
 		broken := spec
 		broken.Fill = nil

@@ -14,10 +14,12 @@ const Retention = time.Duration(172800000000000)
 // Fingerprint is what the fingerprint covers: body, with the method and the path.
 const Fingerprint = "body"
 
-// The problem type URIs of the three idempotency problems, under the service's problem base.
+// The problem type URIs of the four idempotency problems, under the service's problem base.
 const (
-	// ProblemMissing is the type of a 400 for an absent or malformed key.
+	// ProblemMissing is the type of a 400 for an absent key.
 	ProblemMissing = "https://errors.example.com/todo/idempotency-key-missing"
+	// ProblemInvalid is the type of a 400 for a key that is not one structured string of 1 to 255 characters.
+	ProblemInvalid = "https://errors.example.com/todo/idempotency-key-invalid"
 	// ProblemInProgress is the type of a 409 for a duplicate of a request that is not complete.
 	ProblemInProgress = "https://errors.example.com/todo/idempotency-key-in-progress"
 	// ProblemReused is the type of a 422 for a used key with another fingerprint.

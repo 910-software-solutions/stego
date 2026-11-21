@@ -436,7 +436,7 @@ func keyService(t *testing.T, tx Tx, ran *bool) http.Handler {
 		if err != nil {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"type":"https://errors.example.com/orders/%s","status":400,"detail":%q}`, ProblemMissing, err.Error())
+			fmt.Fprintf(w, `{"type":"https://errors.example.com/orders/%s","status":400,"detail":%q}`, Problem(err), err.Error())
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -507,6 +507,30 @@ func TestKeyFrom(t *testing.T) {
 		}
 		if got, err := KeyFrom(http.Header{}, false); err != nil || got != "" {
 			t.Fatalf("no key on an operation that does not require it = %q, %v; want no key and no error", got, err)
+		}
+	})
+
+	t.Run("ST-SUP-RP07-LC04-T04 A key that is not a structured string gets idempotency-key-invalid, and an absent key idempotency-key-missing", func(t *testing.T) {
+		ran := false
+		srv := httptest.NewServer(keyService(t, noStatement{t}, &ran))
+		defer srv.Close()
+		for value, want := range map[string]string{"": ProblemMissing, `abc`: ProblemInvalid, `""`: ProblemInvalid, `"` + strings.Repeat("k", 256) + `"`: ProblemInvalid} {
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/orders", strings.NewReader(`{}`))
+			if value != "" {
+				req.Header.Set(KeyHeader, value)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != 400 || !strings.Contains(string(body), `/orders/`+want+`"`) || ran {
+				t.Fatalf("the key %.20q got %d %s, handler ran %v; want 400 %s and no run", value, resp.StatusCode, body, ran, want)
+			}
+		}
+		if ProblemInvalid != "idempotency-key-invalid" || Problem(ErrKeyMalformed) != ProblemInvalid || Problem(ErrKeyMissing) != ProblemMissing {
+			t.Fatalf("Problem gives %q and %q", Problem(ErrKeyMalformed), Problem(ErrKeyMissing))
 		}
 	})
 }

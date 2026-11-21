@@ -26,9 +26,9 @@ import (
 // RuntimePackage is the import path of the runtime package that the generated code calls.
 const RuntimePackage = "github.com/jsell-rh/stego/registry/runtime/idempotency"
 
-// ProblemSlugs are the problem type slugs of the runtime package (ProblemMissing, ProblemInProgress and
-// ProblemReused of github.com/jsell-rh/stego/registry/runtime/idempotency), in that order. The service joins each to its problem base.
-var ProblemSlugs = []string{"idempotency-key-missing", "idempotency-key-in-progress", "idempotency-key-reused"}
+// ProblemSlugs are the problem type slugs of the runtime package (ProblemMissing, ProblemInProgress, ProblemReused
+// and ProblemInvalid of github.com/jsell-rh/stego/registry/runtime/idempotency), in that order. The service joins each to its problem base.
+var ProblemSlugs = []string{"idempotency-key-missing", "idempotency-key-in-progress", "idempotency-key-reused", "idempotency-key-invalid"}
 
 // The defaults of the declaration's idempotency setting (ST-DECL-UC07-R03, ST-DECL-UC07-R04).
 const (
@@ -55,7 +55,7 @@ type settings struct {
 	Retention                         time.Duration
 	Fingerprint                       string
 	ProblemMissing, ProblemInProgress string
-	ProblemReused                     string
+	ProblemReused, ProblemInvalid     string
 	Operations                        []operation
 }
 
@@ -123,7 +123,7 @@ func resolve(ctx gen.Context) (settings, error) {
 		return settings{}, errors.New("idempotency: the declaration has no idempotency setting")
 	}
 	if ctx.ErrorTypeBase == "" {
-		return settings{}, errors.New("idempotency: the declaration has no error_type_base, so the problem types idempotency-key-missing, idempotency-key-in-progress and idempotency-key-reused have no base")
+		return settings{}, errors.New("idempotency: the declaration has no error_type_base, so the problem types idempotency-key-missing, idempotency-key-invalid, idempotency-key-in-progress and idempotency-key-reused have no base")
 	}
 	s := settings{Package: path.Base(ctx.OutputNamespace), RetentionText: declared.Retention, Fingerprint: declared.Fingerprint}
 	if s.RetentionText == "" {
@@ -149,7 +149,7 @@ func resolve(ctx gen.Context) (settings, error) {
 		return settings{}, errors.New("idempotency: Required on does not name create")
 	}
 	uris := ProblemURIs(ctx.ErrorTypeBase)
-	s.ProblemMissing, s.ProblemInProgress, s.ProblemReused = uris[0], uris[1], uris[2]
+	s.ProblemMissing, s.ProblemInProgress, s.ProblemReused, s.ProblemInvalid = uris[0], uris[1], uris[2], uris[3]
 	entities := make(map[string]types.Entity, len(ctx.Entities))
 	for _, entity := range ctx.Entities {
 		entities[entity.Name] = entity
@@ -173,7 +173,7 @@ func resolve(ctx gen.Context) (settings, error) {
 	return s, nil
 }
 
-// ProblemURIs gives the three problem type URIs under the problem base, in the order of ProblemSlugs, joined as the
+// ProblemURIs gives the four problem type URIs under the problem base, in the order of ProblemSlugs, joined as the
 // rest-api component joins its own problem types: the base and the slug.
 func ProblemURIs(base string) []string {
 	uris := make([]string, len(ProblemSlugs))
@@ -250,9 +250,10 @@ func renderSettings(s settings) []byte {
 	fmt.Fprintf(&b, "const Retention = time.Duration(%d)\n\n", int64(s.Retention))
 	fmt.Fprintf(&b, "// Fingerprint is what the fingerprint covers: %s, with the method and the path.\n", s.Fingerprint)
 	fmt.Fprintf(&b, "const Fingerprint = %s\n\n", strconv.Quote(s.Fingerprint))
-	fmt.Fprintf(&b, "// The problem type URIs of the three idempotency problems, under the service's problem base.\n")
+	fmt.Fprintf(&b, "// The problem type URIs of the four idempotency problems, under the service's problem base.\n")
 	fmt.Fprintf(&b, "const (\n")
-	fmt.Fprintf(&b, "\t// ProblemMissing is the type of a 400 for an absent or malformed key.\n\tProblemMissing = %s\n", strconv.Quote(s.ProblemMissing))
+	fmt.Fprintf(&b, "\t// ProblemMissing is the type of a 400 for an absent key.\n\tProblemMissing = %s\n", strconv.Quote(s.ProblemMissing))
+	fmt.Fprintf(&b, "\t// ProblemInvalid is the type of a 400 for a key that is not one structured string of 1 to 255 characters.\n\tProblemInvalid = %s\n", strconv.Quote(s.ProblemInvalid))
 	fmt.Fprintf(&b, "\t// ProblemInProgress is the type of a 409 for a duplicate of a request that is not complete.\n\tProblemInProgress = %s\n", strconv.Quote(s.ProblemInProgress))
 	fmt.Fprintf(&b, "\t// ProblemReused is the type of a 422 for a used key with another fingerprint.\n\tProblemReused = %s\n", strconv.Quote(s.ProblemReused))
 	fmt.Fprintf(&b, ")\n\n")

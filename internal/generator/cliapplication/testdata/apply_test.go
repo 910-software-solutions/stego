@@ -239,7 +239,8 @@ func TestApplyCreatePatchAndDryRun(t *testing.T) {
 		if number != "9007199254740993" {
 			t.Fatal("apply lost integer precision")
 		}
-		second, _, err := runApplyTest(t, app, "apply", "--filename="+path, "--output=json")
+		changed := applyFile(t, filepath.Join(f.directory, "changed.yaml"), manifest("Record", "a' OR name = 'b", `{"count":9007199254740995,"tags":["a","b"]}`)+"---\n"+manifest("Widget", "other", `{"count":1}`))
+		second, _, err := runApplyTest(t, app, "apply", "--filename="+changed, "--output=json")
 		if err != nil || second[0].ID != first[0].ID || second[0].Status != "configured" || f.writes != 4 || len(f.rows) != 2 {
 			t.Fatal("repeat apply did not patch", second, err)
 		}
@@ -541,7 +542,9 @@ func TestApplyCreateOnlyFields(t *testing.T) {
 		if err != nil || len(first) != 1 || first[0].Status != "created" || f.writes != 1 {
 			t.Fatal("apply creation", first, err)
 		}
-		second, _, err := runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		// The same code with another count: the patch takes the count and leaves out the code.
+		changed := applyFile(t, filepath.Join(f.directory, "changed.yaml"), manifest("Record", "first", `{"code":"UTR1","count":2}`))
+		second, _, err := runApplyTest(t, app, "apply", "-f", changed, "-o", "json")
 		f.mu.Lock()
 		_, sent := f.last["code"]
 		f.mu.Unlock()
@@ -560,6 +563,53 @@ func TestApplyCreateOnlyFields(t *testing.T) {
 		_, _, err = runApplyTest(t, app, "apply", "-f", same, "-o", "json")
 		if err == nil || !strings.Contains(err.Error(), "field code of Record \"first\"") || !strings.Contains(err.Error(), "does not return it") || f.writes != 2 {
 			t.Fatal("apply did not refuse a create-only field that the answer does not hold", err)
+		}
+	})
+}
+
+func TestApplyAgainUnchanged(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC35-T02 An apply of the same documents again sends no patch and reports unchanged, and a changed field is configured", func(t *testing.T) {
+		f := applySetup(t)
+		app := applyCreateOnlyDefinition()
+		same := applyFile(t, filepath.Join(f.directory, "same.yaml"), manifest("Record", "first", `{"code":"UTR1","count":9007199254740993}`)+"---\n"+manifest("Record", "second", `{"code":"UTR2"}`))
+		first, _, err := runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		if err != nil || len(first) != 2 || first[0].Status != "created" || first[1].Status != "created" || f.writes != 2 {
+			t.Fatal("apply creation", first, err)
+		}
+		again, output, err := runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		if err != nil || len(again) != 2 || again[0].Status != "unchanged" || again[1].Status != "unchanged" || again[0].ID != first[0].ID || again[1].ID != first[1].ID || f.writes != 2 {
+			t.Fatal("a second apply of the same documents did not report unchanged without a write", again, err, f.writes)
+		}
+		if strings.Contains(output, "UTR1") || strings.Contains(output, "9007199254740993") {
+			t.Fatal("the results give a spec value", output)
+		}
+		// The count is one more than the stored count, past the exact range of a float64.
+		changed := applyFile(t, filepath.Join(f.directory, "changed.yaml"), manifest("Record", "first", `{"code":"UTR1","count":9007199254740994}`)+"---\n"+manifest("Record", "second", `{"code":"UTR2"}`))
+		results, _, err := runApplyTest(t, app, "apply", "-f", changed, "-o", "json")
+		if err != nil || len(results) != 2 || results[0].Status != "configured" || results[1].Status != "unchanged" || f.writes != 3 {
+			t.Fatal("a changed field was not patched, or an unchanged document was", results, err, f.writes)
+		}
+		// A field that the answer does not give cannot be compared, so apply sends the patch.
+		f.mu.Lock()
+		delete(f.rows["/records/"+first[1].ID], "count")
+		f.mu.Unlock()
+		counted := applyFile(t, filepath.Join(f.directory, "counted.yaml"), manifest("Record", "second", `{"code":"UTR2","count":0}`))
+		results, _, err = runApplyTest(t, app, "apply", "-f", counted, "-o", "json")
+		if err != nil || len(results) != 1 || results[0].Status != "configured" || f.writes != 4 {
+			t.Fatal("a field that the answer does not give was not patched", results, err, f.writes)
+		}
+	})
+}
+
+func TestApplyNamesMissingField(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC23-T08 A missing required create field is refused before any write with its name, its kind and its document name, and no value", func(t *testing.T) {
+		f := applySetup(t)
+		app := applyDefinition()
+		app.Resources[0].CreateFields[1].Required = true
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", `{"count": 1}`)+"---\n"+manifest("Record", "second", `{"tags": ["PRIVATEVALUE"]}`))
+		_, output, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json")
+		if err == nil || err.Error() != `Record "second": the required apply field count is missing` || strings.Contains(output, "PRIVATEVALUE") || f.writes != 0 {
+			t.Fatal("the refusal does not name the missing field, or a write was sent", err, output, f.writes)
 		}
 	})
 }
