@@ -15,6 +15,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
@@ -102,7 +104,11 @@ func TestAttempts(t *testing.T) {
 	copies := pinCopyEntity(t)
 	e.exec(`CREATE TABLE pin_copies (tenant_id text NOT NULL, id text NOT NULL, pin text, version bigint NOT NULL DEFAULT 1,
   authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`, "GRANT SELECT, INSERT, UPDATE, DELETE ON pin_copies TO "+e.roles[0])
-	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets, copies} })
+	reader := sdkmetric.NewManualReader()
+	rt := e.runtime(func(c *Config) {
+		c.Entities = []Declared{wallets, copies}
+		c.Meter = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	})
 	var charges, refusedCharges atomic.Int32
 	rt.charged = func(ok bool) {
 		if ok {
@@ -371,6 +377,59 @@ func TestAttempts(t *testing.T) {
 		})
 		if got != "2" {
 			t.Fatalf("the second line holds back %q lines, want 2", got)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T10 The counter command.attempts.failed counts each charge that cannot commit by action, entity and cause, with no tenant", func(t *testing.T) {
+		held := statementLog
+		statementLog = authz.NewCauseLog(nil)
+		defer func() { statementLog = held }()
+		// failures gives the sum of the counter by its attribute set, with each attribute key=value.
+		failures := func() map[string]int64 {
+			var data metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &data); err != nil {
+				t.Fatal(err)
+			}
+			out := map[string]int64{}
+			for _, scope := range data.ScopeMetrics {
+				for _, m := range scope.Metrics {
+					if m.Name != AttemptsFailedEvent {
+						continue
+					}
+					if m.Unit != "{charge}" {
+						t.Errorf("the counter %s has the unit %q, want {charge}", m.Name, m.Unit)
+					}
+					sum, ok := m.Data.(metricdata.Sum[int64])
+					if !ok || !sum.IsMonotonic {
+						t.Fatalf("the metric %s is %T, want a monotonic int64 sum", m.Name, m.Data)
+					}
+					for _, point := range sum.DataPoints {
+						var keys []string
+						for _, kv := range point.Attributes.ToSlice() {
+							keys = append(keys, string(kv.Key)+"="+kv.Value.Emit())
+						}
+						out[strings.Join(keys, ",")] += point.Value
+					}
+				}
+			}
+			return out
+		}
+		key := "action=withdraw,cause=internal,entity=PinWallet"
+		before := failures()
+		e.exec("REVOKE INSERT, UPDATE ON attempt_counts FROM " + e.roles[0])
+		defer e.exec("GRANT INSERT, UPDATE ON attempt_counts TO " + e.roles[0])
+		for range 3 {
+			if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("a failed charge gave %v, want ErrUnavailable", err)
+			}
+		}
+		after := failures()
+		if got := after[key] - before[key]; got != 3 {
+			t.Fatalf("3 failed charges added %d to %s {%s}, want 3 (the counter is %v)", got, AttemptsFailedEvent, key, after)
+		}
+		for set := range after {
+			if set != key && after[set] != before[set] {
+				t.Errorf("a failed charge of withdraw added to the attribute set %s, want only %s", set, key)
+			}
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T03 A rerun of the call after a conflict does not charge the checks of an earlier attempt again", func(t *testing.T) {

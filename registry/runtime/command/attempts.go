@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
@@ -297,8 +298,12 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 	return charged, nil
 }
 
-// AttemptsFailedEvent is the event name of the error log line of a charge of a counted check that cannot commit.
+// AttemptsFailedEvent is the event name of the error log line of a charge of a counted check that cannot commit, and
+// the name of its counter.
 const AttemptsFailedEvent = "command.attempts.failed"
+
+// attemptsFailedDescription is the description of the counter AttemptsFailedEvent.
+const attemptsFailedDescription = "The charges of counted checks that did not commit, so the call answered 503, by action, entity and cause class."
 
 // chargeCause gives the fixed cause class of a charge that cannot commit, and never the error text: unavailable for a
 // database that cannot serve now (tenant.Unavailable), deadline and canceled for the end of its context, and internal
@@ -319,13 +324,20 @@ func chargeCause(err error) string {
 	return "internal"
 }
 
-// logChargeFailure logs the charge of a counted check that cannot commit, so the call answers 503: one error line
-// through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
+// logChargeFailure counts and logs the charge of a counted check that cannot commit, so the call answers 503: it adds
+// one to the counter AttemptsFailedEvent of the Meter of the runtime by action, entity and cause class; and logs one
+// error line through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
 // entity, the cause class and the count of the lines held back, and no value and no error text (ST-SUP-RP10-LC54;
 // walkthrough 20, P-C). It logs one line for each action, entity and cause class in each authz.LogEvery. With no log
 // provider, it logs the same fields with log/slog.
 func (rt *Runtime) logChargeFailure(action, entity string, err error) {
 	cause := chargeCause(err)
+	// The counter counts each failed charge, also those whose line the rate limit holds back, with no tenant and no
+	// value (security review of PR #482, I4).
+	if rt.attemptsFailed != nil {
+		rt.attemptsFailed.Add(context.Background(), 1, metric.WithAttributes(attribute.String("action", action),
+			attribute.String("entity", entity), attribute.String("cause", cause)))
+	}
 	// One line for each action, entity and cause class in each authz.LogEvery, with the count of the lines held back,
 	// so a flood of failed charges cannot flood the log (security review of PR #481, I1).
 	allowed, held := statementLog.Allow(action + "/attempts_failed/" + entity + "/" + cause)

@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
@@ -100,6 +101,9 @@ type Config struct {
 	Telemetry *otel.Runtime
 	// Logger gives the log of an outcome row that was not written (ST-SUP-RP10-LC06). Nil logs nothing.
 	Logger otellog.LoggerProvider
+	// Meter records the counter command.attempts.failed of the charges of counted checks that cannot commit, by
+	// action, entity and cause class (ST-SUP-RP10-LC54). Nil records no metric.
+	Meter metric.MeterProvider
 	// Service, ServiceVersion and DeclarationVersion name the service in its audit rows.
 	Service, ServiceVersion, DeclarationVersion string
 	// ProblemBase is the declared problem base of the service, error_type_base, such as
@@ -134,6 +138,8 @@ type TenantList interface {
 type Runtime struct {
 	cfg    Config
 	logger otellog.Logger
+	// attemptsFailed is the counter of the charges that cannot commit, or nil with no Meter.
+	attemptsFailed metric.Int64Counter
 	// schemaStep is the value of the writer marker, or empty for a release with no open sync trigger.
 	schemaStep string
 	// slots is set only by New: a Runtime that New did not make, such as new(Runtime), gives a slot key that
@@ -263,6 +269,12 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	}
 	if cfg.Logger != nil {
 		rt.logger = cfg.Logger.Logger("github.com/jsell-rh/stego/registry/runtime/command")
+	}
+	if cfg.Meter != nil {
+		if rt.attemptsFailed, err = cfg.Meter.Meter("github.com/jsell-rh/stego/registry/runtime/command").Int64Counter(AttemptsFailedEvent,
+			metric.WithUnit("{charge}"), metric.WithDescription(attemptsFailedDescription)); err != nil {
+			return nil, fmt.Errorf("command: the counter %s: %w", AttemptsFailedEvent, err)
+		}
 	}
 	if cfg.ChargeDB != nil {
 		rt.warnSmallChargePool()
