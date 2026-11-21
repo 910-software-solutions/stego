@@ -85,7 +85,7 @@ type Compared struct {
 	key     *StoreKey
 }
 
-// StoreKey is the key of the runtime that binds a counter to a stored value (CountedBy): only the holder of that key
+// StoreKey is the key of the runtime that binds a counter to a stored value (CountedByKey): only the holder of that key
 // gets the stored hash of the counted value back, through StoredBy, to write it again. The command runtime keeps its
 // key in a variable of its own package, which fill code cannot reach.
 type StoreKey struct{ _ byte }
@@ -120,11 +120,22 @@ func dummyHash() string {
 	return dummy.hash
 }
 
-// CountedBy gives c with the counter k and the store key key: each later Matches of a stored value asks k first and
-// records its result in k, and only StoredBy with key gives the stored hash. The command runtime calls it for the
+// CountedBy gives c with the counter k and no store key: each later Matches of a stored value asks k first and records
+// its result in k, and no StoredBy gives the stored hash. A value that has a counter keeps its counter, and a nil
+// counter changes nothing. The command runtime calls CountedByKey.
+func CountedBy(c Compared, k Counter) Compared {
+	if c.counter != nil || k == nil {
+		return c
+	}
+	c.counter = k
+	return c
+}
+
+// CountedByKey gives c with the counter k and the store key key: each later Matches of a stored value asks k first
+// and records its result in k, and only StoredBy with key gives the stored hash. The command runtime calls it for the
 // value of a counted field that its handle reads. A value that has a counter keeps its counter and its key, and a nil
 // counter or key changes nothing, so a caller cannot bind a counted value to a key of its own.
-func CountedBy(c Compared, k Counter, key *StoreKey) Compared {
+func CountedByKey(c Compared, k Counter, key *StoreKey) Compared {
 	if c.counter != nil || k == nil || key == nil {
 		return c
 	}
@@ -200,7 +211,7 @@ func (c Compared) Stored() (string, error) { return c.StoredContext(context.Back
 func (c Compared) StoredContext(ctx context.Context) (string, error) { return c.StoredBy(ctx, nil) }
 
 // StoredBy is StoredContext, which also gives the stored hash of a counted value when key is the store key that
-// CountedBy bound to it.
+// CountedByKey bound to it.
 func (c Compared) StoredBy(ctx context.Context, key *StoreKey) (string, error) {
 	if c.counter != nil && c.hash != nil && (key == nil || key != c.key) {
 		return "", ErrCounted

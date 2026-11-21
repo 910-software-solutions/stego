@@ -230,7 +230,7 @@ func TestCompare(t *testing.T) {
 		}
 		key, other := NewStoreKey(), NewStoreKey()
 		k := &testCounter{allow: true}
-		c := CountedBy(ComparedHash(hash), k, key)
+		c := CountedByKey(ComparedHash(hash), k, key)
 		if stored, err := c.Stored(); !errors.Is(err, ErrCounted) || stored != "" {
 			t.Fatalf("Stored of a counted value gave %q and %v, want ErrCounted and no hash", stored, err)
 		}
@@ -243,7 +243,7 @@ func TestCompare(t *testing.T) {
 			}
 		}
 		// A second binding keeps the first counter and key: the value does not take a key of the caller.
-		again := CountedBy(c, &testCounter{allow: true}, other)
+		again := CountedByKey(c, &testCounter{allow: true}, other)
 		if stored, err := again.StoredBy(context.Background(), other); !errors.Is(err, ErrCounted) || stored != "" {
 			t.Fatalf("a value bound again to another key gave %q and %v, want ErrCounted", stored, err)
 		}
@@ -254,13 +254,16 @@ func TestCompare(t *testing.T) {
 			t.Fatalf("StoredBy with the bound key gave %q and %v, want the hash", stored, err)
 		}
 		// A nil counter or key binds nothing, and a value with no counter and a new text give their stored form.
-		if stored, err := CountedBy(ComparedHash(hash), nil, key).Stored(); err != nil || stored != hash {
+		if stored, err := CountedByKey(ComparedHash(hash), nil, key).Stored(); err != nil || stored != hash {
 			t.Fatalf("a value with a nil counter gave %q and %v, want the hash", stored, err)
 		}
-		if stored, err := CountedBy(ComparedHash(hash), k, nil).Stored(); err != nil || stored != hash {
+		if stored, err := CountedByKey(ComparedHash(hash), k, nil).Stored(); err != nil || stored != hash {
 			t.Fatalf("a value with a nil key gave %q and %v, want the hash", stored, err)
 		}
-		if stored, err := CountedBy(ComparedOf("4712"), k, key).Stored(); err != nil || !Matches(stored, "4712") {
+		if stored, err := CountedBy(ComparedHash(hash), k).StoredBy(context.Background(), key); !errors.Is(err, ErrCounted) || stored != "" {
+			t.Fatalf("a value that CountedBy bound with no key gave %q and %v, want ErrCounted", stored, err)
+		}
+		if stored, err := CountedByKey(ComparedOf("4712"), k, key).Stored(); err != nil || !Matches(stored, "4712") {
 			t.Fatalf("a new text with a counter gave %v, want its hash", err)
 		}
 	})

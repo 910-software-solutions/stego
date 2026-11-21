@@ -248,7 +248,7 @@ func (s *state) bindCounted(t *countedTarget) {
 		return
 	}
 	k := &rowCounter{s: s, key: attemptKey{counter: t.counter, row: strings.ToLower(*t.row)}}
-	*t.into = sealed.CountedBy(*t.into, k, storeKey)
+	*t.into = sealed.CountedByKey(*t.into, k, storeKey)
 }
 
 // countAttempts resets, in the transaction of a call that commits, the count of each row whose check matched or whose

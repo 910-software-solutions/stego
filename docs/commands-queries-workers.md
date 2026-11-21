@@ -1415,9 +1415,10 @@ worker mode, which runs the relay, runs.
 - `sealed.Compared.Stored` and `StoredContext` give the new error
   `sealed.ErrCounted` for a counted stored value, and no hash. The new
   `sealed.Compared.StoredBy`, `sealed.StoreKey` and `sealed.NewStoreKey` give
-  the hash only to the runtime that bound the counter. `sealed.CountedBy` takes
-  the store key as a third argument and keeps the counter of a value that has
-  one (ST-SUP-RP16-LC03, security review of PR #451, L1).
+  the hash only to the runtime that bound the counter with the new
+  `sealed.CountedByKey`. `sealed.CountedBy` binds no store key, and both keep
+  the counter of a value that has one (ST-SUP-RP16-LC03, security review of PR
+  #451, L1).
 - `lease.SealsText` adds the columns and the default of `stego_schema.seals`
   only when they are not there, so a run again takes no `ACCESS EXCLUSIVE` lock
   on the table (security review of PR #472, I2).
