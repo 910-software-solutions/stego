@@ -44,6 +44,18 @@ func TestFillGate(t *testing.T) {
 		expectRefused(t, p, "unlisted-fill", "SIGNERS does not list its key")
 	})
 
+	t.Run("ST-EXT-UC02-R02-T20 The fault of a fill whose key SIGNERS does not list says to sign it with a listed key, and to list the key only when it was not revoked", func(t *testing.T) {
+		p := newFillProject(t)
+		p.bind(t, slotBinding{"unlisted-fill", "before_create", "org-users"})
+		expectRefused(t, p, "SIGNERS does not list its key", "run stego fill sign unlisted-fill with a key that SIGNERS lists",
+			"only for a key that was not removed from SIGNERS to revoke it", "reviews on its own")
+		// The fault does not tell first to list the key, which is wrong for a key that a change removed to revoke it
+		// (walkthrough 22, T-K).
+		if stdout, stderr, _ := p.stego(t, "no-key", "plan"); strings.Contains(stdout+stderr, "list the signer's public key in the project's SIGNERS file, or") {
+			t.Fatalf("the fault tells first to list the key:\n%s%s", stdout, stderr)
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R02-T09 Validate warns of a fill with no evidence or no sign-off and names the fix, and plan, apply and deps refuse it", func(t *testing.T) {
 		for _, c := range []struct{ fill, standing string }{{"untested-fill", "untested"}, {"unsigned-fill", "unsigned"}} {
 			p := newFillProject(t)
