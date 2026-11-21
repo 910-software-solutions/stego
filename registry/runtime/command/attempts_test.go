@@ -1,9 +1,12 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +52,31 @@ func pinWalletEntity(t *testing.T) *Entity[pinWallet] {
 	return e
 }
 
+// pinCopy is a test entity with a compare-only PIN with no limit of wrong attempts (ST-SUP-RC32-OC20).
+type pinCopy struct {
+	ID  string
+	PIN sealed.Compared
+}
+
+func pinCopyEntity(t *testing.T) *Entity[pinCopy] {
+	t.Helper()
+	s := spec("PinCopy", "", "pin_copies", []string{"pin"},
+		func(row Scanner) (pinCopy, Meta, error) {
+			var v pinCopy
+			var m Meta
+			err := row.Scan(&v.ID, ComparedAt(&v.PIN), &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v pinCopy) []any { return []any{v.ID, HashOf(v.PIN)} },
+		func(v pinCopy) map[string]any { return map[string]any{"id": v.ID} })
+	e, err := NewEntity(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
 // pinWallets makes the table of the PIN wallets in the database of e with the wallet walletID, whose PIN is right.
 func pinWallets(t *testing.T, e *env, walletID, right string) {
 	t.Helper()
@@ -69,7 +97,10 @@ func TestAttempts(t *testing.T) {
 	e := newEnv(t)
 	pinWallets(t, e, walletID, right)
 	wallets := pinWalletEntity(t)
-	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+	copies := pinCopyEntity(t)
+	e.exec(`CREATE TABLE pin_copies (tenant_id text NOT NULL, id text NOT NULL, pin text, version bigint NOT NULL DEFAULT 1,
+  authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`, "GRANT SELECT, INSERT, UPDATE, DELETE ON pin_copies TO "+e.roles[0])
+	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets, copies} })
 	var charges, refusedCharges atomic.Int32
 	rt.charged = func(ok bool) {
 		if ok {
@@ -335,6 +366,100 @@ func TestAttempts(t *testing.T) {
 		}
 		setPIN(right)
 	})
+	t.Run("ST-SUP-RP10-LC54-T05 A counted PIN that a read gives is not written to a field with no limit or to another row", func(t *testing.T) {
+		setPIN(right)
+		copier := e.command("copy-pin", nil, wallets, copies)
+		otherID, copyID := "0198a1b2-0000-7000-8000-0000000000a1", "0198a1b2-0000-7000-8000-0000000000a2"
+		for _, write := range []struct {
+			name string
+			do   func(ctx context.Context, h *Handle[testProbe], pin sealed.Compared) error
+		}{
+			{"a field with no limit", func(ctx context.Context, h *Handle[testProbe], pin sealed.Compared) error {
+				r, err := Repo(h, copies)
+				if err != nil {
+					return err
+				}
+				_, err = r.Create(ctx, pinCopy{ID: copyID, PIN: pin})
+				return err
+			}},
+			{"a new row with a new count", func(ctx context.Context, h *Handle[testProbe], pin sealed.Compared) error {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return err
+				}
+				_, err = r.Create(ctx, pinWallet{ID: otherID, Balance: 1, PIN: pin})
+				return err
+			}},
+		} {
+			n := runs.Add(1)
+			_, err := e.runOn(rt, copier, e.request("t1", u7(t), fmt.Sprintf("copy-%d", n), `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				w, err := r.Get(ctx, walletID)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				return ok, write.do(ctx, h, w.Value().PIN)
+			})
+			if err == nil || !sealedFault(err) {
+				t.Fatalf("%s: the copy of the counted PIN gave %v, want the internal error of a sealed value", write.name, err)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM pin_copies`) + e.count(`SELECT count(*) FROM pin_wallets WHERE id = $1`, otherID); n != 0 {
+			t.Fatalf("the copies of the counted PIN left %d rows, want 0", n)
+		}
+		// The same field of the same row takes the value that the read gave, as each update of the row does.
+		if matched, err := withdraw(locked, right); !matched || err != nil {
+			t.Fatalf("an update of the wallet with its own PIN gave %v and %v, want a commit", matched, err)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T06 A rerun after a new PIN between two attempts charges the checks of the new PIN", func(t *testing.T) {
+		setPIN(right)
+		newHash, err := sealed.Hash("9999")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rerun := e.command("withdraw-reset", func(s *CommandSpec[testProbe]) { s.RetryOnConflict = 1 }, wallets)
+		charges.Store(0)
+		attempts := 0
+		n := runs.Add(1)
+		_, err = e.runOn(rt, rerun, e.request("t1", u7(t), fmt.Sprintf("reset-%d", n), `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			attempts++
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, walletID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			v := w.Value()
+			if v.PIN.Matches("0000") || v.PIN.Matches("1111") {
+				return idempotency.Response{}, errors.New("a wrong PIN matched")
+			}
+			if attempts == 1 {
+				// A reset commits between the two attempts: a new PIN and a count of 0, and the version moves, so the
+				// update of the attempt is a conflict and the call runs again.
+				if _, err := e.admin.ExecContext(e.ctx, `UPDATE pin_wallets SET pin = $2, version = version + 1 WHERE id = $1`, walletID, newHash); err != nil {
+					return idempotency.Response{}, err
+				}
+				e.exec(`DELETE FROM attempt_counts WHERE row_id = '` + walletID + `'`)
+				if _, err := r.Update(ctx, w, v); err != nil {
+					return idempotency.Response{}, err
+				}
+			}
+			return idempotency.Response{}, errWrongPIN
+		})
+		if !errors.Is(err, errWrongPIN) || attempts != 2 {
+			t.Fatalf("the call gave %v after %d attempts, want the refusal at the second", err, attempts)
+		}
+		if got := count(); got != 2 || charges.Load() != 4 {
+			t.Fatalf("two wrong PINs against the new PIN left the count %d after %d charges, want 2 and 4", got, charges.Load())
+		}
+		setPIN(right)
+	})
 }
 
 // TestAttemptPools proves that the charge of a check runs on its own pool, not on the main pool (security review of
@@ -377,4 +502,135 @@ func TestAttemptPools(t *testing.T) {
 			t.Fatalf("the pool of the charges has %d open connections, want the one of the charges", got)
 		}
 	})
+	t.Run("ST-SUP-RP10-LC54-T07 A charge ends at its lock timeout behind a reset, and a full pool of the charges is logged with no value", func(t *testing.T) {
+		const walletID, right = "0198a1b2-0000-7000-8000-000000000003", "4711"
+		e := newEnv(t)
+		pinWallets(t, e, walletID, right)
+		wallets := pinWalletEntity(t)
+		chargeDB := e.openPool(e.dsn(e.roles[0]))
+		chargeDB.SetMaxOpenConns(1)
+		rt := e.runtime(func(c *Config) { c.Entities, c.ChargeDB = []Declared{wallets}, chargeDB })
+		var chargeErrs []error
+		var mu sync.Mutex
+		rt.chargeErr = func(err error) { mu.Lock(); chargeErrs = append(chargeErrs, err); mu.Unlock() }
+		cmd := e.command("withdraw", nil, wallets)
+		check := func(key, pin string) error {
+			_, err := e.runOn(rt, cmd, e.request("t1", u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				w, err := r.Get(ctx, walletID)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				if !w.Value().PIN.Matches(pin) {
+					return idempotency.Response{}, errors.New("pin.wrong")
+				}
+				return ok, nil
+			})
+			return err
+		}
+		if err := check("lock-0", "0000"); err == nil || errors.Is(err, ErrUnavailable) {
+			t.Fatalf("the first wrong PIN gave %v, want the refusal", err)
+		}
+		// A reset of the count that has not committed holds the row of the count.
+		hold, err := e.admin.BeginTx(e.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.ExecContext(e.ctx, `DELETE FROM attempt_counts WHERE row_id = $1`, walletID); err != nil {
+			t.Fatal(err)
+		}
+		err = check("lock-1", "0000")
+		_ = hold.Rollback()
+		var state interface{ SQLState() string }
+		mu.Lock()
+		got := append([]error(nil), chargeErrs...)
+		mu.Unlock()
+		if !errors.Is(err, ErrUnavailable) || len(got) != 1 || !errors.As(got[0], &state) || state.SQLState() != "55P03" || chargeCause(got[0]) != "lock_timeout" {
+			t.Fatalf("the charge behind the reset gave %v with the charge errors %v, want 503 after the lock timeout (55P03)", err, got)
+		}
+		// Each connection of the pool of the charges is in use: the charge waits for one, and the wait is logged.
+		// full holds the one connection of the pool until seen tells that the log came, and gives the result of the
+		// check, or fails when the check ends with no log.
+		full := func(key string, seen func() bool) error {
+			t.Helper()
+			held, err := chargeDB.Conn(e.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- check(key, "0000") }()
+			for {
+				select {
+				case result := <-done:
+					_ = held.Close()
+					t.Fatalf("the charge ended with %v and logged no full pool of the charges", result)
+				default:
+				}
+				if seen() {
+					_ = held.Close()
+					return <-done
+				}
+				runtime.Gosched()
+			}
+		}
+		var logs lockedBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		result := full("full-1", func() bool { return strings.Contains(logs.String(), PoolSaturatedEvent) })
+		if result == nil || errors.Is(result, ErrUnavailable) {
+			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
+		}
+		text := logs.String()
+		if !strings.Contains(text, "entity=PinWallet") || !strings.Contains(text, "max_open=1") || strings.Contains(text, "0000") || strings.Contains(text, "argon2") {
+			t.Fatalf("the log of the full pool is %q, want the entity and the counts of the pool and no value", text)
+		}
+		// With a log provider, the line goes through it, as each other log line of the runtime.
+		records := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(records))).Logger("test")
+		rt.saturationLogged.Store(0)
+		saturated := func() []sdklog.Record {
+			var lines []sdklog.Record
+			for _, r := range records.all() {
+				if r.EventName() == PoolSaturatedEvent {
+					lines = append(lines, r)
+				}
+			}
+			return lines
+		}
+		result = full("full-2", func() bool { return len(saturated()) > 0 })
+		if result == nil || errors.Is(result, ErrUnavailable) {
+			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
+		}
+		lines := saturated()
+		attrs := map[string]string{}
+		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		if len(lines) != 1 || lines[0].SeverityText() != "WARN" || attrs["stego.entity"] != "PinWallet" || attrs["stego.pool.max_open"] != "1" || strings.Contains(lines[0].Body().Emit(), "0000") {
+			t.Fatalf("the provider got %d lines of %s with the attributes %v, want one WARN line with the entity and the pool and no value", len(lines), PoolSaturatedEvent, attrs)
+		}
+	})
+}
+
+// lockedBuffer is a bytes.Buffer that a log handler and the test can use at one time.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
