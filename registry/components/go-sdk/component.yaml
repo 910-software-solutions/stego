@@ -2,6 +2,8 @@
 # (ST-SUP-RC06-OC09).
 # Version 2.2.1 takes the boolean OpenAPI marks x-kept and x-stego-opaque of the rest-api document (security
 # review of PR #463, F1).
+# Version 2.2.2 takes a document whose request schemas mark a member x-output-only, as the rest-api component writes a
+# create or an update request (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
 # Version 2.3.0 gives a required secret (writeOnly) member of a request a plain Go field, not an optional pointer
 # (ST-SUP-RC06-OC09-T03), and prints each request with a secret member with the value redacted (security review of PR
 # #467, L1).

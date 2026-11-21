@@ -1,5 +1,7 @@
 # Version 1.2.3 takes the boolean OpenAPI marks x-kept and x-stego-opaque of the rest-api document (security
 # review of PR #463, F1).
+# Version 1.2.4 takes a document whose request schemas mark a member x-output-only, as the rest-api component writes a
+# create or an update request (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
 # Version 1.3.0 makes the client of the service's own API when the declaration gives no document, which the mixin
 # typescript-sdk selects (ST-SUP-RC24-OC14); takes the header parameters that the browser backend forwards from the
 # input of an operation (ST-SUP-RC24-OC15); and checks the string formats uuid, byte and int64 of the service document.

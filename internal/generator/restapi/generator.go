@@ -864,7 +864,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"fmt\"\n")
 	fmt.Fprintf(&buf, "\t\"io\"\n")
 	fmt.Fprintf(&buf, "\t\"net/http\"\n")
+	fmt.Fprintf(&buf, "\t\"slices\"\n")
+	fmt.Fprintf(&buf, "\t\"strconv\"\n")
 	fmt.Fprintf(&buf, "\t\"strings\"\n")
+	fmt.Fprintf(&buf, "\t\"unicode/utf8\"\n")
 	fmt.Fprintf(&buf, "\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3\"\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
@@ -1050,6 +1053,11 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\tvar schemaErr *openapi3.SchemaError\n")
 	fmt.Fprintf(&buf, "\tif errors.As(err, &schemaErr) {\n")
 	fmt.Fprintf(&buf, "\t\tpointer := schemaErr.JSONPointer()\n")
+	// The check of a closed schema names an unknown member only in its reason, so the entry takes the member from
+	// there, and names it as the decode of the handler does (ST-SUP-RC20-OC05, ST-SUP-RC20-OC55).
+	fmt.Fprintf(&buf, "\t\tif member, ok := unsupportedMember(schemaErr); ok {\n")
+	fmt.Fprintf(&buf, "\t\t\tpointer = append(slices.Clone(pointer), member)\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
 	fmt.Fprintf(&buf, "\t\tfield := strings.Join(pointer, \".\")\n")
 	fmt.Fprintf(&buf, "\t\t// The reason names the rule; the error text would also quote the value.\n")
 	fmt.Fprintf(&buf, "\t\tmsg := schemaErr.Reason\n")
@@ -1069,6 +1077,21 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\treturn\n")
 	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\t*result = append(*result, ValidationError{Message: \"the request body is not valid\"})\n")
+	fmt.Fprintf(&buf, "}\n\n")
+	fmt.Fprintf(&buf, "// unsupportedMember gives the member that a closed schema does not take, which the check names only in the\n")
+	fmt.Fprintf(&buf, "// reason of its failure: property \"<member>\" is unsupported.\n")
+	fmt.Fprintf(&buf, "func unsupportedMember(err *openapi3.SchemaError) (string, bool) {\n")
+	fmt.Fprintf(&buf, "\tquoted, found := strings.CutPrefix(err.Reason, \"property \")\n")
+	fmt.Fprintf(&buf, "\tquoted, unsupported := strings.CutSuffix(quoted, \" is unsupported\")\n")
+	fmt.Fprintf(&buf, "\tif err.SchemaField != \"properties\" || !found || !unsupported {\n")
+	fmt.Fprintf(&buf, "\t\treturn \"\", false\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\tmember, unquoteErr := strconv.Unquote(quoted)\n")
+	// The entry repeats at most 128 bytes of the name, cut on a character boundary (security review of PR #464).
+	fmt.Fprintf(&buf, "\tif cut := 128; len(member) > cut {\n")
+	fmt.Fprintf(&buf, "\t\tfor cut > 0 && !utf8.RuneStart(member[cut]) {\n\t\t\tcut--\n\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tmember = member[:cut]\n\t}\n")
+	fmt.Fprintf(&buf, "\treturn member, unquoteErr == nil\n")
 	fmt.Fprintf(&buf, "}\n")
 
 	formatted, err := format.Source(buf.Bytes())
@@ -1167,8 +1190,8 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		}
 		spec.Components.Schemas[e.Name] = schema
 
-		// CreateRequest schema: excludes server-managed fields, scope fields,
-		// implicit fields, and id. Used by POST and PUT(upsert) request bodies.
+		// CreateRequest schema: used by POST and PUT(upsert) request bodies. Server-managed fields, scope fields,
+		// implicit fields and id are optional members that a client never writes (ST-SUP-RC20-OC20).
 		createSchema := openAPISchema{
 			Type:       "object",
 			Properties: make(map[string]openAPISchema),
@@ -1185,6 +1208,17 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		var updateRequired []string
 		for _, f := range e.Fields {
 			if isServerManaged(f) || scopeFields[f.Name] || implicitFields[f.Name] {
+				// A member that the server sets, the path gives or the collection sets is an optional member that a
+				// client never writes, so a body that sends back a read row passes the closed schema
+				// (ST-SUP-RC20-OC20, ST-SUP-RC20-OC55).
+				property := outputOnlyProperty()
+				if !isServerManaged(f) {
+					property = fieldToOpenAPISchema(f)
+					property.Description = joinDescription(property.Description, setByPathDescription(scopeFields[f.Name]))
+					property.Default, property.Kept = nil, true
+				}
+				createSchema.Properties[f.Name] = property
+				updateSchema.Properties[f.Name] = property
 				continue
 			}
 			updateSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
@@ -1193,7 +1227,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				// would then give a value other than the stored one: the member has no default here.
 				property := updateSchema.Properties[f.Name]
 				property.Description = keptUpdateDescription(f, property.Description)
-				property.Default = nil
+				property.Default, property.Kept = nil, true
 				updateSchema.Properties[f.Name] = property
 			} else if f.Secret() {
 				// No response gives a secret back, so an update that leaves it out, or gives it empty, keeps the stored
@@ -1206,14 +1240,34 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			} else if !f.Optional {
 				updateRequired = append(updateRequired, f.Name)
 			}
-			// The create-request schema leaves out a field with writable never: a create stores its default.
+			// A create stores the default of a field with writable never: the create-request schema holds it as an
+			// optional x-kept member with no default, which the body may leave out or give with its default
+			// (ST-SUP-RC20-OC45, ST-SUP-RC20-OC47).
 			if f.Writable == types.WritableNever {
+				property := fieldToOpenAPISchema(f)
+				property.Description = keptCreateDescription(f, property.Description)
+				property.Default, property.Kept = nil, true
+				createSchema.Properties[f.Name] = property
 				continue
 			}
 			createSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
 			if !f.Optional {
 				createRequired = append(createRequired, f.Name)
 			}
+		}
+		// A create, an update and an upsert take only these members, kind, id and, in the envelope format, href, and
+		// refuse each other member (ST-SUP-RC20-OC55).
+		for _, request := range []*openAPISchema{&createSchema, &updateSchema} {
+			if _, field := request.Properties["kind"]; !field {
+				request.Properties["kind"] = openAPISchema{Type: "string", Enum: []string{e.Name}, Description: "The name of the entity; a body may leave it out."}
+			}
+			request.Properties["id"] = outputOnlyProperty()
+			if responseFormat == "envelope" {
+				if _, field := request.Properties["href"]; !field {
+					request.Properties["href"] = outputOnlyProperty()
+				}
+			}
+			request.Closed = true
 		}
 		if len(createRequired) > 0 {
 			createSchema.Required = createRequired
@@ -1736,6 +1790,31 @@ func keptUpdateDescription(f types.Field, typeDescription string) string {
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
 }
 
+// keptCreateDescription gives the description of a field with writable never in the create-request schema
+// (ST-SUP-RC20-OC45, ST-SUP-RC20-OC47).
+func keptCreateDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		return "A secret: only a command or a worker sets it. A create cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "Only a command or a worker sets this field, and a create stores its default: the body may leave it out or give its default.")
+}
+
+// setByPathDescription gives the sentence of a scope field, which the path gives, or of an implicit field, which the
+// collection sets, in a request schema (ST-SUP-RC20-OC23, ST-SUP-RC20-OC55).
+func setByPathDescription(scope bool) string {
+	if scope {
+		return "The path gives this field: the body may leave it out or give the value of the path."
+	}
+	return "The collection sets this field: the body may leave it out or give the value of the collection."
+}
+
+// outputOnlyProperty gives the request member of id, href or a server-managed field: the server sets it and clears
+// the value of a body, so the member has no type and no constraint, is nullable, and takes each value that a read
+// gives, null too (ST-SUP-RC20-OC17, ST-SUP-RC20-OC55).
+func outputOnlyProperty() openAPISchema {
+	return openAPISchema{Description: "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.", OutputOnly: true, Nullable: true}
+}
+
 // keptPatchDescription gives the description of a field of keptField in a patch-request schema (ST-SUP-RC20-OC46).
 func keptPatchDescription(f types.Field, typeDescription string) string {
 	if f.Secret() {
@@ -2184,6 +2263,12 @@ type openAPISchema struct {
 	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
 	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
 	Kept bool `json:"x-kept,omitempty"`
+	// OutputOnly marks a member of a create, update or upsert request that the server sets: the body may give it, as
+	// a read gives it, and the server ignores the value (ST-SUP-RC20-OC55).
+	OutputOnly bool `json:"x-output-only,omitempty"`
+	// Nullable takes null as a value, as an x-output-only member of a request does: a read gives null for an optional
+	// field (OpenAPI 3.0).
+	Nullable bool `json:"nullable,omitempty"`
 	// Closed writes additionalProperties: false, so the object takes no member that Properties does not name (the
 	// patch request, ST-SUP-RC20-OC15). It is not written with AdditionalProperties.
 	Closed bool `json:"-"`

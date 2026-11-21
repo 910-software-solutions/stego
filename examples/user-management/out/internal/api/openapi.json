@@ -2236,15 +2236,39 @@
           "detail": {
             "description": "Arbitrary JSON value"
           },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "ActivityEntry"
+            ]
+          },
           "source_id": {
             "type": "string",
             "maxLength": 255
+          },
+          "source_type": {
+            "type": "string",
+            "description": "The collection sets this field: the body may leave it out or give the value of the collection.",
+            "maxLength": 50,
+            "x-kept": true
           }
         },
         "required": [
           "source_id",
           "action"
-        ]
+        ],
+        "additionalProperties": false
       },
       "OrgSetting": {
         "type": "object",
@@ -2273,9 +2297,36 @@
       "OrgSettingCreateRequest": {
         "type": "object",
         "properties": {
+          "generation": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
           "key": {
             "type": "string",
             "maxLength": 255
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "OrgSetting"
+            ]
+          },
+          "org_id": {
+            "type": "string",
+            "description": "The path gives this field: the body may leave it out or give the value of the path.",
+            "x-kept": true
           },
           "value": {
             "description": "Arbitrary JSON value"
@@ -2284,7 +2335,8 @@
         "required": [
           "key",
           "value"
-        ]
+        ],
+        "additionalProperties": false
       },
       "OrgUsersPatchRequest": {
         "type": "object",
@@ -2339,6 +2391,23 @@
             "type": "string",
             "maxLength": 1000
           },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "Organization"
+            ]
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -2347,7 +2416,8 @@
         },
         "required": [
           "name"
-        ]
+        ],
+        "additionalProperties": false
       },
       "User": {
         "type": "object",
@@ -2394,8 +2464,30 @@
             "type": "string",
             "maxLength": 255
           },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "User"
+            ]
+          },
           "metadata": {
             "description": "Arbitrary JSON value"
+          },
+          "org_id": {
+            "type": "string",
+            "description": "The path gives this field: the body may leave it out or give the value of the path.",
+            "x-kept": true
           },
           "role": {
             "type": "string",
@@ -2410,7 +2502,8 @@
           "email",
           "display_name",
           "role"
-        ]
+        ],
+        "additionalProperties": false
       }
     }
   }
