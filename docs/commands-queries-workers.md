@@ -33,8 +33,8 @@ that your schema needs. The example declares:
 - The worker `fulfill-orders`, which consumes the messages of `place-order`.
 - The worker `low-stock-scan`, which runs every minute and emits the
   observation `low_stock`.
-- The worker `ship-orders`, which runs every minute and creates one shipment
-  for each fulfilled order.
+- The worker `ship-orders`, which runs every minute, creates one shipment for
+  each fulfilled order and marks the order `shipped`.
 
 A test of the STEGO repository runs `stego validate` on this declaration,
 with the schema and the proto file below (ST-STD-DOCS-R02). Each smaller
@@ -88,14 +88,13 @@ entities:
       warehouse_id: {relation: warehouse, permission: edit}
     fields:
       - { name: warehouse_id, type: ref, to: Warehouse }
-      - { name: status, type: enum, values: [draft, placed, fulfilled], default: draft }
+      - { name: status, type: enum, values: [draft, placed, fulfilled, shipped], default: draft }
       - { name: total_units, type: int32, min: 0, max: 1000000, default: 0 }
   - name: Shipment
     resource_type: shipment
-    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
-    public_reasons: {create: a new shipment is decided on edit of its order through the reference order_id}
+    permissions: {create: ship, read: view, list: view, update: manage, delete: manage}
     references:
-      order_id: {relation: order, permission: edit}
+      order_id: {relation: order, permission: ship}
     fields:
       - { name: order_id, type: ref, to: Order, unique: true }
       - { name: units, type: int32, min: 0, max: 1000000 }
@@ -1217,10 +1216,9 @@ row. Then the database refuses the second row:
 ```yaml
   - name: Shipment
     resource_type: shipment
-    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
-    public_reasons: {create: a new shipment is decided on edit of its order through the reference order_id}
+    permissions: {create: ship, read: view, list: view, update: manage, delete: manage}
     references:
-      order_id: {relation: order, permission: edit}
+      order_id: {relation: order, permission: ship}
     fields:
       - { name: order_id, type: ref, to: Order, unique: true }
       - { name: units, type: int32, min: 0, max: 1000000 }
@@ -1245,8 +1243,11 @@ row. Then the database refuses the second row:
           - {field: order_id, op: equals, param: order_id}
 ```
 
-The fill keeps its check, so a run after the relay creates no row and fails
-on no key:
+The fill marks each order `shipped` in the transaction that creates its
+shipment, so the order leaves the list of fulfilled orders when the run
+commits. Without the mark, the list gives the same first 100 fulfilled orders
+at each tick, and a later order never ships. The fill also keeps its check, so
+a run after the relay creates no row and fails on no key:
 
 ```go
 // New gives the fill of ship-orders.
@@ -1269,11 +1270,16 @@ func New() workers.ShipOrdersFill {
 			if err != nil {
 				return err
 			}
-			if len(shipped) > 0 {
-				continue
+			if len(shipped) == 0 {
+				shipment := workers.Shipment{OrderID: order.ID(), Units: order.Value().TotalUnits}
+				if _, err := shipments.Create(ctx, shipment, order); err != nil {
+					return err
+				}
 			}
-			shipment := workers.Shipment{OrderID: order.ID(), Units: order.Value().TotalUnits}
-			if _, err := shipments.Create(ctx, shipment, order); err != nil {
+			// The order leaves the list of fulfilled orders in the same transaction.
+			v := order.Value()
+			v.Status = "shipped"
+			if _, err := orders.Update(ctx, order, v); err != nil {
 				return err
 			}
 		}
@@ -1282,10 +1288,18 @@ func New() workers.ShipOrdersFill {
 }
 ```
 
-When a run creates a shipment that is already there, `Create` gives
+Only the worker creates a shipment: the create permission and the reference
+`order_id` take the permission `ship`, which the schema gives only to the
+worker relation. A user who could create a shipment first would take the key,
+and the worker could then not ship the order.
+
+The mark does not stop two runs at one time, such as on two instances of a
+worker with `single: false`, or a second delivery of a message to a consuming
+worker. When a run creates a shipment that is already there, `Create` gives
 `command.ErrConflict` and the fill returns it. The run commits nothing, and
 `worker.run.failed` has the cause `conflict`. A later run, after the relay
-wrote the tuples of the first shipment, finds that shipment and creates none.
+wrote the tuples of the first shipment, finds that shipment, creates none and
+marks the order.
 The run record of [A job that runs once a month](#a-job-that-runs-once-a-month)
 takes the same key: `unique: true` on `period`.
 
