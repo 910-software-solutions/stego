@@ -429,26 +429,40 @@ func subscriptionPattern(file string, toks []tok, at int) int {
 	return -1
 }
 
-// enclosingFunc gives the name of the declared function or method around a position, or "" outside each one. A
-// function literal is part of the function around it.
+// enclosingFunc gives the name of the plain function, with no receiver, whose body holds the position, or "": at
+// package level, such as in the value of a package-level var, and in a method. A function literal is part of the
+// function around it. It counts the braces from the start of the text, and takes a function name that a type
+// parameter list ([) or a parameter list follows (security review of PR #486, L1).
 func enclosingFunc(toks []tok, at int) string {
-	for i := at - 1; i >= 0; i-- {
-		if toks[i].t != token.FUNC {
-			continue
-		}
-		j := i + 1
-		if j < len(toks) && toks[j].t == token.LPAREN {
-			// A method: skip the receiver.
-			for j < len(toks) && toks[j].t != token.RPAREN {
-				j++
+	depth, current, pending, header := 0, "", "", false
+	for i := 0; i < at && i < len(toks); i++ {
+		switch toks[i].t {
+		case token.FUNC:
+			if depth == 0 {
+				header, pending = true, ""
+				if i+2 < len(toks) && toks[i+1].t == token.IDENT && (toks[i+2].t == token.LPAREN || toks[i+2].t == token.LBRACK) {
+					pending = toks[i+1].text
+				}
 			}
-			j++
-		}
-		if j+1 < len(toks) && toks[j].t == token.IDENT && toks[j+1].t == token.LPAREN {
-			return toks[j].text
+		case token.LBRACE:
+			if depth == 0 {
+				current = ""
+				if header {
+					current = pending
+				}
+				header = false
+			}
+			depth++
+		case token.RBRACE:
+			if depth--; depth <= 0 {
+				depth, current = 0, ""
+			}
 		}
 	}
-	return ""
+	if depth == 0 {
+		return ""
+	}
+	return current
 }
 
 // formerFault gives the fault of a read r of a name of formerReads in the unit with the label in a function that is
@@ -1134,6 +1148,14 @@ func CheckFormer() {
 }
 
 func ReadSettings() string { return os.Getenv("STEGO_KAFKA_CONSUMER_GROUP") }
+
+var leaked = os.Getenv("STEGO_KAFKA_CONSUMER_GROUP_FILE")
+
+type other struct{}
+
+func (other) CheckFormer() string { return os.Getenv("STEGO_KAFKA_CONSUMER_TOPIC_FILE") }
+
+func Generic[T any]() string { return os.Getenv("STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION") }
 `,
 			"kafkaoutbox": `package kafkaoutbox
 
@@ -1169,7 +1191,10 @@ func ReadSettings() string { return value("STEGO_KAFKA_CONSUMER_GROUP_FILE") }
 		}
 		slices.Sort(faults)
 		want := []string{
+			"registry/runtime/outbox/kafkainbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION of kafka-consumer before 0.5.0 in Generic; only CheckFormer of the package may read it",
 			"registry/runtime/outbox/kafkainbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_GROUP of kafka-consumer before 0.5.0 in ReadSettings; only CheckFormer of the package may read it",
+			"registry/runtime/outbox/kafkainbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_GROUP_FILE of kafka-consumer before 0.5.0 in no function; only CheckFormer of the package may read it",
+			"registry/runtime/outbox/kafkainbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_TOPIC_FILE of kafka-consumer before 0.5.0 in no function; only CheckFormer of the package may read it",
 			"registry/runtime/outbox/kafkaoutbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_GROUP_FILE of kafka-consumer before 0.5.0 in ReadSettings; only ReadConsumer of the package may read it",
 		}
 		if !slices.Equal(faults, want) {
