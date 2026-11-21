@@ -67,6 +67,34 @@ The check reads the record of the base, not the out folder. `stego apply`
 writes a missing generated file again with no flag, and refuses only a
 generated file that was edited by hand.
 
+## What compat trusts
+
+`stego compat` generates nothing for its faults. For the check of a released
+migration body (ST-GEN-INV38), it reads the record `.stego/state.yaml` of the
+head and the generated `out/.../migrate.go` as they are committed. An author
+can change both by hand, so that they agree with each other and not with the
+generator. Then compat finds no fault.
+
+So compat also generates the head when it can, and compares the result with
+the committed `migrate.go` and its digest in the record. When they are not the
+same, compat writes a warning on standard error that names the file and
+`stego plan --base <ref>`. The warning does not change the faults, the JSON
+output or the exit status. When compat cannot generate the head, such as with
+no registry, it writes a note that it did not compare.
+
+## In CI
+
+Use `stego plan --base <ref>` as the gate of ST-GEN-INV38 in CI, with the base
+of the pull request or the tag of the running release as `<ref>`.
+`stego plan --base` generates the head again and checks the files that it
+generates, not the committed files. Run `stego compat --base <ref>` too when
+you want its faults as JSON, but do not use it as the only gate.
+
+```sh
+stego compat --base "$BASE" --json
+stego plan --base "$BASE"
+```
+
 ## Exit status
 
 - 0: no fault.

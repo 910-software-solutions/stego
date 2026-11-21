@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +84,7 @@ func runCompat(args []string, stdout io.Writer) error {
 			return err
 		}
 		check.Faults = append(check.Faults, bodies...)
+		warnUngenerated(*baseRef, headState.LastApplied.Files, os.Stderr)
 	}
 	if *structured {
 		document, err := json.MarshalIndent(check, "", "  ")
@@ -669,6 +671,35 @@ func recordedMigrateFiles(recorded map[string]string) map[string][]byte {
 		}
 	}
 	return files
+}
+
+// warnUngenerated warns on stderr when a generated migrate.go of the adapter in the out folder, or its digest in the
+// record of the head, is not what a new generation of the head gives (security review of PR #476, L1). compat checks
+// the committed files, which an author can change by hand together with their digests, so the gate of ST-GEN-INV38
+// in CI is stego plan --base, which generates the head again. The warning changes no fault and no exit status. When
+// the head does not generate here, such as with no registry, compat says that it did not compare.
+func warnUngenerated(ref string, recorded map[string]string, stderr io.Writer) {
+	input, err := buildReconcilerInput()
+	var plan *compiler.Plan
+	if err == nil {
+		plan, err = compiler.Reconcile(input)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "note: compat did not generate the head, so it did not compare the committed migrate.go with a new generation (%v); stego plan --base %s generates it and holds ST-GEN-INV38.\n", err, ref)
+		return
+	}
+	var differ []string
+	for name, content := range plannedMigrateFiles(plan) {
+		committed, err := os.ReadFile(filepath.Join(input.OutDir, filepath.FromSlash(name)))
+		if err != nil || !bytes.Equal(committed, content) || recorded[name] != compiler.HashBytes(content) {
+			differ = append(differ, "out/"+name)
+		}
+	}
+	if len(differ) == 0 {
+		return
+	}
+	sort.Strings(differ)
+	fmt.Fprintf(stderr, "warning: %s, or its digest in .stego/state.yaml, is not what a new generation of the head gives, and compat checks the committed files. Run stego apply and commit what it writes. In CI, stego plan --base %s is the gate of ST-GEN-INV38, as it generates the head again.\n", strings.Join(differ, ", "), ref)
 }
 
 // refuseChangedBodies refuses a plan whose generated SQL file of a ledgered migration that the record at the base
