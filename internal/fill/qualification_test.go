@@ -178,3 +178,20 @@ func TestReadTestReport(t *testing.T) {
 		}
 	})
 }
+
+func TestUnlistedKeyAdvice(t *testing.T) {
+	t.Run("ST-EXT-UC02-R02-T20 The advice for a sign-off whose key SIGNERS does not list names a listed key first and does not tell to list a revoked key again", func(t *testing.T) {
+		advice := nextSteps("hide-review", Unsigned, []string{reasonUnlistedKey})
+		for _, want := range []string{"run stego fill sign hide-review with a key that SIGNERS lists", "only for a key that was not removed from SIGNERS to revoke it", "reviews on its own"} {
+			if !strings.Contains(advice, want) {
+				t.Errorf("the advice %q does not say %q", advice, want)
+			}
+		}
+		if strings.HasPrefix(advice, "list the signer's public key") {
+			t.Errorf("the advice %q tells first to list the key, which is wrong for a revoked key", advice)
+		}
+		if got := nextSteps("hide-review", Unsigned, []string{"the key of its sign-off is revoked or expired"}); got != "run stego fill sign hide-review" {
+			t.Errorf("the advice for a revoked GPG key is %q, want run stego fill sign hide-review", got)
+		}
+	})
+}
