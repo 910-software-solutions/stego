@@ -556,10 +556,21 @@ gives to the count of its row:
   check wait (runtime v0.178.0).
 - When the runtime runs the command again in the same request, such as after a
   conflict, the checks that an earlier attempt counted do not count again
-  (runtime v0.178.0).
+  (runtime v0.178.0). This is true only for the same stored PIN: when a new
+  PIN comes between two attempts, its checks count (runtime v0.180.0).
 - The PIN that a read gives does not give its stored hash to the fill:
   `Stored` gives the error `sealed.ErrCounted` (runtime v0.178.0). Check a
   value only with `Matches`.
+- The runtime writes the PIN that a read gave only into its own field and row.
+  An update of the wallet that keeps its PIN is correct. A fill that gives the
+  PIN to a compare-only field with no limit, or to another row, such as a new
+  wallet, gets an internal error, and the command commits nothing (runtime
+  v0.180.0). To give a row a PIN, give it a new value with `sealed.ComparedOf`.
+- A count waits at most 1 s for a lock, such as behind a command that resets
+  the count and has not committed. Then `Matches` gives `false` and the command
+  answers 503 (runtime v0.180.0). When each connection of the small pool of
+  the counts is in use, the runtime writes the warn line
+  `command.attempts.pool_saturated`, with no value.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.
