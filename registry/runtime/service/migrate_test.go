@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3185,7 +3185,9 @@ func (c ownClass) CauseClass() string { return string(c) }
 // namedFault is a cause that names its own fault, as a refused unique step of the adapter does.
 type namedFault struct{}
 
-func (namedFault) Error() string       { return "the unique index of assets is not built: rows hold buyer@example.com" }
+func (namedFault) Error() string {
+	return "the unique index of assets is not built: rows hold buyer@example.com"
+}
 func (namedFault) FaultClass() string  { return "schema_change.unique_duplicates" }
 func (namedFault) FaultObject() string { return "assets_asset_tag_key" }
 func (namedFault) FaultRemedy() string { return "correct or remove those rows" }
