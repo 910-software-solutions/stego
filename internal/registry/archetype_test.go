@@ -40,8 +40,8 @@ func TestRestCrudArchetypeParsesFromLiveRegistry(t *testing.T) {
 	if a.Language != "go" {
 		t.Errorf("Language = %q, want %q", a.Language, "go")
 	}
-	if a.Version != "3.226.0" {
-		t.Errorf("Version = %q, want %q", a.Version, "3.226.0")
+	if a.Version != "3.232.0" {
+		t.Errorf("Version = %q, want %q", a.Version, "3.232.0")
 	}
 	if a.DefaultAuth != "jwt-auth" {
 		t.Errorf("DefaultAuth = %q, want %q", a.DefaultAuth, "jwt-auth")
@@ -125,8 +125,8 @@ func TestLiveRegistryLoadsAllArchetypeComponents(t *testing.T) {
 	if pg == nil {
 		t.Fatal("Component(postgres-adapter) returned nil")
 	}
-	if pg.Version != "6.19.0" {
-		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.19.0")
+	if pg.Version != "6.20.0" {
+		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.20.0")
 	}
 
 	otel := reg.Component("otel-tracing")

@@ -18,9 +18,12 @@
 # Version 6.19.0 reads a field written sensitivity: public as a field with no sensitivity, so its table has the search
 # index of a list on it, and a seal from public keeps that index in 001_initial and on the clear column until the
 # contract step, as a seal with no from (decision ST-DECL-Q46 (a); ST-SUP-RC01-OC49; walkthrough 15, W15-B1).
+# Version 6.20.0 makes the seal checkpoint keep the database instance where a start of the seal job last saw the row,
+# and the time of that first sight, so the 3-minute wait of the first pass applies also after a restore, which keeps
+# created_at from the dump (ST-SUP-RP09-LC15; security review of PR #470).
 kind: component
 name: postgres-adapter
-version: 6.19.0
+version: 6.20.0
 stage: ga
 output_namespace: internal/storage
 
