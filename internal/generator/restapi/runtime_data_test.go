@@ -864,6 +864,8 @@ func TestBodyLimit(t *testing.T) {
 	}))
 	large := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":\""+strings.Repeat("a", MaxRequestBody)+"\"}"))
 	large.Header.Set("Content-Type", "application/json")
+	// A create of todos requires the key, which the check reads before the body (ST-SUP-RC30-OC02).
+	large.Header.Set("Idempotency-Key", "\"k-1\"")
 	answer := httptest.NewRecorder()
 	handler.ServeHTTP(answer, large)
 	if answer.Code != http.StatusRequestEntityTooLarge || called {
@@ -871,6 +873,7 @@ func TestBodyLimit(t *testing.T) {
 	}
 	small := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":7}"))
 	small.Header.Set("Content-Type", "application/json")
+	small.Header.Set("Idempotency-Key", "\"k-2\"")
 	answer = httptest.NewRecorder()
 	handler.ServeHTTP(answer, small)
 	if answer.Code != http.StatusBadRequest || called {
