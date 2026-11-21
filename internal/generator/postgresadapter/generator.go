@@ -233,7 +233,7 @@ var reservedTypeNames = map[string]bool{
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
-	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
+	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "refreshSealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
 	"stegotenancy":             true,
@@ -483,8 +483,9 @@ var sealCheckpoints string
 // checkpoints of a service whose schema history holds a seal
 // (ST-SUP-RC01-OC49). The text is in no migration body and no digest: each
 // statement runs again with no error, and the migration job runs it after
-// each migration that it applies, in the transaction of that migration, and
-// once at its end (applySealCheckpoints), as a repeatable migration of Flyway
+// each migration that it applies, in the transaction of that migration, once
+// at its start before the first pending migration (refreshSealCheckpoints)
+// and once at its end (applySealCheckpoints), as a repeatable migration of Flyway
 // or a change set with runOnChange of Liquibase. So a new version of the
 // functions takes effect on a database whose expand migration ran with an
 // older one, and a step whose body makes release_stop again cannot leave the
@@ -927,6 +928,9 @@ func (r *digestRefusal) Is(target error) bool { return target == ErrMigrationLed
 // (ST-SUP-RC01-OC22). The build of an index of a step runs outside a
 // transaction (applyIndex).
 func applyPending(ctx context.Context, db Database, ordered []Migration) error {
+	if err := refreshSealCheckpoints(ctx, db, ordered); err != nil {
+		return err
+	}
 	tries := 0
 	for {
 		done := false
@@ -997,6 +1001,49 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 		tries = 0
 		if done {
 			return nil
+		}
+	}
+}
+
+// refreshSealCheckpoints runs the seal checkpoints once at the start of the
+// job, in a transaction of its own under the ledger lock, after the ledger
+// check and the marker, and before the first pending migration: so the check
+// of a seal contract step, which runs before any migration of this job, reads
+// the functions of this release also on a database where an earlier release
+// applied the expand step (security review of PR #472, L1). On a lock timeout
+// it tries again as applyPending does.
+func refreshSealCheckpoints(ctx context.Context, db Database, ordered []Migration) error {
+	if sealCheckpoints == "" {
+		return nil
+	}
+	for tries := 1; ; tries++ {
+		err := inTransaction(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+			if err := lockLedger(ctx, tx); err != nil {
+				return err
+			}
+			applied, err := appliedMigrations(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if err := checkLedger(applied, ordered); err != nil {
+				return err
+			}
+			if err := refreshMarker(ctx, tx); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, stepStatementTimeout); err != nil {
+				return err
+			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("the seal checkpoints: %w", err)
+			}
+			return nil
+		})
+		if err == nil || !lockTimedOut(err) || tries >= stepAttempts {
+			return err
+		}
+		if err := pause(ctx, tries); err != nil {
+			return err
 		}
 	}
 }
@@ -1467,14 +1514,14 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 		}
 	}
 	if state != "" {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass", c.Change, state, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand)}
 	}
 	left, err := rowsLeft(ctx, tx, c)
 	if err != nil {
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass", c.Change, left, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand)}
 	}
 	return runningReleases(ctx, tx, c)
 }

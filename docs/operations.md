@@ -553,6 +553,12 @@ Do these steps in this order:
      the database and the server. It makes the table of the seal checkpoints
      again, so it is a new database instance too, and gets the same wait and
      the same new pass (postgres-adapter 6.21.0 or later).
+   - A restore of the data alone, such as `pg_restore --data-only` into the
+     tables that are there, keeps the table of the seal checkpoints and its
+     file node. So the rows of the dump can look as seen in this database
+     instance. Before such a restore, run `TRUNCATE stego_schema.seals`, or
+     restart the database server after it. Either one makes a new database
+     instance, and the seal job does a new pass.
    - A restart of the database server also makes a new database instance. The
      first run after the restart waits, and the next run does a new pass, also
      when a pass completed before the restart. A `VACUUM FULL`, `CLUSTER` or

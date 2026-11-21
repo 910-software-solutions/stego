@@ -52,8 +52,9 @@ const sealsTable = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 `
 
 // sealCheckpoints is the rest of sealsText: the columns that later versions added, the functions, the grants and
-// release_stop. Each statement runs again with no error, so the migration job runs it after each migration that it
-// applies and once at its end when the table is there (applySealCheckpoints), as a repeatable migration of Flyway or a
+// release_stop. Each statement runs again with no error, so the migration job runs it when the table is there: once
+// at its start before the first pending migration, after each migration that it applies, and once at its end
+// (applySealCheckpoints, refreshSealCheckpoints), as a repeatable migration of Flyway or a
 // change set with runOnChange of Liquibase: a new version of the text takes effect on a database whose expand
 // migration ran with an older one, and the ledger digest of that migration does not change.
 const sealCheckpoints = `ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
@@ -381,8 +382,8 @@ func withSealing(ctx gen.Context, models, earlier []tableModel, change types.Sch
 // the same migration makes the table of the release reports, the table of the seal checkpoints and the row of the
 // change. The functions of the seal checkpoints are not in the body: the migration job runs them (sealCheckpoints).
 // It gives also the earlier digests of the step, the digests of the bodies that earlier versions of the adapter wrote
-// with the functions in them (sealsHistory). It refuses a step that changes any other table or column, a field in clear that is a key, in
-// a unique key or a reference, and a table with a column of the name of the sealed column.
+// with the functions in them (sealsHistory). It refuses a step that changes any other table or column, a field in
+// clear that is a key, in a unique key or a reference, and a table with a column of the name of the sealed column.
 func sealExpandSQL(ctx gen.Context, position int, before, after []tableModel, change types.SchemaChange) (string, []string, error) {
 	runtime, _, err := serviceRoles(ctx)
 	if err != nil {
@@ -645,7 +646,8 @@ func sealsBefore(ctx gen.Context, change, body string) ([]string, error) {
 // adapter put the text of the seal checkpoints after the release reports in such a body, because the text of the
 // release reports makes release_stop delete the report of a stopped process, and the seal checkpoints need
 // release_stop to keep the report of a release before an open seal (ST-SUP-RP09-LC15). The body holds it no more:
-// the migration job runs the seal checkpoints after each migration in the same transaction (sealCheckpoints).
+// the migration job runs the seal checkpoints at its start, after each migration in the same transaction, and at its
+// end (sealCheckpoints).
 func sealsAgain(ctx gen.Context, change, runtime, body string) []string {
 	kinds := map[string]string{}
 	for _, c := range ctx.SchemaChanges {
