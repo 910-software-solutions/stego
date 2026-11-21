@@ -444,8 +444,16 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 					found = true
 				}
 			}
-			if !found {
-				fault(".field", "the field names no declared invariant of kind unique on the entity")
+			// A unique of a field names a field of the entity that is unique or in a unique_composite (ST-DECL-INV58,
+			// ST-GEN-Q48).
+			field, _ := findField(entity, change.Field)
+			switch {
+			case found && hasField:
+				fault(".field", "the field names both a field of the entity and a declared invariant of kind unique on it; give the invariant a name that is not the name of a field")
+			case hasField && !field.Unique && len(field.UniqueComposite) == 0:
+				fault(".field", "the field is not unique and is in no unique_composite; a unique of a field names a field that is unique: true or in a unique_composite")
+			case !found && !hasField:
+				fault(".field", "the field names no declared invariant of kind unique on the entity and no field of the entity")
 			}
 		}
 	}
@@ -488,12 +496,13 @@ func schemaPhases(steps []types.SchemaStep) map[string][]string {
 }
 
 // openSchemaChanges gives the schema changes whose last step is expand, in the order of the declaration. A relax
-// finishes at its expand step, in place, so it is never open (decision on finding F12, owner, 2026-11-13).
+// finishes at its expand step, in place, so it is never open, and neither is a within or a unique of a field (decision on finding F12, owner, 2026-11-13).
 func openSchemaChanges(service *types.ServiceDeclaration) []types.SchemaChange {
 	phases := schemaPhases(service.SchemaHistory)
 	var open []types.SchemaChange
 	for _, change := range service.SchemaChanges {
-		if change.Kind == "relax" || change.Kind == "within" {
+		// A unique of a field finishes at its expand step too, which builds its unique index (ST-GEN-Q48).
+		if change.Kind == "relax" || change.Kind == "within" || change.UniqueOfField(service.Entities) {
 			continue
 		}
 		if steps := phases[change.ID]; len(steps) > 0 && steps[len(steps)-1] == "expand" {
@@ -540,6 +549,8 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 			fault("a change of kind relax has an expand step only, which finishes it in place")
 		case len(steps) == 2 && change.Kind == "within":
 			fault("a change of kind within has an expand step only, which adds and validates the key")
+		case len(steps) == 2 && change.UniqueOfField(service.Entities):
+			fault("a unique of a field has an expand step only, which builds the unique index and finishes the change")
 		}
 	}
 	return faults

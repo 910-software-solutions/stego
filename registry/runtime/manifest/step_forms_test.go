@@ -271,7 +271,8 @@ GRANT SELECT, INSERT ON public.books TO ` + writer + `;
 			{"a non-default operator class", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug" text_pattern_ops);` + "\n"},
 			{"a non-default collation", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug" COLLATE "POSIX");` + "\n"},
 			{"a deferrable unique constraint", slug + `ALTER TABLE public.books ADD CONSTRAINT "books_slug_key" UNIQUE ("tenant_id", "slug") DEFERRABLE;` + "\n"},
-			{"listed columns only", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("tenant_id", "title");` + "\n"},
+			{"listed columns with another name", `CREATE UNIQUE INDEX "books_title_uq" ON public.books ("tenant_id", "title");` + "\n"},
+			{"listed columns with no tenant lead", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("title");` + "\n"},
 			{"the lead twice", slug + `CREATE UNIQUE INDEX "books_tenant_id_slug_key" ON public.books ("tenant_id", "tenant_id", "slug");` + "\n"},
 			{"a domain column", "CREATE DOMAIN public.dom AS text;\nALTER TABLE public.books ADD COLUMN \"slug\" public.dom;\n" +
 				`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug");` + "\n"},
@@ -282,6 +283,25 @@ GRANT SELECT, INSERT ON public.books TO ` + writer + `;
 		// The partition-only index is in TestStepPartitions.
 		stepCase(t, "control: the step form", slug+`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug");`+"\n", stepManifest(), false)
 		stepCase(t, "control: the step form as a unique constraint", slug+`ALTER TABLE public.books ADD CONSTRAINT "books_slug_key" UNIQUE ("tenant_id", "slug");`+"\n", stepManifest(), false)
+		// An index that a build left invalid or not ready is no step form, also in the exact step form (security
+		// review of PR #484, L1).
+		const stepIndex = `CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug");` + "\n"
+		stepCase(t, "the step form left invalid by a build", slug+stepIndex+`UPDATE pg_catalog.pg_index SET indisvalid = false WHERE indexrelid = 'public.books_slug_key'::pg_catalog.regclass;`+"\n", stepManifest(), true)
+		stepCase(t, "the step form not ready", slug+stepIndex+`UPDATE pg_catalog.pg_index SET indisready = false, indisvalid = false WHERE indexrelid = 'public.books_slug_key'::pg_catalog.regclass;`+"\n", stepManifest(), true)
+		// No unique index of a later step on a column of a secret, listed with Secret, or on the sealed column of a
+		// seal (security review of PR #484, L2).
+		secret := stepManifest()
+		for i := range secret.Tables[1].Columns {
+			if secret.Tables[1].Columns[i].Name == "note" {
+				secret.Tables[1].Columns[i].Secret = true
+			}
+		}
+		stepCase(t, "a unique step of a listed secret column", `CREATE UNIQUE INDEX "books_note_key" ON public.books ("tenant_id", "note");`+"\n", secret, true)
+		stepCase(t, "a unique index on the sealed column of a seal", `ALTER TABLE public.books ADD COLUMN "note_sealed" bytea;`+"\n"+
+			`CREATE UNIQUE INDEX "books_note_sealed_key" ON public.books ("tenant_id", "note_sealed");`+"\n", stepManifest(), true)
+		stepCase(t, "control: a unique step of the listed column note that is no secret", `CREATE UNIQUE INDEX "books_note_key" ON public.books ("tenant_id", "note");`+"\n", stepManifest(), false)
+		// A unique step of a field builds the unique index of a column that the manifest lists (ST-GEN-Q48).
+		stepCase(t, "control: the unique step of a listed column", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("tenant_id", "title");`+"\n", stepManifest(), false)
 		stepCase(t, "control: the step form with INCLUDE", slug+`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug") INCLUDE ("title");`+"\n", stepManifest(), false)
 	})
 

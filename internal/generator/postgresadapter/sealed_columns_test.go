@@ -36,7 +36,7 @@ func TestSealedColumns(t *testing.T) {
 			strings.Contains(sql, "pin_search") {
 			t.Errorf("001_initial.sql has a CHECK or an index on a secret column:\n%s", sql)
 		}
-		if !strings.Contains(manifest, `{Name: "api_token", Type: "bytea", NotNull: false}`) || !strings.Contains(manifest, `{Name: "pin", Type: "text", NotNull: true}`) {
+		if !strings.Contains(manifest, `{Name: "api_token", Type: "bytea", NotNull: false, Secret: true}`) || !strings.Contains(manifest, `{Name: "pin", Type: "text", NotNull: true, Secret: true}`) {
 			t.Errorf("the schema manifest does not name the secret columns with their types:\n%s", manifest)
 		}
 		sealed := findFileContent(t, files, "internal/storage/sealed_columns.go")

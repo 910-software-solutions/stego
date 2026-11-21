@@ -164,3 +164,35 @@ func TestScopeFieldDefault(t *testing.T) {
 		}
 	})
 }
+
+func TestScopeFieldComputed(t *testing.T) {
+	t.Run("ST-DECL-INV106-T Checking refuses a scope field that is computed or filled_by, with one fault for each property", func(t *testing.T) {
+		entities := func(field types.Field) []types.Entity {
+			field.Name, field.Type = "org_id", types.FieldTypeRef
+			return []types.Entity{{Name: "Organization", Fields: []types.Field{{Name: "name", Type: "string"}}},
+				{Name: "Project", Fields: []types.Field{field, {Name: "size", Type: "int32", Computed: true, FilledBy: "sizer"}}}}
+		}
+		collections := []types.Collection{{Name: "org-projects", Entity: "Project", Operations: []types.Operation{types.OpCreate}, Scope: map[string]string{"org_id": "Organization"}}}
+		faults := validateCollectionReferences(collections, entities(types.Field{Computed: true, FilledBy: "org-filler"}))
+		if len(faults) != 2 || faults[0].Path != "collections.org-projects.scope.org_id" || faults[1].Path != faults[0].Path ||
+			faults[0].Found != "computed" || faults[1].Found != "org-filler" ||
+			!strings.Contains(faults[0].Message, `collection "org-projects" has scope field "org_id", which declares computed: true`) ||
+			!strings.Contains(faults[1].Message, `collection "org-projects" has scope field "org_id", which declares filled_by: org-filler`) {
+			t.Fatalf("want a fault for computed and one for filled_by of the scope field, got %+v", faults)
+		}
+		// Each property alone is refused, and with the default the field gets three faults.
+		if faults := validateCollectionReferences(collections, entities(types.Field{Computed: true})); len(faults) != 1 || faults[0].Found != "computed" {
+			t.Fatalf("want one fault for computed alone, got %+v", faults)
+		}
+		if faults := validateCollectionReferences(collections, entities(types.Field{FilledBy: "org-filler"})); len(faults) != 1 || faults[0].Found != "org-filler" {
+			t.Fatalf("want one fault for filled_by alone, got %+v", faults)
+		}
+		if faults := validateCollectionReferences(collections, entities(types.Field{Default: "org-1", Computed: true, FilledBy: "org-filler"})); len(faults) != 3 {
+			t.Fatalf("want three faults for a default, computed and filled_by, got %+v", faults)
+		}
+		// A computed field of the entity that the scope does not name is not refused here.
+		if faults := validateCollectionReferences(collections, entities(types.Field{})); len(faults) != 0 {
+			t.Fatalf("a scope field that is not computed is refused: %+v", faults)
+		}
+	})
+}

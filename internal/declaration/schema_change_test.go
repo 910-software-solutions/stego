@@ -600,3 +600,26 @@ func TestSchemaSeal(t *testing.T) {
 		wantFault(t, schemaFaults(t, todoFields(secret, "[api]", []string{seal}, "todo-title-seal expand"), "schema-change-mode"), "todo-title-seal", "controller")
 	})
 }
+
+func TestUniqueOfField(t *testing.T) {
+	unique := "{id: todo-summary-unique, kind: unique, entity: Todo, field: summary}"
+	uniqueSummary := []string{"{name: summary, type: string, min_length: 1, max_length: 255, unique: true}", "{name: done, type: bool, default: false}"}
+	t.Run("ST-DECL-INV58-T A unique of a field that is unique or in a unique_composite is accepted", func(t *testing.T) {
+		wantNoFault(t, schemaFaults(t, todoFields(uniqueSummary, "", []string{unique}, "todo-summary-unique expand")))
+		composite := []string{"{name: summary, type: string, min_length: 1, max_length: 255, unique_composite: [summary, done]}", "{name: done, type: bool, default: false}"}
+		wantNoFault(t, schemaFaults(t, todoFields(composite, "", []string{unique}, "todo-summary-unique expand")))
+	})
+	t.Run("ST-DECL-INV58-T A unique of a field that is not unique, or that is also the name of a unique invariant, is refused", func(t *testing.T) {
+		wantFault(t, schemaFaults(t, todoFields(renamed, "", []string{unique}, "todo-summary-unique expand"), "schema-change-entity"),
+			`"todo-summary-unique"`, `"Todo"`, `"summary"`, "is not unique and is in no unique_composite")
+		service := todoFields(uniqueSummary, "", []string{unique}, "todo-summary-unique expand") + "invariants:\n  - {name: summary, kind: unique, on: Todo, by: [summary]}\n"
+		wantFault(t, schemaFaults(t, service, "schema-change-entity"), `"todo-summary-unique"`, "both a field of the entity and a declared invariant")
+	})
+	t.Run("ST-DECL-INV59-T A unique of a field with a contract step is refused", func(t *testing.T) {
+		wantFault(t, schemaFaults(t, todoFields(uniqueSummary, "", []string{unique}, "todo-summary-unique expand", "todo-summary-unique contract"), "schema-step"),
+			`"todo-summary-unique"`, "a unique of a field has an expand step only")
+	})
+	t.Run("ST-DECL-INV61-T A unique of a field is not open at expand, so it needs no controller mode", func(t *testing.T) {
+		wantNoFault(t, schemaFaults(t, todoFields(uniqueSummary, "[api]", []string{unique}, "todo-summary-unique expand"), "schema-change-mode"))
+	})
+}
