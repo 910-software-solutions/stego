@@ -92,7 +92,7 @@ jobs:
           STEGO_REGISTRY: ${{ github.workspace }}/registry
           GOWORK: 'off'
         run: |
-          "$RUNNER_TEMP/stego" validate ${STEGO_STRICT:-}
+          "$RUNNER_TEMP/stego" validate ${STEGO_STRICT:-} ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
           "$RUNNER_TEMP/stego" apply ${STEGO_STRICT:-} ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
           "$RUNNER_TEMP/stego" deps
           "$RUNNER_TEMP/stego" apply ${STEGO_STRICT:-} ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}

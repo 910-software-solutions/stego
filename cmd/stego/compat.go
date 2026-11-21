@@ -317,8 +317,12 @@ func defaultBaseRef() (ref string, found bool, err error) {
 	} else if empty {
 		return "", false, errNoCommit
 	}
-	return "", false, fmt.Errorf("the repository of the service folder has no default branch: refs/remotes/origin/HEAD is not set and there is no branch main or master; name the base with --base")
+	return "", false, errNoDefaultBranch
 }
+
+// errNoDefaultBranch is the answer of defaultBaseRef for a repository that has commits and no default branch: no
+// refs/remotes/origin/HEAD and no branch main or master, as in a checkout of one commit.
+var errNoDefaultBranch = errors.New("the repository of the service folder has no default branch: refs/remotes/origin/HEAD is not set and there is no branch main or master; name the base with --base")
 
 // errNoCommit is the answer of defaultBaseRef for a repository with no commit, whose default branch is not born: it
 // holds no base, so no record of a release.

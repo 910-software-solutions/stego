@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -22,6 +23,14 @@ import (
 // the clear value when the two differ (SealingAt), so a release before and a roll back to it lose no write
 // (ST-SUP-RP10-LC49). The seal job of the controller seals and checks each row in passes (ST-SUP-RP10-LC50), and the
 // contract step drops the clear column only after a pass that no release before ran during (ST-SUP-RP09-LC15).
+
+// SealPassEvent is the event name of the info line of each seal of a secret column by the seal job, and
+// ResealPassEvent the one of each re-seal of a secret column by the re-seal job: the log/slog handler of the runtime
+// writes each as a JSON line with this event name (walkthrough 21, U-E).
+const (
+	SealPassEvent   = "command.seal.pass"
+	ResealPassEvent = "command.reseal.pass"
+)
 
 // ClearOf gives the statement value of the clear column of a readable secret whose seal step is open: its text, or
 // NULL for a value that is not set (ST-SUP-RP10-LC49).
@@ -478,7 +487,7 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 			}
 			continue
 		}
-		slog.InfoContext(ctx, "command: seal of a secret column", "change", c.Change, "entity", c.Entity, "column", c.Clear,
+		slog.InfoContext(ctx, "command: seal of a secret column", otel.SlogEventKey, SealPassEvent, "change", c.Change, "entity", c.Entity, "column", c.Clear,
 			"sealed", result.Sealed, "checked", result.Checked, "completed", result.Completed, "waits", result.Waits)
 	}
 	return results, errors.Join(failed...)

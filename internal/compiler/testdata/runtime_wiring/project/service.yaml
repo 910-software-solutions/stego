@@ -47,9 +47,10 @@ entities:
     fields:
       - {name: sku, type: string}
       - {name: qty, type: int32}
-      # A readable secret, sealed at rest, and a compare-only secret, stored as its hash (ST-DECL-Q44).
+      # A readable secret, sealed at rest, and a compare-only secret, stored as its hash (ST-DECL-Q44), whose wrong
+      # checks the runtime counts (ST-SUP-RP10-LC54).
       - {name: api_token, type: string, sensitivity: secret, optional: true, min_length: 8}
-      - {name: pin, type: string, sensitivity: secret, compare_only: true, optional: true, min_length: 4}
+      - {name: pin, type: string, sensitivity: secret, compare_only: true, optional: true, min_length: 4, attempts: {limit: 100}}
   - name: Note
     resource_type: note
     permissions: {read: view}

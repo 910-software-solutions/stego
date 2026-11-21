@@ -66,6 +66,10 @@ component writes (`<out>/commands/openapi.json`), in the package
   patch and reports `configured`. A secret field that only the create takes
   cannot be in a document of a resource that exists (cli-application 1.28.0).
 
+The fills of the service follow the STEGO gates: `stego validate` and `stego plan`
+also warn when the sign-off of a fill counts only because of a key that the
+change adds to `SIGNERS`; with `--strict` this is a fault.
+
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
 `IdempotentWritesFrom` sets it: each command, and the create and the patch of a

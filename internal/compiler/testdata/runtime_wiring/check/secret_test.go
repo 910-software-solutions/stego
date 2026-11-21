@@ -246,4 +246,94 @@ func secretChecks(t *testing.T, s *service, owner caller) {
 			}
 		}
 	})
+
+	t.Run(jsonLinesCheck, func(t *testing.T) {
+		s.t = t
+		if vault == "" {
+			t.Fatal("no order with a PIN: the checks before did not pass")
+		}
+		// A wrong PIN leaves a count row of the order. A transaction of the check holds the lock of each count row,
+		// so each charge of the next checks waits for 1 s, ends at its lock timeout, and the call answers 503
+		// (walkthrough 21, U-E). The charges of one tenant hold at most half of the pool of the charges, so the pool
+		// is never full here; the line of a full pool goes through the same log provider as the line of a failed
+		// charge.
+		if _, pinOK, status := s.verified(t, owner, vault, nextToken, pin+"-wrong"); pinOK || status != http.StatusCreated {
+			t.Fatalf("a wrong PIN gave %t, status %d", pinOK, status)
+		}
+		tx, err := s.admin.Begin()
+		must(t, err)
+		var held int
+		must(t, tx.QueryRow(`SELECT count(*) FROM (SELECT 1 FROM public.attempt_counts FOR UPDATE) AS locked`).Scan(&held))
+		if held == 0 {
+			_ = tx.Rollback()
+			t.Fatal("the wrong PIN left no count row")
+		}
+		statuses := make(chan int, 4)
+		for range 4 {
+			go func() {
+				_, _, status := s.verified(t, owner, vault, nextToken, pin)
+				statuses <- status
+			}()
+		}
+		for range 4 {
+			if status := <-statuses; status != http.StatusServiceUnavailable {
+				t.Errorf("a check of the PIN whose count row is locked answered %d, want 503", status)
+			}
+		}
+		must(t, tx.Rollback())
+		if _, pinOK, status := s.verified(t, owner, vault, nextToken, pin); !pinOK || status != http.StatusCreated {
+			t.Fatalf("after the lock, the right PIN gave %t, status %d", pinOK, status)
+		}
+		// Each line of these events is one JSON line, with its event name and its stego.* attributes.
+		type line struct {
+			Event      string         `json:"event.name"`
+			Message    string         `json:"message"`
+			Attributes map[string]any `json:"attributes"`
+		}
+		lines := func(what, output, mark string) []line {
+			t.Helper()
+			var found []line
+			for _, text := range strings.Split(output, "\n") {
+				// The failure record of a refused job names the line of the refused step in its remedy.
+				if !strings.Contains(text, mark) || strings.Contains(text, `"event.name":"service.failed"`) {
+					continue
+				}
+				var l line
+				if err := json.Unmarshal([]byte(text), &l); err != nil {
+					t.Errorf("%s: the line is not JSON: %s", what, text)
+					continue
+				}
+				found = append(found, l)
+			}
+			if len(found) == 0 {
+				t.Errorf("%s: no line holds %q", what, mark)
+			}
+			return found
+		}
+		log := s.log.String()
+		for _, l := range lines("the failed charge", log, "command.attempts.failed") {
+			if l.Event != "command.attempts.failed" || l.Attributes["stego.action"] != "verify-order" || l.Attributes["stego.entity"] != "Order" ||
+				(l.Attributes["stego.cause"] != "lock_timeout" && l.Attributes["stego.cause"] != "deadline") {
+				t.Errorf("the line of a failed charge is %+v, want the action verify-order, the entity Order and the cause lock_timeout or deadline", l)
+			}
+		}
+		for _, l := range lines("the re-seal job of the controller", log, "re-seal of a secret column") {
+			if l.Event != "command.reseal.pass" || l.Attributes["stego.entity"] != "Order" || l.Attributes["stego.column"] != "api_token" {
+				t.Errorf("the line of the re-seal job is %+v, want the event command.reseal.pass, the entity Order and the column api_token", l)
+			}
+		}
+		for _, l := range lines("the refused migration job", s.foreignMigration.output+s.legacyMigration.output, "migrate: the step is refused") {
+			if l.Event != "migrate.step.refused" || l.Attributes["stego.step"] != "ledger_check" || !strings.HasPrefix(l.Message, "migrate: the step is refused: ") ||
+				len(l.Message) < len("migrate: the step is refused: ")+40 {
+				t.Errorf("the line of a refused step is %+v, want the event migrate.step.refused, the step ledger_check and the refusal in the message", l)
+			}
+		}
+		if strings.Contains(log, pin) || strings.Contains(log, nextToken) {
+			t.Error("the log of the service holds a secret value")
+		}
+	})
 }
+
+// jsonLinesCheck is the check that the lines of the counted checks, of the re-seal job and of a refused step of the
+// migration job are JSON lines (walkthrough 21, U-E).
+const jsonLinesCheck = "ST-SUP-RP03-LC16-T03 The generated service writes the lines of a failed charge, the re-seal job and a refused step of the migration job as JSON lines with stego attributes"
