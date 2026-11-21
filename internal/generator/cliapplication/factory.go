@@ -59,6 +59,8 @@ type factoryResource struct {
 	Kind, APIVersion, Path    string
 	CreateFields, PatchFields []factoryField
 	IdempotentWrites          bool
+	// ConditionalPatch states that the patch operation takes the header If-Match (ST-SUP-RC04-OC38).
+	ConditionalPatch bool
 }
 
 // factorySource gives the Go source of the package app of the CLI: Commands, which returns the definitions of the
@@ -143,6 +145,9 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 		b.WriteString("\t\tResources: []command.ApplyResource{\n")
 		for _, r := range resources {
 			fmt.Fprintf(&b, "\t\t\t{Kind: %q, APIVersion: %q, Path: %q, IdempotentWrites: %t,", r.Kind, r.APIVersion, r.Path, r.IdempotentWrites)
+			if r.ConditionalPatch {
+				b.WriteString(" ConditionalPatch: true,")
+			}
 			writeFields(&b, "CreateFields", r.CreateFields)
 			writeFields(&b, "PatchFields", r.PatchFields)
 			b.WriteString("},\n")
@@ -396,6 +401,7 @@ func applyResource(doc *openapi3.T, p string, item *openapi3.PathItem, service s
 		}
 	}
 	r.IdempotentWrites = keyed(item, item.Post) && one != nil && one.Patch != nil && keyed(one, one.Patch)
+	r.ConditionalPatch = one != nil && one.Patch != nil && headerParameter(one, one.Patch, "If-Match")
 	// The runtime needs the name among the fields of the create and of the patch, so a collection with no patch
 	// that takes the name is no apply resource: apply cannot change a resource that it finds.
 	if !slicesContainsKey(r.PatchFields, "name") || len(r.CreateFields) > maxFields || len(r.PatchFields) > maxFields {
@@ -407,9 +413,15 @@ func applyResource(doc *openapi3.T, p string, item *openapi3.PathItem, service s
 // keyed tells whether an operation, with the parameters of its path item, carries the Idempotency-Key header
 // parameter. A parameter given by $ref is not followed, as command.IdempotentWritesFrom does not follow it.
 func keyed(item *openapi3.PathItem, op *openapi3.Operation) bool {
+	return headerParameter(item, op, "Idempotency-Key")
+}
+
+// headerParameter tells whether an operation, with the parameters of its path item, carries the header parameter
+// name. A parameter given by $ref is not followed.
+func headerParameter(item *openapi3.PathItem, op *openapi3.Operation, name string) bool {
 	for _, params := range []openapi3.Parameters{item.Parameters, op.Parameters} {
 		for _, ref := range params {
-			if ref != nil && ref.Ref == "" && ref.Value != nil && ref.Value.In == "header" && strings.EqualFold(ref.Value.Name, "Idempotency-Key") {
+			if ref != nil && ref.Ref == "" && ref.Value != nil && ref.Value.In == "header" && strings.EqualFold(ref.Value.Name, name) {
 				return true
 			}
 		}

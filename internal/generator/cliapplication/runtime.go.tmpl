@@ -170,6 +170,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  if payload!=nil{headers.Set("Content-Type","application/json")}
  response,retried,err:=send(ctx,c.IdempotentWrites,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
+ if success&&c.Method!="GET"{keepRevocation(ctx,app,cfg,response)}
  if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
  // A 5xx answer to a write that was not sent again, such as one with no Idempotency-Kept header, can follow a write
  // that the service did (ST-SUP-RC04-OC34).
@@ -187,18 +188,20 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
 // problemFacts gives, for an answer of type application/problem+json, the last segment of its problem type and the
 // field and the message of at most five of its validation_errors, each one as printable ASCII text of at most 120
 // characters. It never gives the detail or another member of the answer, and it gives "" for any other answer
-// (ST-SUP-RC04-OC11; walkthrough 18: the CLI said API request failed (HTTP 400) and did not name the field).
+// (ST-SUP-RC04-OC11; walkthrough 18: the CLI said API request failed (HTTP 400) and did not name the field). It gives
+// the type and each entry in double quotes, so a text of the answer cannot look like another entry (security review
+// of PR #473, I2).
 func problemFacts(response client.Response)string{
  media,_,_:=strings.Cut(response.Header.Get("Content-Type"),";")
  if !strings.EqualFold(strings.TrimSpace(media),"application/problem+json"){return ""}
  var problem struct{Type string `json:"type"`;Entries []struct{Field string `json:"field"`;Message string `json:"message"`} `json:"validation_errors"`}
  if json.Unmarshal(response.Body,&problem)!=nil{return ""}
  var parts []string
- if slug:=printableText(problem.Type[strings.LastIndex(problem.Type,"/")+1:]);slug!=""{parts=append(parts,"problem "+slug)}
+ if slug:=printableText(problem.Type[strings.LastIndex(problem.Type,"/")+1:]);slug!=""{parts=append(parts,"problem "+strconv.Quote(slug))}
  for i,entry:=range problem.Entries{
   if i==5{break}
   field,message:=printableText(entry.Field),printableText(entry.Message)
-  switch{case field!=""&&message!="":parts=append(parts,field+": "+message);case field!="":parts=append(parts,field);case message!="":parts=append(parts,message)}
+  switch{case field!=""&&message!="":parts=append(parts,strconv.Quote(field+": "+message));case field!="":parts=append(parts,strconv.Quote(field));case message!="":parts=append(parts,strconv.Quote(message))}
  }
  if len(parts)==0{return ""}
  return ": "+strings.Join(parts,"; ")
