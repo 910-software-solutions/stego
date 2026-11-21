@@ -130,7 +130,7 @@ func TestQualifyFillFlow(t *testing.T) {
 	t.Run("ST-EXT-UC02-FL-T The service author records evidence and signs it with a listed key, and the fill becomes qualified", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"untested-fill", "before_create", "org-users"})
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatal("stego test wrote no evidence for untested-fill")
 		}
@@ -158,7 +158,7 @@ func TestQualifyFillFlow(t *testing.T) {
 
 		// The unlisted path, from the project of ST-EXT-TD01.
 		p = newFillProject(t)
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		p.must(t, "unlisted-ssh", "fill", "sign", "untested-fill-2")
 		p.bind(t, slotBinding{"untested-fill-2", "before_create", "org-groups"})
 		stdout, stderr, err := p.stego(t, "listed-ssh", "plan")
@@ -489,7 +489,7 @@ func TestOnlyAnAdminCreatesAnAdmin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key", "no-tests-fill")
 		evidence := p.manifest(t, "admin-policy").Evidence
 		if evidence == nil || evidence.FillDigest != fillDigest || evidence.ContractDigest != contractDigest(t, p, "before_create") {
 			t.Fatalf("stego test did not write evidence with the digests of admin-policy and before_create.proto: %+v", evidence)
@@ -509,14 +509,14 @@ func TestOnlyAnAdminCreatesAnAdmin(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := p.read(t, "fills/admin-policy/fill.yaml")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "admin-policy")
 		expectNoEvidence(t, p, stdout, "admin-policy", before, "no test file")
 		p.write(t, "fills/admin-policy/fill_test.go", test)
 		p.withFillModules(t)
 		p.bind(t, slotBinding{"admin-policy", "before_create", "org-users"})
 		p.addImport(t, "fills/admin-policy/fill.go", "github.com/lib/pq", "pq.Name")
 		before = p.read(t, "fills/admin-policy/fill.yaml")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "admin-policy")
 		expectNoEvidence(t, p, stdout, "admin-policy", before, "github.com/lib/pq")
 	})
 }
@@ -547,7 +547,7 @@ func TestRequalifyGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key", "no-tests-fill")
 		if evidence := p.manifest(t, "stale-fill").Evidence; evidence == nil || evidence.FillDigest != newDigest {
 			t.Fatalf("stego test did not write new evidence with the new fill digest %s: %+v", newDigest, evidence)
 		}
@@ -566,7 +566,7 @@ func TestRequalifyFillFlow(t *testing.T) {
 		if !strings.Contains(line, "policy.go") {
 			t.Fatalf("fill status does not name policy.go as the file that changed:\n%s", line)
 		}
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		f := p.manifest(t, "stale-fill")
 		p.must(t, "listed-ssh", "fill", "sign", "stale-fill")
 		signed := p.manifest(t, "stale-fill")
