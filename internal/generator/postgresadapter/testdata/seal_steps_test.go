@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/tables-check/seal"
 	"example.com/tables-check/sealbase"
@@ -457,6 +458,121 @@ func TestSealSteps(t *testing.T) {
 					t.Fatalf("the contract after the new pass: %v", err)
 				}
 			})
+		}
+	})
+
+	// waits gives the query of the backend of the pool application that waits for a lock of the kind event, or "".
+	waits := func(t *testing.T, db *sql.DB, application, event string) string {
+		t.Helper()
+		var query sql.NullString
+		err := db.QueryRow(`SELECT a.query FROM pg_catalog.pg_stat_activity a WHERE a.application_name = $1 AND a.wait_event_type = 'Lock' AND a.wait_event = $2`, application, event).Scan(&query)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return query.String
+	}
+
+	t.Run("ST-SUP-RC01-OC50-T06 The check of a seal contract runs the functions of this release in its own transaction, also when another job put older functions in place after the start of the job", func(t *testing.T) {
+		own, db, reader := base(t)
+		expand(t, own, db)
+		for _, r := range job(t, reader) {
+			if !r.Completed {
+				t.Fatalf("the seal job gave %+v, want the pass completed", r)
+			}
+		}
+		// The test holds the ledger lock on a connection of its own. Each time that the job waits for it at a
+		// transaction lock, one statement gives the lock to the job and asks for it again, so the test gets it back
+		// when that transaction ends. When the job waits at the session lock of the contract step, after the run of
+		// the seal checkpoints at its start, the test puts the seal_instance of postgres-adapter 6.20.0 in place, as a
+		// job of a release before can do in that time, and gives the lock to the job.
+		gate, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer gate.Close()
+		if _, err := gate.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_lock(1937007983,1935894637)`); err != nil {
+			t.Fatal(err)
+		}
+		named := own.Copy()
+		named.RuntimeParams["application_name"] = "seal-contract-t06"
+		done := make(chan error, 1)
+		jobDB := stdlib.OpenDB(*named)
+		defer jobDB.Close()
+		go func() {
+			conn, err := jobDB.Conn(ctx)
+			if err != nil {
+				done <- err
+				return
+			}
+			defer conn.Close()
+			if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+				done <- err
+				return
+			}
+			done <- sealc.Migrate(ctx, conn)
+		}()
+		for {
+			query := waits(t, db, "seal-contract-t06", "advisory")
+			if query == "" {
+				select {
+				case err := <-done:
+					t.Fatalf("the contract job ended with %v before it waited for the ledger lock of the contract step", err)
+				default:
+				}
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			if !strings.Contains(query, "pg_advisory_xact_lock") {
+				break
+			}
+			if _, err := gate.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_unlock(1937007983,1935894637), pg_catalog.pg_advisory_lock(1937007983,1935894637)`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := db.Exec(`CREATE OR REPLACE FUNCTION stego_schema.seal_instance() RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
+  AS $f$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS') FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$f$`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gate.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_unlock(1937007983,1935894637)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("the contract with older functions in place after the start of the job ends with %v, want it to pass", err)
+		}
+		var current bool
+		if err := db.QueryRow(`SELECT pg_catalog.pg_get_functiondef('stego_schema.seal_instance()'::regprocedure) LIKE '%pg_relation_filenode%'`).Scan(&current); err != nil || !current {
+			t.Fatalf("after the contract seal_instance is not the one of this release (%v, %v)", current, err)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC49-T13 A migration job again on a database with the seal checkpoints takes no ACCESS EXCLUSIVE lock on their table", func(t *testing.T) {
+		own, db, _ := base(t)
+		expand(t, own, db)
+		before := catalog(t, db)
+		// A reader holds an ACCESS SHARE lock on the table of the seal checkpoints while the job runs again. An ALTER
+		// TABLE would wait for it past the lock timeout of each attempt, and the job would fail.
+		reading, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = reading.Rollback() }()
+		var rows int
+		if err := reading.QueryRow(`SELECT pg_catalog.count(*) FROM stego_schema.seals`).Scan(&rows); err != nil || rows != 2 {
+			t.Fatalf("the reader sees %d seal rows (%v), want 2", rows, err)
+		}
+		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return seal.Migrate(ctx, conn) }); err != nil {
+			t.Fatalf("the migration job again while a reader holds the seal checkpoints: %v", err)
+		}
+		if err := reading.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if after := catalog(t, db); !slices.Equal(before, after) {
+			t.Errorf("the migration job again changed the catalog:\n%s", strings.Join(after, "\n"))
+		}
+		var defaulted bool
+		if err := db.QueryRow(`SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid) LIKE '%seal_instance()' FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+  WHERE d.adrelid = 'stego_schema.seals'::regclass AND a.attname = 'armed_in'`).Scan(&defaulted); err != nil || !defaulted {
+			t.Fatalf("armed_in has no default of seal_instance after the job again (%v, %v)", defaulted, err)
 		}
 	})
 

@@ -577,6 +577,12 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
 	})
+	t.Run("ST-SUP-RC01-OC50-T06 The check of a seal contract runs the functions of this release in its own transaction, also when another job put older functions in place after the start of the job", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T06")
+	})
+	t.Run("ST-SUP-RC01-OC49-T13 A migration job again on a database with the seal checkpoints takes no ACCESS EXCLUSIVE lock on their table", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC49-T13")
+	})
 	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T03")
 	})

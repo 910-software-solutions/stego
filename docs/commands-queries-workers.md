@@ -1424,6 +1424,29 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.178.0
+
+- The charge of a check of a counted compare-only secret runs on a small pool
+  of its own, of at most 4 connections, apart from the main pool. Before, it
+  took a second connection of the main pool, so a full main pool made the
+  check wait for 5 s and the command answered 503. New field
+  `command.Config.ChargeDB`; with no value, the charges use the audit pool
+  (ST-SUP-RP10-LC54, security review of PR #451, L2).
+- A rerun of a command in the same request, such as after a conflict, a stale
+  prepared statement or a seal switch, does not charge again the checks that an
+  earlier attempt charged (security review of PR #451, I1 of the second
+  review).
+- `sealed.Compared.Stored` and `StoredContext` give the new error
+  `sealed.ErrCounted` for a counted stored value, and no hash. The new
+  `sealed.Compared.StoredBy`, `sealed.StoreKey` and `sealed.NewStoreKey` give
+  the hash only to the runtime that bound the counter with the new
+  `sealed.CountedByKey`. `sealed.CountedBy` binds no store key, and both keep
+  the counter of a value that has one (ST-SUP-RP16-LC03, security review of PR
+  #451, L1).
+- `lease.SealsText` adds the columns and the default of `stego_schema.seals`
+  only when they are not there, so a run again takes no `ACCESS EXCLUSIVE` lock
+  on the table (security review of PR #472, I2).
+
 ### Release notes for runtime v0.177.0
 
 - The cause of `worker.run.failed` and of the log line

@@ -49,9 +49,9 @@ func pinWalletEntity(t *testing.T) *Entity[pinWallet] {
 	return e
 }
 
-func TestAttempts(t *testing.T) {
-	const walletID, right = "0198a1b2-0000-7000-8000-000000000001", "4711"
-	e := newEnv(t)
+// pinWallets makes the table of the PIN wallets in the database of e with the wallet walletID, whose PIN is right.
+func pinWallets(t *testing.T, e *env, walletID, right string) {
+	t.Helper()
 	e.exec(pinWalletDDL, "GRANT SELECT, INSERT, UPDATE, DELETE ON pin_wallets TO "+e.roles[0],
 		"ALTER TABLE pin_wallets ENABLE ROW LEVEL SECURITY", "ALTER TABLE pin_wallets FORCE ROW LEVEL SECURITY",
 		"CREATE POLICY pin_wallets_tenant ON pin_wallets USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))")
@@ -62,6 +62,12 @@ func TestAttempts(t *testing.T) {
 	if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) VALUES ('t1', $1, 100, $2)`, walletID, hash); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestAttempts(t *testing.T) {
+	const walletID, right = "0198a1b2-0000-7000-8000-000000000001", "4711"
+	e := newEnv(t)
+	pinWallets(t, e, walletID, right)
 	wallets := pinWalletEntity(t)
 	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
 	var charges, refusedCharges atomic.Int32
@@ -284,6 +290,91 @@ func TestAttempts(t *testing.T) {
 			if got := chargeCause(c.err); got != c.want {
 				t.Errorf("chargeCause(%v) = %s, want %s", c.err, got, c.want)
 			}
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T03 A rerun of the call after a conflict does not charge the checks of an earlier attempt again", func(t *testing.T) {
+		setPIN(right)
+		rerun := e.command("withdraw-rerun", func(s *CommandSpec[testProbe]) { s.RetryOnConflict = 2 }, wallets)
+		charges.Store(0)
+		attempts := 0
+		n := runs.Add(1)
+		result, err := e.runOn(rt, rerun, e.request("t1", u7(t), fmt.Sprintf("rerun-%d", n), `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			attempts++
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, walletID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			v := w.Value()
+			// Two wrong PINs in each attempt.
+			if v.PIN.Matches("0000") || v.PIN.Matches("1111") {
+				return idempotency.Response{}, errors.New("a wrong PIN matched")
+			}
+			if attempts < 3 {
+				// Another transaction moves the version of the row: the update of the attempt is a conflict, and the
+				// call runs again.
+				e.exec(`UPDATE pin_wallets SET version = version + 1 WHERE id = '` + walletID + `'`)
+				if _, err := r.Update(ctx, w, v); err != nil {
+					return idempotency.Response{}, err
+				}
+			}
+			return idempotency.Response{}, errWrongPIN
+		})
+		if !errors.Is(err, errWrongPIN) || attempts != 3 || result.Attempts != 3 {
+			t.Fatalf("the call gave %v after %d calls of the fill (%d attempts), want the refusal at the third", err, attempts, result.Attempts)
+		}
+		if got := count(); got != 2 || charges.Load() != 2 {
+			t.Fatalf("three attempts of two wrong PINs left the count %d after %d charges, want 2 and 2", got, charges.Load())
+		}
+		// A new call is a new request: its checks are charged.
+		if matched, err := withdraw(unlocked, "2222"); matched || !errors.Is(err, errWrongPIN) || count() != 3 {
+			t.Fatalf("the next call gave %v, %v and the count %d, want a refusal and 3", matched, err, count())
+		}
+		setPIN(right)
+	})
+}
+
+// TestAttemptPools proves that the charge of a check runs on its own pool, not on the main pool (security review of
+// PR #451, L2).
+func TestAttemptPools(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T02 The charge of a check runs on the pool of the charges while the fill holds the only main connection", func(t *testing.T) {
+		const walletID, right = "0198a1b2-0000-7000-8000-000000000002", "4711"
+		e := newEnv(t, func(c *envConfig) { c.mainConns = 1 })
+		pinWallets(t, e, walletID, right)
+		wallets := pinWalletEntity(t)
+		if _, err := New(e.ctx, Config{DB: e.pool, AuditDB: e.auditDB, ChargeDB: e.pool, Authz: e.authz, Audit: e.writer, Outbox: e.queue,
+			Probes: e.probes, Service: "orders", ServiceVersion: "1.0.0", DeclarationVersion: "d1"}); err == nil {
+			t.Fatal("New takes the main pool as the pool of the charges")
+		}
+		chargeDB := e.openPool(e.dsn(e.roles[0]))
+		chargeDB.SetMaxOpenConns(1)
+		rt := e.runtime(func(c *Config) { c.Entities, c.ChargeDB = []Declared{wallets}, chargeDB })
+		cmd := e.command("withdraw", nil, wallets)
+		for i, pin := range []string{"0000", right} {
+			var matched bool
+			_, err := e.runOn(rt, cmd, e.request("t1", u7(t), fmt.Sprintf("pool-%d", i), `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				w, err := r.GetForUpdate(ctx, walletID)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				if matched = w.Value().PIN.Matches(pin); !matched {
+					return idempotency.Response{}, errors.New("pin.wrong")
+				}
+				return ok, nil
+			})
+			if matched != (pin == right) || (matched && err != nil) || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("the PIN %s gave %v and %v with one main connection, want a match only of the right PIN and no 503", pin, matched, err)
+			}
+		}
+		if got := chargeDB.Stats().OpenConnections; got != 1 {
+			t.Fatalf("the pool of the charges has %d open connections, want the one of the charges", got)
 		}
 	})
 }

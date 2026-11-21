@@ -142,7 +142,7 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 				// sealArgs runs inside a method of the handle, which holds the lock of the state.
 				s.resetAttemptsHeld(attemptKey{counter: a.counter, row: a.row})
 			}
-			stored, err := a.value.StoredContext(ctx)
+			stored, err := a.value.StoredBy(ctx, storeKey)
 			if err != nil {
 				return nil, sealedf("command: a compare-only value does not hash")
 			}
@@ -152,7 +152,7 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 				value = stored
 			}
 		case hashArg:
-			stored, err := a.value.StoredContext(ctx)
+			stored, err := a.value.StoredBy(ctx, storeKey)
 			if err != nil {
 				return nil, sealedf("command: a compare-only value does not hash")
 			}
