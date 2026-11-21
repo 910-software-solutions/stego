@@ -642,8 +642,8 @@ type AddedKeySignOff struct {
 }
 
 // AddedKeySignOffs gives each fill that the declaration binds and that is qualified, whose sign-off does not verify
-// against base because base does not list its key, in the order of the fill names (ST-EXT-UC02-R02, decision
-// ST-EXT-Q31). It writes nothing. A fill that is not qualified is not given: the checks of qualification name it.
+// against base for any reason, such as a key that base does not list or lists with other options, in the order of
+// the fill names (ST-EXT-UC02-R02, decision ST-EXT-Q31). It writes nothing. A fill that is not qualified is not given: the checks of qualification name it.
 func AddedKeySignOffs(check compiler.FillCheck, base Signers) ([]AddedKeySignOff, error) {
 	signers, err := ReadSigners(check.ProjectDir)
 	if err != nil {
@@ -666,7 +666,9 @@ func AddedKeySignOffs(check compiler.FillCheck, base Signers) ([]AddedKeySignOff
 		if err != nil {
 			return nil, err
 		}
-		if _, err := VerifySignOff(f.SignOff, digest, base); !errors.Is(err, ErrUnlistedKey) {
+		// Any refusal of the base counts, also of a key that the base lists with other options, such as
+		// namespaces=, or another principal (security review of PR #485, L1).
+		if _, err := VerifySignOff(f.SignOff, digest, base); err == nil {
 			continue
 		}
 		signer, err := VerifySignOff(f.SignOff, digest, signers)

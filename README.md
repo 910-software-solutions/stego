@@ -852,13 +852,27 @@ A change to `SIGNERS` in a branch is a change of who may qualify fills. Review
 it on its own before the merge, and protect `SIGNERS` with a CODEOWNERS rule.
 When `SIGNERS` in the working folder is not the `SIGNERS` of the base,
 `stego validate` and `stego plan` give a warning for each fill whose
-sign-off counts only because of a key that the change adds. The base is the
+sign-off counts only because of a key that the change adds, or whose line in
+`SIGNERS` it changes, such as a removed `namespaces=` option. The base is the
 merge base of the branch and the default branch (`origin/HEAD`, else `main`
-or `master`), or the ref of `stego plan --base`. The warning names the fill,
-the signer and the base. With `--strict`, each such fill is a fault, so use
-`--strict` in CI. `stego fill sign <fill>` does not keep such a sign-off: it
-signs the fill again with your key, and says so. A project with no Git
-history, or no default branch, gets no such check.
+or `master`), or the ref of `--base`. The warning names the fill, the signer
+and the base. With `--strict`, each such fill is a fault. `stego fill sign
+<fill>` does not keep such a sign-off: it signs the fill again with your key,
+and says so.
+
+When there is no base, the check does not run, and the command writes a
+`NOTE` on standard error that says why: the folder is in no Git repository,
+the repository has no commit, or it has no default branch, as in a CI
+checkout of one commit. Any other failure of Git stops the command. With
+`--strict`, no base is a fault. Thus in CI, give `stego validate` the base
+commit of the pull request:
+
+```sh
+stego validate --strict --base "$PR_BASE_SHA"
+```
+
+For GitHub Actions, `PR_BASE_SHA` is `${{ github.event.pull_request.base.sha }}`,
+and the checkout needs that commit, such as with `fetch-depth: 0`.
 When your policy needs the reviewer's own signature on each merged fill, run
 `stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`:
 the check does not read the revocation or the expiry of a key.

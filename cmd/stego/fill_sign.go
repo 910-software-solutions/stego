@@ -93,11 +93,16 @@ func runFillSign(args []string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := fill.VerifySignOff(f.SignOff, digest, base.signers); !base.changed || !errors.Is(err, fill.ErrUnlistedKey) {
+			if base.missing != "" {
+				base.noBaseNote(os.Stderr)
+			}
+			// A sign-off that does not verify against the base, for any reason, is not kept (security review of PR
+			// #485, L1).
+			if _, err := fill.VerifySignOff(f.SignOff, digest, base.signers); !base.changed || err == nil {
 				fmt.Printf("The sign-off of fill %q already signs its current evidence %s as %s, so fill.yaml stays as it is. To sign it again, run stego fill sign --force %s.\n", name, digest, signer, name)
 				return nil
 			}
-			fmt.Printf("The sign-off of fill %q signs its current evidence as %s, whose key SIGNERS at %s does not list: the change adds it. So the fill is signed again with your key.\n", name, signer, base.ref)
+			fmt.Printf("The sign-off of fill %q signs its current evidence as %s, and SIGNERS at %s does not qualify its key: the change adds it or changes its line. So the fill is signed again with your key.\n", name, signer, base.ref)
 		}
 	}
 	key, err := personalSigningKey(input.ProjectDir)
@@ -311,12 +316,19 @@ type baseSigners struct {
 	ref, commit string
 	signers     fill.Signers
 	changed     bool
+	// missing says why there is no base, or is empty when there is one.
+	missing string
+}
+
+// noBaseNote writes the note that the SIGNERS check did not run, and why.
+func (b baseSigners) noBaseNote(w io.Writer) {
+	fmt.Fprintf(w, "NOTE: the check of SIGNERS against a base did not run: %s. Name the base with --base <ref>, such as the base commit of the pull request.\n", b.missing)
 }
 
 // readBaseSigners reads the SIGNERS file of the service folder at the base: at the ref that named gives, else at the
 // merge base of HEAD and the default branch of the repository (defaultBaseRef). A base that holds no SIGNERS file
-// lists no key. With no Git repository, no commit or no default branch that git can read, there is no base, and
-// changed is false.
+// lists no key. With no Git repository, no commit or no default branch, there is no base: changed is false and
+// missing says why. Every other failure of git is an error.
 func readBaseSigners(named string) (baseSigners, error) {
 	var base baseSigners
 	if strings.HasPrefix(named, "-") {
@@ -324,11 +336,22 @@ func readBaseSigners(named string) (baseSigners, error) {
 	}
 	base.ref = named
 	if named == "" {
-		// With no default branch, such as in a checkout of one commit, there is no base, and no check; plan
-		// refuses such a checkout at its base check, which names --base.
+		// Only a folder in no repository, a repository with no commit and one with no default branch have no base;
+		// every other failure of git fails, as the base check of plan does, so a check never stops in silence
+		// (security review of PR #485, M1).
 		ref, found, err := defaultBaseRef()
-		if err != nil || !found {
+		switch {
+		case err == nil && !found:
+			base.missing = "the service folder is in no Git repository"
 			return base, nil
+		case errors.Is(err, errNoCommit):
+			base.missing = "the repository of the service folder has no commit"
+			return base, nil
+		case errors.Is(err, errNoDefaultBranch):
+			base.missing = "the repository of the service folder has no default branch (refs/remotes/origin/HEAD, main or master)"
+			return base, nil
+		case err != nil:
+			return base, err
 		}
 		base.ref = ref
 		// The merge base is the version of the default branch that the change starts from: a key that the
@@ -368,8 +391,20 @@ func readBaseSigners(named string) (baseSigners, error) {
 // each as a warning, and as a fault with --strict. With no base, or the same SIGNERS file as the base, there is none.
 func addedKeyFaults(input compiler.ReconcilerInput, named string) ([]declaration.ValidationError, error) {
 	base, err := readBaseSigners(named)
-	if err != nil || !base.changed {
+	if err != nil {
 		return nil, err
+	}
+	if base.missing != "" {
+		// With no base the check does not run: a note says so, and --strict refuses (security review of PR #485, M1).
+		base.noBaseNote(os.Stderr)
+		if strictSecretSources {
+			return []declaration.ValidationError{{Rule: "ST-EXT-UC02-R02", Path: fill.SignersFile, Found: base.missing,
+				Message: "--strict needs a base to check SIGNERS against, and " + base.missing + ": name it with --base <ref>, such as the base commit of the pull request"}}, nil
+		}
+		return nil, nil
+	}
+	if !base.changed {
+		return nil, nil
 	}
 	check, err := compiler.ResolveFillCheck(input)
 	if err != nil {
@@ -382,7 +417,7 @@ func addedKeyFaults(input compiler.ReconcilerInput, named string) ([]declaration
 	var faults []declaration.ValidationError
 	for _, a := range added {
 		faults = append(faults, declaration.ValidationError{Rule: "ST-EXT-UC02-R02", Path: "fills/" + a.Fill + "/" + fill.ManifestFile, Found: a.Signer,
-			Message: fmt.Sprintf("the sign-off of fill %q counts only because of the key of %s, which SIGNERS at %s (commit %s) does not list: the change adds it. "+
+			Message: fmt.Sprintf("the sign-off of fill %q counts only because of the key of %s, which SIGNERS at %s (commit %s) does not qualify: the change adds it or changes its line. "+
 				"Review the change of SIGNERS on its own and merge it first, or have a person whom SIGNERS at %s lists run stego fill sign --force %s",
 				a.Fill, a.Signer, base.ref, shortCommit(base.commit), base.ref, a.Fill)})
 	}
@@ -411,7 +446,7 @@ func checkAddedKeys(input compiler.ReconcilerInput, named string, stdout io.Writ
 		fmt.Fprintf(stdout, "WARNING: %s: %s\n", fault.Path, fault.Message)
 	}
 	if strictSecretSources {
-		return fmt.Errorf("--strict refuses %d fill(s) whose sign-off counts only because of a key that the change adds to SIGNERS, so plan saved no plan", len(added))
+		return fmt.Errorf("--strict refuses %d fault(s) of the SIGNERS check against the base, so plan saved no plan", len(added))
 	}
 	return nil
 }
