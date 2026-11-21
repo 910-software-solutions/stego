@@ -31,9 +31,11 @@ import (
 // fill at each qualification standing. It is made once; each test copies it.
 
 type fillKeys struct {
-	dir, gnupgHome                  string
-	listedSSH, unlistedSSH          string
-	listedGPG, keyringGPG           string
+	dir, gnupgHome         string
+	listedSSH, unlistedSSH string
+	listedGPG, keyringGPG  string
+	// subkeyGPG is the primary key of a GPG key that signs with a subkey, and subkeySigner the subkey.
+	subkeyGPG, subkeySigner         string
 	signers                         string
 	homes                           map[string]string
 	goEnv                           []string
@@ -74,6 +76,10 @@ func testFillKeys(t *testing.T) *fillKeys {
 				return "", err
 			}
 		}
+		// subkey-gpg certifies only, and signs with a subkey of its own (security review of PR #480, I1b).
+		if _, err := run("gpg", "--batch", "--passphrase", "", "--quick-gen-key", "subkey-gpg <subkey-gpg@example.com>", "ed25519", "cert", "never"); err != nil {
+			return "", err
+		}
 		defer run("gpgconf", "--kill", "gpg-agent")
 		fingerprint := func(name string) (string, error) {
 			out, err := run("gpg", "--batch", "--with-colons", "--list-keys", name+"@example.com")
@@ -93,6 +99,24 @@ func testFillKeys(t *testing.T) *fillKeys {
 		}
 		if k.keyringGPG, err = fingerprint("keyring-gpg"); err != nil {
 			return "", err
+		}
+		if k.subkeyGPG, err = fingerprint("subkey-gpg"); err != nil {
+			return "", err
+		}
+		if _, err := run("gpg", "--batch", "--passphrase", "", "--quick-add-key", k.subkeyGPG, "ed25519", "sign", "never"); err != nil {
+			return "", err
+		}
+		listing, err := run("gpg", "--batch", "--with-colons", "--list-keys", k.subkeyGPG)
+		if err != nil {
+			return "", err
+		}
+		for _, line := range strings.Split(listing, "\n") {
+			if fields := strings.Split(line, ":"); fields[0] == "fpr" && fields[9] != k.subkeyGPG {
+				k.subkeySigner = fields[9]
+			}
+		}
+		if k.subkeySigner == "" {
+			return "", errors.New("no signing subkey for subkey-gpg")
 		}
 		public := func(key string) (string, error) {
 			data, err := os.ReadFile(key + ".pub")
@@ -119,6 +143,7 @@ func testFillKeys(t *testing.T) *fillKeys {
 			"unlisted-ssh": {{"gpg.format", "ssh"}, {"user.signingkey", k.unlistedSSH}},
 			"listed-gpg":   {{"gpg.format", "openpgp"}, {"user.signingkey", k.listedGPG}},
 			"keyring-gpg":  {{"gpg.format", "openpgp"}, {"user.signingkey", k.keyringGPG}},
+			"subkey-gpg":   {{"gpg.format", "openpgp"}, {"user.signingkey", k.subkeyGPG}},
 			"no-key":       nil,
 		} {
 			home := filepath.Join(k.dir, "home-"+name)
@@ -671,6 +696,9 @@ func TestFillQualification(t *testing.T) {
 		for _, c := range []struct{ key, fingerprint, line string }{
 			{"unlisted-ssh", sshFingerprint, p.keys.unlistedPublic},
 			{"keyring-gpg", p.keys.keyringGPG, "gpg --armor --export " + p.keys.keyringGPG},
+			// A key that signs with a subkey is named by its primary key, as SIGNERS names it (security review of
+			// PR #480, I1b).
+			{"subkey-gpg", p.keys.subkeyGPG, "gpg --armor --export " + p.keys.subkeyGPG},
 		} {
 			before := p.read(t, "fills/unsigned-fill/fill.yaml")
 			stdout, stderr, err := p.stego(t, c.key, "fill", "sign", "unsigned-fill")
@@ -689,6 +717,9 @@ func TestFillQualification(t *testing.T) {
 			}
 			if f.SignOff.Signature.Signer != c.fingerprint {
 				t.Errorf("%s: the signer is %q, want the fingerprint %q of the key", c.key, f.SignOff.Signature.Signer, c.fingerprint)
+			}
+			if c.key == "subkey-gpg" && strings.Contains(stderr, p.keys.subkeySigner) {
+				t.Errorf("the warning names the signing subkey %s, not the primary key %s that SIGNERS names:\n%s", p.keys.subkeySigner, c.fingerprint, stderr)
 			}
 			after := p.read(t, "fills/unsigned-fill/fill.yaml")
 			if bytes.Contains(after, []byte(p.keys.dir)) || bytes.Equal(before, after) {

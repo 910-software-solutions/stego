@@ -6,7 +6,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: user-management-migrate-900ceb789b
+  name: user-management-migrate-d83f5e877a
 spec:
   template:
     spec:
