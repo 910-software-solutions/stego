@@ -65,6 +65,11 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 		return err
 	}
 
+	// A field of a served entity has no name of a member that the handler sets itself (ST-SUP-RC20-OC52).
+	if err := validateEnvelopeMembers(ctx.Collections, ctx.Entities); err != nil {
+		return err
+	}
+
 	// Check for collection-derived identifier collisions with generator-internal
 	// identifiers, entity struct names, and cross-collection derived names.
 	if err := checkCollectionNameCollisions(ctx.Collections, ctx.Entities); err != nil {
@@ -904,8 +909,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
-	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53).
-	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] != nil {\n", commandMarker)
+	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53). Only
+	// the marker true skips the check: a marker false, or one of another type, leaves it on (security review of PR
+	// #454, INFO).
+	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] == true {\n", commandMarker)
 	fmt.Fprintf(&buf, "\t\t\t\tnext.ServeHTTP(w, r)\n")
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
@@ -1188,6 +1195,14 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				property.Description = keptUpdateDescription(f, property.Description)
 				property.Default = nil
 				updateSchema.Properties[f.Name] = property
+			} else if f.Secret() {
+				// No response gives a secret back, so an update that leaves it out, or gives it empty, keeps the stored
+				// value (ST-SUP-RC20-OC48): the member is optional, and the request check holds no min_length and no
+				// pattern of it, which an empty value would break; the check of the entity holds them on a value
+				// that the body gives (walkthrough 14, W14-B4).
+				property := updateSchema.Properties[f.Name]
+				property.MinLength, property.Pattern = nil, ""
+				updateSchema.Properties[f.Name] = property
 			} else if !f.Optional {
 				updateRequired = append(updateRequired, f.Name)
 			}
@@ -1204,7 +1219,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			createSchema.Required = createRequired
 		}
 		spec.Components.Schemas[e.Name+"CreateRequest"] = createSchema
-		if hasKeptField(e) {
+		if hasUpdateRequest(e) {
 			if len(updateRequired) > 0 {
 				updateSchema.Required = updateRequired
 			}
@@ -1231,7 +1246,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		collPascal := collectionToPascalCase(eb.Name)
 		createRef := "#/components/schemas/" + eb.Entity + "CreateRequest"
 		updateRef := createRef
-		if hasKeptField(entityMap[eb.Entity]) {
+		if hasUpdateRequest(entityMap[eb.Entity]) {
 			updateRef = "#/components/schemas/" + eb.Entity + "UpdateRequest"
 		}
 		for _, op := range eb.Operations {
@@ -1444,6 +1459,25 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 						patchSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
 					}
 				}
+				// A patch also takes each field that a collection write cannot change, with its stored value, so a
+				// client can send back a row that it read (ST-SUP-RC20-OC46); x-kept marks it.
+				for _, f := range entity.Fields {
+					_, scoped := eb.Scope[f.Name]
+					_, implicit := eb.Implicit[f.Name]
+					if patchableSet[f.Name] || !keptField(f) || scoped || implicit {
+						continue
+					}
+					property := fieldToOpenAPISchema(f)
+					property.Description = keptPatchDescription(f, property.Description)
+					property.Default, property.Kept = nil, true
+					patchSchema.Properties[f.Name] = property
+				}
+				// A patch takes only these members and kind, the name of the entity, and refuses each other member
+				// (ST-SUP-RC20-OC15, security review of PR #461, M1).
+				if _, field := patchSchema.Properties["kind"]; !field {
+					patchSchema.Properties["kind"] = openAPISchema{Type: "string", Enum: []string{eb.Entity}, Description: "The name of the entity; a patch may leave it out."}
+				}
+				patchSchema.Closed = true
 				patchSchemaName := collPascal + "PatchRequest"
 				spec.Components.Schemas[patchSchemaName] = patchSchema
 
@@ -1616,8 +1650,59 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 // setting changes nothing.
 func keptField(f types.Field) bool { return f.Kept() && !isServerManaged(f) }
 
+// envelopeMembers are the members that the handler of a collection sets itself beside the fields of an entity: kind,
+// which a request body may give only as the name of the entity, and href. The postgres adapter refuses a field named
+// id.
+var envelopeMembers = []string{"kind", "href"}
+
+// validateEnvelopeMembers refuses each field of an entity that a collection serves whose name is a member of
+// envelopeMembers: each create, update, upsert and patch of such an entity would answer 400, and each answer would
+// hold the member of the handler and not the field (ST-SUP-RC20-OC52; walkthrough 14, W14-B5). The fault names the
+// path of the field, the member and the remedy.
+func validateEnvelopeMembers(collections []types.Collection, entities []types.Entity) error {
+	served := map[string]string{}
+	for _, c := range collections {
+		if _, ok := served[c.Entity]; !ok {
+			served[c.Entity] = c.Name
+		}
+	}
+	var faults []string
+	for ei, e := range entities {
+		collection, ok := served[e.Name]
+		if !ok {
+			continue
+		}
+		for fi, f := range e.Fields {
+			if slices.Contains(envelopeMembers, f.Name) {
+				faults = append(faults, fmt.Sprintf("entities[%d].fields[%d].name: the entity %s, which the collection %s serves, has the field %q, and the API sets the member %s of each answer itself%s; give the field another name, and when the base stores it, add a field of another name and drop this one, because a rename keeps the API name",
+					ei, fi, e.Name, collection, f.Name, f.Name, envelopeEffect(f.Name, e.Name)))
+			}
+		}
+	}
+	if len(faults) > 0 {
+		return fmt.Errorf("field names that are members of the API (ST-SUP-RC20-OC52):\n  %s", strings.Join(faults, "\n  "))
+	}
+	return nil
+}
+
+// envelopeEffect tells what the member does to a field of its name: a body may give kind only as the entity name, so
+// each write with the field fails, and an answer holds the href of the handler and never the field.
+func envelopeEffect(member, entity string) string {
+	if member == "kind" {
+		return ", and refuses each create, update, upsert and patch whose kind is not " + entity
+	}
+	return ", so no answer holds the field"
+}
+
 // hasKeptField tells whether an entity has a field of keptField.
 func hasKeptField(e types.Entity) bool { return slices.ContainsFunc(e.Fields, keptField) }
+
+// hasUpdateRequest tells whether the update of an entity takes its own request schema, EntityUpdateRequest, and not
+// the create-request schema: an entity with a field of keptField, or with a secret field, which an update may leave
+// out (ST-SUP-RC20-OC47, ST-SUP-RC20-OC48).
+func hasUpdateRequest(e types.Entity) bool {
+	return hasKeptField(e) || slices.ContainsFunc(e.Fields, func(f types.Field) bool { return f.Secret() && !isServerManaged(f) })
+}
 
 // keptDescription gives the description of a field of keptField in the entity schema: when the field may be set,
 // after the description of its type (ST-SUP-RC20-OC47).
@@ -1649,6 +1734,14 @@ func keptUpdateDescription(f types.Field, typeDescription string) string {
 		return "A secret: a create sets it, and no response gives it back. An update cannot take this secret field: the body must leave it out."
 	}
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
+}
+
+// keptPatchDescription gives the description of a field of keptField in a patch-request schema (ST-SUP-RC20-OC46).
+func keptPatchDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		return "A secret: a create sets it, and no response gives it back. A patch cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "A patch cannot change this field: the body may leave it out or give its stored value.")
 }
 
 // isServerManaged returns true when a field's value is assigned by the server,
@@ -2083,6 +2176,31 @@ type openAPISchema struct {
 	AllOf       []openAPISchema          `json:"allOf,omitempty"`
 	// AdditionalProperties is the schema of each member of a map, as the protobuf JSON form of a map field writes it.
 	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
+	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
+	Sensitive bool `json:"x-sensitive,omitempty"`
+	// Opaque marks the root of a command response that holds a google.protobuf.Any, Struct, Value or ListValue member
+	// at any depth, whose content the document cannot describe (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+	Opaque bool `json:"x-stego-opaque,omitempty"`
+	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
+	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
+	Kept bool `json:"x-kept,omitempty"`
+	// Closed writes additionalProperties: false, so the object takes no member that Properties does not name (the
+	// patch request, ST-SUP-RC20-OC15). It is not written with AdditionalProperties.
+	Closed bool `json:"-"`
+}
+
+// MarshalJSON writes the schema, with additionalProperties: false when it is Closed and gives no AdditionalProperties.
+func (s openAPISchema) MarshalJSON() ([]byte, error) {
+	type plain openAPISchema
+	data, err := json.Marshal(plain(s))
+	if err != nil || !s.Closed || s.AdditionalProperties != nil || len(data) < 2 || data[len(data)-1] != '}' {
+		return data, err
+	}
+	closed := []byte(`"additionalProperties":false}`)
+	if len(data) > 2 {
+		closed = append([]byte(","), closed...)
+	}
+	return append(data[:len(data)-1:len(data)-1], closed...), nil
 }
 
 // validateCollectionOperations checks that every collection has at least one
@@ -3057,6 +3175,30 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent or malformed"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
+	op.Responses = responses
+	return withKeptHeader(op)
+}
+
+// keptHeader is the response header that tells that the service keeps the Idempotency-Key of the request
+// (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27).
+const keptHeader = "Idempotency-Kept"
+
+// withKeptHeader describes the header Idempotency-Kept on each response of an operation that keeps the key of its
+// request: a create and a patch with the idempotency component, and a command. The service writes it on each answer
+// to a request with a key, a problem and a 5xx answer too, so a client of another release than the service knows
+// from the answer that a second request with the same key is safe (ST-SUP-RC04-OC34).
+func withKeptHeader(op openAPIOperation) openAPIOperation {
+	responses := make(map[string]openAPIResponse, len(op.Responses))
+	for code, response := range op.Responses {
+		headers := make(map[string]openAPIHeader, len(response.Headers)+1)
+		for name, header := range response.Headers {
+			headers[name] = header
+		}
+		headers[keptHeader] = openAPIHeader{Description: "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+			Schema: openAPISchema{Type: "string", Enum: []string{"1"}}}
+		response.Headers = headers
+		responses[code] = response
+	}
 	op.Responses = responses
 	return op
 }

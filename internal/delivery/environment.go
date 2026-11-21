@@ -521,6 +521,16 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			fit.Rows = append(fit.Rows, FitRow{Requirement: "variable " + variable.Name, Status: Missing, Detail: detail})
 		}
 	}
+	// A path variable of the api mode that names the file of a secret, such as STEGO_GRPC_TLS_CERT, is not required on
+	// its own, so the check asks for no value: the Component secret-files sets the path. With no value and no such
+	// Component, the api mode does not start, so the check gives a notice, never a failure (ST-SUP-Q200 (c)).
+	for _, variable := range requirements.Environment {
+		if variable.Required || variable.Secret || variable.Type != "path" || variable.ReadByMode != APIMode || variable.SecretSource == nil || variableGiven(variable, env) {
+			continue
+		}
+		fit.Notices = append(fit.Notices, fmt.Sprintf("variable %s: the environment file gives it no value; the api mode does not start without the file, so give its path, "+
+			"or list the Component %s in the overlay, which sets it to the key %s of the secret %s", variable.Name, SecretFilesFolder, variable.SecretSource.Key, variable.SecretSource.Name))
+	}
 	fit.Rows = append(fit.Rows, groupRows(requirements.Environment, env)...)
 	for _, entry := range env.entries {
 		if form, wired := fileFormOf(entry.name, variables); wired && (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {

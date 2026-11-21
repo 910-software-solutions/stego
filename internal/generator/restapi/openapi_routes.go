@@ -90,11 +90,22 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		}
 		params := pathParameters(routePath)
 		body := messageSchema(request, 0, map[protoreflect.FullName]bool{})
+		writeOnlySecrets(&body)
 		for _, p := range params {
 			delete(body.Properties, p)
-			if f := request.Fields().ByName(protoreflect.Name(p)); f != nil {
-				delete(body.Properties, f.JSONName())
+			f := request.Fields().ByName(protoreflect.Name(p))
+			if f == nil {
+				f = request.Fields().ByJSONName(p)
 			}
+			if f == nil {
+				continue
+			}
+			// A path parameter goes in the URL, the access logs and a CLI flag, so it cannot hold a secret
+			// (security review of PR #460, L2).
+			if command.SecretMember(f) {
+				return nil, fmt.Errorf("the command %s has the path parameter %s, and the proto file marks the member %s of %sRequest debug_redact: a secret member cannot be a path parameter, because the URL goes in access logs and a CLI flag; give it in the body", c.Name, p, f.Name(), goName)
+			}
+			delete(body.Properties, f.JSONName())
 		}
 		status := "200"
 		last := routePath[strings.LastIndex(routePath, "/")+1:]
@@ -110,7 +121,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 				Description: "A structured string that holds a key, such as a quoted UUID; a second request with the same key gets the stored answer", Schema: openAPISchema{Type: "string"}}),
 			RequestBody: &openAPIRequestBody{Required: true, Content: jsonContent(body)},
 			Responses: map[string]openAPIResponse{
-				status: {Description: "The response of the command", Content: jsonContent(messageSchema(response, 0, map[protoreflect.FullName]bool{}))},
+				status: {Description: "The response of the command", Content: jsonContent(responseSchema(response))},
 				"400":  {Description: "Bad request: the body, a path parameter or the Idempotency-Key header is not valid"},
 				"401":  {Description: "Unauthorized"},
 				"404":  {Description: "Not found: the resource is not there, or the caller may not run the command on it"},
@@ -120,6 +131,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		}
 		op.Parameters = append(op.Parameters, revocationParameters()...)
 		refusals(op.Responses, c.Refusals)
+		op = withKeptHeader(op)
 		if err := add(ctx.BasePath+routePath, "post", op); err != nil {
 			return nil, err
 		}
@@ -271,17 +283,58 @@ func messageSchema(m protoreflect.MessageDescriptor, depth int, seen map[protore
 	return schema
 }
 
-// fieldSchema gives the schema of one member of a message in its protobuf JSON form.
+// responseSchema gives the schema of the response message of a command. When the message holds a member that the
+// proto marks debug_redact at any depth, also deeper than the schema follows or past a recursive message, the root
+// carries x-sensitive, so the CLI still makes the command Sensitive (ST-SUP-RC20-OC54, security review of PR #460,
+// L1). When the message holds a google.protobuf.Any, Struct, Value or ListValue member at any depth, the root carries
+// x-stego-opaque, so the CLI makes the command Sensitive too; the service needs no key ring for it (decision
+// ST-SUP-Q194 (a)).
+func responseSchema(m protoreflect.MessageDescriptor) openAPISchema {
+	schema := messageSchema(m, 0, map[protoreflect.FullName]bool{})
+	schema.Sensitive = command.HoldsSecret(m)
+	schema.Opaque = command.HoldsOpaque(m)
+	return schema
+}
+
+// fieldSchema gives the schema of one member of a message in its protobuf JSON form. A member that the proto file
+// marks debug_redact is a secret: x-sensitive, and the format password for a string (ST-SUP-RC20-OC54).
 func fieldSchema(f protoreflect.FieldDescriptor, depth int, seen map[protoreflect.FullName]bool) openAPISchema {
-	if f.IsMap() {
+	var schema openAPISchema
+	switch {
+	case f.IsMap():
 		value := singleSchema(f.MapValue(), depth, seen)
-		return openAPISchema{Type: "object", AdditionalProperties: &value}
+		schema = openAPISchema{Type: "object", AdditionalProperties: &value}
+	case f.IsList():
+		item := singleSchema(f, depth, seen)
+		schema = openAPISchema{Type: "array", Items: &item}
+	default:
+		schema = singleSchema(f, depth, seen)
 	}
-	item := singleSchema(f, depth, seen)
-	if f.IsList() {
-		return openAPISchema{Type: "array", Items: &item}
+	if command.SecretMember(f) {
+		schema.Sensitive = true
+		if schema.Type == "string" && schema.Format == "" {
+			schema.Format = "password"
+		}
 	}
-	return item
+	return schema
+}
+
+// writeOnlySecrets marks each secret member of a request body writeOnly, at any depth: a request member is never in
+// an answer (ST-SUP-RC20-OC54).
+func writeOnlySecrets(s *openAPISchema) {
+	if s.Sensitive {
+		s.WriteOnly = true
+	}
+	for name, p := range s.Properties {
+		writeOnlySecrets(&p)
+		s.Properties[name] = p
+	}
+	if s.Items != nil {
+		writeOnlySecrets(s.Items)
+	}
+	if s.AdditionalProperties != nil {
+		writeOnlySecrets(s.AdditionalProperties)
+	}
 }
 
 // singleSchema gives the schema of one value of the kind of f.

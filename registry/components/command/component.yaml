@@ -13,12 +13,27 @@
 # Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
 # compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
 # (ST-SUP-RC32-OC21).
-# Version 1.12.0 binds a compare-only field with a counter of wrong attempts to its counter in the scan of its entity
-# (ST-SUP-RC32-OC24, decision ST-SUP-Q185 (a)), and gives an entity with event fields its EventData and EventVersion,
-# so its change events carry the declared fields (ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
+# Version 1.13.0 gives each entity with an open seal its statements, scan and values after the contract step, which
+# the runtime takes once the contract drops the clear column (ST-SUP-RC01-OC49, ST-SUP-RP10-LC49; walkthrough 14,
+# W14-B6), and states that STEGO_SECRET_KEY_RING_FILE is required when the service has a secret or a pii field.
+# Version 1.14.0 gives an entity with a resource type of its own the repository type <Entity>Repo, whose GetForUpdate,
+# GetForDelete, Update and Delete take no parent, and Move for an update that changes a reference (walkthrough 15,
+# W15-B3, ST-SUP-RC32-OC26).
+# Version 1.15.0 takes a field written sensitivity: public as a field with no sensitivity (decision ST-DECL-Q46 (a)),
+# and names the seal change of each clear column in AfterSeal (ST-SUP-RP10-LC49; security review of PR #459, L1).
+# Version 1.16.0 states that STEGO_SECRET_KEY_RING_FILE is also required when a command message has a member that the
+# proto marks debug_redact: such a service keys its idempotency fingerprints and seals its stored answers
+# (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, ST-SUP-Q192).
+# Version 1.17.0 refuses a command route whose path parameter is a member that the proto marks debug_redact, also for
+# an archetype with no rest-api (ST-SUP-RC20-OC54; security review of PR #462, L2).
+# Version 1.18.0 puts Idempotency-Kept: 1 on each answer to a command request with a key, through the runtime's
+# Serve (ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
+# Version 1.19.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
+# its entity (ST-SUP-RC32-OC24, decision ST-SUP-Q185 (a)), and gives an entity with event fields its EventData and
+# EventVersion, so its change events carry the declared fields (ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: command
-version: 1.12.0
+version: 1.19.0
 stage: ga
 output_namespace: commands
 
@@ -116,7 +131,8 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret field, readable or compare-only, or a pii field."
+    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret or pii field, or a secret command member."
+    required_when: "the service has a secret field or a pii field or a command member marked debug_redact"
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed

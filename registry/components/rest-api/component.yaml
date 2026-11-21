@@ -31,11 +31,35 @@
 # where it gave an empty name (security review of PR #445, I-4).
 # Version 4.17.0 describes each command and each get or list query in the OpenAPI document, at its route, and the
 # request validation does not check the body of a command (ST-SUP-RC20-OC53).
-# Version 4.18.0 stages the declared event fields of an entity in the change event of each collection write, as a
+# Version 4.18.0 skips the check of a body only for an operation whose x-stego-command marker is true (security review
+# of PR #454, INFO).
+# Version 4.19.0 lets an update leave out a secret field, or give it empty, and keep the stored value: the update
+# request requires no secret and holds no min_length or pattern of one (ST-SUP-RC20-OC48; walkthrough 14, W14-B4).
+# It refuses at checking a field named kind or href of an entity that a collection serves (ST-SUP-RC20-OC52).
+# Version 4.20.0 calls the update of the runtime in the generated writes of an entity with its own resource type,
+# whose repository type takes no parent on Update (ST-SUP-RC32-OC26).
+# Version 4.21.0 lets a list search and order a field written sensitivity: public, as one with no sensitivity
+# (decision ST-DECL-Q46 (a)).
+# Version 4.22.0 marks a member of a command message that the proto marks debug_redact as a secret in the OpenAPI
+# document: x-sensitive, the format password for a string, and writeOnly in a request body (ST-SUP-RC20-OC54,
+# ST-SUP-Q192).
+# Version 4.23.0 marks the root of a command response x-sensitive when the message holds such a member at any depth,
+# also deeper than the schema follows, and refuses a path parameter that is such a member (security review of
+# PR #460, L1 and L2).
+# Version 4.24.0 refuses each member of a patch body that is not kind, a patchable field or a field that a collection
+# write cannot change, in its exact letter case, with a 400 validation problem that names the member, and closes the
+# patch request of the OpenAPI document with additionalProperties: false (ST-SUP-RC20-OC15, security review of PR
+# #461, M1).
+# Version 4.25.0 puts Idempotency-Kept: 1 on each answer to a create or a patch with a key when the service has the
+# idempotency component, and describes the header on each response of such a create and patch and of each command
+# (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
+# Version 4.26.0 marks the root of a command response x-stego-opaque when the message holds a google.protobuf.Any,
+# Struct, Value or ListValue member at any depth; the mark asks no key ring (ST-SUP-RC20-OC54, ST-SUP-Q194 (a)).
+# Version 4.27.0 stages the declared event fields of an entity in the change event of each collection write, as a
 # command does (ST-SUP-RC20-OC40, ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: rest-api
-version: 4.18.0
+version: 4.27.0
 stage: ga
 output_namespace: internal/api
 

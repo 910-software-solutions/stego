@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -27,6 +28,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
@@ -114,7 +117,34 @@ func (s ServeSpec[Req, Res, P]) check(rt *Runtime) error {
 		s.Resource == nil || s.SubjectType == "" || s.Status < 200 || s.Status > 299 {
 		return errors.New("command: Serve needs the runtime, the command, the subject type, a 2xx status, the messages, the resource and the fill")
 	}
+	// A message member that the proto marks debug_redact is a secret: without the key ring, keyed would store its
+	// fingerprint and its answer in clear (ST-SUP-RP14-LC12, security review of PR #460, L4).
+	if rt.cfg.Ring == nil && (holdsSecret(s.NewRequest().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{}) ||
+		holdsSecret(s.NewResponse().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{})) {
+		return fmt.Errorf("command: the command %s has a message member marked debug_redact, and the runtime has no key ring", s.Command.spec.Name)
+	}
 	return nil
+}
+
+// holdsSecret tells whether the message m, or a message of one of its members at any depth, has a member that its
+// proto file marks with the standard field option debug_redact = true (ST-SUP-RP14-LC12).
+func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if options, ok := f.Options().(*descriptorpb.FieldOptions); ok && options.GetDebugRedact() {
+			return true
+		}
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f.Message() != nil && holdsSecret(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // Outcome is how a command handler answers an error of Run (ST-SUP-RP10-LC34): the HTTP status, the fixed code and
@@ -367,8 +397,8 @@ func serveRun[Req, Res proto.Message, P any](ctx context.Context, rt *Runtime, s
 
 // Serve gives the HTTP handler of one command (ST-SUP-RP10-LC33). It binds the verified tenant and principal before
 // any transaction (401 when it cannot), reads the Idempotency-Key header (400 when it is required and missing or
-// malformed), decodes the body with protojson and the path parameters into the request message (400), and runs the
-// one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
+// malformed) and marks each later answer to a request with a key Idempotency-Kept: 1 (ST-SUP-RC32-OC27), decodes the
+// body with protojson and the path parameters into the request message (400), and runs the one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
 // refusal with its status and code, ErrConflict with 409 conflict, and ErrCommitUnknown and any other error with 500
 // internal; it writes the outcome audit row of a denied or failed command, and a problem response with a fixed
 // title, the status and the fixed code only.
@@ -392,6 +422,12 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		if err != nil {
 			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
+		}
+		if key != "" {
+			// The command keeps the key (ST-SUP-RP10-LC11): each answer from here on tells it, also a problem and a
+			// 5xx answer, so a client of another release knows that a second request with the key is safe
+			// (ST-SUP-RC32-OC27).
+			w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 		if err != nil {
@@ -691,6 +727,28 @@ func NewID() string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// The sizes of a token that NewToken gives, in bytes: at least 128 bits, so that no one can guess it, and at most 512.
+const (
+	MinTokenSize = 16
+	MaxTokenSize = 64
+)
+
+// NewToken gives size new random bytes from crypto/rand, for a secret that a command or a worker fill issues, such
+// as an API key or a one-time code (ST-SUP-RP10-LC56). The fill allow list keeps crypto/rand out, so NewToken and
+// NewID are the only sources of randomness of a fill. It refuses a size under MinTokenSize or over MaxTokenSize with
+// an error and no bytes. The fill encodes the bytes, such as with encoding/base64, and gives the secret only in a
+// member of the response message that the proto file marks debug_redact (ST-SUP-Q192).
+func NewToken(size int) ([]byte, error) {
+	if size < MinTokenSize || size > MaxTokenSize {
+		return nil, fmt.Errorf("a token has %d to %d bytes, not %d", MinTokenSize, MaxTokenSize, size)
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return b, nil
 }
 
 // ValidUUID tells whether id is a UUID in its text form, the key type of every entity.

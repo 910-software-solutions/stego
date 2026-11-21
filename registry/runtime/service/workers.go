@@ -293,6 +293,9 @@ func (svc *Service) Start(ctx context.Context, c StartConfig) (_ *Workers, err e
 		return nil, err
 	}
 	w.readiness = modes.NewReadiness(svc.pool)
+	// A database that lacks a table or a column of the manifest makes each mode not ready from the start, so a
+	// rollout of a release before a contract step stops at its first replica (ST-SUP-RP14-LC06).
+	w.readiness.Block(svc.blocked)
 	w.readiness.WatchQueue(controllerQueue{w: w})
 	drain := c.DrainBound
 	if drain <= 0 {
@@ -374,6 +377,13 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		config = *c.WorkerConfig
 	}
 	config.Meter, config.Logger = svc.telemetry.MeterProvider(), svc.telemetry.LoggerProvider()
+	// A message of the Kafka inbox that is done frees the later messages of its key that are parked as poison, with the
+	// audit row of each resolution, in its transaction (ST-SUP-RP01-LC39). Only a service with the inbox has such
+	// messages, and its worker role holds the audit grants of its consuming workers (ST-SUP-Q141).
+	if config.Auditor == nil && p.Inbox != nil {
+		config.Auditor = &resolveAuditor{writer: svc.writer, settings: svc.parts.AuditSettings, service: svc.parts.Service,
+			version: svc.version, declaration: svc.parts.DeclarationVersion}
+	}
 	if svc.tenants != nil {
 		// A destination registered with ActiveTenants, such as the after slots, gets no message of a tenant that is
 		// not active (ST-SUP-RC27-OC12).
@@ -426,6 +436,11 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		}
 		// The refused records are purged on the timer of the outbox (ST-SUP-RP01-LC37).
 		if err := w.worker.AddPurge(inbox.Purge); err != nil {
+			return nil, err
+		}
+		// The worker's own identity resolves the parked messages that a done message of the inbox frees, never a
+		// column of the row (ST-SUP-RP01-LC39; security review of PR #457, L2).
+		if err := w.worker.SetResolver(inbox.Destination(), inbox.Principal()); err != nil {
 			return nil, err
 		}
 	}

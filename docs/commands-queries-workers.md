@@ -299,6 +299,54 @@ The body of a command request is the JSON form of the request message
 `{"stockItemId": "...", "quantity": 2}`. protojson also accepts the proto
 field names, such as `stock_item_id`.
 
+### A secret member
+
+Mark each member that holds a secret, such as a PIN in a request or an API
+key in a response, with the standard protobuf option `debug_redact`. Without
+the mark, STEGO does not know that the member is a secret: the generated CLI
+gives it a flag, which puts the value in the shell history and the process
+list. `stego validate` warns (`unmarked-secret-member`) of a request member
+that has the name of a secret field of an entity that the command writes and
+has no mark.
+
+For example, write `string pin = 2 [debug_redact = true];` in the request
+message `IssueKeyRequest` and `string api_key = 1 [debug_redact = true];` in
+the response message `IssueKeyResponse`. The fill makes the API key with
+`command.NewToken(32)` (from runtime v0.163.0), never from an ID or the time
+(see [The imports of a fill](fills.md#the-imports-of-a-fill)). A secret in a
+response is only for a secret that the command issues: the stored answer
+keeps it for the retention of the idempotency key, sealed with the key ring,
+and a retry with the same key gets it again. Never put a secret field of an
+entity in a response.
+
+From rest-api 4.22.0, cli-application 1.13.0 and command 1.16.0:
+
+- The OpenAPI document gives the member `x-sensitive: true`, and the format
+  `password` for a string. A member of a request body is also `writeOnly`.
+- The generated CLI gives no flag to a secret request member. Give it in
+  `--body FILE`. A command whose answer holds a secret member is Sensitive:
+  it writes the answer only to `--output-file FILE`.
+- The service reads the key ring (`STEGO_SECRET_KEY_RING_FILE`), as for a
+  secret field. The ring keys the fingerprints of the idempotency keys and
+  seals the stored answers. Thus a stored API key and the fingerprint of a
+  body with a PIN are not in clear in the table `idempotency_keys`.
+
+From rest-api 4.23.0, cli-application 1.15.0 and runtime v0.160.0:
+
+- A command whose answer holds a secret member at any depth is Sensitive,
+  also when the member is deeper than the OpenAPI document shows.
+- A secret member cannot be a path parameter. Generation refuses the route,
+  because the URL goes in access logs. Give the member in the body.
+- A Sensitive command refuses `--output-file -`: its answer never goes to
+  stdout.
+- The CLI refuses a `--body FILE` that holds a secret member when the group
+  or other users have access to the file. Use `chmod 600 FILE`.
+- The runtime refuses to serve a command with a secret member when the
+  service has no key ring.
+
+The mark also works in nested messages, lists and maps. Other tools, such as
+the debug output of C++ and Java, also hide a member with this mark.
+
 ## Declare a command
 
 <!-- excerpt -->
@@ -403,6 +451,14 @@ curl -X POST https://<host>/api/inventory/v1/stego/tenants/acme/retire \
   -H 'Idempotency-Key: "retire-acme"'
 ```
 
+A retire is for good. The tenant ID stays in the tenant list as retired, so
+a later provision of the same ID answers 409 with the code `tenant.retired`,
+and no route, worker or subscription of the service acts in that tenant
+again. (A provision of an ID that is active answers 409 with the code
+`tenant.provisioned`.) To serve the same customer again, provision a new
+tenant ID. A retire changes only the service that gets it: retire the tenant
+in each service of the chain.
+
 The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later
@@ -424,15 +480,41 @@ Each request of a command must have the header `Idempotency-Key`.
 The keys of each tenant and each caller are separate. Thus the same key from
 another caller, or in another tenant, is a new request.
 
-The runtime does not keep an answer of 5xx, an answer of 429, or an answer
-409 with the code `conflict`. It rolls back the transaction of the command,
-and the key with it. A request again with the same key then runs the fill
-again. The rows that the fill writes and the effects that it stages in the
+The header `Idempotency-Kept: 1` is for HTTP only. A command over gRPC gets no
+such metadata (ST-SUP-Q199 (d)). After a failure, a gRPC client sends the
+command again only with the same key: the service then gives the stored
+answer, or runs the command once.
+
+The runtime keeps only an answer that commits. It does not keep an error
+answer: a 404, a 400, a declared refusal, an answer of 5xx, an answer of
+429, or an answer 409 with the code `conflict`. For each of these, it rolls
+back the transaction of the command, and the key with it. A request again
+with the same key then runs the fill again, and can get another answer. The
+rows that the fill writes and the effects that it stages in the
 outbox are in that transaction, so only the run that commits keeps them.
+One answer is not an error in this sense: a before slot of a collection that
+halts the command (its result sets `Halt` with a status). The command then
+commits with no write, and the runtime keeps the answer of the halt with the
+key, also when its status is a 4xx. A request again with the same key gets
+that stored answer, and the slot does not run again. But a halt with a status
+of 500 or more, or 429, is not kept: the command rolls back as for an error
+answer, and a request again with the same key runs the slot again. A before
+slot that refuses the request (its result is not `Ok`) rolls back as an error
+does.
 Anything that the fill does outside the transaction, such as a log line,
-occurs again at each request. Thus, send each change to another system as an
+occurs again at each request. It can also occur twice in one request: the
+runtime runs a command again once, in a new transaction, when the database
+refuses a prepared statement that a change of a table made stale
+(ST-SUP-RP04-LC11). Thus, send each change to another system as an
 effect through the outbox (see [Effects](#effects)), never from the fill
 directly. A worker then sends it after the commit.
+
+A worker can send one effect more than one time, for example after a crash
+before it records that the send is done (see [The fill of a
+worker](#the-fill-of-a-worker)). Thus the system that gets the effect must
+find a second copy and ignore it: give the effect a stable ID in its
+payload, such as the ID of the row and the change, and let the receiver keep
+the IDs that it applied.
 
 The runtime keeps each key for the time in `idempotency.retention`. The
 default is `24h`.
@@ -700,6 +782,14 @@ The request of a get query has one field for the member: `req.OrderID` for
 `orderId`. The response of a get query is any value that the handler can
 write as JSON.
 
+Do not put a secret in the answer of a query. The read-only value of an
+entity has no `secret` field, so a query fill cannot read a stored secret.
+The OpenAPI document gives a query answer as any JSON value, with no
+`x-sensitive` mark, and the generated CLI writes it to stdout. A call that
+makes a secret, such as a new API key, is a command with a `debug_redact`
+member in its response message (see [A secret member](#a-secret-member);
+ST-SUP-Q199 (a)).
+
 ### An optional field in a command and in a query
 
 The Go type of an optional field is not the same in the two packages:
@@ -817,6 +907,48 @@ experimental_acceptances:
 - `consumes fulfillment`: the runtime runs the fill once for each message of
   the destination `fulfillment`, in the transaction of the tenant of the
   message. A command or a worker stages these messages as an effect.
+
+### A job that runs once a month
+
+The longest interval of `every` is `24h`. A worker has no calendar trigger,
+such as "on the first day of each month". For a job of each month, run the
+worker each hour, and let the fill find out if the month has a run already:
+
+1. Declare the worker with `trigger: every 1h`.
+2. Declare an entity that records each run, with the period as a field, such
+   as `MonthlyClose` with `period` (`pattern: "^[0-9]{4}-[0-9]{2}$"`). Put it
+   in `writes`.
+3. Declare in the worker a list of the runs of one period: the list
+   `closes-of-period` of the entity `MonthlyClose`, with the filter term
+   `{field: period, op: equals, param: period}`.
+
+4. In the fill, find the period from the tick, which is the time of the run.
+   Return with no change when the list holds a row of the period. Else do the
+   job, and create the row of the period in the same transaction:
+
+   ```go
+   first := time.Date(tick.Year(), tick.Month(), 1, 0, 0, 0, 0, time.UTC)
+   period := first.AddDate(0, -1, 0).Format("2006-01") // the month before the tick
+   closes, err := workers.MonthlyCloseRepository(h)
+   if err != nil {
+   	return err
+   }
+   done, err := closes.List(ctx, workers.MonthlyCloseClosesOfPeriodWith(period), 1)
+   if err != nil || len(done) > 0 {
+   	return err
+   }
+   // Close the month here, then record it.
+   _, err = closes.Create(ctx, workers.MonthlyClose{Period: period})
+   return err
+   ```
+
+The first run of each month closes the month before it. When the service is
+stopped at the start of a month, the first run after the start does the
+job. A run that fails commits nothing, so the next run does the job again.
+Each run reads one list in each tenant, which costs little. Use the first day
+of the month in UTC, as above, and not `tick.AddDate(0, -1, 0)`: on 31 March
+that gives 3 March. A daily job is `every 24h`. A worker that must run at one
+time of the day uses the same form: `every 1h` and a check of the hour.
 
 ### The permission of a worker
 
@@ -1156,6 +1288,14 @@ cause classes are:
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 
+From runtime v0.165.0, a statement that the database refuses with SQLSTATE
+0A000 `cached plan must not change result type` is not a failed statement.
+This occurs when a person drops a column and adds it again while the service
+runs: the prepared statement of a connection is then stale. The runtime makes
+each connection of the pool prepare its statements again, and runs the
+command once more with no wait. A query answers 500 one time, and the next
+call passes (ST-SUP-RP04-LC11).
+
 ### A value that breaks a declared constraint
 
 Each entity checks the declared constraints of its fields before a create or
@@ -1247,7 +1387,7 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
-### Release notes for runtime v0.148.0
+### Release notes for runtime v0.167.0
 
 - A worker can declare `reads: [Entity]`. Its fill gets a read-only
   repository `<Entity>Reader`, of the new type `command.Reader`, with `Get` and

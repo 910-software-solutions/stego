@@ -532,10 +532,19 @@ func Run[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Requ
 	if req.RequestID == "" {
 		req.RequestID = uuid.NewString()
 	}
+	// switched is 1 once a statement failed because the contract step of a seal dropped a clear column, or because
+	// its prepared statement was stale: the entity took its statements after the contract, or the pools dropped their
+	// prepared statements, and the call runs again once with no wait, beyond the declared Retry on conflict
+	// (ST-SUP-RP10-LC49, ST-SUP-RP04-LC11).
+	switched := 0
 	for reruns := 0; ; reruns++ {
 		result, err, conflict := runAttempt(ctx, rt, cmd, req, reruns, decode, fill)
 		result.Attempts = reruns + 1
-		if !conflict || reruns >= cmd.spec.RetryOnConflict || !waitRerun(ctx, rt, reruns+1) {
+		if conflict && switched == 0 && rerunsOnce(err) && ctx.Err() == nil {
+			switched = 1
+			continue
+		}
+		if !conflict || reruns >= cmd.spec.RetryOnConflict+switched || !waitRerun(ctx, rt, reruns+1) {
 			return result, err
 		}
 	}
@@ -588,6 +597,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	outcome := otel.OutcomeRolledBack
 	defer func() { finish(outcome, reruns > 0, err != nil && !conflict) }()
 
+	// An entity that took its statements after a seal contract takes those of the spec again when the clear column
+	// and its checkpoint are back (security review of PR #452, L1), before the transaction begins.
+	recheckSeals(ctx, rt, cmd.writes)
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		if isConflict(ctx, err) {
@@ -946,7 +958,8 @@ var errDeadline = &conflictError{text: "the run reached its deadline before the 
 func newState(ctx context.Context, rt *Runtime, tx *sql.Tx, t tenant.Tenant, p authz.Principal, m mode, action string,
 	writes map[Declared]bool, destinations map[string]Destination) *state {
 	s := &state{rt: rt, tx: tx, tenant: t, principal: p, mode: m, action: action, writes: writes,
-		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{}}
+		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{},
+		sealSwitches: sealSwitches.Load()}
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}

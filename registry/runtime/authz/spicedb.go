@@ -511,8 +511,10 @@ func (e *providerError) Is(target error) bool { return target == ErrProvider }
 func (e *providerError) Unwrap() error { return e.cause }
 
 // spiceError maps a gRPC error of SpiceDB to a fixed text for what and its status code. InvalidArgument,
-// FailedPrecondition, NotFound and OutOfRange are refusals that a retry does not change; any other error may pass on
-// a retry.
+// FailedPrecondition, NotFound and OutOfRange are refusals that a retry does not change, and so is ResourceExhausted
+// with the reason ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED: SpiceDB gives it for a check whose relations go deeper than its
+// dispatch limit, which the same tuples give again (security review of PR #455, I2). Any other error may pass on a
+// retry.
 func spiceError(what string, err error) error {
 	code := status.Code(err)
 	fixed := &providerError{what: what, code: code, cause: contextCause(err), notServed: notServed(err)}
@@ -522,12 +524,30 @@ func spiceError(what string, err error) error {
 	case codes.DeadlineExceeded:
 		fixed.cause = context.DeadlineExceeded
 	}
-	switch code {
-	case codes.InvalidArgument, codes.FailedPrecondition, codes.NotFound, codes.OutOfRange:
+	switch {
+	case code == codes.InvalidArgument, code == codes.FailedPrecondition, code == codes.NotFound, code == codes.OutOfRange,
+		code == codes.ResourceExhausted && hasReason(err, v1.ErrorReason_ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED):
 		return Refused(fixed)
 	default:
 		return fixed
 	}
+}
+
+// hasReason reports whether a SpiceDB error holds reason in its error details. The reason is a fixed enum value, so
+// no message text is read.
+func hasReason(err error, reasons ...v1.ErrorReason) bool {
+	for _, detail := range status.Convert(err).Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok {
+			continue
+		}
+		for _, reason := range reasons {
+			if info.GetReason() == reason.String() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tokenOf makes the Token of a ZedToken. The ZedToken is kept byte for byte and never parsed: the revision of the
@@ -543,17 +563,7 @@ func tokenOf(token *v1.ZedToken) (Token, error) {
 // at the revision of the request has no such definition, relation or permission. The reason is a fixed enum value,
 // so no message text is read.
 func notServed(err error) bool {
-	for _, detail := range status.Convert(err).Details() {
-		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok {
-			continue
-		}
-		switch info.GetReason() {
-		case v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), v1.ErrorReason_ERROR_REASON_UNKNOWN_RELATION_OR_PERMISSION.String():
-			return true
-		}
-	}
-	return false
+	return hasReason(err, v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION, v1.ErrorReason_ERROR_REASON_UNKNOWN_RELATION_OR_PERMISSION)
 }
 
 // The causes that Cause gives: fixed names that a log line may hold, because they hold no text of the provider.
@@ -592,14 +602,14 @@ func Cause(err error) string {
 		switch {
 		case provider.notServed:
 			return CauseSchemaNotServed
+		case IsRefused(err):
+			return CauseRefused
 		case provider.code == codes.Unavailable || provider.code == codes.ResourceExhausted || provider.code == codes.Aborted:
 			return CauseUnavailable
 		case provider.code == codes.DeadlineExceeded:
 			return CauseDeadline
 		case provider.code == codes.Canceled:
 			return CauseCanceled
-		case IsRefused(err):
-			return CauseRefused
 		default:
 			return CauseProvider
 		}
@@ -820,6 +830,59 @@ func (l *CauseLog) Allow(cause string) (bool, int) {
 
 // MaxCauses is the most causes that one CauseLog keeps.
 const MaxCauses = 1024
+
+// CauseRuns keeps, for each key, such as a permission, the cause of its last failed call and the time at which the
+// run of failures of that cause began; a call that succeeds or fails with another cause ends the run. A transient
+// cause that lasts long, such as a permission that SpiceDB never serves because the schema does not declare it, is
+// then told from one that a retry soon passes (security review of PR #455, I3). Its zero value is ready; it is safe
+// for concurrent use and keeps at most MaxCauses keys.
+type CauseRuns struct {
+	mu   sync.Mutex
+	now  func() time.Time
+	runs map[string]causeRun
+}
+
+type causeRun struct {
+	cause string
+	since time.Time
+}
+
+// NewCauseRuns gives a CauseRuns that reads the time from now; nil is time.Now.
+func NewCauseRuns(now func() time.Time) *CauseRuns { return &CauseRuns{now: now} }
+
+// Observe records err, the outcome of a call of key, and gives how long the run of its cause has lasted: zero for a
+// nil err and for the first failure of a run.
+func (r *CauseRuns) Observe(key string, err error) time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		delete(r.runs, key)
+		return 0
+	}
+	now := time.Now()
+	if r.now != nil {
+		now = r.now()
+	}
+	cause := Cause(err)
+	if run, ok := r.runs[key]; ok && run.cause == cause {
+		return now.Sub(run.since)
+	}
+	if r.runs == nil {
+		r.runs = map[string]causeRun{}
+	}
+	if _, ok := r.runs[key]; !ok && len(r.runs) >= MaxCauses {
+		// A new key evicts the key whose run began first, so a stream of new keys cannot grow the map.
+		oldest, first := "", true
+		for k, run := range r.runs {
+			if first || run.since.Before(r.runs[oldest].since) {
+				oldest, first = k, false
+			}
+		}
+		delete(r.runs, oldest)
+	}
+	r.runs[key] = causeRun{cause: cause, since: now}
+	return 0
+}
 
 // RetryAfter gives the Retry-After value of a 503 answer to a decision that the provider could not make now: a whole
 // number of seconds from 1 to 3, at random, so the clients of an outage do not retry in step (L3).

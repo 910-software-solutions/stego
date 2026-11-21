@@ -11,6 +11,7 @@ import (
  "io"
  "net"
  "net/http"
+ "net/http/httptrace"
  "net/url"
  "os"
  "strings"
@@ -40,6 +41,16 @@ var ErrTransport=errors.New("HTTP service request failed")
 // ErrDeadline is the error of a request whose time limit ended before its answer was read whole. The service can
 // have done the request.
 var ErrDeadline=errors.New("HTTP service request expired")
+// ErrUntrusted is the error of a request whose TLS handshake refused the certificate of the service: a chain that the
+// CA does not sign, another host name, an expired certificate, or a leaf that differs from PeerCertificateSHA256.
+// It is also the error of a handshake or certificate alert from the service on a new connection, such as for a client
+// certificate that the service requires and this client does not give: the service refused the TLS session before
+// it read a request on it. In these cases the service did not do the request, and a retry gets the same error, so it
+// is not a transport failure (security review of PR 449, INFO-3, and of PR 456, I1). Each other alert, and each alert
+// on a reused connection, which can come after the service read the request, is ErrTransport (security review of
+// PR 458, L1).
+var ErrUntrusted=errors.New("HTTP service certificate is not trusted")
+var errPeerDiffers=errors.New("HTTP peer certificate differs")
 // Client sends bounded requests to one configured HTTPS origin and path prefix.
 // It does not follow redirects or use proxy settings from the environment.
 type Client struct {
@@ -69,7 +80,7 @@ func New(options Options)(*Client,error){
   expected:=*options.PeerCertificateSHA256
   if expected==([32]byte{}){return nil,errors.New("HTTP peer certificate digest is empty")}
   tlsConfig.VerifyConnection=func(state tls.ConnectionState)error{
-   if len(state.VerifiedChains)==0 || len(state.PeerCertificates)==0 || sha256.Sum256(state.PeerCertificates[0].Raw)!=expected{return errors.New("HTTP peer certificate differs")}
+   if len(state.VerifiedChains)==0 || len(state.PeerCertificates)==0 || sha256.Sum256(state.PeerCertificates[0].Raw)!=expected{return errPeerDiffers}
    return nil
   }
  }
@@ -92,6 +103,26 @@ func safePath(encoded string)bool{
    if err!=nil || decoded=="." || decoded==".." || strings.ContainsAny(decoded,"/\\\x00\r\n"){return false}
  }
  return true
+}
+// untrusted tells whether err is a refusal of the certificate of the service in the TLS handshake, or, on a
+// connection that is not reused, a handshake or certificate alert from the service.
+func untrusted(err error,reused bool)bool{
+ var verification *tls.CertificateVerificationError
+ var authority x509.UnknownAuthorityError
+ var hostname x509.HostnameError
+ var invalid x509.CertificateInvalidError
+ return errors.Is(err,errPeerDiffers)||errors.As(err,&verification)||errors.As(err,&authority)||errors.As(err,&hostname)||errors.As(err,&invalid)||(!reused&&sessionRefused(err))
+}
+// sessionAlerts are the texts of the TLS alerts with which a service refuses a TLS session in its handshake: crypto/tls
+// gives a remote alert as a net.OpError with the Op "remote error" and an error of an unexported type, whose text is
+// one of these.
+var sessionAlerts=map[string]bool{"tls: certificate required":true,"tls: bad certificate":true,"tls: unsupported certificate":true,
+ "tls: revoked certificate":true,"tls: expired certificate":true,"tls: unknown certificate":true,"tls: unknown certificate authority":true,
+ "tls: access denied":true,"tls: handshake failure":true,"tls: protocol version not supported":true,"tls: insufficient security level":true}
+// sessionRefused tells whether err is a TLS alert from the service that refuses the TLS session.
+func sessionRefused(err error)bool{
+ var alert *net.OpError
+ return errors.As(err,&alert)&&alert.Op=="remote error"&&alert.Err!=nil&&sessionAlerts[alert.Err.Error()]
 }
 func(c *Client)Close(){if c!=nil{c.closed.Store(true);if c.stop!=nil{c.stop()};c.transport.CloseIdleConnections()}}
 // Response contains a complete, bounded response. The transport closes the body.
@@ -133,12 +164,15 @@ func(c *Client)exchange(ctx context.Context,method,relative string,headers http.
  ctx,cancel=context.WithTimeout(ctx,timeout)
  stopClose:=context.AfterFunc(c.lifetime,cancel);defer stopClose()
  address:=strings.TrimRight(c.base.String(),"/")+relative
- request,err:=http.NewRequestWithContext(ctx,method,address,bytes.NewReader(body));if err!=nil{return fail("invalid_request",errors.New("invalid HTTP request"))}
+ // reused records whether the request went on a connection of the pool, on which an alert can come after the request.
+ var reused atomic.Bool
+ traced:=httptrace.WithClientTrace(ctx,&httptrace.ClientTrace{GotConn:func(info httptrace.GotConnInfo){reused.Store(info.Reused)}})
+ request,err:=http.NewRequestWithContext(traced,method,address,bytes.NewReader(body));if err!=nil{return fail("invalid_request",errors.New("invalid HTTP request"))}
  request.Header=headers.Clone();request.GetBody=nil
  {{if .Tracing}}request.Header=inject(request.Header){{end}}
  client:=*c.http;client.Timeout=timeout
  response,err:=client.Do(request)
- if err!=nil{return fail("transport",ErrTransport)}
+ if err!=nil{if untrusted(err,reused.Load()){return fail("transport",ErrUntrusted)};return fail("transport",ErrTransport)}
  {{if .Tracing}}status=response.StatusCode{{end}}
  defer response.Body.Close()
  if response.StatusCode==http.StatusNotModified && method!=http.MethodGet && method!=http.MethodHead{return fail("response",errors.New("unexpected HTTP cache response"))}

@@ -40,7 +40,9 @@ Do these steps for each upgrade. Do them in this order.
    `stego test` runs the tests of each fill. Sign each fill whose evidence is
    new with `stego fill sign <fill>`. When `stego plan` says that the
    declaration needs add steps and saved no plan, run `stego apply --base`
-   without `--saved-plan`. See [Schema changes](schema-changes.md).
+   without `--saved-plan`. See [Schema changes](schema-changes.md). When a
+   Go build fails with `could not import log/slog`, see [A Go build fails
+   with "could not import log/slog"](#a-go-build-fails-with-could-not-import-logslog).
 4. Make each new Secret, grant and role that the release notes name, before
    you deploy. A pod that needs a Secret key that is not there does not start.
    `stego env check` finds a missing Secret of the environment file:
@@ -82,7 +84,11 @@ archetype does not have the change.
 | 3.182.0 | 1.184.0 | - | Checking refuses a `route` on a query whose `method` is a gRPC server stream: no handler served it. The query contract names the repository of an entity with the plural of its table, such as `GetEntryEntries`; the old name, such as `GetEntryEntrys`, stays one release as a deprecated function. Runtime v0.136.0: a write waits for the revocation that `Authz-Revocation-After` names, and a unique violation names the fields of its key. | [Remove the route of a stream query](#remove-the-route-of-a-stream-query), [Use the new names of the query repositories](#use-the-new-names-of-the-query-repositories). A client that creates a child at once after its parent can send `Authz-Revocation-After` (see [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent)). |
 | runtime v0.137.0 | runtime v0.137.0 | - | A field with `sensitivity: secret` is sealed at rest: the column of a readable secret holds sealed bytes (`bytea`), and a `compare_only` field holds an Argon2id hash. The api, worker and controller modes do not start without the key ring of the Secret `<service>-secret-key-ring`. In a fill, the type of a secret field is `sealed.Secret` (read its text with `Reveal()`) or `sealed.Compared` (check a value with `Matches`). A field that a release before v0.135.0 declared secret was stored in clear: `stego compat` and `stego plan` refuse the release until you declare a seal step for it. | [Seal the secret fields of a release before runtime v0.135.0](#seal-the-secret-fields-of-a-release-before-runtime-v01350) |
 | 3.189.0 | 1.190.0 | 1.191.0 | Runtime v0.138.0 and postgres-adapter 6.14.0: the seal step is built. A service with a `pii` field and no `secret` field also needs the key ring, which seals the stored answers of its idempotency keys. A retry of a key that the release before stored gets `idempotency-key-reused`. | [Make the key ring of a service with a pii field](#make-the-key-ring-of-a-service-with-a-pii-field) |
-| 3.198.0 | 1.198.0 | 1.198.0 | Runtime v0.148.0, command 1.12.0, worker 0.6.0 and rest-api 4.18.0: a worker can declare `reads`, a compare-only secret can have a limit of wrong attempts, and an entity can declare the fields of its change events. The change events of an entity with no `events` do not change. | None. A worker that only reads an entity can move it from `writes` to `reads`; its fill then uses `<Entity>Reader` (see [Who reads a secret](fills.md#who-reads-a-secret)). |
+| 3.199.0 | 1.199.0 | 1.199.0 | Runtime v0.150.0, postgres-adapter 6.17.0, command 1.13.0 and rest-api 4.19.0. A process of the release of the expand step of a seal goes on after the contract step drops the clear column. `stego compat` and `stego plan` refuse the contract step of a seal over a base with a runtime before v0.150.0. The update request of an entity with a secret field requires no secret: an update that leaves it out keeps it. Checking refuses a field named `kind` or `href` of an entity that a collection serves. | Before the contract step of an open seal, deploy a release with runtime v0.150.0 or later and the seal still at expand (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)). Give a field named `kind` or `href` another name: when the base stores it, add a field of another name and drop the old one, because a rename keeps the API name. |
+| 3.206.0 | 1.206.0 | 1.206.0 | command 1.14.0: the repository of an entity with its own resource type is the type `<Entity>Repo`. Its `GetForUpdate`, `GetForDelete`, `Update` and `Delete` take no parent, and an update that changes a reference is `Move`. A fill that gives a parent to one of them does not compile: `too many arguments in call to`. Runtime v0.154.0: a process whose database lacks a table or a column of its manifest, such as after a roll back past a contract step, starts not ready; the api Deployment of a service with modes has the readiness `/readyz/modes`. After an offset reset, a record that comes again takes its place before the later messages of its row, and a message parked as poison goes back to pending when an earlier message of its row is done. | [Give no parent where the repository takes none](#give-no-parent-where-the-repository-takes-none). Remove an overlay patch of the readiness probe of `<service>`. See [Which older releases can run on a newer database](operations.md#which-older-releases-can-run-on-a-newer-database) and [Repair a wrong order with an offset reset](subscriptions.md#repair-a-wrong-order-with-an-offset-reset). |
+| 3.209.0 | 1.209.0 | 1.209.0 | Runtime v0.157.0, postgres-adapter 6.19.0, command 1.15.0 and rest-api 4.21.0. A field written `sensitivity: public` is a field with no sensitivity: a list searches and orders it, and its table has its search index. A seal `from: public` keeps the search index of the field, as a seal with no `from`. `stego compat` and `stego plan` refuse the contract step of one seal of an entity while the base holds another seal of the same entity open. A process of the release of the expand step writes the clear column again when a restore brings it back, and the seal job completes no pass with no checkpoint while the clear column is there. | Declare the contract steps of the open seals of one entity in the same release (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)). |
+| 3.215.0 | 1.215.0 | 1.215.0 | rest-api 4.24.0: a patch refuses each body member that is not a patchable field, `kind`, or a field that a collection write cannot change. The names must match in letter case: a member such as `Title` for the field `title` is refused. The answer is a 400 validation problem that names the member, and the patch changes nothing. Before, a patch ignored such a member and answered 200. The OpenAPI document gives each `<Collection>PatchRequest` with `additionalProperties: false`. cli-application 1.16.0: an apply of the same documents again leaves out each create-only field whose value is the stored one. | Send in a patch only the fields that `patchable` names, in the letter case of the OpenAPI document, and after a rename the API name of the field. Build the clients again from the new OpenAPI document (see the operations of a collection in [Quick start](../README.md#quick-start)). |
+| 3.231.0 | 1.231.0 | 1.231.0 | Runtime v0.167.0, command 1.19.0, worker 0.6.0 and rest-api 4.27.0: a worker can declare `reads`, a compare-only secret can have a limit of wrong attempts, and an entity can declare the fields of its change events. The change events of an entity with no `events` do not change. | None. A worker that only reads an entity can move it from `writes` to `reads`; its fill then uses `<Entity>Reader` (see [Who reads a secret](fills.md#who-reads-a-secret)). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -403,6 +409,34 @@ has a new name.
 2. Run `stego test` and `stego fill sign <fill>` for each fill that you
    changed.
 
+## Give no parent where the repository takes none
+
+Do this in the first release at rest-crud 3.206.0, rpc-service 1.206.0 or
+browser-service 1.206.0.
+
+Why: the runtime refused at run time each parent of a locked read, an update
+that keeps its references and a delete of an entity with its own resource
+type, and the command answered 500 (walkthrough 15). The generated repository
+of such an entity now takes no parent for these calls, so the mistake fails
+in `go build` and `stego test`. See [The repository of an
+entity](fills.md#the-repository-of-an-entity).
+
+1. Run `stego test`. Go names each call to change, such as `too many
+   arguments in call to parcels.Update`.
+2. Change each call that it names:
+   - Remove the parent, or `nil`, from `GetForUpdate`, `GetForDelete`,
+     `Delete` and an `Update` that keeps the references of the row.
+   - Replace `Update` with `Move` for an update that changes a reference,
+     and keep its parents: `parcels.Move(ctx, from, value, newShipment)`.
+3. A fill that keeps the repository in a variable or a parameter of the type
+   `*command.Repository[<Entity>]` uses the type `*commands.<Entity>Repo` or
+   `*workers.<Entity>Repo` in its place.
+4. Run `stego test` and `stego fill sign <fill>` for each fill that you
+   changed.
+
+A child entity, which has no resource type of its own, does not change: its
+calls still take the loaded parent row.
+
 ## Add a subscription to a running service
 
 A release that adds a subscription, a `kafka-consumer` with a consuming
@@ -476,3 +510,36 @@ Do these steps:
 From runtime v0.134.0, look at the parked list once after the first start
 all the same: a message that parks has another cause, such as a row that the
 fill needs and that does not exist.
+
+## A Go build fails with "could not import log/slog"
+
+The Go command keeps an index of each module version of the module cache in
+its build cache (`go env GOCACHE`). It makes the index one time and uses it
+again, because it takes the content of a module version as fixed. A released
+version of the STEGO runtime library never changes its content. A runtime
+version that you fetched before its release, such as from a branch of a pull
+request, can change its content and its sum before the release. Take such a
+new sum only from the go.sum line of the project that gives the version, and
+never turn off the check of sums (do not set GONOSUMDB, GONOSUMCHECK,
+GOSUMDB=off or GOFLAGS=-insecure). When the
+module cache then holds the new content and the build cache holds the index
+of the old content, a Go build can fail with an error such as:
+
+```text
+could not import log/slog (open : no such file or directory)
+```
+
+The same error can come from `go build`, `go test` or `go vet`, and from
+`stego test` or `stego deps`, which run Go commands. The error names a
+package of the standard library, but the cause is the old index. To correct
+it, clear the build cache, then build again:
+
+```sh
+go clean -cache
+```
+
+To build one time without the index, and keep the build cache, set
+`GODEBUG=goindex=0` for that command only, such as
+`GODEBUG=goindex=0 go build ./...`. When the error comes back, clear the build
+cache. A build cache that more users or builds share has the same old index
+for each of them: clear it when no build runs.

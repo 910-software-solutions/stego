@@ -1049,3 +1049,55 @@ func TestUnnamedCode(t *testing.T) {
 		}
 	})
 }
+
+func TestBlocking(t *testing.T) {
+	t.Run("ST-SUP-RP15-LC05-T01 Check names the missing tables and columns as blocking, and no droppable column and no other fault", func(t *testing.T) {
+		ctx := context.Background()
+		// droppable is the manifest with the column note marked as one that a later contract may drop.
+		droppable := func() Manifest {
+			m := want()
+			for i, c := range m.Tables[1].Columns {
+				if c.Name == "note" {
+					m.Tables[1].Columns[i].Droppable = true
+				}
+			}
+			return m
+		}
+		for _, c := range []struct {
+			name, statement string
+			m               func() Manifest
+			faults          int
+			blocking        []string
+		}{
+			{"a missing table", "DROP TABLE public.books", want, 1, []string{"table public.books is missing"}},
+			{"a missing column", "ALTER TABLE public.books DROP COLUMN pages", want, 1, []string{"table public.books: column pages is missing"}},
+			// The column note is in the predicate of the upsert key index, which goes with it: two faults, one blocks.
+			{"a missing column with its index", "ALTER TABLE public.books DROP COLUMN note CASCADE", want, 2, []string{"table public.books: column note is missing"}},
+			{"a missing droppable column", "ALTER TABLE public.books DROP COLUMN note CASCADE", droppable, 2, nil},
+			{"a changed column type", "ALTER TABLE public.books ALTER COLUMN title TYPE character varying(300)", want, 1, nil},
+			{"a dropped check", "ALTER TABLE public.books DROP CONSTRAINT books_title_check", want, 1, nil},
+			{"a dropped index", "DROP INDEX public.books_folder_id_title_key", want, 1, nil},
+			{"a dropped policy", "DROP POLICY stego_tenant ON public.books", want, 1, nil},
+			{"a dropped trigger", "DROP TRIGGER books_reject_row ON public.books", want, 1, nil},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				admin, reader := database(t)
+				if _, err := admin.Exec(c.statement); err != nil {
+					t.Fatal(err)
+				}
+				var mismatch *Mismatch
+				if err := Check(ctx, reader, c.m()); !errors.As(err, &mismatch) {
+					t.Fatalf("Check gave %v, want a mismatch", err)
+				}
+				if len(mismatch.Faults) != c.faults || !slices.Equal(mismatch.Blocking, c.blocking) {
+					t.Fatalf("Check gave the faults %q and the blocking faults %q, want %d faults and %q blocking", mismatch.Faults, mismatch.Blocking, c.faults, c.blocking)
+				}
+				for _, b := range mismatch.Blocking {
+					if !slices.Contains(mismatch.Faults, b) {
+						t.Fatalf("the blocking fault %q is not one of the faults %q", b, mismatch.Faults)
+					}
+				}
+			})
+		}
+	})
+}

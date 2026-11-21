@@ -344,6 +344,13 @@ func (in *Inbox) nextAttempt() int {
 // Name is the name of the inbox among the components of the worker mode: inbox-<subscription>.
 func (in *Inbox) Name() string { return "inbox-" + in.sub.Name }
 
+// Destination is the outbox destination that the inbox writes each record to: the name of its subscription.
+func (in *Inbox) Destination() string { return in.sub.Name }
+
+// Principal is the system principal of the consuming worker of the subscription, the staging principal of each
+// message, as text: the resolver of the parked messages that a done message frees (ST-SUP-RP01-LC39).
+func (in *Inbox) Principal() string { return in.principal }
+
 // Purge removes at most limit refused records older than RefusedRetention, for the purge timer of the outbox
 // worker (outbox.Worker.AddPurge, ST-SUP-RP01-LC37).
 func (in *Inbox) Purge(ctx context.Context, limit int) (int64, error) {
@@ -652,7 +659,10 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 	}
 	message := outbox.Message{ID: MessageID(in.sub.Name, t.ID(), checked.eventID), Destination: in.sub.Name,
 		ResourceKey: checked.resourceKey, Kind: checked.kind, Payload: json.RawMessage(record.Value),
-		Principal: in.principal, Origin: in.sub.Name, MustLand: true, Idempotent: true}
+		Principal: in.principal, Origin: in.sub.Name, MustLand: true, Idempotent: true,
+		// The position of the record keeps the order of its key as in its topic, also for a record that an offset
+		// reset sends again (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35).
+		Position: &outbox.Position{Partition: record.Partition, Offset: record.Offset}}
 	if err := outbox.ValidateMessage(message); err != nil || len(record.Value) > in.queue.PayloadLimit(in.sub.Name) {
 		return in.refuse(ctx, record, checked, ReasonNotOutboxMessage)
 	}

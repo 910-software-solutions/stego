@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -468,8 +469,10 @@ func (e *errTenantState) Error() string {
 var errAnswered = errors.New("command: the idempotency key of the request answered it")
 
 // tenantOutcome maps an error of a Provision or Retire to its answer: a deny is 404 denied, as every operation
-// answers a deny (ST-SUP-RC29-OC02); a change that the tenant list refuses is 409 with its code; any other error is
-// 500 internal. Each is audited as denied or failed (ST-SUP-RC27-OC10).
+// answers a deny (ST-SUP-RC29-OC02); a change that the tenant list refuses is 409 with its code; a permission that
+// the provider could not decide now is 503 undecided with Retry-After, as for each other command (ST-SUP-Q140;
+// security review of PR #453, INFO); any other error is 500 internal. Each is audited as denied or failed
+// (ST-SUP-RC27-OC10).
 func tenantOutcome(err error) Outcome {
 	var state *errTenantState
 	switch {
@@ -477,6 +480,8 @@ func tenantOutcome(err error) Outcome {
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 	case errors.As(err, &state):
 		return Outcome{Status: http.StatusConflict, Code: state.code, Audit: audit.OutcomeFailed}
+	case errors.Is(err, ErrUndecided):
+		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
 }
@@ -872,7 +877,17 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 // ST-SUP-RP06-LC17). A grant on a resource of one tenant, such as service:<tenant>/<service name>, decides nothing.
 func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (tenant.Decision, error) {
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true})
+	decided := tenantLogKey{service: rt.cfg.Service, step: "decide_tenant", permission: spec.Permission}
+	begun := decided
+	begun.begin = true
+	// The begin has a run of its own, which a begin that succeeds ends (security review of PR #458, I2).
+	logTenantDecision(ctx, begun, err)
 	if err != nil {
+		if authz.Transient(err) {
+			// A database that cannot serve now, such as for a lost connection, is 503 with Retry-After, as the
+			// tenant list answers it (security review of PR #455, I1).
+			return nil, ErrUndecided
+		}
 		return nil, internalf("the transaction of the decision did not begin")
 	}
 	defer func() { _ = tx.Rollback() }()
@@ -885,13 +900,76 @@ func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request
 		return nil, internalf("the service-level resource was not built")
 	}
 	decision, allowed, err := handle.DecideTenantPermission(ctx, spec.Action, spec.Permission, req.Resource, resource, nil)
+	logTenantDecision(ctx, decided, err)
 	switch {
+	case authz.Transient(err):
+		// The provider could not decide now, such as for some seconds after a schema write: 503 with Retry-After
+		// (ST-SUP-Q140).
+		return nil, ErrUndecided
 	case err != nil:
 		return nil, internalf("the permission of the tenant provisioning was not decided")
 	case !allowed:
 		return nil, ErrDenied
 	}
 	return decision, nil
+}
+
+// LongUndecided is the length of a run of failures of one cause in the decisions of one tenant permission after which
+// the log line of a transient failure is an error, not a warning. It is longer than the wait of the migration job for
+// the schema (authz.SchemaPolls rounds authz.SchemaPause apart, about 30 s), so a run this long tells an outage or a
+// permission that the schema does not declare, which SpiceDB never serves, not a schema write that SpiceDB serves
+// some seconds later (security review of PR #455, I3).
+const LongUndecided = 2 * time.Minute
+
+// tenantRuns keeps the run of failures of each tenant decision, by its tenantLogKey key.
+var tenantRuns = authz.NewCauseRuns(nil)
+
+// tenantLogKey names a decision of a tenant permission in the log: the service, the step, such as decide_tenant
+// or list_tenants, and the permission. Its key holds all three, so the runtimes of two services in one process, or a
+// TenantSpec permission named list_tenants and the tenant list, do not share a run or a log limit (security review of
+// PR #456, I2). begin tells a failure to begin the transaction of the decision, before the provider is asked. The key
+// holds begin too, so a failure to begin and a failure of the provider of the same cause, such as a store that cannot
+// serve, do not share a run or a log limit (security review of PR #458, I2).
+type tenantLogKey struct {
+	service, step, permission string
+	begin                     bool
+}
+
+func (d tenantLogKey) key() string {
+	k := d.service + "/" + d.step + "/" + d.permission
+	if d.begin {
+		k += "/begin"
+	}
+	return k
+}
+
+// logTenantDecision records err, the outcome of the decision d, and logs a failure with the permission and the fixed
+// cause, as each other failed decision is logged (ST-SUP-Q140): at most one line for each decision and cause in each
+// authz.LogEvery, with the count held back and the length of the run of that cause, and no text of the provider or
+// of the database (ST-SUP-RP06-LC20). The line of a failure to begin names the transaction, not the provider
+// (security review of PR #456, I3).
+func logTenantDecision(ctx context.Context, d tenantLogKey, err error) {
+	run := tenantRuns.Observe(d.key(), err)
+	if err == nil {
+		return
+	}
+	cause := authz.Cause(err)
+	ok, held := decisionLog.Allow("tenant/" + d.key() + "/" + cause)
+	if !ok {
+		return
+	}
+	message, long := "command: the authorization provider could not decide",
+		"command: the authorization provider has not decided the tenant permission for a long time"
+	if d.begin {
+		message, long = "command: the transaction of the tenant decision did not begin",
+			"command: the transaction of the tenant decision has not begun for a long time"
+	}
+	level := slog.LevelWarn
+	if authz.Transient(err) && run >= LongUndecided {
+		level, message = slog.LevelError, long
+	}
+	slog.Log(ctx, level, message, "step", d.step, "permission", d.permission, "cause", cause,
+		"transient", authz.Transient(err), "held_back", held, "run_seconds", int64(run/time.Second))
 }
 
 // replayTenant reads the key of a request whose change the tenant list holds already, in a read-only transaction of
@@ -1064,8 +1142,13 @@ func ServeTenantList(rt *Runtime, spec TenantListSpec) (http.Handler, error) {
 			_ = rt.recordListed(recordCtx, req, spec.ResourceType)
 		}
 		allowed, err := decideTenantList(r.Context(), rt, spec, b)
+		logTenantDecision(r.Context(), tenantLogKey{service: rt.cfg.Service, step: "list_tenants", permission: ListTenantsPermission}, err)
 		if err != nil {
 			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			if authz.Transient(err) {
+				// The provider could not decide now: 503 undecided with Retry-After (ST-SUP-Q140).
+				o = tenantOutcome(ErrUndecided)
+			}
 			outcome(o)
 			rt.writeProblem(w, o.Status, "", o.AnswerCode())
 			return

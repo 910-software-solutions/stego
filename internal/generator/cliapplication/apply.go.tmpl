@@ -9,6 +9,8 @@ import (
  "io"
  "net/http"
  "net/url"
+ "slices"
+ "strconv"
  "strings"
  "time"
  "unicode/utf8"
@@ -47,6 +49,36 @@ func applyFields(fields []Field,body map[string]json.RawMessage,required bool)er
  allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required apply field is missing")}}}
  for key,value:=range body{f,ok:=allowed[key];if !ok||!fieldValue(f,value){return errors.New("invalid apply field")}}
  return nil
+}
+// keepCreateOnly leaves out of the patch of a found resource each field that only its create takes, such as a field
+// with writable create: a document that gives the stored value is applied again, as kubectl apply leaves out an
+// immutable field that did not change. A value that is not the stored one, or a field that the answer does not give,
+// is refused before any write, with the name of the field (ST-SUP-RC04-OC35).
+func keepCreateOnly(p *applyPlan,row map[string]json.RawMessage)error{
+ patch:=map[string]bool{};for _,f:=range p.resource.PatchFields{patch[f.Key]=true}
+ for _,f:=range p.resource.CreateFields{
+  value,given:=p.body[f.Key];if !given||patch[f.Key]{continue}
+  stored,ok:=row[f.Key]
+  if !ok{return fmt.Errorf("apply cannot change the field %s of %s %q: only a create sets it, and the service does not return it, so apply cannot compare it; leave it out of the document",f.Key,p.resource.Kind,p.name)}
+  if !sameApplyValue(f,value,stored){return fmt.Errorf("apply cannot change the field %s of %s %q: only a create sets it, and the resource has another value; give the stored value or leave the field out",f.Key,p.resource.Kind,p.name)}
+  delete(p.body,f.Key)
+ }
+ return nil
+}
+// sameApplyValue tells whether a value of a document is the value that the service returned for the field: the same
+// text, number, truth value or list, or both null.
+func sameApplyValue(f Field,given,stored json.RawMessage)bool{
+ null:=func(raw json.RawMessage)bool{return bytes.Equal(bytes.TrimSpace(raw),[]byte("null"))}
+ if null(given)||null(stored){return null(given)&&null(stored)}
+ switch f.Type{
+ case "integer":
+  number:=func(raw json.RawMessage)(string,bool){var n json.Number;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if d.Decode(&n)!=nil{var text string;if json.Unmarshal(raw,&text)!=nil{return "",false};n=json.Number(text)};i,err:=n.Int64();return strconv.FormatInt(i,10),err==nil}
+  a,okA:=number(given);b,okB:=number(stored);return okA&&okB&&a==b
+ case "string":var a,b string;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&a==b
+ case "boolean":var a,b bool;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&a==b
+ case "string-list":var a,b []string;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&slices.Equal(a,b)
+ }
+ return false
 }
 func prepareApply(app Application,documents []map[string]json.RawMessage)([]applyPlan,error){
  definitions:=map[string]ApplyResource{};for _,r:=range app.Resources{definitions[r.Kind]=r}
@@ -117,7 +149,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
    p.path+="/"+url.PathEscape(p.id)
    if targets[p.path]{return errors.New("multiple apply documents select the same resource")};targets[p.path]=true
    p.method="PATCH";fields=p.resource.PatchFields
-   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}
+   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}else if err:=keepCreateOnly(p,row);err!=nil{return err}
   }
   if err:=applyFields(fields,p.body,true);err!=nil{return err}
   p.payload,err=json.Marshal(p.body);if err!=nil||len(p.payload)>65536{return errApplyInput};results[i].ID=p.id

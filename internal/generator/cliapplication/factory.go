@@ -41,6 +41,11 @@ type factoryCommand struct {
 	PathParameters                       [][2]string
 	Fields                               []factoryField
 	Success, EmptyResponses              []int
+	// BodyFields are the secret members, which have no flag and which only --body FILE gives (ST-SUP-RC04-OC32).
+	BodyFields []factoryField
+	// Sensitive tells that a success answer holds a secret, so the CLI writes it only to --output-file
+	// (ST-SUP-RC04-OC33).
+	Sensitive bool
 }
 
 // factoryField is one request member of a command, in the form of command.Field.
@@ -115,6 +120,9 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 	b.WriteString("\t\tCommands: []command.Command{\n")
 	for _, c := range commands {
 		fmt.Fprintf(&b, "\t\t\t{Name: []string{%q}, Method: %q, Path: %q, ID: %t, Query: %t, IdempotentWrites: %t, Confirm: %t,", c.Name, c.Method, c.Path, c.ID, c.Query, c.IdempotentWrites, c.Confirm)
+		if c.Sensitive {
+			b.WriteString(" Sensitive: true,")
+		}
 		if len(c.PathParameters) > 0 {
 			b.WriteString(" PathParameters: []command.PathParameter{")
 			for _, p := range c.PathParameters {
@@ -123,6 +131,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 			b.WriteString("},")
 		}
 		writeFields(&b, "Fields", c.Fields)
+		writeFields(&b, "BodyFields", c.BodyFields)
 		fmt.Fprintf(&b, " Success: %s,", intList(c.Success))
 		if len(c.EmptyResponses) > 0 {
 			fmt.Fprintf(&b, " EmptyResponses: %s,", intList(c.EmptyResponses))
@@ -221,9 +230,10 @@ func operationCommand(p, method string, op *openapi3.Operation) (factoryCommand,
 		}
 		if media := op.RequestBody.Value.Content.Get("application/json"); media != nil && media.Schema != nil && media.Schema.Value != nil {
 			c.Fields = append(c.Fields, bodyFields(media.Schema.Value, flags)...)
+			c.BodyFields = secretFields(media.Schema.Value)
 		}
 	}
-	if len(c.Fields) > maxFields {
+	if len(c.Fields)+len(c.BodyFields) > maxFields {
 		return c, false
 	}
 	for code, ref := range op.Responses.Map() {
@@ -234,6 +244,11 @@ func operationCommand(p, method string, op *openapi3.Operation) (factoryCommand,
 		c.Success = append(c.Success, n)
 		if ref.Value != nil && len(ref.Value.Content) == 0 {
 			c.EmptyResponses = append(c.EmptyResponses, n)
+		}
+		if ref.Value != nil {
+			for _, media := range ref.Value.Content {
+				c.Sensitive = c.Sensitive || (media != nil && holdsSecret(media.Schema, map[*openapi3.Schema]bool{}))
+			}
 		}
 	}
 	sort.Ints(c.Success)
@@ -265,6 +280,11 @@ func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 		if ref == nil || ref.Value == nil || ref.Value.ReadOnly || ref.Value.WriteOnly || ref.Value.Extensions["x-sensitive"] == true {
 			continue
 		}
+		// The member kind of one value is the name of the entity, which a body may give and the CLI never needs, and
+		// an x-kept member is one that a patch cannot change (the patch request, ST-SUP-RC20-OC15, ST-SUP-RC20-OC46).
+		if (name == "kind" && len(ref.Value.Enum) == 1) || ref.Value.Extensions["x-kept"] == true {
+			continue
+		}
 		t, ok := fieldType(ref)
 		flag := flagName(name)
 		if !ok || !cliProperty.MatchString(name) || !cliWord.MatchString(flag) || flags[flag] || reservedFlag(flag) {
@@ -274,6 +294,58 @@ func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 		fields = append(fields, factoryField{Flag: flag, Key: name, Type: t, Required: required[name]})
 	}
 	return fields
+}
+
+// secretFields gives a body field, with no flag, for each secret member of a body schema (writeOnly or
+// x-sensitive) of a type that the runtime takes, so --body FILE can give it while no flag takes it.
+func secretFields(schema *openapi3.Schema) []factoryField {
+	required := map[string]bool{}
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var fields []factoryField
+	for _, name := range names {
+		ref := schema.Properties[name]
+		if ref == nil || ref.Value == nil || ref.Value.ReadOnly || !(ref.Value.WriteOnly || ref.Value.Extensions["x-sensitive"] == true) {
+			continue
+		}
+		if t, ok := fieldType(ref); ok && cliProperty.MatchString(name) {
+			fields = append(fields, factoryField{Key: name, Type: t, Required: required[name]})
+		}
+	}
+	return fields
+}
+
+// holdsSecret tells whether a schema, or a schema of a member, an item, a map value or a part of it at any depth, is
+// marked x-sensitive, or x-stego-opaque for an answer whose content the document cannot describe, which can hold a
+// secret (ST-SUP-RC04-OC33, decision ST-SUP-Q194 (a)).
+func holdsSecret(ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) bool {
+	if ref == nil || ref.Value == nil || seen[ref.Value] {
+		return false
+	}
+	s := ref.Value
+	seen[s] = true
+	if s.Extensions["x-sensitive"] == true || s.Extensions["x-stego-opaque"] == true {
+		return true
+	}
+	parts := []*openapi3.SchemaRef{s.Items, s.Not, s.AdditionalProperties.Schema}
+	for _, p := range s.Properties {
+		parts = append(parts, p)
+	}
+	for _, list := range []openapi3.SchemaRefs{s.AllOf, s.AnyOf, s.OneOf} {
+		parts = append(parts, list...)
+	}
+	for _, p := range parts {
+		if holdsSecret(p, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // fieldType gives the type of a field of the runtime for a schema: string, integer, boolean or string-list.

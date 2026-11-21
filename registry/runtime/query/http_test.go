@@ -431,6 +431,16 @@ func TestUnavailableAnswer(t *testing.T) {
 		if status, code := answerOf(fmt.Errorf("query: read: %w", sqlState("42703")), nil); status != http.StatusInternalServerError || code != ErrorCodeInternal {
 			t.Fatalf("an undefined column gave %d %q, want 500 internal", status, code)
 		}
+		// A not-found error that also holds a cause of a 503 answer is 503, as the command runtime answers it; a
+		// not-found error alone stays 404 (security review of PR #453, INFO).
+		for name, err := range map[string]error{"an undecided read": &undecidedError{transient: true}, "a refused connection": refused} {
+			if status, _ := answerOf(errors.Join(ErrNotFound, err), nil); status != http.StatusServiceUnavailable {
+				t.Fatalf("ErrNotFound with %s gave %d, want 503", name, status)
+			}
+		}
+		if status, _ := answerOf(fmt.Errorf("query: read: %w", ErrNotFound), nil); status != http.StatusNotFound {
+			t.Fatalf("ErrNotFound alone gave %d, want 404", status)
+		}
 	})
 }
 

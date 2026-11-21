@@ -138,7 +138,7 @@ func (c *runtimeCollection) hrefExpr(v string) string {
 // search does not take: a pii or secret field, whose match would tell its value (ST-SUP-RP11-LC20), a ref, and a
 // field of a jsonb, bytes or timestamp type.
 func searchKind(f types.Field) string {
-	if f.Sensitivity != "" {
+	if !f.Public() {
 		return ""
 	}
 	switch f.Type {
@@ -1516,9 +1516,10 @@ func (w *runtimeHandlerWriter) helpers() {
 			w.f("\t%s *%s `json:%q`\n", toPascalCase(f.Name), fieldTypeToGo(f.Type), f.Name)
 		}
 		w.f("}\n\n")
-		w.f("// decode%sPatch gives the patch of a patch body. A kind member that is not %s is refused.\n", c.pascal, e.Name)
+		w.f("// decode%sPatch gives the patch of a patch body. A kind member that is not %s is refused, and so is each\n// member that is not kind or the API name of a patchable field, in its exact letter case (ST-SUP-RC20-OC15).\n", c.pascal, e.Name)
 		w.f("func decode%sPatch(bodyBytes []byte) (%sPatchRequest, error) {\n", c.pascal, c.pascal)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", c.pascal)
+		w.patchMembers()
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, c.pascal, e.Name)
 		w.clientTimeText(c.pascal+"PatchRequest{}", c.patchFields())
 		w.f("\tvar patch %sPatchRequest\n\tif err := json.Unmarshal(bodyBytes, &patch); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body does not decode into the patch of %s\")}\n\t}\n", c.pascal, c.pascal, e.Name)
@@ -1527,6 +1528,36 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("\treturn patch, nil\n}\n\n")
 	}
 	w.keptCheck()
+}
+
+// patchMembers writes, in the decode of a patch body, the refusal of each member that is not kind or the API name of
+// a patchable field. The JSON decoder ignores an unknown member and matches a member name to a field with no regard
+// to case, so a patch that names a field it cannot change, or the declared name of a renamed field, would answer 200
+// and change nothing. The problem names the first such member in byte order and holds no value (ST-SUP-RC20-OC15,
+// security review of PR #461, M1).
+func (w *runtimeHandlerWriter) patchMembers() {
+	c := w.c
+	names := []string{"kind"}
+	for _, f := range c.patchFields() {
+		if !slices.Contains(names, f.Name) {
+			names = append(names, f.Name)
+		}
+	}
+	allowed := slices.Clone(names)
+	// A field that a collection write cannot change is checked by its own rule: the body may give its stored value
+	// (ST-SUP-RC20-OC46).
+	for _, f := range w.keptFields() {
+		if _, scoped := c.decl.Scope[f.Name]; !scoped && !slices.Contains(allowed, f.Name) {
+			allowed = append(allowed, f.Name)
+		}
+	}
+	quoted := make([]string, len(allowed))
+	for i, name := range allowed {
+		quoted[i] = strconv.Quote(name)
+	}
+	message := "the member is not a patchable field of " + c.decl.Name + "; a patch takes only " + strings.Join(names[1:], ", ") + " and kind"
+	w.f("\tunknown := \"\"\n\tfor member := range rawMap {\n\t\tswitch member {\n\t\tcase %s:\n\t\tdefault:\n\t\t\tif unknown == \"\" || member < unknown {\n\t\t\t\tunknown = member\n\t\t\t}\n\t\t}\n\t}\n", strings.Join(quoted, ", "))
+	w.f("\tif unknown != \"\" {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: %q}})}\n\t}\n", c.pascal, message)
 }
 
 // clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.
@@ -2013,10 +2044,15 @@ func (w *runtimeHandlerWriter) deliverAfter() bool {
 }
 
 // key writes the read of the idempotency key of a create or a patch: required when the declaration requires it,
-// and the request's own key when the client sends none (ST-SUP-RC30-OC01).
+// and the request's own key when the client sends none (ST-SUP-RC30-OC01). With the idempotency component, each
+// answer from here on to a request with a key carries Idempotency-Kept: 1, a problem and a 5xx answer too
+// (ST-SUP-RC30-OC08).
 func (w *runtimeHandlerWriter) key(op types.Operation) {
 	required := w.keys != nil && w.keys.required[op]
 	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r, err)\n\t\treturn\n\t}\n", required)
+	if w.keys != nil {
+		w.f("\tif key != \"\" {\n\t\tw.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)\n\t}\n")
+	}
 	w.f("\trequestID := command.NewID()\n\tif key == \"\" {\n\t\tkey = requestKey(requestID)\n\t}\n")
 }
 
@@ -2183,7 +2219,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.forceScope("stored." + toPascalCase(c.scope))
 	w.before(types.OpUpdate, nil)
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpdate, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2385,7 +2421,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.populateUpdate()
 	w.forceScope("scope")
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpsert, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2459,7 +2495,7 @@ func (w *runtimeHandlerWriter) patch() {
 		}
 	}
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpPatch, "persisted", "updated", fields)
 	w.respond("http.StatusOK", "persisted")
@@ -2549,7 +2585,7 @@ func (w *runtimeHandlerWriter) list() {
 	var fields []string
 	// A pii or secret field orders no list: the order would tell its value (ST-SUP-RP11-LC20).
 	for _, f := range e.Fields {
-		if f.Sensitivity == "" {
+		if f.Public() {
 			fields = append(fields, fmt.Sprintf("%q: true", f.Name))
 		}
 	}
@@ -2702,4 +2738,14 @@ func renderChainLinks(ctx gen.Context, collections []*runtimeCollection) ([]byte
 		return nil, fmt.Errorf("rest-api: format links.go: %w", err)
 	}
 	return out, nil
+}
+
+// updateCall gives the call of the update of a generated write of e: the repository of an entity with a resource type
+// of its own takes no parent on Update, so the write calls the update of the runtime that it embeds, which takes the
+// parents of a changed reference (ST-SUP-RC32-OC26).
+func updateCall(e types.Entity) string {
+	if e.ResourceType != "" {
+		return "repo.Repository.Update"
+	}
+	return "repo.Update"
 }

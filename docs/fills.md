@@ -314,7 +314,7 @@ Each field of an entity is one item of `fields`:
 | `unique` | `true` when no two rows of the tenant have the same value. |
 | `unique_composite` | The fields of a unique key with more than one field, such as `[team_id, name]`. |
 | `client_set` | `true` for a `timestamp` that the client sets, such as a due date. The server sets each other timestamp. |
-| `sensitivity` | `public`, `pii` or `secret`. The default is `public`. See below. |
+| `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
 | `attempts` | For a compare-only secret only: `{limit: <1 to 100>}`, the limit of wrong checks. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
@@ -402,7 +402,7 @@ No client can read a secret back. Only the fills of commands and workers can
 read a readable secret.
 
 A worker that only reads an entity declares it in `reads`, not in `writes`
-(runtime v0.148.0). The worker `sum-balances` of the example reads the wallets
+(runtime v0.167.0). The worker `sum-balances` of the example reads the wallets
 this way. Its fill gets `workers.WalletReader(h)`, a read-only repository with
 `Get` and `List` only, whose value `workers.WalletView` has each field of the
 wallet except `api_key` and `pin`. The statements of the reader do not read
@@ -411,12 +411,18 @@ fill that tries to read `w.Value().ApiKey` does not compile. An entity is in
 `writes` or in `reads`, not in both. Give a worker `writes` only for the
 entities that it changes.
 
-Do not put a secret in the response message of a command: the idempotency
-store keeps each answer of a command for the retention of its key. Since
-runtime v0.138.0, a service with a `secret` or a `pii` field seals each stored
-answer with its key ring (see
-[Idempotency](commands-queries-workers.md#idempotency)), but the answer is still
-kept, and a reader of the answer gets the secret.
+Put a secret in the response message of a command only when the command
+issues it, such as an API key that the client gets one time, and only in a
+member that the proto file marks `debug_redact` (see [A secret
+member](commands-queries-workers.md#a-secret-member)). Never put a secret that
+the service stores, such as a secret field of an entity, in a response. The
+idempotency store keeps each answer of a command for the retention of its key,
+24 hours by default. With the mark, the runtime seals each stored answer with
+the key ring (see [Idempotency](commands-queries-workers.md#idempotency)), and
+the generated CLI writes the answer only to `--output-file`. A retry with the
+same key gets the same secret again, from the sealed answer. Without the mark,
+the answer goes to stdout, and a service with no `secret` or `pii` field keeps
+it in clear.
 
 A field with `writable: create` or `never` that is a secret is never compared:
 an update that gives it, also with the stored value, gets 400. An answer never
@@ -521,7 +527,7 @@ so a wrong PIN tells nothing of the balance.
 
 A PIN of 4 digits has only 10,000 values. A caller who may operate the wallet,
 such as with a stolen session, could try each value in some minutes. Thus the
-example declares a limit of wrong PINs on the field (runtime v0.148.0):
+example declares a limit of wrong PINs on the field (runtime v0.167.0):
 
 <!-- excerpt -->
 ```yaml
@@ -596,24 +602,49 @@ value.
 A command fill and a worker fill get a repository for each entity in
 `writes`, such as `commands.WalletRepository(h)` or
 `workers.DailyTotalRepository(h)`. A worker fill gets a reader for each entity
-in `reads`, such as `workers.WalletReader(h)`, with only `Get` and `List` of
-the table below, and values with no secret field. A repository has these
-methods:
+in `reads`, such as `workers.WalletReader(h)`, with only `Get` and `List`,
+and values with no secret field.
+
+Two kinds of entity have repositories of different forms:
+
+- A child entity has no resource type of its own and a reference to an
+  entity with one, such as a line item under an order. Its rows have no
+  permissions of their own: each locked read, update and delete decides on
+  the row of its parent, so each of these takes the loaded parent row.
+- Each other entity has its own resource type, also when it has a reference
+  to another entity, such as a Parcel under a Shipment. Its rows have their
+  own permissions, so its locked reads, update and delete take no parent.
+
+The repository of an entity with its own resource type is the generated type
+`<Entity>Repo`, such as `commands.WalletRepo`. It has these methods:
 
 | Method | What it does | The decision that it makes |
 |---|---|---|
 | `Get(ctx, id)` | Reads the row with no lock. | The read permission of the entity (`permissions.read`), for the caller of a command; the permission of the worker, for a worker. |
-| `GetForUpdate(ctx, id, parent...)` | Reads the row and locks it with `FOR NO KEY UPDATE` until the transaction ends. | The read permission, then the declared `permission` of the command on the row. A worker decides its own permission. |
-| `GetForDelete(ctx, id, parent...)` | As `GetForUpdate`, with `FOR UPDATE`. Use it before a delete, or before a change of a key column. | As `GetForUpdate`. |
-| `Create(ctx, value, parent...)` | Inserts a row, writes its audit row and, in a service with change events, stages its event. | For each reference of the row: the `permission` that the reference declares, else the permission of the command, on the referenced row. A command create of a row with no parent is covered by the decision before the fill. A worker create of a row with no parent is decided on the tenant resource. |
-| `Update(ctx, from, value, parent...)` | Writes the value over the loaded row `from`, only while the row still has the version of `from`. | The permission of the command on the row, or of the worker. |
-| `Delete(ctx, from, parent...)` | Deletes the loaded row `from`, with the same version check. | As `Update`. |
+| `GetForUpdate(ctx, id)` | Reads the row and locks it with `FOR NO KEY UPDATE` until the transaction ends. | The read permission, then the declared `permission` of the command on the row. A worker decides its own permission. |
+| `GetForDelete(ctx, id)` | As `GetForUpdate`, with `FOR UPDATE`. Use it before a delete, or before a change of a key column. | As `GetForUpdate`. |
+| `Create(ctx, value, parent...)` | Inserts a row, writes its audit row and, in a service with change events, stages its event. `parent` is the loaded row of each reference of the new row. | For each reference of the row: the `permission` that the reference declares, else the permission of the command, on the referenced row. A command create of a row with no reference is covered by the decision before the fill. A worker create of a row with no reference is decided on the tenant resource. |
+| `Update(ctx, from, value)` | Writes the value over the loaded row `from`, only while the row still has the version of `from`. The value keeps each reference of the row. | The permission of the command on the row, or of the worker. |
+| `Move(ctx, from, value, parent...)` | As `Update`, for a value that changes a reference. `parent` is the loaded row that each changed reference names. Only an entity with a reference has it. | As `Update`, and for each changed reference the decision of `Create` on its new row. |
+| `Delete(ctx, from)` | Deletes the loaded row `from`, with the same version check. | As `Update`. |
 | `List(ctx, list, limit, args...)` | Reads the rows of a declared list, at most `limit`, with no lock. | Keeps only the rows on which the caller has the list permission of the entity (else its read permission), or the worker its permission. |
-| `ListForUpdate(ctx, list, parent, args...)` | Reads the rows of a declared list with `lock: true`, and locks the allowed rows. | As `List`. |
+| `ListForUpdate(ctx, list, nil, args...)` | Reads the rows of a declared list with `lock: true`, and locks the allowed rows. The parent is `nil`. | As `List`. |
 
-`parent` is the loaded row of the parent of a child entity, which the fill read
-through its own handle, such as `updated` in the create of a transaction
-above. An entity with no parent takes no `parent`.
+The repository of a child entity is `*command.Repository[<Entity>]`. Its
+`GetForUpdate(ctx, id, parent)`, `GetForDelete(ctx, id, parent)`,
+`Create(ctx, value, parent)`, `Update(ctx, from, value, parent)`,
+`Delete(ctx, from, parent)` and `ListForUpdate(ctx, list, parent, args...)`
+take the loaded row of the parent, which the fill read through its own
+handle, such as `updated` in the create of a transaction above. The
+decisions are those of the table, on the row of the parent. An entity with
+no resource type and no reference also has the repository
+`*command.Repository[<Entity>]`, and each of its methods takes no parent: pass
+none.
+
+A parent that the repository does not take does not compile: `go build` and
+`stego test` give `too many arguments in call to parcels.Update`. For an
+update that keeps the references of the row, give no parent. For an update
+that changes a reference, call `Move` with the new referenced row.
 
 Each read of a row decides a permission. This is also true for a row other
 than the resource member of the command. In the example, the `transfer` fill
@@ -636,6 +667,12 @@ Other errors of the handle:
 
 After `ErrConflict`, `ErrInvalid` or `ErrInternal`, each later method of the
 handle gives the same error, and the runtime commits nothing.
+
+In one case the runtime runs a fill again also when the command sets no
+`retry_on_conflict`: once, when the contract step of a seal dropped a clear
+column while the call ran (see [Seal steps](schema-changes.md#seal-steps)). The
+rerun rolls back each write of the first attempt, but an effect of the fill
+outside the handle, such as a call to another system, runs twice.
 
 A fill that returns any other error gets the answer 500 with the code
 `internal`. The log then has one error line `command.fill.failed` with the
@@ -893,6 +930,48 @@ as `log.Fatal` and `slog.SetDefault`; and `time.AfterFunc` and
 `_test.go`, is not built into the service, so it can import any module of
 `go.mod`.
 
+A fill does not import `crypto/rand` or `math/rand`, so that its review finds
+each source of randomness by name. To issue a secret, such as an API key or a
+one-time code, call `command.NewToken(size)` of the package
+`github.com/jsell-rh/stego/registry/runtime/command`, which the contract of a
+command fill and of a worker fill always imports (from runtime v0.163.0). It
+gives `size` new random bytes from `crypto/rand`, from 16 to 64, and refuses
+another size with an error. Encode the bytes with `encoding/base64` or
+`encoding/hex`, or take a code of digits with `math/big`:
+
+```go
+raw, err := command.NewToken(32)
+if err != nil {
+	return nil, err
+}
+apiKey := base64.RawURLEncoding.EncodeToString(raw)
+```
+
+For a code of digits, read all the bytes as one number and reduce that number
+once. Do not take one digit from each byte with `b % 10`: 256 is not a
+multiple of 10, so the digits 0 to 5 come more often than 6 to 9. With 32
+random bytes, the bias of one reduction is too small to measure:
+
+```go
+raw, err := command.NewToken(32)
+if err != nil {
+	return nil, err
+}
+n := new(big.Int).SetBytes(raw)
+code := fmt.Sprintf("%06d", n.Mod(n, big.NewInt(1_000_000)))
+```
+
+Store such a code in a field with `sensitivity: secret` and
+`compare_only: true`, so the table holds only its hash, and check it with
+`sealed.Compared`. A code of 6 digits has only one million values, so limit
+the wrong attempts too (see [Check a compare-only
+secret](#check-a-compare-only-secret)).
+
+`command.NewID()` gives a new random UUID in its text form, with 122 random
+bits. Use it for a new ID. Do not make a secret from an ID, the time or the
+input with `crypto/sha256`: each person who knows the inputs can make the
+same value again.
+
 Thus a fill cannot import `crypto/subtle` to compare two secret values.
 Prefer a compare-only field and `sealed.Compared` (see [Check a compare-only
 secret](#check-a-compare-only-secret)): it checks a value against the stored
@@ -969,7 +1048,7 @@ type Change struct {
 
 A worker handle has no network client, so a consuming fill cannot read a row
 from the service `wallets`. Thus an entity declares the fields that its change
-events carry (runtime v0.148.0, rest-api 4.18.0):
+events carry (runtime v0.167.0, rest-api 4.27.0):
 
 <!-- excerpt -->
 ```yaml

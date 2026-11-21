@@ -2,6 +2,7 @@ package restapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -4494,6 +4495,27 @@ func TestRuntimeList(t *testing.T) {
 		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
 			t.Error("the customers list orders by a sensitive field")
 		}
+		// A field written sensitivity: public is a public field, as one with no sensitivity: a list orders and
+		// searches it (decision ST-DECL-Q46 (a)).
+		written := crudContext()
+		for i := range written.Entities {
+			for j := range written.Entities[i].Fields {
+				if written.Entities[i].Name == "Customer" && written.Entities[i].Fields[j].Name == "plan" {
+					written.Entities[i].Fields[j].Sensitivity = "public"
+				}
+			}
+		}
+		writtenFiles := crudFiles(t, written)
+		if customers := handlerMethod(t, writtenFiles, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
+			t.Error("the customers list does not order by a field written public")
+		}
+		searched := false
+		for _, content := range writtenFiles {
+			searched = searched || strings.Contains(string(content), `var customersSearchFields = map[string]query.FieldKind{"plan": query.`)
+		}
+		if !searched {
+			t.Error("the customers list does not search a field written public")
+		}
 		helperRun(t, "TestOrderField")
 	})
 	t.Run("ST-SUP-RC20-OC10-T02 A direction other than asc or desc is refused", func(t *testing.T) {
@@ -4682,10 +4704,28 @@ func TestRuntimeWrites(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC15-T02 The emitted patch handler reads, merges and saves", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "repo.GetForDelete(ctx, id)", "stored := todosFromData(from.Value())",
 			"todo := stored", "if patch.Title != nil {", "todo.Title = *patch.Title", "if patch.Done != nil {", "todo.Done = ptrOf(*patch.Done)",
-			"repo.Update(ctx, from, todosToData(todo), parents...)")
+			"repo.Repository.Update(ctx, from, todosToData(todo), parents...)")
+	})
+	t.Run("ST-SUP-RC20-OC15-T04 The OpenAPI document closes the patch request: it names kind and the patchable fields, and no other member", func(t *testing.T) {
+		var document struct {
+			Components struct {
+				Schemas map[string]map[string]any `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(files["api/openapi.json"], &document); err != nil {
+			t.Fatal(err)
+		}
+		patch := document.Components.Schemas["OrdersPatchRequest"]
+		properties, _ := patch["properties"].(map[string]any)
+		kind, _ := properties["kind"].(map[string]any)
+		if patch["additionalProperties"] != false || len(properties) != 2 || properties["qty"] == nil || fmt.Sprint(kind["enum"]) != "[Order]" {
+			t.Errorf("the patch request of orders is %v, want the members qty and kind (Order) and additionalProperties false", patch)
+		}
+		decode := handlerFunc(t, files, "orders", "decodeOrdersPatch")
+		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: unknown,", "json.Unmarshal(bodyBytes, &patch)")
 	})
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
-		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Update(")
+		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")
 		// The command runtime sets updated_time at each update of a row, a patch too.
 		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $13, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
 			t.Error("the update of a todo does not set updated_time to the time of the change")
@@ -4704,11 +4744,11 @@ func TestRuntimeWrites(t *testing.T) {
 		inOrder(t, "decodeFolderSettings", handlerFunc(t, files, "folder-settings", "decodeFolderSettings"), "setting.CreatedBy = nil", "setting.UpdatedBy = nil", "setting.Generation = 0")
 		inOrder(t, "folder-settings Upsert", handlerMethod(t, files, "folder-settings", "Upsert"),
 			"setting.CreatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = 1", "repo.Create(",
-			"setting.CreatedBy = stored.CreatedBy", "setting.UpdatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = stored.Generation + 1", "repo.Update(")
+			"setting.CreatedBy = stored.CreatedBy", "setting.UpdatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = stored.Generation + 1", "repo.Repository.Update(")
 	})
 	t.Run("ST-SUP-RC20-OC18-T01 The emitted update handler keeps create-only values and raises the generation", func(t *testing.T) {
 		inOrder(t, "todos Update", handlerMethod(t, files, "todos", "Update"), "repo.GetForDelete(ctx, id)", "stored := todosFromData(from.Value())",
-			"todo.ID = id", "todo.CreatedBy = stored.CreatedBy", "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "todo.Generation = stored.Generation + 1", "repo.Update(")
+			"todo.ID = id", "todo.CreatedBy = stored.CreatedBy", "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "todo.Generation = stored.Generation + 1", "repo.Repository.Update(")
 	})
 	kind := func(t *testing.T, collection, decode, op, entity string) {
 		t.Helper()
@@ -4820,5 +4860,41 @@ func TestRuntimeDelete(t *testing.T) {
 			t.Errorf("the delete answers a response with a header or a body:\n%s", body)
 		}
 		inOrder(t, "writeResult", extractMethodBody(string(files["api/runtime.go"]), "func writeResult("), "w.WriteHeader(result.Response.Status)", "w.Write(result.Response.Body)")
+	})
+}
+
+func TestEnvelopeMembers(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC52-T01 A field named kind or href of a served entity is refused at checking with its path and the remedy", func(t *testing.T) {
+		for _, member := range []string{"kind", "href"} {
+			ctx := gen.Context{
+				Conventions: types.Convention{Layout: "flat", ResponseFormat: "envelope"},
+				Entities: []types.Entity{
+					{Name: "Clinic", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}}},
+					{Name: "Record", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: member, Type: types.FieldTypeString}}},
+				},
+				Collections: []types.Collection{
+					{Name: "clinics", Entity: "Clinic", Operations: []types.Operation{types.OpCreate, types.OpRead}},
+					{Name: "records", Entity: "Record", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate}},
+				},
+				OutputNamespace: "internal/api",
+			}
+			err := (&Generator{}).ValidateContext(onRuntime(ctx))
+			if err == nil {
+				t.Fatalf("a served entity with a field named %s is accepted", member)
+			}
+			for _, want := range []string{"entities[1].fields[1].name", "the collection records", `"` + member + `"`, "give the field another name", "ST-SUP-RC20-OC52"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the fault for %s does not hold %q: %v", member, want, err)
+				}
+			}
+			if _, _, err := (&Generator{}).Generate(onRuntime(ctx)); err == nil {
+				t.Errorf("generation of a served entity with a field named %s does not refuse it", member)
+			}
+			// An entity that no collection serves keeps the name: no handler sets a member beside its fields.
+			ctx.Collections = ctx.Collections[:1]
+			if err := (&Generator{}).ValidateContext(onRuntime(ctx)); err != nil {
+				t.Errorf("an entity that no collection serves is refused for its field %s: %v", member, err)
+			}
+		}
 	})
 }

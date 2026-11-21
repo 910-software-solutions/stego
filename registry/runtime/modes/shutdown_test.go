@@ -304,6 +304,32 @@ func TestModeReadiness(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP09-LC05-T07 Each mode is not ready from the start with the reason of a blocking schema fault", func(t *testing.T) {
+		readiness := NewReadiness(pingOK{})
+		readiness.WatchQueue(readyQueue{})
+		readiness.Block("")
+		_, url := serve(t, readiness, nil)
+		if code := get(t, url+"/livez"); code != http.StatusOK {
+			t.Fatalf("the server answered %d", code)
+		}
+		if err := readiness.Check(ctx, Selection{All}); err != nil {
+			t.Fatalf("with no reason, the modes gave %v, want ready", err)
+		}
+		const reason = "table public.books: column pages is missing"
+		readiness.Block(reason)
+		for _, m := range []Mode{API, Worker, Controller} {
+			if err := readiness.Ready(ctx, m); !errors.Is(err, ErrNotReady) || !strings.Contains(err.Error(), reason) {
+				t.Errorf("after Block, %s gave %v, want not ready with the reason", m, err)
+			}
+		}
+		if code := get(t, url+"/readyz"); code != http.StatusServiceUnavailable {
+			t.Fatalf("after Block, /readyz answered %d, want 503", code)
+		}
+		if code := get(t, url+"/livez"); code != http.StatusOK {
+			t.Fatalf("after Block, /livez answered %d, want 200: a blocked replica is not restarted", code)
+		}
+	})
+
 	t.Run("ST-SUP-RP09-LC05-T02 The worker mode is ready only when the database is reachable", func(t *testing.T) {
 		d := openDatabase(t)
 		readiness := NewReadiness(d.db)
@@ -311,8 +337,10 @@ func TestModeReadiness(t *testing.T) {
 			t.Fatalf("with the database reachable, worker gave %v, want ready", err)
 		}
 		d.proxy.stop()
-		if err := readiness.Ready(ctx, Worker); !errors.Is(err, ErrNotReady) {
-			t.Fatalf("with the database stopped, worker gave %v, want not ready", err)
+		// The reason is fixed: no text of the ping error, which can name the host or the user (security review of
+		// PR #457, L3).
+		if err := readiness.Ready(ctx, Worker); !errors.Is(err, ErrNotReady) || err.Error() != "worker: not ready: "+DatabaseUnreachable {
+			t.Fatalf("with the database stopped, worker gave %v, want not ready with the fixed reason", err)
 		}
 	})
 

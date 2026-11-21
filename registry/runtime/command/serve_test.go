@@ -20,6 +20,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
@@ -559,6 +563,80 @@ func TestProblemForm(t *testing.T) {
 		bare.writeProblem(w, http.StatusBadRequest, bare.problemType("idempotency-key-missing"), "")
 		if p := read(t, w); p["type"] != "about:blank" {
 			t.Errorf("with no base the idempotency problem has the type %v, want about:blank, never a bare word", p["type"])
+		}
+	})
+}
+
+// secretMessages gives a request message whose nested member pin the proto marks debug_redact when marked is true,
+// and a plain response message.
+func secretMessages(t *testing.T, marked bool) (func() *dynamicpb.Message, func() *dynamicpb.Message) {
+	t.Helper()
+	str, msg, opt := descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	file := &descriptorpb.FileDescriptorProto{Name: proto.String("secret.proto"), Package: proto.String("secret.v1"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Pin"), Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("pin"), JsonName: proto.String("pin"), Number: proto.Int32(1), Type: &str, Label: &opt,
+				Options: &descriptorpb.FieldOptions{DebugRedact: proto.Bool(marked)}}}},
+			{Name: proto.String("ResetRequest"), Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("pin"), JsonName: proto.String("pin"), Number: proto.Int32(1), Type: &msg, Label: &opt, TypeName: proto.String(".secret.v1.Pin")}}},
+			{Name: proto.String("ResetResponse")},
+		}}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, response := fd.Messages().ByName("ResetRequest"), fd.Messages().ByName("ResetResponse")
+	return func() *dynamicpb.Message { return dynamicpb.NewMessage(request) }, func() *dynamicpb.Message { return dynamicpb.NewMessage(response) }
+}
+
+func TestServeSecretNeedsRing(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC12-T04 Serve and ServeRPC refuse a command whose message holds a debug_redact member when the runtime has no key ring", func(t *testing.T) {
+		cmd := &Command[testProbe]{spec: CommandSpec[testProbe]{Name: "reset-pin"}}
+		spec := func(marked bool) ServeSpec[*dynamicpb.Message, *dynamicpb.Message, testProbe] {
+			newRequest, newResponse := secretMessages(t, marked)
+			return ServeSpec[*dynamicpb.Message, *dynamicpb.Message, testProbe]{Command: cmd, ResourceType: "pin", SubjectType: "user", Status: http.StatusOK,
+				NewRequest: newRequest, NewResponse: newResponse, Resource: func(*dynamicpb.Message) string { return "p1" },
+				Fill: func(context.Context, *dynamicpb.Message, *Handle[testProbe]) (*dynamicpb.Message, error) {
+					return nil, nil
+				}}
+		}
+		bare, ringed := &Runtime{}, &Runtime{cfg: Config{Ring: vaultRing(t, "1 "+throwawayKey(t))}}
+		for _, c := range []struct {
+			name    string
+			rt      *Runtime
+			marked  bool
+			refused bool
+		}{{"a marked member and no ring", bare, true, true}, {"a marked member and a ring", ringed, true, false}, {"no marked member and no ring", bare, false, false}} {
+			_, serveErr := Serve(c.rt, spec(c.marked))
+			_, rpcErr := ServeRPC(c.rt, spec(c.marked))
+			for name, err := range map[string]error{"Serve": serveErr, "ServeRPC": rpcErr} {
+				if refused := err != nil && strings.Contains(err.Error(), "debug_redact"); refused != c.refused {
+					t.Errorf("%s of %s gave %v, want refused %t", name, c.name, err, c.refused)
+				}
+			}
+		}
+	})
+}
+
+func TestNewToken(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC56-T01 NewToken gives new random bytes of each size from 16 to 64, and refuses each other size", func(t *testing.T) {
+		seen := map[string]bool{}
+		for size := MinTokenSize; size <= MaxTokenSize; size++ {
+			a, err := NewToken(size)
+			if err != nil || len(a) != size {
+				t.Fatalf("NewToken(%d) gives %d bytes and %v", size, len(a), err)
+			}
+			b, _ := NewToken(size)
+			if string(a) == string(b) || seen[string(a)] {
+				t.Fatalf("NewToken(%d) gives the same bytes twice", size)
+			}
+			seen[string(a)] = true
+			if string(a) == string(make([]byte, size)) {
+				t.Fatalf("NewToken(%d) gives only zero bytes", size)
+			}
+		}
+		for _, size := range []int{-1, 0, 1, MinTokenSize - 1, MaxTokenSize + 1, 1 << 20} {
+			if b, err := NewToken(size); err == nil || b != nil {
+				t.Errorf("NewToken(%d) gives %d bytes and %v, want a refusal and no bytes", size, len(b), err)
+			}
 		}
 	})
 }

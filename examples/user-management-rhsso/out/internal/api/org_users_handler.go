@@ -178,11 +178,25 @@ type OrgUsersPatchRequest struct {
 	Metadata    *json.RawMessage `json:"metadata"`
 }
 
-// decodeOrgUsersPatch gives the patch of a patch body. A kind member that is not User is refused.
+// decodeOrgUsersPatch gives the patch of a patch body. A kind member that is not User is refused, and so is each
+// member that is not kind or the API name of a patchable field, in its exact letter case (ST-SUP-RC20-OC15).
 func decodeOrgUsersPatch(bodyBytes []byte) (OrgUsersPatchRequest, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return OrgUsersPatchRequest{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
+	}
+	unknown := ""
+	for member := range rawMap {
+		switch member {
+		case "kind", "display_name", "role", "metadata":
+		default:
+			if unknown == "" || member < unknown {
+				unknown = member
+			}
+		}
+	}
+	if unknown != "" {
+		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: "the member is not a patchable field of org-users; a patch takes only display_name, role, metadata and kind"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
@@ -515,7 +529,7 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}
@@ -891,7 +905,7 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}

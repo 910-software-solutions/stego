@@ -475,7 +475,8 @@ of the database does not hold them.
 
 Do these steps in this order:
 
-1. Stop the service. Pause the automatic sync of its Argo CD Application, if
+1. Stop the service: each process of each release, also of the release of the
+   expand step of a seal. Pause the automatic sync of its Argo CD Application, if
    it has one, so that Argo CD does not start it again. Then:
 
    ```sh
@@ -514,7 +515,18 @@ Do these steps in this order:
 4. Run the migration Job of the release that you start. It checks the roles,
    the grants and the schema again, and it refuses a database that does not
    satisfy the schema manifest. When the dump is of an older release, it also
-   migrates the database to the release.
+   migrates the database to the release. When the dump is from before the
+   contract step of a seal, the Job refuses at that step until the seal job of
+   the release of its expand step completes a pass: see [Restore a database
+   with an open or finished seal](schema-changes.md#restore-a-database-with-an-open-or-finished-seal).
+   A dump from before the seal holds the field in clear. So when the dump is
+   from before the expand step or the contract step of a seal, first run the
+   release of the expand step: its migration Job and its worker Deployment,
+   which runs the controller, for one pass of the seal job. That takes 10 to
+   13 minutes or more: the first run of the job waits 3 minutes after the expand
+   step, and the job runs each 10 minutes. When it logs `seal of a secret
+   column` with `completed=true`, stop that release and run the migration Job
+   of the release that you start again. Only then does that Job pass.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
 6. List the messages of the destination `authz` that are not done, and review
@@ -673,6 +685,18 @@ functions of the outbox, the audit and the authorization can differ. Then each
 pod of the older release logs the error `the database does not satisfy the
 schema manifest` once for each difference, with its class, such as
 `class=owner`. The pod starts and serves. This is expected during a rollback.
+
+A table or a column that the older release uses can be missing, for example
+after a contract step of a later release dropped it. Then each statement on
+that table fails. In this case the error line says `the service starts not
+ready`, with the table or the column, and each mode of the pod answers
+`/readyz/modes`, the readiness probe of each Deployment, with 503. The answer
+names no table or column, because a caller of the network can read it: read
+the log of the pod. The pod does not restart. A rollout of
+the older release stops at its first pod, and the pods that serve stay. Roll
+forward to the release that changed the database. There is one exception: the
+release of the expand step of a seal goes on after the contract step drops
+the clear column, so its pods are ready.
 
 Do these steps for a rollback:
 

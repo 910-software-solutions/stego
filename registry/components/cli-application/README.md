@@ -23,10 +23,30 @@ package `<out>/cli/app`:
   boolean or list of strings; give the other members in `--body FILE`;
 - no flag for a secret member, which the document marks `writeOnly` or
   `x-sensitive`, such as a PIN: a flag puts its value in the shell history and
-  the process list. Give it in `--body FILE`, a file that only you can read;
+  the process list. Give it in `--body FILE`, a file that only you can read:
+  the CLI refuses a body file that holds a secret member when the group or
+  other users have access to the file.
+  A secret field of an entity is `writeOnly` in the document of its
+  collection. A member of a command message is a secret only when its proto
+  file marks it `[debug_redact = true]`: mark each secret member of a command
+  request and response, such as `string pin = 2 [debug_redact = true];`
+  (see [A secret member](../../../docs/commands-queries-workers.md#a-secret-member)).
+  `stego validate` warns of a request member with the name of a secret field
+  of an entity that the command writes and no mark
+  (`unmarked-secret-member`). A secret member cannot be a path parameter:
+  generation refuses the route, because the URL goes in access logs;
+- `Sensitive` for a command whose answer holds a member marked `x-sensitive`,
+  or whose answer the document marks `x-stego-opaque` because it holds a
+  `google.protobuf.Any`, `Struct`, `Value` or `ListValue` member, which can
+  hold a secret that no mark reaches: it writes the answer only to
+  `--output-file FILE`, and never to stdout;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
-  that take a string `name`. The kind is the name of the entity.
+  that take a string `name`, at a path with no parameter. The kind is the
+  name of the entity, and the API version is `<service>/v1`, such as
+  `sellers/v1` for the service `sellers`. A scoped collection, whose path
+  names its parent, gets no apply resource: use its create and patch
+  commands.
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
@@ -54,8 +74,10 @@ reads the current token file before its request. Logout removes configuration
 and retains the externally owned token file. The factory selects the environment
 variable and application directory used to locate configuration.
 
-New directories use mode 0700. Configuration and token files must exclude group
-and other access. The configuration directory must exclude writes by other
+New directories use mode 0700. Configuration and token files must be owned by
+the effective user, as ssh checks for its keys, and must exclude group and other
+access. A body file that holds a secret member has the same rules. Thus a CLI
+that runs as root accepts only such files that root owns. The configuration directory must exclude writes by other
 users. Configuration reads reject leaf symlinks. Writes use an open directory
 handle, a random exclusive file, file sync, atomic rename, and directory sync.
 Failed writes do not replace configuration with partial JSON. Input files must
@@ -82,17 +104,39 @@ gives by `$ref` does not count. A command that is not a POST or a PATCH must
 not set the flag.
 
 With the flag, the CLI sends a write again one time, with the same key and
-body, after a transport failure, a request that expired, or a 5xx answer. It
-waits one second first, or follows a `Retry-After` of one to five seconds.
+body, after a transport failure, a request that expired, or a 5xx answer that
+carries the header `Idempotency-Kept: 1`. It waits one second first, or follows a `Retry-After` of one to five seconds.
 When the second request gets no success, the outcome is unknown: the first
 request can still be in its transaction, as a 409 answer shows. The service
 gives the stored answer of a write that it did, so the write does not occur
 two times. The CLI does not send a GET, PUT, or DELETE again. It does not send
 a write again after any other answer, after a redirect, after an answer body
-over the client limit, or after a request that the client refused before it
-sent it. Without the flag, the CLI does not send the write again. After an
+over the client limit, after a certificate of the service that the TLS
+handshake refuses or a handshake alert from the service on a new connection
+(`ErrUntrusted`), or after a request that the client refused before it sent
+it. Without the flag, the CLI does not send the write again. After an
 uncertain failure, callers must check resource state before they retry a
 write.
+
+The flag comes from the OpenAPI document that the CLI holds, which is the
+document of the service when the CLI was built. When a later release of the
+service stops to keep the key of a write, a CLI of an earlier release still
+sends that write again, and the write can then occur two times. Thus, build
+the CLI from the same release as the service that it calls, and build it again
+with each release of the service.
+
+The service tells on each answer to a write whose key it keeps that it keeps
+the key: the answer carries `Idempotency-Kept: 1`, also a problem and a 5xx
+answer. A 5xx answer with no such header, such as a 502 or a 504 of a proxy,
+or an answer of a service of another release, is not sent again: the command
+ends with an error that says that the write was not sent again and can have
+been done, so read the state of the resource before a new write. A transport
+failure or a request that expired gives no answer, so the flag decides there.
+When the flag says that the service keeps the key and a 2xx answer has no
+`Idempotency-Kept` header, the CLI writes a warning to standard error that the
+CLI and the service can be of different releases. The warning changes no
+answer and no exit code. A proxy in front of the service must not add
+`Idempotency-Kept`: the CLI trusts the header to send a write again.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and
@@ -112,8 +156,10 @@ validation error. A write or sync error keeps the file for inspection; it can
 contain the only copy of a credential. No file failure falls back to stdout.
 A successful response with no body creates an empty file when requested.
 
-Commands marked `Sensitive` require `--output-file`. Use `--output-file -` to
-select stdout explicitly. Other commands use stdout by default. This output
+Commands marked `Sensitive` require `--output-file FILE` and refuse
+`--output-file -`: their answer holds a secret, and stdout can go to a
+terminal or a log. Other commands use stdout by default, and `--output-file -`
+selects stdout explicitly. This output
 choice does not change uncertain mutation results: check resource state before
 a retry. A process crash can leave an empty or partial private file. The CLI
 cannot recover a secret that the server returned only once.
@@ -158,6 +204,19 @@ then removes local configuration, even if revocation fails. A revocation error
 is reported. Provider browser cookies and other applications are outside this
 logout operation. The lock file remains in place.
 
+## The environment of the CLI
+
+The CLI reads one environment variable of its own:
+
+| Variable | Required | Description |
+|---|---|---|
+| `APPLY_CONFIG` | no | The file of the configuration of the CLI: the URL, the CA file, the token file or the OIDC session. When it has no value, the CLI uses `<service>/config.json` in the configuration folder of the user (`os.UserConfigDir`, such as `~/.config/applicants/config.json`). |
+
+Set it on the computer of the user that runs the CLI, never on a pod of the
+service. The component states it with `read_by_client: true`, so the platform
+requirements, the environment variable reference, `stego env check` and the
+Kubernetes base of the service do not list it (walkthrough 17, W17-D2).
+
 ## The apply command
 
 `apply` creates or changes resources from a set of documents, as
@@ -184,13 +243,18 @@ A document holds the JSON subset of YAML: no aliases, merge keys or custom
 tags. Its keys are `apiVersion`, `kind`, `metadata` and `spec`, and no other:
 
 ```yaml
-apiVersion: example.com/v1
+apiVersion: clinics/v1
 kind: Clinic
 metadata:
   name: north
 spec:
   code: NO
 ```
+
+With no `factory_package`, `apiVersion` is `<service>/v1`, with the name of
+the service, such as `clinics/v1` for the service `clinics`. Apply refuses
+another `apiVersion` with `unsupported apply API version`, and accepts a
+document with no `apiVersion`.
 
 Give the application each kind as a `command.ApplyResource`: the `Kind`
 and the `APIVersion` that a document states, the `Path` of the collection,
@@ -211,6 +275,26 @@ each document is `created`, `configured`, `unchanged`, `failed`, `unknown`
 or `not_attempted`. Apply stops at the first write that fails. The writes
 before it stay. A status of `unknown` means that the write can have
 occurred: read the resource before you run apply again.
+
+A field that the create takes and the patch does not, such as a field with
+`writable: create`, is create-only. When apply patches a resource that it
+found, it leaves out each create-only field whose value in the document is
+the value that the service returned, so you can apply the same documents
+again. When the value is another one, apply refuses the documents before
+the first write, with `apply cannot change the field <field> of <kind>
+"<name>"`. A create-only field that the answer of the service does not hold
+is refused in the same way, because apply cannot compare it. To
+change a create-only field, use a command of the service that changes it, or
+delete the resource and apply again when the collection has a delete.
+
+Apply compares a create-only field only when its type is a string, an
+integer, a boolean or a list of strings. It compares a string as text: a
+timestamp, such as `2026-01-01T00:00:00Z`, is the same value only when the
+document gives it in the form that the service returns. A field of type
+number or object has no apply field, so a document that gives it is refused
+with `invalid apply field`. A secret field is not in the answer, so apply
+cannot compare it. Leave such create-only fields out of a document that you
+apply again (security review of PR #461, I1).
 
 Commands marked for confirmation require `--yes`. Interactive prompts,
 stdin bodies, legacy configuration migration, and automatic SDK generation

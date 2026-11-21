@@ -323,10 +323,11 @@ type tableModel struct {
 }
 
 // columnModel is one column: its name, its type, its NOT NULL, its DEFAULT clause, and its default as the schema
-// manifest states it (ST-SUP-RC01-OC12).
+// manifest states it (ST-SUP-RC01-OC12). droppable marks the clear column of an open seal, which the manifest names
+// as droppable, because the release goes on after the contract step drops it (ST-SUP-RP15-LC05).
 type columnModel struct {
 	name, typ, defaultClause, manifestDefault string
-	notNull                                   bool
+	notNull, droppable                        bool
 }
 
 // checkModel is one CHECK constraint: its name, its expression, and its definition as pg_get_constraintdef
@@ -780,10 +781,11 @@ func searchColumns(entity types.Entity, collections []types.Collection) []string
 }
 
 // Searchable tells whether the search of a list takes the field, so that each table of a listed entity has a search
-// index on it: a field that is not pii or secret, of a text, enum, number or bool type. The check against the base
-// reads it too (ST-GEN-INV33).
+// index on it: a field that is not pii or secret, of a text, enum, number or bool type. A field written public is
+// such a field, as one with no sensitivity, from postgres-adapter 6.19.0 (decision ST-DECL-Q46 (a)). The check
+// against the base reads it too (ST-GEN-INV33).
 func Searchable(f types.Field) bool {
-	return f.Sensitivity == "" && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
+	return f.Public() && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
 		f.Type == types.FieldTypeInt32 || f.Type == types.FieldTypeInt64 || f.Type == types.FieldTypeFloat ||
 		f.Type == types.FieldTypeDouble || f.Type == types.FieldTypeBool)
 }

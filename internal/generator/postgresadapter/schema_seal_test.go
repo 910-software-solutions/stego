@@ -96,8 +96,8 @@ func TestSealSteps(t *testing.T) {
 		// CHECKs of the contract.
 		manifest := generated(t, files[1], "seal/schema_manifest.go")
 		for _, want := range []string{
-			`{Name: "note", Type: "character varying(200)", NotNull: false}`, `{Name: "note_sealed", Type: "bytea", NotNull: false}`,
-			`{Name: "code", Type: "character varying(40)", NotNull: true}`, `{Name: "code_sealed", Type: "bytea", NotNull: false}`,
+			`{Name: "note", Type: "character varying(200)", NotNull: false, Droppable: true}`, `{Name: "note_sealed", Type: "bytea", NotNull: false}`,
+			`{Name: "code", Type: "character varying(40)", NotNull: true, Droppable: true}`, `{Name: "code_sealed", Type: "bytea", NotNull: false}`,
 			`{Name: "vaults_note_sealed_complete", Kind: manifest.KindCheck, Definition: "CHECK (((note_sealed IS NOT NULL) OR (note IS NULL)))", NotValid: true}`,
 			`{Name: "vaults_code_sealed_not_null", Kind: manifest.KindCheck, Definition: "CHECK ((code_sealed IS NOT NULL))", NotValid: true}`,
 		} {
@@ -145,6 +145,83 @@ func TestSealSteps(t *testing.T) {
 		}
 		if strings.Contains(migrate, `ALTER COLUMN \"note_sealed\" SET NOT NULL`) {
 			t.Error("the contract of the optional note sets its sealed column NOT NULL")
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC49-T01 A seal from public of a field that a list searches keeps its search index on the clear column until the contract drops the column", func(t *testing.T) {
+		roles := map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "seal_runtime", "owner_role": "seal_owner"}}
+		clear := []types.Entity{{Name: "Vault", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "code", Type: types.FieldTypeString}}}}
+		release := func(ns string, phases ...string) gen.Context {
+			ctx := runtimeService(ns, ns+"tenancy", clear, sealCollections())
+			ctx.PeerConfigs = roles
+			if len(phases) == 0 {
+				return ctx
+			}
+			entities := []types.Entity{{Name: "Vault", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "code", Type: types.FieldTypeString, Sensitivity: "secret"}}}}
+			// The base declares code with no sensitivity, and the seal names it public (walkthrough 15, W15-B1).
+			ctx.SchemaChanges = []types.SchemaChange{{ID: "vault-code-seal", Kind: "seal", Entity: "Vault", Field: "code", From: "public"}}
+			for _, phase := range phases {
+				ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "vault-code-seal", Phase: phase})
+			}
+			ctx.Entities = gen.SealedNames(entities, ctx.SchemaChanges, ctx.SchemaHistory)
+			return ctx
+		}
+		var files [3][]gen.File
+		for i, ctx := range []gen.Context{release("pubbase"), release("pub", "expand"), release("pubc", "expand", "contract")} {
+			out, _, err := new(postgresadapter.Generator).Generate(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[i] = out
+		}
+		const index = `CREATE INDEX "vaults_code_search" ON public."vaults" ("tenant_id", "code");`
+		initial := generated(t, files[0], "pubbase/migrations/001_initial.sql")
+		if !strings.Contains(initial, index) {
+			t.Fatalf("the base does not give the search index of code:\n%s", initial)
+		}
+		for i, name := range []string{"pub", "pubc"} {
+			if got := generated(t, files[i+1], name+"/migrations/001_initial.sql"); got != initial {
+				t.Errorf("the 001_initial of %s with the seal from public is not the one of the base:\n%s\nwant\n%s", name, got, initial)
+			}
+		}
+		// The release of the expand step keeps the clear column with its search index, and no index of the sealed
+		// column; after the contract the index went with the clear column.
+		if manifest := generated(t, files[1], "pub/schema_manifest.go"); !strings.Contains(manifest, `"vaults_code_search"`) || strings.Contains(manifest, "code_sealed_search") {
+			t.Errorf("the manifest of the expand step does not keep the search index of the clear column alone:\n%s", manifest)
+		}
+		if manifest := generated(t, files[2], "pubc/schema_manifest.go"); strings.Contains(manifest, "vaults_code_search") || strings.Contains(manifest, "code_sealed_search") {
+			t.Errorf("the manifest after the contract names a search index of code:\n%s", manifest)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC12-T11 The manifest marks as droppable the clear column of each open seal and no other column", func(t *testing.T) {
+		roles := map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "seal_runtime", "owner_role": "seal_owner"}}
+		for _, c := range []struct {
+			name      string
+			ctx       gen.Context
+			droppable int
+		}{
+			{"the release before the seals", sealBase("dropbase", "dropbasetenancy"), 0},
+			{"the release of the expand steps", sealSteps("dropseal", "dropsealtenancy", false), 2},
+			{"the release of the contract steps", sealSteps("dropsealc", "dropsealctenancy", true), 0},
+		} {
+			c.ctx.PeerConfigs = roles
+			out, _, err := new(postgresadapter.Generator).Generate(c.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := generated(t, out, c.ctx.OutputNamespace+"/schema_manifest.go")
+			if got := strings.Count(manifest, "Droppable: true"); got != c.droppable {
+				t.Errorf("%s: the manifest marks %d columns droppable, want %d:\n%s", c.name, got, c.droppable, manifest)
+			}
+			if c.droppable > 0 {
+				for _, want := range []string{`{Name: "note", Type: "character varying(200)", NotNull: false, Droppable: true}`,
+					`{Name: "code", Type: "character varying(40)", NotNull: true, Droppable: true}`} {
+					if !strings.Contains(manifest, want) {
+						t.Errorf("%s: the manifest does not hold %s", c.name, want)
+					}
+				}
+			}
 		}
 	})
 

@@ -1,6 +1,8 @@
+# Version 1.2.3 takes the boolean OpenAPI marks x-kept and x-stego-opaque of the rest-api document (security
+# review of PR #463, F1).
 kind: component
 name: typescript-sdk
-version: 1.2.1
+version: 1.2.3
 stage: ga
 output_namespace: tssdk
 config:

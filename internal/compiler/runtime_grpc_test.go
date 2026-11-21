@@ -120,3 +120,31 @@ func TestRuntimeGRPC(t *testing.T) {
 		})
 	}
 }
+
+func TestGRPCSecretPathParameter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the stego binary")
+	}
+	t.Parallel()
+	stego := stegoBinary(t)
+	t.Run("ST-SUP-RC20-OC54-T05 A service of the rpc-service archetype, with no rest-api, refuses a path parameter that the proto marks debug_redact", func(t *testing.T) {
+		plain := newGRPCProject(t, stego)
+		if output, err := plain.stegoRun("plan"); err != nil {
+			t.Fatalf("the plan of the fixture with a plain path parameter gave %v:\n%s", err, output)
+		}
+		marked := newGRPCProject(t, stego)
+		proto := marked.read("proto/shop.proto")
+		changed := strings.Replace(proto, "message AddNoteRequest {\n  string order_id = 1;", "message AddNoteRequest {\n  string order_id = 1 [debug_redact = true];", 1)
+		if changed == proto {
+			t.Fatal("the fixture proto has no member order_id of AddNoteRequest")
+		}
+		marked.write("proto/shop.proto", changed)
+		output, err := marked.stegoRun("plan")
+		if err == nil || !strings.Contains(output, "a secret member cannot be a path parameter") || !strings.Contains(output, "orderId") {
+			t.Errorf("the plan with a debug_redact path parameter gave %v, want the refusal that names orderId:\n%s", err, output)
+		}
+		if _, err := os.Stat(filepath.Join(marked.dir, "out")); !os.IsNotExist(err) {
+			t.Errorf("the refused plan wrote the output folder: %v", err)
+		}
+	})
+}

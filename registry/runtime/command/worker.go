@@ -193,6 +193,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 			return errTenantNotActive
 		}
 	}
+	recheckSeals(ctx, rt, w.writes)
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return workerBegin(ctx, rt, notAfter, err)
@@ -500,6 +501,8 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	if !ok || stagerPermission == "" {
 		return outbox.PermanentRefusal(fmt.Errorf("%w: %s consumes no message that %q stages", errMessage, w.spec.Name, d.Origin))
 	}
+	// The outbox began the transaction of a consumer, so its check runs beside it.
+	recheckSeals(ctx, rt, w.writes)
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
 	s.reads = w.reads
 	s.changeEvents = w.changeEvents

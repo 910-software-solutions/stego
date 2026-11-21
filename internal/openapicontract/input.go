@@ -93,9 +93,11 @@ func checkDocument(data []byte) error {
 				}
 				seen[key.Value] = true
 				if strings.HasPrefix(strings.ToLower(key.Value), "x-") {
-					// x-stego-command marks the operation of a command in the document of the rest-api component
-					// (ST-SUP-RC20-OC53).
-					if (key.Value != "x-sensitive" && key.Value != "x-stego-command") || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+					// The marks of the document of the rest-api component, each a boolean: x-stego-command marks the
+					// operation of a command (ST-SUP-RC20-OC53), x-kept a patch member that a write cannot change
+					// (ST-SUP-RC20-OC46), and x-stego-opaque a command answer with an opaque protobuf member
+					// (ST-SUP-RC20-OC54).
+					if !documentMarks[key.Value] || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
 						return fmt.Errorf("unsupported OpenAPI extension")
 					}
 					// All body fields are excluded from diagnostics, including sensitive fields.
@@ -117,6 +119,10 @@ func checkDocument(data []byte) error {
 	}
 	return visit(&root, 0)
 }
+
+// documentMarks are the extensions that an OpenAPI input may hold, each with a boolean value.
+var documentMarks = map[string]bool{"x-sensitive": true, "x-stego-command": true, "x-kept": true, "x-stego-opaque": true}
+
 func Load(ctx gen.Context) (*openapi3.T, error) {
 	inputs := ctx.Inputs
 	root, names, err := "", []string(nil), error(nil)

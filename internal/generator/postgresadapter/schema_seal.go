@@ -324,6 +324,18 @@ func openSeals(ctx gen.Context, models []tableModel, optional map[string][]syncT
 			return nil, err
 		}
 		name := tableName(change.Entity)
+		// The release of the expand step goes on after the contract step drops the clear column (ST-SUP-RC01-OC49),
+		// so the manifest names it as droppable, and a start without it is ready (ST-SUP-RC01-OC12).
+		for i := range models {
+			if models[i].name != name {
+				continue
+			}
+			for j := range models[i].columns {
+				if models[i].columns[j].name == clear {
+					models[i].columns[j].droppable = true
+				}
+			}
+		}
 		trigger := syncTrigger{notNull: CompleteCheckName(change.Entity, sealed), notNullDefinition: completeDefinition(clear, sealed)}
 		optional[name] = append(optional[name], trigger)
 		if !field.Optional {

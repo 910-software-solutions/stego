@@ -61,7 +61,7 @@ Deployments:
 
 | Deployment | File | Modes (`args`) | Readiness | Service |
 |---|---|---|---|---|
-| `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz` | The Service selects it. |
+| `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz/modes` | The Service selects it. |
 | `<service>-worker` | `deploy/base/worker-deployment.yaml` | `--mode=worker`, `--mode=controller` | `/readyz/modes` | No Service selects it, and it has no container port. |
 
 - Each Deployment runs as a ServiceAccount of its own name: `<service>` in `deploy/base/service-account.yaml`, and
@@ -82,8 +82,13 @@ Deployments:
   cloud or Vault credentials.
 - The liveness probe of each one is `/livez`. It answers 200 while the process runs, and it reads no database
   and no broker, so an outage of a dependency does not restart a pod.
-- `/readyz` tells whether the pod can take requests of the API. It does not read the worker and controller
-  modes. Thus an outage of Kafka or of the audit sink does not remove the API from the endpoints of its Service.
+- `/readyz/modes` of the api pod tells whether the pod can take requests of the API: it reads the api mode only,
+  which the pod runs, and not the worker and controller modes. Thus an outage of Kafka or of the audit sink does
+  not remove the API from the endpoints of its Service. It answers 503 while the HTTP server does not accept, at
+  shutdown, and from the start when the database does not hold a table or a column that the code of the release
+  needs, such as after a roll back past a contract step (see [Which older releases can run on a newer
+  database](operations.md#which-older-releases-can-run-on-a-newer-database)). Then a rollout stops at its first
+  pod, and the pods that serve stay.
 - `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
   `worker: not ready: the component inbox-order-changes stopped`. No traffic goes to the worker Deployment, so
   its readiness removes nothing from a Service. It shows a stopped worker in `kubectl get pods` and in the
@@ -99,7 +104,12 @@ Deployments:
   Thus the API pod holds no credential of the worker role, the relay role or Kafka.
   A variable that only the api mode reads (`read_by_mode: api`), such as the CORS settings `CORS_ALLOWED_*` and
   the gRPC settings `STEGO_GRPC_ADDR`, `STEGO_GRPC_STREAM_TIMEOUT` and `STEGO_GRPC_STREAM_IO_TIMEOUT`, is only in
-  the api Deployment. The worker Deployment and the migration Job do not get it.
+  the api Deployment. The worker Deployment and the migration Job do not get it. From grpc-application 2.4.0, the
+  gRPC TLS files `STEGO_GRPC_TLS_CERT` and `STEGO_GRPC_TLS_KEY` are read by the api mode too, so only the api
+  Deployment mounts the Secret `<service>-grpc-tls`, which holds the private key of the gRPC server. The worker
+  modes serve no gRPC call. The two variables are required when the process runs the api mode.
+- A variable of a client program of the service, such as `APPLY_CONFIG` of the generated CLI, is in no pod:
+  from cli-application 1.20.0 the platform requirements do not list it.
 - The `args` select the modes, so neither Deployment has an entry of `STEGO_MODE`.
 - The pods of the worker Deployment have the label `app.kubernetes.io/name: <service>-worker`, so that the
   selector of `<service>`, which does not change, takes none of them.
@@ -108,8 +118,8 @@ Deployments:
   orders-worker, count: 2}]`.
 
 A service whose declared modes hold only the api mode, or only the worker and controller modes, gets one
-Deployment, with the readiness `/readyz` or `/readyz/modes`. A browser service has no modes: it gets one
-Deployment with the readiness `/readyz`.
+Deployment, with the readiness `/readyz/modes`. A browser service has no modes: it gets one Deployment with the
+readiness `/readyz` of health-check.
 
 Upgrade: before this release, the one Deployment `<service>` ran every mode, as `STEGO_MODE` selected. After the
 upgrade it runs the api mode only, whatever `STEGO_MODE` holds, and `<service>-worker` runs the worker and
@@ -128,7 +138,7 @@ Deployment runs and no pod of `<service>-worker` runs:
 - The creator of a new row gets 404 when it reads the row.
 - A write answers `Authz-Revocation: pending`, and its status route stays `pending`. A read with
   `Authz-Revocation-After` waits until the wait cap, then answers `Authz-Revocation: pending` with the 404.
-- `/readyz` of the api pod stays 200. This is correct: the readiness of the API does not read the worker modes, so
+- `/readyz/modes` of the api pod stays 200. This is correct: the readiness of the API does not read the worker modes, so
   an outage of the worker does not remove the API from its Service. Thus readiness does not show this case.
 
 When the worker pod starts, the relay delivers the tuples in order, and the grants and rows become visible. No
@@ -420,7 +430,7 @@ credential and the key of SpiceDB. With the shipped registry, these are:
 | `STEGO_SECRET_KEY_RING_FILE` (the Deployments only, for a service with a `secret` field, readable or compare-only, or a `pii` field) | `STEGO_SECRET_KEY_RING_FILE` | `<service>-secret-key-ring`, `key-ring` |
 | `STEGO_HTTP_TLS_CERT`, `STEGO_HTTP_TLS_KEY` | the same | `<service>-tls`, `tls-crt` and `tls-key` (browser-backend) |
 | `STEGO_BROWSER_CLIENT_SECRET_FILE`, `STEGO_BROWSER_SESSION_KEY_FILE` | the same | `<service>-browser`, `client-secret` and `session-keys` |
-| `STEGO_GRPC_TLS_CERT`, `STEGO_GRPC_TLS_KEY` | the same | `<service>-grpc-tls`, `tls-crt` and `tls-key` |
+| `STEGO_GRPC_TLS_CERT`, `STEGO_GRPC_TLS_KEY` (the api Deployment only, from grpc-application 2.4.0) | the same | `<service>-grpc-tls`, `tls-crt` and `tls-key` |
 | `STEGO_KAFKA_PASSWORD_FILE`, `STEGO_KAFKA_CA_FILE` (the worker Deployment only) | the same | `<service>-kafka-client`, `password` and `ca-crt` (kafka-producer, kafka-consumer) |
 
 The Component writes a row only when the service has that variable and states that secret need. It does not

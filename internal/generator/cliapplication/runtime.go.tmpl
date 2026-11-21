@@ -10,6 +10,7 @@ import (
  "io"
  "net/http"
  "net/url"
+ "os"
  "regexp"
  "sort"
  "strconv"
@@ -27,9 +28,9 @@ type Field struct {Flag,Key,Type,RelativeFlag string;Required,Nullable bool}
 type PathParameter struct {Flag,Key string}
 // IdempotentWrites states that the service keeps the Idempotency-Key of this POST or PATCH command: its OpenAPI
 // operation carries the Idempotency-Key header parameter (the idempotency component). Then the CLI sends the write
-// again one time, with the same key, after a transport failure, an expired request or a 5xx answer. The CLI sends a
-// new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
-type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
+// again one time, with the same key, after a transport failure, an expired request or a 5xx answer that carries
+// Idempotency-Kept: 1. The CLI sends a new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
+type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;BodyFields []Field;Success,EmptyResponses []int}
 type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
@@ -82,6 +83,12 @@ func validate(app Application)error{
    }
    switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
   }
+  // A body field, a secret, has no flag: only --body FILE gives it (ST-SUP-RC04-OC32).
+  for _,f:=range c.BodyFields{
+   if f.Flag!=""||f.RelativeFlag!=""||!property.MatchString(f.Key)||keys[f.Key]||c.Query||(c.Method!="POST"&&c.Method!="PUT"&&c.Method!="PATCH"){return errors.New("invalid CLI body field")}
+   keys[f.Key]=true
+   switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
+  }
   if !c.Query&&len(c.Fields)>0&&(c.Method=="GET"||c.Method=="DELETE"){return errors.New("CLI read and delete fields require query mode")}
  }
  return validateApply(app.Resources)
@@ -114,7 +121,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  for _,f:=range c.Fields{fields[f.Flag]=f;if f.RelativeFlag!=""{fields[f.RelativeFlag]=f}}
  if len(arguments)==1&&arguments[0]=="--help"{
   var names []string;for _,f:=range c.Fields{names=append(names,"--"+f.Flag+" ("+f.Type+")");if f.RelativeFlag!=""{names=append(names,"--"+f.RelativeFlag+" DURATION (exclusive with --"+f.Flag+")")}}
-  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};names=append(names,"--output-file FILE (- selects stdout)")
+  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};if c.Sensitive{names=append(names,"--output-file FILE (required)")}else{names=append(names,"--output-file FILE (- selects stdout)")}
   if c.Method=="POST"||c.Method=="PUT"||c.Method=="PATCH"{names=append(names,"--body FILE")};if c.Confirm{names=append(names,"--yes")};sort.Strings(names)
   _,err:=fmt.Fprintln(output,strings.Join(names,"\n"));return err
  }
@@ -124,13 +131,18 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  if c.ID{if !identifier.MatchString(positions[0]){return errArguments};route=strings.Replace(route,"{id}",url.PathEscape(positions[0]),1)}
  for _,p:=range c.PathParameters{value,ok:=values[p.Flag];if !ok||!identifier.MatchString(value){return errArguments};route=strings.Replace(route,"{"+p.Key+"}",url.PathEscape(value),1);delete(values,p.Flag)}
  outputFile,outputSet:=values["output-file"];delete(values,"output-file")
- if (outputSet&&outputFile=="")||(c.Sensitive&&!outputSet){return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ if outputSet&&outputFile==""{return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ // The answer of a Sensitive command holds a secret: it goes only to a private file, never to stdout (security review of PR #460, I1).
+ if c.Sensitive&&(!outputSet||outputFile=="-"){return errors.New("this command answer holds a secret and requires --output-file FILE; stdout is not permitted")}
  if c.Confirm{if values["yes"]!="true"{return errors.New("confirmation required: pass --yes")};delete(values,"yes")}
  body:=map[string]json.RawMessage{}
  if name,ok:=values["body"];ok{
   if c.Query||(c.Method!="POST"&&c.Method!="PATCH"&&c.Method!="PUT")||len(values)!=1{return errArguments}
-  data,err:=readBody(name);if err!=nil{return err}
+  data,private,err:=readBody(name);if err!=nil{return err}
   if body,err=object(data);err!=nil{return err};delete(values,"body")
+  // A file that holds a secret body field is private, as the token file is (security review of PR #460, L3, and of PR
+  // #462, L3).
+  for _,f:=range c.BodyFields{if _,ok:=body[f.Key];ok&&!private{return errors.New("a request body file that holds a secret field must be your own file and must not permit access by other users")}}
  }
  now:=time.Now()
  for flag,value:=range values{
@@ -142,7 +154,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   raw:=[]byte(value);if field.Type=="string"{raw,_=json.Marshal(value)}
   body[field.Key]=raw
  }
- allowed:=map[string]Field{};for _,f:=range c.Fields{allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
  for key,raw:=range body{field,ok:=allowed[key];if !ok||!fieldValue(field,raw){return errors.New("invalid request field")}}
  var payload []byte
  if c.Query{
@@ -159,6 +171,9 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  response,retried,err:=send(ctx,c.IdempotentWrites,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
  if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
+ // A 5xx answer to a write that was not sent again, such as one with no Idempotency-Kept header, can follow a write
+ // that the service did (ST-SUP-RC04-OC34).
+ if !success&&response.StatusCode>=500&&(c.Method=="POST"||c.Method=="PATCH"){return fmt.Errorf("API request failed (HTTP %d); the write was not sent again and can have been done; retrieve the resource before a new write",response.StatusCode)}
  if !success{return fmt.Errorf("API request failed (HTTP %d)",response.StatusCode)}
  emptyResponse:=response.StatusCode==204||response.StatusCode==205
  for _,code:=range c.EmptyResponses{if code==response.StatusCode{emptyResponse=true}}
@@ -179,32 +194,55 @@ func idempotencyKey()(string,error){
 // writeRetryWait is the wait before the second request of a write when the answer gives no Retry-After; a Retry-After
 // of 1 to 5 seconds is followed. Only the tests of this package change it.
 var writeRetryWait=time.Second
+// warnings is where the CLI writes a warning that changes no answer and no exit code. Only the tests of this package
+// change it.
+var warnings io.Writer=os.Stderr
+// keptHeader is the answer header with which the service tells that it keeps the Idempotency-Key of the request
+// (ST-SUP-RC04-OC34).
+const keptHeader="Idempotency-Kept"
 // send sends one request. A POST or a PATCH gets a new Idempotency-Key. When keeps states that the service keeps the
-// key of this write, a write that fails in transport, expires or gets a 5xx answer is sent again one time, after a
-// short wait, with the same key and body, so the service gives the stored answer of a write that it did
-// (ST-SUP-RC04-OC31). retried tells that the second request was sent: its answer, when it is not a success, leaves the
-// outcome of the write unknown, as the first request can still be in its transaction. No other request is sent again
-// (ST-SUP-RC04-OC05).
+// key of this write, a write that fails in transport or expires, or whose 5xx answer carries Idempotency-Kept: 1, is
+// sent again one time, after a short wait, with the same key and body, so the service gives the stored answer of a
+// write that it did (ST-SUP-RC04-OC31, ST-SUP-RC04-OC34). retried tells that the second request was sent: its answer,
+// when it is not a success, leaves the outcome of the write unknown, as the first request can still be in its
+// transaction. No other request is sent again (ST-SUP-RC04-OC05).
 func send(ctx context.Context,keeps bool,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
  if method!="POST"&&method!="PATCH"{response,err=transport.Do(ctx,method,route,headers,payload);return}
  key,err:=idempotencyKey();if err!=nil{return}
  headers=headers.Clone();headers.Set("Idempotency-Key",key)
  response,err=transport.Do(ctx,method,route,headers,payload)
- if !keeps||!uncertain(response,err)||ctx.Err()!=nil{return}
+ if !keeps||!uncertain(response,err)||ctx.Err()!=nil{warnRelease(keeps,response,err);return}
  wait:=writeRetryWait
  if err==nil{if seconds,parseErr:=strconv.Atoi(response.Header.Get("Retry-After"));parseErr==nil&&seconds>=1&&seconds<=5{wait=time.Duration(seconds)*time.Second}}
  timer:=time.NewTimer(wait);defer timer.Stop()
  select{case <-ctx.Done():return response,false,err;case <-timer.C:}
  response,err=transport.Do(ctx,method,route,headers,payload)
+ warnRelease(keeps,response,err)
  return response,true,err
 }
 
-// uncertain tells whether a write can have occurred with its answer lost: a transport failure, a request that expired,
-// or a 5xx answer. A local refusal of the client (such as a header or a body over its limit), a redirect and an answer
-// body over the limit are not sent again (security review of PR 447, I-2).
+// uncertain tells whether a write can have occurred with its answer lost and a second request with the same key is
+// safe: a transport failure or a request that expired, which give no answer, or a 5xx answer that carries
+// Idempotency-Kept: 1, the word of the service that it keeps the key. A 5xx answer with no such header, such as of a
+// proxy or of a service of another release, is not sent again (ST-SUP-RC04-OC34). A local refusal of the client (such
+// as a header or a body over its limit), a redirect and an answer body over the limit are not sent again (security
+// review of PR 447, I-2).
 func uncertain(response client.Response,err error)bool{
  if err!=nil{return errors.Is(err,client.ErrTransport)||errors.Is(err,client.ErrDeadline)}
- return response.StatusCode>=500
+ return response.StatusCode>=500&&kept(response)
+}
+
+// kept tells whether an answer carries Idempotency-Kept: 1, one time.
+func kept(response client.Response)bool{
+ values:=response.Header.Values(keptHeader);return len(values)==1&&values[0]=="1"
+}
+
+// warnRelease writes a warning when the application states that the service keeps the key of a write and a 2xx
+// answer has no Idempotency-Kept header: the CLI and the service can then be of different releases. It changes no
+// answer (ST-SUP-RC04-OC34).
+func warnRelease(keeps bool,response client.Response,err error){
+ if !keeps||err!=nil||response.StatusCode<200||response.StatusCode>299||kept(response){return}
+ _,_ = fmt.Fprintln(warnings,"warning: the CLI states that the service keeps the Idempotency-Key of this write, but the answer has no Idempotency-Kept header; the CLI and the service can be of different releases, so build the CLI from the release of the service")
 }
 
 // IdempotentWritesFrom gives the application with IdempotentWrites set from the OpenAPI document of its service: true
