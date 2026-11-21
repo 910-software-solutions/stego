@@ -238,5 +238,5 @@ last_applied:
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.177.0
-            sum: h1:hf/8q1rDg+8Pb2He+5hqq0jTa182njU5of7jALHh5BY=
+            sum: h1:uKyqgClsL+OsCu5PxFi4YZxXm+RYNn/sS43Be6Ep1oM=
         imports_runtime: true
