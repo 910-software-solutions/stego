@@ -522,11 +522,27 @@ Do these steps in this order:
    A dump from before the seal holds the field in clear. So when the dump is
    from before the expand step or the contract step of a seal, first run the
    release of the expand step: its migration Job and its worker Deployment,
-   which runs the controller, for one pass of the seal job. That takes 10 to
-   13 minutes or more: the first run of the job waits 3 minutes after the expand
-   step, and the job runs each 10 minutes. When it logs `seal of a secret
-   column` with `completed=true`, stop that release and run the migration Job
-   of the release that you start again. Only then does that Job pass.
+   which runs the controller, for one pass of the seal job. The controller
+   runs the seal job when it gets the controller lease, at its start, and then
+   each 10 minutes. A run starts a pass only when the checkpoint row of the
+   seal is 3 minutes old or older, and no process of a release before the
+   step reported itself in its last three report intervals. Else the run
+   seals nothing, and the next run is 10 minutes later. The age of the row is
+   the time since the migration Job first applied the expand step on the
+   database, and a restore keeps the row of the dump with its time:
+   - When the dump is from after the expand step, the row is older than
+     3 minutes. Stop each process of the release before, then start the
+     worker Deployment: the pass runs at its start. In walkthrough 18, the
+     pass over 57 rows completed 2 seconds after the start of the worker.
+   - When the dump is from before the expand step, the migration Job of that
+     release makes a new row. Wait 3 minutes after the Job before you start
+     the worker Deployment, or the first pass runs only 10 minutes later.
+
+   A pass reads 100 rows at a time, with a pause of 50 ms after each batch,
+   so its time grows with the number of rows. When the job logs `seal of a
+   secret column` with `completed=true`, stop that release and run the
+   migration Job of the release that you start again. Only then does that Job
+   pass.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
 6. List the messages of the destination `authz` that are not done, and review
