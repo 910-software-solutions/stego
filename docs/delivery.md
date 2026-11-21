@@ -90,7 +90,9 @@ Deployments:
   database](operations.md#which-older-releases-can-run-on-a-newer-database)). Then a rollout stops at its first
   pod, and the pods that serve stay.
 - `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
-  `worker: not ready: the component inbox-order-changes stopped`. No traffic goes to the worker Deployment, so
+  `worker: not ready: the component inbox-order-changes stopped`. A service with several subscriptions has one
+  inbox for each, `inbox-<subscription>`, and the text names each inbox that stopped or that fails, joined by
+  `; `. No traffic goes to the worker Deployment, so
   its readiness removes nothing from a Service. It shows a stopped worker in `kubectl get pods` and in the
   `Available` condition, and a new release whose worker cannot start does not complete its rollout.
 - `/readyz/modes` also answers 503 while a destination of the outbox fails each delivery in a row. The Kafka

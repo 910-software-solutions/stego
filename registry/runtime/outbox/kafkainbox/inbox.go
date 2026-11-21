@@ -241,6 +241,14 @@ func New(c Config) (*Inbox, error) {
 	if c.Queue == nil || c.DB == nil || c.Tenants == nil || c.TenantSchema == "" || c.Retention <= 0 {
 		return nil, errors.New("kafkainbox: the inbox needs the queue, the worker role's database, the tenant list with its schema and the done retention")
 	}
+	// The settings name the settings of their subscription in each refusal (ST-SUP-RP01-LC38).
+	switch c.Settings.Subscription {
+	case "":
+		c.Settings.Subscription = c.Subscription.Name
+	case c.Subscription.Name:
+	default:
+		return nil, errors.New("kafkainbox: the settings are those of another subscription")
+	}
 	if err := c.Settings.Check(); err != nil {
 		return nil, err
 	}
@@ -360,7 +368,7 @@ func (in *Inbox) Purge(ctx context.Context, limit int) (int64, error) {
 }
 
 // ErrRetention is the error of Run when the topic's retention is longer than the done retention of the outbox, or
-// infinite with no InfiniteRetentionSetting: an offset reset could then apply a record twice (ST-SUP-RP01-LC35).
+// infinite with no SubscriptionInfiniteRetentionSetting of its subscription: an offset reset could then apply a record twice (ST-SUP-RP01-LC35).
 var ErrRetention = errors.New("kafkainbox: the topic keeps its records longer than the inbox keeps their IDs")
 
 // RetentionStage is the stage that names a start of the inbox that ErrRetention stopped.
@@ -390,13 +398,14 @@ func (in *Inbox) Run(ctx context.Context) error {
 			in.failed = RetentionStage
 			in.mu.Unlock()
 			in.emit(ctx, "kafka.consumer.start_refused", otellog.SeverityError, "the Kafka inbox did not start: "+RetentionStage,
-				attribute.String("stage", RetentionStage))
+				attribute.String("subscription", in.sub.Name), attribute.String("stage", RetentionStage))
 			return err
 		case err != nil:
 			class := failureClass(err)
 			in.sessionFailed(class)
+			// The subscription names the inbox of a service with several (decision on ST-SUP-Q204).
 			in.emit(ctx, "kafka.consumer.failed", otellog.SeverityWarn, "the Kafka inbox failed and opens its client again",
-				attribute.String("failure", class))
+				attribute.String("subscription", in.sub.Name), attribute.String("failure", class))
 		}
 		// A session that read before it failed, or ended clean, starts the backoff again (reading).
 		attempt := in.nextAttempt()
@@ -521,7 +530,7 @@ func (in *Inbox) session(ctx context.Context) error {
 }
 
 // checkRetention reads the retention.ms of the topic with the describe configs request, and refuses a retention
-// longer than the done retention, or an infinite one with no InfiniteRetentionSetting, with ErrRetention.
+// longer than the done retention, or an infinite one with no SubscriptionInfiniteRetentionSetting of the subscription, with ErrRetention.
 func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	ctx, cancel := context.WithTimeout(ctx, retentionTimeout)
 	defer cancel()
@@ -546,14 +555,14 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	if err != nil {
 		return err
 	}
-	if err := RetentionFits(ms, policy, in.retention, in.settings.AcceptInfiniteRetention); err != nil {
+	if err := RetentionFitsFor(ms, policy, in.retention, in.settings.AcceptInfiniteRetention, Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name)); err != nil {
 		return err
 	}
 	if ms < 0 || compacted(policy) {
 		// The acceptance of a topic that keeps records without end is logged once (security review of PR #418, L5).
 		in.accepted.Do(func() {
 			in.emit(ctx, "kafka.consumer.retention_accepted", otellog.SeverityInfo,
-				"the Kafka inbox reads a topic that keeps records without end, as "+InfiniteRetentionSetting+"=1 accepts",
+				"the Kafka inbox reads a topic that keeps records without end, as "+Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name)+"=1 accepts",
 				attribute.String("subscription", in.sub.Name))
 		})
 	}
@@ -601,23 +610,32 @@ func compacted(policy string) bool {
 	return false
 }
 
-// RetentionFits refuses with ErrRetention a topic retention of retentionMS milliseconds that is longer than the done
-// retention, or that is infinite (a negative value) or compacted (a cleanup.policy that holds compact, which keeps the
-// last record of each key without end) when acceptInfinite is false.
+// RetentionFits is RetentionFitsFor with the fixed name InfiniteRetentionSetting in its error. It stays for the API of
+// the runtime (ST-STD-RUNTIME-R03).
+//
+// Deprecated: use RetentionFitsFor with the setting of the subscription.
 func RetentionFits(retentionMS int64, policy string, done time.Duration, acceptInfinite bool) error {
+	return RetentionFitsFor(retentionMS, policy, done, acceptInfinite, InfiniteRetentionSetting)
+}
+
+// RetentionFitsFor refuses with ErrRetention a topic retention of retentionMS milliseconds that is longer than the done
+// retention, or that is infinite (a negative value) or compacted (a cleanup.policy that holds compact, which keeps the
+// last record of each key without end) when acceptInfinite is false. Its error names setting, the setting of the
+// subscription that accepts an infinite retention.
+func RetentionFitsFor(retentionMS int64, policy string, done time.Duration, acceptInfinite bool, setting string) error {
 	if compacted(policy) {
 		if acceptInfinite {
 			return nil
 		}
 		return fmt.Errorf("%w: the topic is compacted, so it keeps the last record of each key without end; set %s=1 to accept that an offset reset beyond the done retention can apply a record twice",
-			ErrRetention, InfiniteRetentionSetting)
+			ErrRetention, setting)
 	}
 	if retentionMS < 0 {
 		if acceptInfinite {
 			return nil
 		}
 		return fmt.Errorf("%w: the retention is infinite; set %s=1 to accept that an offset reset beyond the done retention can apply a record twice",
-			ErrRetention, InfiniteRetentionSetting)
+			ErrRetention, setting)
 	}
 	if time.Duration(retentionMS)*time.Millisecond > done {
 		return fmt.Errorf("%w: give the outbox a done retention at least as long as the topic's", ErrRetention)

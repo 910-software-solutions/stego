@@ -247,6 +247,11 @@ func checkNeedVariable(component *Component, need Need) error {
 		if found.IsSecret() {
 			return fault("variable", "the variable %s is secret; the value of a %s is not secret", need.Variable, need.Kind)
 		}
+		// A need of each subscription carries the value of the variable of that subscription, and a need of the
+		// service the value of a variable of the service (decision on ST-SUP-Q204).
+		if strings.Contains(need.Name, SubscriptionPlaceholder) != strings.Contains(need.Variable, SubscriptionPlaceholder) {
+			return fault("variable", "the need name and its variable %s must both hold %s or neither, so that the need of each subscription carries the variable of that subscription", need.Variable, SubscriptionPlaceholder)
+		}
 	}
 	if need.Value != "" {
 		if need.Kind != "identity issuer" {
@@ -277,10 +282,18 @@ func checkNeedName(component *Component, name string) error {
 		if inner == "service" {
 			continue
 		}
+		if placeholder == SubscriptionPlaceholder {
+			// A subscription name is a DNS label of the declaration, never a value of an environment (ST-SUP-INV23,
+			// decision on ST-SUP-Q204).
+			if !ProvidesSubscriptions(component) {
+				return fmt.Errorf("the placeholder %s is only for a component that provides the port %s", placeholder, SubscriptionsPort)
+			}
+			continue
+		}
 		key, isSetting := strings.CutPrefix(inner, "settings.")
 		setting, declared := component.Config[key]
 		if !isSetting || !declared {
-			return fmt.Errorf("the placeholder %s is not {service} or {settings.<key>} of a setting of the component", placeholder)
+			return fmt.Errorf("the placeholder %s is not {service}, {subscription} or {settings.<key>} of a setting of the component", placeholder)
 		}
 		if setting.Secret {
 			return fmt.Errorf("the placeholder %s names the secret setting %s; a name never holds a secret (ST-SUP-INV23)", placeholder, key)

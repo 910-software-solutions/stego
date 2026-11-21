@@ -190,12 +190,13 @@ func checkKafkaTopic() error {
 {{- end}}
 {{- if .Inbox}}
 
-// checkConsumerTopic refuses a worker mode that has no topic for the Kafka inbox of the subscription, at the stage
-// service.start.setting.kafka-consumer.STEGO_KAFKA_CONSUMER_TOPIC (ST-SUP-RP14-LC08).
+// checkConsumerTopic refuses a worker mode that has no topic for the Kafka inbox of a subscription, one consumer group
+// for two subscriptions, or a setting of kafka-consumer before 0.5.0, at the stage
+// service.start.setting.kafka-consumer.<variable>, such as STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC (ST-SUP-RP14-LC08,
+// decision on ST-SUP-Q204).
 func checkConsumerTopic() error {
-	if os.Getenv("STEGO_KAFKA_CONSUMER_TOPIC") == "" && os.Getenv("STEGO_KAFKA_CONSUMER_TOPIC_FILE") == "" {
-		return &startSetting{component: "kafka-consumer", variable: "STEGO_KAFKA_CONSUMER_TOPIC",
-			problem: "or STEGO_KAFKA_CONSUMER_TOPIC_FILE must be set for the worker mode: it is the topic of the subscription"}
+	if variable, problem := subscriptions.CheckSettings(); variable != "" {
+		return &startSetting{component: "kafka-consumer", variable: variable, problem: problem}
 	}
 	return nil
 }
@@ -267,9 +268,9 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 			ConsumerReadTables: workerrunners.ConsumerReadTables(),
 {{- end}}
 {{- if .Inbox}}
-			// The Kafka inbox of the declared subscription, which writes each record into the outbox for its worker
+			// The Kafka inbox of each declared subscription, which writes each record into the outbox for its worker
 			// (ST-SUP-RC38-OC01).
-			Inbox: subscriptions.Inbox,
+			Inboxes: subscriptions.Inboxes,
 {{- end}}
 		},
 {{- if .Workers}}

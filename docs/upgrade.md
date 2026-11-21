@@ -241,6 +241,8 @@ archetype does not have the change.
 | 3.244.0 | 1.244.0 | 1.244.0 | Runtime v0.178.0 and postgres-adapter 6.23.0. Each process opens a small pool of its own, of at most 4 connections, for the charges of checks of a compare-only secret with `attempts`; a fill that holds the last connection of the main pool no longer makes its check wait 5 s and answer 503. A rerun of a command in the same request, such as after a conflict, does not count again the checks that an earlier attempt counted. `sealed.Compared.Stored` gives the error `sealed.ErrCounted` for a value of a field with `attempts` that a read gave, and no hash. The migration Job adds the columns and the default of `stego_schema.seals` only when they are not there, so it no longer takes an `ACCESS EXCLUSIVE` lock on that table at each run, and the check of the contract step of a seal puts the seal functions of the release in place in its own transaction. | Give the database at least one more connection for each process of the service, and at most 4 more under load, in `max_connections` or the connection limit of the pooler. A fill that calls `Stored` on such a value, such as to compare the hash itself, calls `Matches` instead. |
 | 3.245.0 | 1.245.0 | 1.245.0 | Runtime v0.179.0 and typescript-sdk 1.4.0. A command whose JSON body holds a member that its request message does not take gets 400 `bad-request` as before, and now the member `field` of the problem names the member, such as `carrier` or `address.zip`, at most 128 bytes and no value, as a collection write names it. A check of a counted secret whose charge cannot commit, which answers 503, now logs `command.attempts.failed` through the log provider of the runtime, in the same JSON format as each other line, with `stego.action`, `stego.entity` and the cause class `stego.cause` (`unavailable`, `deadline`, `canceled` or `internal`, and from 3.246.0 also `lock_timeout` for a charge that waited 1 s for a lock); any other cause, such as a grant of `attempt_counts` that the database revoked, is `internal`. Before, it was a plain-text line with no cause. Until 3.250.0, a generated service gave its commands and collections no log provider, so the line stayed plain text in a service; from 3.250.0 it is JSON. The TypeScript SDK reads the code of an error answer of the media type `application/problem+json` too, as a command refusal gives it, and `error_codes` takes a code with a dot, such as `shipment.not_draft`; before, `SDKError.apiCode` of a declared refusal was never set. `stego fill sign` with a key that `SIGNERS` does not list still signs, now prints a warning that names the fix, and writes the fingerprint of the key as the signer, not the path of the key file. | A client that reads the problem of a refused command body can read the member in `field`. A log alert on `command.attempts.failed` reads the JSON line and its attributes. To get `apiCode` of a refusal in the TypeScript SDK, list its code under `overrides.typescript-sdk.error_codes`, and build the SDK again. An author outside `SIGNERS` follows [When the author of a fill is not in SIGNERS](../README.md#when-the-author-of-a-fill-is-not-in-signers). |
 | 3.246.0 | 1.246.0 | 1.246.0 | Runtime v0.180.0. The runtime writes the value of a field with `attempts` that a read gave only into that field of that row; a fill that gives it to a compare-only field with no `attempts`, or to another row, gets an internal error (500) and the command commits nothing. A rerun of a command does not count again only the checks of the same stored value, so a new value that a reset wrote between two attempts gets its own counts. A charge of a check waits at most 1 s for a lock, and then the command answers 503. A full pool of the charges writes the warn line `command.attempts.pool_saturated`, with no value. | A fill that copies the value of a field with `attempts` to another field or row gives a new value with `sealed.ComparedOf` instead. Alert on `command.attempts.pool_saturated` if you want to know when the pool of the charges is too small. |
+| 3.247.0 | 1.247.0 | 1.247.0 | Runtime v0.181.0. The checks of a field with `attempts` of one tenant use at most half of the connections of the pool of the charges at one time, and the checks of all tenants all but one, so the checks of one or two tenants no longer make the checks of other tenants wait and answer 503. A pool of the charges of fewer than 3 connections or with no bound gets the warn line `command.attempts.pool_small` once. The error line `command.attempts.failed` comes at most once in 10 s for each action, entity and cause class, with the new attribute `stego.held_back`. `sealed.CountedBy` is deprecated and binds nothing. `stego fill sign` with a GPG key that `SIGNERS` does not list and that signs with a subkey names the primary key in its warning and as the signer, as `SIGNERS` names it; before, it named the subkey. `stego compat` writes a warning on standard error when the committed `out/.../migrate.go`, or its digest in `.stego/state.yaml`, is not what a new generation of the head gives; the warning changes no fault and no exit status. To generate the head, compat now resolves the registry, which can clone it, and runs `go list`, as `stego plan` does. | A log alert that counts `command.attempts.failed` lines adds `stego.held_back` to its count. Do not call `sealed.CountedBy`. In CI, use `stego plan --base <ref>` as the gate of ST-GEN-INV38, as it generates the head again (see [What compat trusts](compat.md#what-compat-trusts)). |
+| 3.248.0 | 1.248.0 | 1.248.0 | Runtime v0.182.0 and kafka-consumer 0.5.0. A service has 1 to 8 subscriptions. The inbox of each subscription reads its topic in its own consumer group, `<service>.<subscription>` by default, with its own Kafka client, and takes its settings by the name of the subscription: `STEGO_KAFKA_CONSUMER_<S>_TOPIC`, `_GROUP` (each with a `_FILE` form) and `_ACCEPT_INFINITE_RETENTION`, where `<S>` is the subscription name in capital letters with `_` in place of `-`. The topic need of each subscription is `<service>-sub-<subscription>`. The worker mode does not start when the environment gives a value to `STEGO_KAFKA_CONSUMER_TOPIC`, `STEGO_KAFKA_CONSUMER_GROUP`, their `_FILE` forms or `STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION`, or when two subscriptions have one group. A base check fault of a column out of place (ST-GEN-INV33) names the column, the column it comes after in the base, and the place to give in the definition of a drop. | For a service with a subscription, [Move the settings of a subscription to kafka-consumer 0.5.0](#move-the-settings-of-a-subscription-to-kafka-consumer-050) before you deploy. |
 | 3.250.0 | 1.250.0 | 1.250.0 | Runtime v0.184.0, postgres-adapter 6.27.0 and typescript-sdk 1.5.0. A generated service gives its commands and collections the log provider of the runtime, so `command.attempts.failed` and `command.attempts.pool_saturated` are JSON lines with `stego.*` attributes, as the 3.245.0 row says; before, a service wrote them as plain-text lines. Each other line that the runtime writes with `log/slog`, such as `command: seal of a secret column`, `command: re-seal of a secret column` and `migrate: the step is refused`, is a JSON line too, on standard error, with the event name `command.seal.pass`, `command.reseal.pass`, `migrate.step.refused` or `stego.log` and the attributes under `stego.`, such as `stego.step` and `stego.refusal`. The failure record of the migration Job names the fault class, the object, the remedy and the cause class `refused` for a ledger digest refusal (`migration_ledger.digest`) and for a contract step that waits (`schema_change.seal_pending`, `schema_change.backfill_pending`, `schema_change.release_reports` or `schema_change.release_before_running`). The failure record of a start whose database pool did not open (`service.start.database`) names the fault class `database.connection`, `database.settings` or `database.runtime_role`, the object `database`, a remedy and a cause class, such as `connection_closed` or `crash_shutdown` after a restart of the database server. The result of the TypeScript SDK gives `authzRevocation`, `authzRevocationLocation`, `preferenceApplied` and `idempotentReplayed`, and `SDKError.retryAfter` gives the seconds of `Retry-After`. `stego validate` and `stego plan` give a warning for each fill whose sign-off counts only because of a key that the change adds to `SIGNERS`, against the merge base of the branch and the default branch, or the ref of `stego plan --base`; with `--strict` it is a fault. `stego fill sign` does not keep such a sign-off. | A log alert or a dashboard that parses the plain-text lines of these events reads the JSON lines and their attributes. An alert on a failed migration Job can read `fault` and `cause`. To write a child or run a command on a new row at once in a browser page, build the TypeScript SDK again and send `authzRevocationLocation` of the create as `authzRevocationAfter` (see [the README of the component](../registry/components/typescript-sdk/README.md)). Run `stego validate --strict` in CI, and follow the new `SIGNERS` steps of [The order of a merge](../README.md#the-order-of-a-merge). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
@@ -590,6 +592,41 @@ entity](fills.md#the-repository-of-an-entity).
 A child entity, which has no resource type of its own, does not change: its
 calls still take the loaded parent row.
 
+## Move the settings of a subscription to kafka-consumer 0.5.0
+
+Do this once, for a service with a subscription, before you deploy its first
+release of archetypes 3.248.0 or 1.248.0 (`kafka-consumer` 0.5.0).
+
+Why: `kafka-consumer` 0.3.0 read one subscription with fixed names. From 0.5.0,
+a service has up to 8 subscriptions, and each takes its settings by its name.
+The worker mode of 0.5.0 does not start while the environment gives a value to
+a fixed name, so no value is ignored in silence. The default consumer group is
+`<service>.<subscription>`, as before, so the group keeps its offsets and the
+inbox does not read the topic again.
+
+1. Find `<S>`: the name of the subscription in capital letters with `_` in
+   place of `-`, such as `ORDER_CHANGES` for `order-changes`.
+2. In each environment file and overlay, rename each variable:
+
+   | 0.3.0 | 0.5.0 |
+   |---|---|
+   | `STEGO_KAFKA_CONSUMER_TOPIC` | `STEGO_KAFKA_CONSUMER_<S>_TOPIC` |
+   | `STEGO_KAFKA_CONSUMER_TOPIC_FILE` | `STEGO_KAFKA_CONSUMER_<S>_TOPIC_FILE` |
+   | `STEGO_KAFKA_CONSUMER_GROUP` | `STEGO_KAFKA_CONSUMER_<S>_GROUP` |
+   | `STEGO_KAFKA_CONSUMER_GROUP_FILE` | `STEGO_KAFKA_CONSUMER_<S>_GROUP_FILE` |
+   | `STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION` | `STEGO_KAFKA_CONSUMER_<S>_ACCEPT_INFINITE_RETENTION` |
+
+3. The topic need `<service>-subscription` of the platform requirements is now
+   `<service>-sub-<subscription>`. Give it the same topic and the same ACLs.
+4. Run `stego env check` on each environment file. It names the topic of each
+   subscription that has no value. A fixed name of 0.3.0 is in the list of the
+   variables that the service does not read.
+
+If you deploy with a fixed name, the worker Deployment does not start. Its
+failure record names the variable in the stage, such as
+`service.start.setting.kafka-consumer.STEGO_KAFKA_CONSUMER_TOPIC`, and no
+value. The api Deployment continues to serve.
+
 ## Add a subscription to a running service
 
 A release that adds a subscription, a `kafka-consumer` with a consuming
@@ -617,7 +654,10 @@ tuple is in SpiceDB.
 Do these steps:
 
 1. Give the Kafka user of the service the ACLs of the subscription (see
-   [Access to the topic](subscriptions.md#access-to-the-topic)).
+   [Access to the topic](subscriptions.md#access-to-the-topic)), and set the
+   topic of the new subscription, `STEGO_KAFKA_CONSUMER_<S>_TOPIC` (see
+   [Subscriptions](subscriptions.md)). The other subscriptions keep their
+   settings and their groups.
 2. Choose where the group starts. To apply the backlog, do nothing. To skip
    the backlog, set the offsets of the group to the end of the topic before the
    first start:

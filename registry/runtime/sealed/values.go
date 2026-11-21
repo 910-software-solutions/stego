@@ -120,16 +120,12 @@ func dummyHash() string {
 	return dummy.hash
 }
 
-// CountedBy gives c with the counter k and no store key: each later Matches of a stored value asks k first and records
-// its result in k, and no StoredBy gives the stored hash. A value that has a counter keeps its counter, and a nil
-// counter changes nothing. The command runtime calls CountedByKey.
-func CountedBy(c Compared, k Counter) Compared {
-	if c.counter != nil || k == nil {
-		return c
-	}
-	c.counter = k
-	return c
-}
+// CountedBy gives c with no change: a counter binds only with the store key of a runtime, through CountedByKey, so
+// code with no store key, such as a fill, cannot make a counted value (security review of PR #481, I2). It stays only
+// so that the API of the library stays compatible within its major version (ST-STD-RUNTIME-R03).
+//
+// Deprecated: the command runtime binds a counter with CountedByKey.
+func CountedBy(c Compared, k Counter) Compared { return CountedByKey(c, k, nil) }
 
 // CountedByKey gives c with the counter k and the store key key: each later Matches of a stored value asks k first
 // and records its result in k, and only StoredBy with key gives the stored hash. The command runtime calls it for the

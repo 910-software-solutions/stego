@@ -150,6 +150,45 @@ func TestCompat(t *testing.T) {
 			t.Fatalf("the refused plan saved a plan: %v", err)
 		}
 	})
+	t.Run("ST-GEN-INV38-T compat warns that a committed migrate.go and its digest that a new generation does not give are not the gate, and names plan --base", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		if output, code := s.compat(t, "--base", "HEAD"); code != 0 || strings.Contains(output, "warning:") || strings.Contains(output, "note: compat did not generate") {
+			t.Fatalf("compat of the unchanged head gave exit %d or a warning:\n%s", code, output)
+		}
+		// An author changes the generated migrate.go by hand and gives the record its new digest: compat checks the
+		// committed files, so it warns that a new generation gives other files (security review of PR #476, L1).
+		record := s.read(t, ".stego/state.yaml")
+		match := regexp.MustCompile(`(?m)^(\s+)(\S*/migrate\.go): ([0-9a-f]{64})$`).FindStringSubmatch(record)
+		if match == nil {
+			t.Fatalf("the record lists no migrate.go:\n%s", record)
+		}
+		edited := s.read(t, filepath.Join("out", filepath.FromSlash(match[2]))) + "\n// An edit by hand.\n"
+		s.write(t, filepath.Join("out", filepath.FromSlash(match[2])), edited)
+		sum := sha256.Sum256([]byte(edited))
+		s.write(t, ".stego/state.yaml", strings.Replace(record, match[0], match[1]+match[2]+": "+hex.EncodeToString(sum[:]), 1))
+		output, code := s.compat(t, "--base", "HEAD")
+		if code != 0 {
+			t.Fatalf("compat gave exit %d, want 0, as the warning changes no exit status:\n%s", code, output)
+		}
+		for _, want := range []string{"warning: out/" + match[2], "new generation of the head", "stego plan --base HEAD is the gate of ST-GEN-INV38"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("the warning of compat does not hold %q:\n%s", want, output)
+			}
+		}
+		// The JSON on stdout stays one object, as the warning goes to stderr.
+		if result, code := s.compatJSON(t); code != 0 || len(result.Faults) != 0 {
+			t.Fatalf("compat --json gave exit %d and %d faults, want 0 and none", code, len(result.Faults))
+		}
+		// With a registry that does not resolve, compat notes a fixed cause class and never the error text, which can
+		// hold a URL with credentials (security review of PR #482, L2).
+		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
+		output, code = s.compat(t, "--base", "HEAD")
+		note := regexp.MustCompile(`(?m)^note: compat did not generate the head \(cause: (registry|generation)\).*$`).FindString(output)
+		if code != 0 || note == "" || strings.Contains(note, "s3cr3t-token") || strings.Contains(note, "nowhere") {
+			t.Fatalf("compat with a registry that does not resolve gave exit %d and the note %q, want 0 and a note with the cause class and no error text:\n%s", code, note, output)
+		}
+	})
 	t.Run("ST-GEN-INV38-T A seal expand step whose base body holds the seal checkpoints passes compat, plan and apply, and no other body does", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

@@ -552,7 +552,7 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC32-OC20-T01 A command fill reads a readable secret and checks a compare-only one",
 	"ST-SUP-RP10-LC44-T03 A sealed value copied to another order does not open in the generated service",
 	"ST-SUP-RP10-LC46-T02 After a key rotation the generated controller moves each sealed value to the new key",
-	"ST-SUP-RP03-LC16-T03 The generated service writes the lines of a failed charge, a full pool of the charges, the re-seal job and a refused step of the migration job as JSON lines with stego attributes",
+	"ST-SUP-RP03-LC16-T03 The generated service writes the lines of a failed charge, the re-seal job and a refused step of the migration job as JSON lines with stego attributes",
 }
 
 // secretStoredCheck is the check of the generated service that proves that a secret field is never stored in clear

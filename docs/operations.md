@@ -615,7 +615,8 @@ Do these steps in this order:
 
 ### The offsets of a consumer group
 
-The consumer group of a subscription committed its offsets after `T0`, but the
+Each subscription has a consumer group of its own, so reset the group of each
+subscription of the service. The consumer group of a subscription committed its offsets after `T0`, but the
 database lost the messages that the inbox wrote after `T0`. Thus, without a
 reset, the service never applies the events after `T0`. With the worker
 Deployment stopped, set the offsets of the group to one minute before `T0`, in

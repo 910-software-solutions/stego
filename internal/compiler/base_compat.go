@@ -1610,11 +1610,120 @@ func earlierBody(migrate map[string][]byte, read map[string]map[string][]string,
 	return slices.Contains(digests[name], digest), nil
 }
 
+// placeDifference tells which columns of a table are out of place in the CREATE TABLE of the head, when the base and the
+// head have the same columns in another order: each such column with the column that it comes after in the head and in
+// the base, and, for a drop of the head whose Definition gives the field another place, the place to give (walkthrough
+// 20, W20-P-B). The columns out of place are those that a longest common order of the two leaves out; a column of a
+// drop that alone leaves the two orders equal is the one out of place. It gives "" when the columns of the two differ.
+func placeDifference(before postgresadapter.BaselineTable, baseKeys, headKeys []string, changes []types.SchemaChange) string {
+	columns := func(keys []string) []string {
+		var out []string
+		for _, key := range keys {
+			if name, ok := strings.CutPrefix(key, "column "); ok {
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	base, head := columns(baseKeys), columns(headKeys)
+	if len(base) != len(head) || !slices.Equal(slices.Sorted(slices.Values(base)), slices.Sorted(slices.Values(head))) {
+		return ""
+	}
+	var drops []types.SchemaChange
+	for _, change := range changes {
+		if change.Entity == before.Entity && change.Kind == "drop" && change.Field != "" {
+			drops = append(drops, change)
+		}
+	}
+	without := func(list []string, name string) []string {
+		return slices.DeleteFunc(slices.Clone(list), func(n string) bool { return n == name })
+	}
+	var moved []string
+	for _, drop := range drops {
+		if slices.Contains(base, drop.Field) && slices.Equal(without(base, drop.Field), without(head, drop.Field)) {
+			moved = []string{drop.Field}
+			break
+		}
+	}
+	if moved == nil {
+		kept := commonOrder(base, head)
+		for _, name := range head {
+			if !kept[name] {
+				moved = append(moved, name)
+			}
+		}
+	}
+	if len(moved) == 0 {
+		return ""
+	}
+	previous := func(list []string, name string) string {
+		at := slices.Index(list, name)
+		if at <= 0 {
+			return "first"
+		}
+		return "after " + list[at-1]
+	}
+	var text strings.Builder
+	for _, name := range moved {
+		fmt.Fprintf(&text, "the column %s is out of place: it comes %s in the head, and %s in the base.\n", name, previous(head, name), previous(base, name))
+	}
+	for _, drop := range drops {
+		if !slices.Contains(moved, drop.Field) {
+			continue
+		}
+		want := previous(base, drop.Field)
+		dropped, reason := gen.DropDefinition(drop.Definition)
+		given := "after " + dropped.After
+		if dropped.First {
+			given = "first"
+		}
+		if reason != "" || given == want {
+			continue
+		}
+		fmt.Fprintf(&text, "Cause: the definition %q of the drop %s gives the field %s the place %q. Give it the place of the column in the base: end the definition with %q.\n",
+			drop.Definition, drop.ID, drop.Field, given, want)
+	}
+	return text.String()
+}
+
+// commonOrder gives the names of a longest order that base and head share, so that each name it leaves out is one
+// that the head puts in another place. A tie keeps the names of the base that come first.
+func commonOrder(base, head []string) map[string]bool {
+	n, m := len(base), len(head)
+	length := make([][]int, n+1)
+	for i := range length {
+		length[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if base[i] == head[j] {
+				length[i][j] = length[i+1][j+1] + 1
+			} else {
+				length[i][j] = max(length[i+1][j], length[i][j+1])
+			}
+		}
+	}
+	kept := map[string]bool{}
+	for i, j := 0, 0; i < n && j < m; {
+		switch {
+		case base[i] == head[j]:
+			kept[base[i]] = true
+			i, j = i+1, j+1
+		case length[i+1][j] >= length[i][j+1]:
+			i++
+		default:
+			j++
+		}
+	}
+	return kept
+}
+
 // createDifference tells how the CREATE TABLE of a table in the baseline of the head differs from the one of the base:
 // each column or constraint that differs, is missing or is new, with its line in the base and in the head, and the
 // schema change of the head that gives the field of the base, which a rename, a retype or a drop takes from its
-// definition (walkthrough 14, W14-B3). When the two tables have the same columns and constraints in another order, it
-// gives the two texts.
+// definition (walkthrough 14, W14-B3). When the two tables have the same columns in another order, it names each
+// column out of place, its place in the base and the place that a drop gives it (placeDifference); else it gives the two
+// texts.
 func createDifference(before, after postgresadapter.BaselineTable, changes []types.SchemaChange) string {
 	type item struct{ key, line string }
 	items := func(create string) []item {
@@ -1658,6 +1767,16 @@ func createDifference(before, after postgresadapter.BaselineTable, changes []typ
 	}
 	whole := "the base creates\n" + before.Create + "and the head creates\n" + after.Create
 	if !slices.Equal(shared, headOrder) {
+		keys := func(list []item) []string {
+			out := make([]string, len(list))
+			for i, it := range list {
+				out[i] = it.key
+			}
+			return out
+		}
+		if text := placeDifference(before, keys(baseItems), keys(headItems), changes); text != "" {
+			return text
+		}
 		return whole
 	}
 	var text strings.Builder

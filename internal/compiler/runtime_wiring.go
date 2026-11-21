@@ -68,8 +68,8 @@ type runtimeWiringData struct {
 	// Tickers and Consumers tell whether a worker has an every trigger or a consumes trigger.
 	Workers            string
 	Tickers, Consumers bool
-	// Inbox is the package of the kafka-consumer component for a service that declares a subscription, whose Kafka
-	// inbox the worker mode runs (ST-SUP-RC38).
+	// Inbox is the package of the kafka-consumer component for a service that declares subscriptions, whose Kafka
+	// inboxes the worker mode runs (ST-SUP-RC38).
 	Inbox                                                                           string
 	Service, DeclarationVersion, SubjectType, TenantClaim, ProblemType, ProblemCode string
 	Issuer, Audience, Header, KeyFile, RoleClaim                                    string
@@ -185,7 +185,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	if len(svc.Subscriptions) > 0 {
 		if data.Inbox = pkg(kafkaConsumerComponent); data.Inbox == "" || data.Workers == "" {
-			return nil, ComponentWiring{}, fmt.Errorf("the declared subscription needs the components %s and %s, which generate its inbox and its consuming worker", kafkaConsumerComponent, workerComponent)
+			return nil, ComponentWiring{}, fmt.Errorf("the declared subscriptions need the components %s and %s, which generate their inboxes and their consuming workers", kafkaConsumerComponent, workerComponent)
 		}
 	}
 	if data.ProblemCode == "" {
