@@ -129,11 +129,6 @@ func (h *OrganizationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, Unauthorized("the request is not authenticated"))
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
-	if err != nil {
-		handleError(w, r, BadRequest("the body cannot be read"))
-		return
-	}
 	key, err := idempotency.KeyFrom(r.Header, false)
 	if err != nil {
 		keyMissing(w, r, err)
@@ -145,6 +140,11 @@ func (h *OrganizationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	requestID := command.NewID()
 	if key == "" {
 		key = requestKey(requestID)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
+	if err != nil {
+		handleError(w, r, BadRequest("the body cannot be read"))
+		return
 	}
 	if _, err := decodeOrganizations(body); err != nil {
 		h.rt.answerWrite(w, r, command.Request{}, "create", "organization", "Organization", false, err)

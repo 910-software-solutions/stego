@@ -306,8 +306,9 @@ func stegoSQLState(err error) string {
 
 // stegoCauseClass gives the fixed class of a cause that a start or the migration job meets: of the database by its
 // SQLSTATE, such as lock_timeout for 55P03 (#423), of the operating system, such as a listen port that another
-// process holds (walkthrough 8, W8-B5), of the network, of a file and of a certificate; and empty for any other
-// cause. It never holds the text of the cause.
+// process holds (walkthrough 8, W8-B5), of the network, of a file and of a certificate; the class that the cause
+// gives itself (CauseClass) in the strict form of a name; and empty for any other cause. It never holds the text of
+// the cause.
 func stegoCauseClass(err error) string {
 	if code := stegoSQLState(err); code != "" {
 		switch {
@@ -365,6 +366,13 @@ func stegoCauseClass(err error) string {
 		return "timeout"
 	case errors.Is(err, fs.ErrNotExist):
 		return "file_not_found"
+	}
+	// A cause that the standard library does not class may give its own fixed class, such as unavailable for a
+	// SpiceDB that refused the connection of the migration job (walkthrough 19, small items); the record takes it
+	// only in the strict form of a name of the generated code.
+	var classed interface{ CauseClass() string }
+	if errors.As(err, &classed) && stegoFaultName(classed.CauseClass()) {
+		return classed.CauseClass()
 	}
 	return ""
 }
