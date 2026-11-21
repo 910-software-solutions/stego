@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
@@ -23,12 +24,53 @@ import (
 // row comes back and no check runs. A charge that cannot commit fails the check and makes the command answer 503. A
 // check that matches, and a write of a new value of the field, reset the count in the transaction of the command, so
 // the reset commits only with the command.
+//
+// The charge runs on the pool of the charges (Config.ChargeDB), apart from the main pool, so a full main pool never
+// makes a check wait for a second main connection (security review of PR #451, L2). A rerun of the call, after a
+// conflict, a stale plan or a seal switch, checks the same request again: it charges a row only for the checks
+// beyond those that an earlier attempt of the call charged on that row (security review of PR #451, second review,
+// I1). A stored counted value gives its hash only to this runtime, through storeKey, so a fill cannot check it against
+// the hash with no charge (security review of PR #451, L1).
 
 // maxAttempts is the highest limit of a counter (ST-DECL-INV104).
 const maxAttempts = 100
 
 // chargeBound bounds the short transaction of one charge.
 const chargeBound = 5 * time.Second
+
+// storeKey is the store key of the command runtime: the counted values that the handle reads give their stored hash
+// only to the statements of this package (sealed.StoredBy).
+var storeKey = sealed.NewStoreKey()
+
+// charges are the checks that the attempts of one call charged, by row: an attempt charges a row only for its checks
+// beyond the most that an earlier attempt of the call charged on that row. Run makes one for each call.
+type charges struct {
+	mu   sync.Mutex
+	paid map[attemptKey]int
+}
+
+// take tells whether the n-th check of key in an attempt is paid by an earlier attempt of the call.
+func (c *charges) take(key attemptKey, n int) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return n <= c.paid[key]
+}
+
+// pay records that an attempt of the call charged n checks of key.
+func (c *charges) pay(key attemptKey, n int) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.paid == nil {
+		c.paid = map[attemptKey]int{}
+	}
+	c.paid[key] = max(c.paid[key], n)
+}
 
 // The statements of the counts in the table idempotency.AttemptsTable, which the migration job makes beside the key
 // table. Each takes the tenant as $1, the counter as $2 and the row ID as $3; the charge takes the limit as $4 and
@@ -112,14 +154,25 @@ type rowCounter struct {
 
 // Charge takes one check of the row in a short transaction of its own, which commits before the check runs: false in
 // a worker, after the call ended, at the limit, and when the charge cannot commit, which also makes the call answer
-// 503 (ST-SUP-RP10-LC54).
+// 503 (ST-SUP-RP10-LC54). A check that an earlier attempt of the call charged runs with no new charge.
 func (k *rowCounter) Charge() bool {
 	s := k.s
 	s.mu.Lock()
 	open := !s.closed && s.mode == modeCommand
+	var n int
+	if open {
+		if s.checks == nil {
+			s.checks = map[attemptKey]int{}
+		}
+		s.checks[k.key]++
+		n = s.checks[k.key]
+	}
 	s.mu.Unlock()
 	if !open {
 		return false
+	}
+	if s.charges.take(k.key, n) {
+		return true
 	}
 	charged, err := s.rt.charge(s.tenant, k.key, s.deadline)
 	if err != nil {
@@ -131,6 +184,9 @@ func (k *rowCounter) Charge() bool {
 	}
 	if s.rt.charged != nil {
 		s.rt.charged(charged)
+	}
+	if charged {
+		s.charges.pay(k.key, n)
 	}
 	return charged
 }
@@ -168,7 +224,7 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 		ctx, cancelDeadline = context.WithDeadline(ctx, deadline)
 		defer cancelDeadline()
 	}
-	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, nil)
+	tx, err := tenant.Begin(ctx, rt.chargeDB(), t, nil)
 	if err != nil {
 		return false, err
 	}
@@ -192,7 +248,7 @@ func (s *state) bindCounted(t *countedTarget) {
 		return
 	}
 	k := &rowCounter{s: s, key: attemptKey{counter: t.counter, row: strings.ToLower(*t.row)}}
-	*t.into = sealed.CountedBy(*t.into, k)
+	*t.into = sealed.CountedByKey(*t.into, k, storeKey)
 }
 
 // countAttempts resets, in the transaction of a call that commits, the count of each row whose check matched or whose
@@ -218,6 +274,15 @@ func (s *state) countAttempts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// chargeDB is the pool of the charges: Config.ChargeDB, or the audit pool when the configuration has none. Both are
+// apart from the main pool.
+func (rt *Runtime) chargeDB() *sql.DB {
+	if rt.cfg.ChargeDB != nil {
+		return rt.cfg.ChargeDB
+	}
+	return rt.cfg.AuditDB
 }
 
 // chargeUnavailable gives the error of a call whose charge of a check did not commit: the check did not run, and the

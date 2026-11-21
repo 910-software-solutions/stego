@@ -1205,7 +1205,8 @@ func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migrati
 // (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39). It holds the ledger lock for its
 // session on one connection, reads the ledger again and runs nothing when
 // another job has applied m. It first checks the step in its own transaction
-// (checkContract), and refuses with the change and the count of rows left,
+// (checkContract), which runs the seal checkpoints first for the step of a
+// seal (applySealCheckpoints), and refuses with the change and the count of rows left,
 // changes no schema and writes no ledger row when the check fails. Then it
 // runs each statement in its own short transaction under the lock timeout and
 // the statement timeout of a step, again after a pause when the lock wait ends
@@ -1254,6 +1255,14 @@ func applyContract(ctx context.Context, db Database, ordered []Migration, m Migr
 	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
 		if err := stepTimeouts(ctx, tx, m); err != nil {
 			return err
+		}
+		// The check of a seal reads the functions of this release: the check transaction runs the seal
+		// checkpoints itself, and does not depend on the run at the start of the job and on the ledger lock
+		// (security review of PR #472, second review, L1).
+		if c.Seal {
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("the seal checkpoints: %w", err)
+			}
 		}
 		return checkContract(ctx, tx, c)
 	}); err != nil {

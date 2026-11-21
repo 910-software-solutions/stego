@@ -223,7 +223,60 @@ func TestCompare(t *testing.T) {
 			t.Fatalf("a hash with every slot taken and an ended context gave %v and a match %t", err, matched)
 		}
 	})
+	t.Run("ST-SUP-RP16-LC03-T02 A counted stored value gives its hash only to the store key that bound its counter", func(t *testing.T) {
+		hash, err := Hash("4711")
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, other := NewStoreKey(), NewStoreKey()
+		k := &testCounter{allow: true}
+		c := CountedByKey(ComparedHash(hash), k, key)
+		if stored, err := c.Stored(); !errors.Is(err, ErrCounted) || stored != "" {
+			t.Fatalf("Stored of a counted value gave %q and %v, want ErrCounted and no hash", stored, err)
+		}
+		if stored, err := c.StoredContext(context.Background()); !errors.Is(err, ErrCounted) || stored != "" {
+			t.Fatalf("StoredContext of a counted value gave %q and %v, want ErrCounted", stored, err)
+		}
+		for _, k2 := range []*StoreKey{nil, other} {
+			if stored, err := c.StoredBy(context.Background(), k2); !errors.Is(err, ErrCounted) || stored != "" {
+				t.Fatalf("StoredBy with another key gave %q and %v, want ErrCounted", stored, err)
+			}
+		}
+		// A second binding keeps the first counter and key: the value does not take a key of the caller.
+		again := CountedByKey(c, &testCounter{allow: true}, other)
+		if stored, err := again.StoredBy(context.Background(), other); !errors.Is(err, ErrCounted) || stored != "" {
+			t.Fatalf("a value bound again to another key gave %q and %v, want ErrCounted", stored, err)
+		}
+		if again.Matches("4711"); k.charges != 1 {
+			t.Fatalf("the value bound again charged its first counter %d times, want 1", k.charges)
+		}
+		if stored, err := c.StoredBy(context.Background(), key); err != nil || stored != hash {
+			t.Fatalf("StoredBy with the bound key gave %q and %v, want the hash", stored, err)
+		}
+		// A nil counter or key binds nothing, and a value with no counter and a new text give their stored form.
+		if stored, err := CountedByKey(ComparedHash(hash), nil, key).Stored(); err != nil || stored != hash {
+			t.Fatalf("a value with a nil counter gave %q and %v, want the hash", stored, err)
+		}
+		if stored, err := CountedByKey(ComparedHash(hash), k, nil).Stored(); err != nil || stored != hash {
+			t.Fatalf("a value with a nil key gave %q and %v, want the hash", stored, err)
+		}
+		if stored, err := CountedBy(ComparedHash(hash), k).StoredBy(context.Background(), key); !errors.Is(err, ErrCounted) || stored != "" {
+			t.Fatalf("a value that CountedBy bound with no key gave %q and %v, want ErrCounted", stored, err)
+		}
+		if stored, err := CountedByKey(ComparedOf("4712"), k, key).Stored(); err != nil || !Matches(stored, "4712") {
+			t.Fatalf("a new text with a counter gave %v, want its hash", err)
+		}
+	})
 }
+
+// testCounter is a Counter that allows each check while allow is true, and counts the charges.
+type testCounter struct {
+	allow   bool
+	charges int
+}
+
+func (k *testCounter) Charge() bool { k.charges++; return k.allow }
+func (k *testCounter) Record(bool)  {}
 
 func TestValues(t *testing.T) {
 	t.Run("ST-SUP-RP16-LC04-T01 A Secret and a Compared never print, log or encode their text", func(t *testing.T) {
