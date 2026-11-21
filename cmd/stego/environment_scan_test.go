@@ -70,6 +70,13 @@ var (
 	// declarationNamed are the components whose variable names come from the declaration, whose fields state the
 	// same facts (ST-SUP-RC22-OC09).
 	declarationNamed = []string{"runtime-configuration"}
+	// clientFixtures are the contexts in which the scan runs the generator of each component that declares a
+	// variable read by a client program alone (read_by_client), so that it can scan each emitted file by its path
+	// (security review of PR #468, L2).
+	clientFixtures = map[string]gen.Context{
+		"cli-application": {ModuleName: "example.com/scan", OutDirName: "out", OutputNamespace: "cli", ServiceName: "records",
+			ComponentConfig: map[string]any{"factory_package": "app"}, PeerNamespaces: map[string]string{"otel-tracing": "tracing"}},
+	}
 )
 
 // scanRead is one read that the scan finds: the name, or "" with why it cannot be followed.
@@ -683,6 +690,7 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 			}
 		}
 	}
+	faults = append(faults, emittedClientFaults(t, reg, client)...)
 	for component, names := range declared {
 		for name := range names {
 			if !read[component][name] {
@@ -691,6 +699,119 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 		}
 	}
 	slices.Sort(faults)
+	return faults
+}
+
+// emittedClientFaults runs the generator of each component that declares a variable read by a client program alone
+// in its fixture (clientFixtures), and gives the faults of what it emits (emittedFaults). The scan of the generator
+// package holds the reads of the package as a whole, so it cannot see server code that the generator of the same
+// component emits (security review of PR #468, L2).
+func emittedClientFaults(t *testing.T, reg *registry.Registry, client map[string][]string) []string {
+	t.Helper()
+	var owners []string
+	for _, readers := range client {
+		owners = append(owners, readers...)
+	}
+	slices.Sort(owners)
+	var faults []string
+	for _, name := range slices.Compact(owners) {
+		ctx, ok := clientFixtures[name]
+		generator := defaultGenerators()[name]
+		if !ok || generator == nil {
+			faults = append(faults, "component "+name+": declares a variable read by a client program alone, and the scan has no fixture to run its generator in (clientFixtures)")
+			continue
+		}
+		files, wiring, err := generator.Generate(ctx)
+		if err != nil {
+			faults = append(faults, "component "+name+": its generator fails in the fixture of the scan: "+err.Error())
+			continue
+		}
+		var own []string
+		for _, variable := range reg.Component(name).Variables() {
+			if variable.ReadByClient {
+				own = append(own, variable.Name)
+			}
+		}
+		faults = append(faults, emittedFaults(t, name, files, wiring, client, own)...)
+	}
+	return faults
+}
+
+// emittedFaults scans each file that the generator of the component emits by its path. A file under a folder that
+// holds an emitted cmd/main.go is a file of a client program; each other file, and the wiring that the assembler
+// puts in the main package of the service, is server code. Server code may read no variable that only a client
+// program reads (client), and may read no variable whose name the scan cannot follow; the client programs must read
+// each such variable of the component (own), so that the scan sees the read that it holds apart.
+func emittedFaults(t *testing.T, component string, files []gen.File, wiring *gen.Wiring, client map[string][]string, own []string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	var roots []string
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, "/cmd/main.go") {
+			roots = append(roots, strings.TrimSuffix(f.Path, "cmd/main.go"))
+		}
+	}
+	unit := scanUnit{label: component, owners: []string{component}}
+	byPath := map[string]string{}
+	write := func(relative string, content []byte) {
+		path := filepath.Join(dir, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		unit.files = append(unit.files, path)
+		byPath[path] = relative
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".go") {
+			write(f.Path, f.Content)
+		}
+	}
+	const wired = "the wiring of the main package of the service"
+	if wiring != nil {
+		var code strings.Builder
+		code.WriteString("package main\n\nfunc wired() {\n")
+		value := reflect.ValueOf(*wiring)
+		for i := range value.NumField() {
+			field := value.Field(i)
+			switch {
+			case field.Kind() == reflect.String:
+				code.WriteString(field.String() + "\n")
+			case field.Kind() == reflect.Slice && field.Type().Elem().Kind() == reflect.String:
+				for j := range field.Len() {
+					code.WriteString(field.Index(j).String() + "\n")
+				}
+			}
+		}
+		code.WriteString("}\n")
+		write(wired, []byte(code.String()))
+	}
+	clientRead := map[string]bool{}
+	var faults []string
+	for _, r := range unitReads(t, unit, false) {
+		relative := byPath[r.file]
+		if relative != wired && slices.ContainsFunc(roots, func(root string) bool { return strings.HasPrefix(relative, root) }) {
+			clientRead[r.name] = true
+			continue
+		}
+		where := "component " + component + ": the emitted server file " + relative
+		if relative == wired {
+			where = "component " + component + ": " + wired
+		}
+		switch readers, only := client[r.name]; {
+		case r.unresolved != "":
+			faults = append(faults, where+": a read of the environment whose name the scan cannot follow: "+r.unresolved)
+		case only:
+			faults = append(faults, where+" reads the environment variable "+r.name+", which only a client program of "+strings.Join(readers, ", ")+" reads (read_by_client); the service never gets a value for it")
+		}
+	}
+	for _, name := range own {
+		if !clientRead[name] {
+			faults = append(faults, "component "+component+": no emitted client program reads the environment variable "+name+", which the component states as read by a client program alone")
+		}
+	}
 	return faults
 }
 
@@ -759,6 +880,46 @@ func TestEnvironmentScanClient(t *testing.T) {
 		faults := strings.Join(checkScan(t, root, reg), "\n")
 		if !strings.Contains(faults, "registry/runtime/otel") || !strings.Contains(faults, "OTEL_SERVICE_NAME, which only a client program of otel-tracing reads") {
 			t.Errorf("the scan does not name the runtime package that reads the client variable OTEL_SERVICE_NAME:\n%s", faults)
+		}
+		// The release scan runs the generator of each component with such a variable, so a component with no
+		// fixture for its generator fails it (security review of PR #468, L2).
+		if !strings.Contains(faults, "component otel-tracing: declares a variable read by a client program alone, and the scan has no fixture") {
+			t.Errorf("the scan does not ask for a fixture of the generator of otel-tracing:\n%s", faults)
+		}
+	})
+	t.Run("ST-SUP-UC01-R10-T07 The release scan names server code that reads a variable of a client program, also when the generator of the same component emits it", func(t *testing.T) {
+		const name = "cli-application"
+		files, wiring, err := defaultGenerators()[name].Generate(clientFixtures[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := map[string][]string{"APPLY_CONFIG": {name}}
+		own := []string{"APPLY_CONFIG"}
+		if faults := emittedFaults(t, name, files, wiring, client, own); len(faults) != 0 {
+			t.Fatalf("the scan of the emitted CLI gives faults:\n%s", strings.Join(faults, "\n"))
+		}
+		// The same generator also emits a server file and wiring that read the variable of the client program.
+		server := append(slices.Clone(files), gen.File{Path: "settings/settings.go", Content: []byte("package settings\n\nimport \"os\"\n\nfunc Path() string { return os.Getenv(\"APPLY_CONFIG\") }\n")})
+		more := *wiring
+		more.Constructors = append(slices.Clone(more.Constructors), `settings.New(os.Getenv("APPLY_CONFIG"))`)
+		faults := strings.Join(emittedFaults(t, name, server, &more, client, own), "\n")
+		for _, want := range []string{
+			"the emitted server file settings/settings.go reads the environment variable APPLY_CONFIG, which only a client program of cli-application reads",
+			"the wiring of the main package of the service reads the environment variable APPLY_CONFIG",
+		} {
+			if !strings.Contains(faults, want) {
+				t.Errorf("the scan does not say %q:\n%s", want, faults)
+			}
+		}
+		// A client program that does not read the variable of the component is a fault too.
+		var noRead []gen.File
+		for _, f := range files {
+			if !strings.Contains(string(f.Content), "ConfigEnv") {
+				noRead = append(noRead, f)
+			}
+		}
+		if faults := strings.Join(emittedFaults(t, name, noRead, wiring, client, own), "\n"); !strings.Contains(faults, "no emitted client program reads the environment variable APPLY_CONFIG") {
+			t.Errorf("the scan does not see that no client program reads APPLY_CONFIG:\n%s", faults)
 		}
 	})
 }
