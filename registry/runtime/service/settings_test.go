@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -400,5 +401,59 @@ func TestStartStages(t *testing.T) {
 		if strings.Contains(StartStage(err), secretValue) {
 			t.Fatalf("the stage shows a value: %q", StartStage(err))
 		}
+	})
+	t.Run("ST-SUP-RP14-LC05-T05 A database pool that does not open gives the failure record its fault class, the database, a remedy and a cause class, with no value", func(t *testing.T) {
+		roles := func() Parts {
+			p := parts(nil, nil)
+			p.OwnerRole, p.WorkerRole, p.OutboxRelayRole, p.RelayRole, p.PurgeRole = "owner", "worker", "outbox_relay", "relay", "purge"
+			return p
+		}
+		type classified interface {
+			FaultClass() string
+			FaultObject() string
+			FaultRemedy() string
+			CauseClass() string
+		}
+		check := func(name string, err error, fault, cause string) {
+			t.Helper()
+			var c classified
+			if StartStage(err) != "service.start.database" || !errors.As(err, &c) {
+				t.Fatalf("%s gave %v at the stage %q, want service.start.database with a fault", name, err, StartStage(err))
+			}
+			if c.FaultClass() != fault || c.FaultObject() != "database" || c.FaultRemedy() == "" || c.CauseClass() != cause {
+				t.Errorf("%s gives the fault %q, the object %q, the remedy %q and the cause %q, want %q and %q", name,
+					c.FaultClass(), c.FaultObject(), c.FaultRemedy(), c.CauseClass(), fault, cause)
+			}
+			for _, text := range []string{c.FaultClass(), c.FaultObject(), c.FaultRemedy(), c.CauseClass()} {
+				if strings.Contains(text, secretValue) || strings.Contains(text, "127.0.0.1") {
+					t.Errorf("%s: the failure record shows a value: %q", name, text)
+				}
+			}
+		}
+		// A server that accepts the connection and closes it at once, as a database server that restarts after a
+		// crash does (walkthrough 21, step 11): the connection ends in the middle of the startup message.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		go func() {
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+		settings := Settings{DatabaseURL: "postgres://rt:" + secretValue + "@" + listener.Addr().String() + "/app?sslmode=disable"}
+		_, err = New(context.Background(), settings, roles())
+		check("a server that closes the connection", err, DatabaseConnectionFault, "connection_closed")
+		refused := roles()
+		refused.TenantConfig = func(string) (tenant.Config, error) { return tenant.Config{}, errors.New("no configuration " + secretValue) }
+		_, err = New(context.Background(), settings, refused)
+		check("a refused connection configuration", err, DatabaseSettingsFault, "invalid_setting")
+		check("a runtime role that fails a check", &databaseError{err: fmt.Errorf("open: %w", tenant.ErrRuntimeRole)}, DatabaseRuntimeRoleFault, "refused")
+		check("another cause of the connection", &databaseError{err: errors.New("tenant: open the database: " + secretValue)}, DatabaseConnectionFault, "connection_failed")
 	})
 }
