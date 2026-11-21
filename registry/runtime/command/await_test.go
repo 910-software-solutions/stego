@@ -109,9 +109,9 @@ func TestAwaitRevocation(t *testing.T) {
 		if _, err := rpc(ctx, mustStruct(t, map[string]any{"order_id": "aw3"})); status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != "bad_request" {
 			t.Fatalf("a gRPC amend with a bad value gave %v, want InvalidArgument bad_request", err)
 		}
-		// The revocation of u-7 is unknown to u-8 and to another tenant: their command decides as with no wait, and
-		// is denied (404), never a bad request or an internal error.
-		for _, who := range []string{"u-8@t1", "u-7@t2"} {
+		// The revocation of u-7 is unknown to another tenant: its command decides as with no wait, and is denied
+		// (404), never a bad request or an internal error. A second user of the tenant waits for it (T03).
+		for _, who := range []string{"u-7@t2"} {
 			if answer := r.amendHTTP(r.identity[who], h, "aw3", location); answer.Code != http.StatusNotFound {
 				t.Fatalf("an amend of %s with the revocation of u-7 answered %d %s, want 404", who, answer.Code, answer.Body)
 			}
@@ -134,6 +134,58 @@ func TestAwaitRevocation(t *testing.T) {
 		}
 		if r.count(`SELECT count(*) FROM audit_event WHERE action = 'amend' AND error_code = 'internal'`) != 0 {
 			t.Fatal("a cancelled wait wrote an internal audit row")
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC47-T03 A second user of the tenant who has the revocation of another user's create waits for it and is then allowed, and another tenant does not wait", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 5*time.Second, 0, 0, clock)
+		h, rpc := r.amendServe()
+		location := r.placed("u-7@t1", "aw5")
+		// With no header, the command of u-8 on the new row of u-7 is denied before the relay runs: this is the gap
+		// of walkthrough 22, P3-A.
+		if answer := r.amendHTTP(r.identity["u-8@t1"], h, "aw5"); answer.Code != http.StatusNotFound {
+			t.Fatalf("an amend of u-8 before the delivery answered %d %s, want 404", answer.Code, answer.Body)
+		}
+		// Another tenant with the revocation of u-7 does not wait: its read finds no revocation, and it is denied.
+		ctx, _ := r.rpcCall(r.identity["u-7@t2"], authz.RevocationAfterMetadata, location)
+		if _, err := rpc(ctx, mustStruct(t, map[string]any{"order_id": "aw5"})); status.Code(err) != codes.NotFound {
+			t.Fatalf("a gRPC amend of another tenant with the revocation of u-7 gave %v, want NotFound", err)
+		}
+		<-clock.bounds
+		if len(clock.polls) != 0 {
+			t.Fatal("the amend of another tenant found the revocation of u-7 and waited")
+		}
+		// u-8 of the same tenant, to whom u-7 gave the location, waits for the revocation.
+		answers := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answers <- r.amendHTTP(r.identity["u-8@t1"], h, "aw5", location) }()
+		select {
+		case <-clock.bounds:
+		case a := <-answers:
+			t.Fatalf("the amend of u-8 with the revocation of u-7 answered %d %s and did not wait", a.Code, a.Body)
+		}
+		select {
+		case <-clock.polls:
+		case a := <-answers:
+			t.Fatalf("the amend of u-8 with the revocation of u-7 answered %d %s before it waited, want a wait for the revocation", a.Code, a.Body)
+		}
+		r.startRelay()
+		maker := r.bound("u-7@t1")
+		id := uuid.MustParse(strings.TrimPrefix(location, authz.RevocationPath))
+		for {
+			state, err := r.az.Status(context.Background(), maker.Tenant, maker.Principal, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.State == authz.RevocationComplete {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		clock.advance(5 * time.Second)
+		answer := <-answers
+		if answer.Code != http.StatusOK || answer.Header().Get(authz.RevocationHeader) != "" {
+			t.Fatalf("the amend of u-8 after the wait answered %d %v %s, want 200 with no revocation header", answer.Code, answer.Header(), answer.Body)
 		}
 	})
 }

@@ -362,12 +362,14 @@ func EncodeValue[Res any](res Res, _ string) ([]byte, error) { return json.Marsh
 // does not tell whether another tenant or principal made one with that identity.
 const RevocationUnknown = "unknown"
 
-// AwaitWrite waits for the revocation of the caller's own write that the request names in Authz-Revocation-After,
-// before the read opens its transaction (ST-SUP-RP11-LC21). The value is the identity of the revocation or the
-// path of Authz-Revocation-Location. It waits through authz WaitFor, at most the wait of Prefer: wait=N when the
-// request gives one and at most the wait cap, and holds no transaction and no pooled connection while it waits.
-// It sets the response header Authz-Revocation to the state it read last, and to unknown for a revocation that is
-// not one of tenant t and principal p. Once that state is complete, the read that follows runs at least as fresh as
+// AwaitWrite waits for the revocation of a write of the caller's tenant that the request names in
+// Authz-Revocation-After, before the read opens its transaction (ST-SUP-RP11-LC21): the caller's own write, or the
+// write of another principal of the tenant that gave the caller its revocation (decision ST-SUP-Q206 (a),
+// recommended). The value is the identity of the revocation or the path of Authz-Revocation-Location. It waits
+// through authz WaitInTenant, at most the wait of Prefer: wait=N when the request gives one and at most the wait
+// cap, and holds no transaction and no pooled connection while it waits. It sets the response header
+// Authz-Revocation to the state it read last, and to unknown for a revocation that is not one of tenant t and
+// principal p, also after it waited for it. Once that state is complete, the read that follows runs at least as fresh as
 // the revocation's token, because the revocation floor that each check and list reads was raised before the
 // revocation became complete (ST-SUP-RP06-LC13, ST-SUP-RP06-LC15). A request with no such header waits for
 // nothing. A value that is not an identity is ErrBadRequest.
@@ -391,13 +393,19 @@ func (rt *Runtime) AwaitWrite(w http.ResponseWriter, r *http.Request, t tenant.T
 	if !ok {
 		wait = math.MaxInt64
 	}
-	status, _, err := rt.authz.WaitFor(r.Context(), t, p, id, wait)
+	// Any principal of the tenant that holds the revocation waits for it, and only its maker reads its state: another
+	// principal gets unknown, as for a revocation that is not found (decision ST-SUP-Q206 (a), recommended;
+	// walkthrough 22, P3-A).
+	status, own, _, err := rt.authz.WaitInTenant(r.Context(), t, p, id, wait)
 	switch {
 	case errors.Is(err, authz.ErrRevocationNotFound):
 		w.Header().Set(authz.RevocationHeader, RevocationUnknown)
 		return nil
 	case err != nil:
 		return err
+	case !own:
+		w.Header().Set(authz.RevocationHeader, RevocationUnknown)
+		return nil
 	}
 	w.Header().Set(authz.RevocationHeader, string(status.State))
 	return nil

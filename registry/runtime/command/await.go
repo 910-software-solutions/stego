@@ -19,13 +19,15 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
-// AwaitRevocation waits, before a command decides its permission, for the revocation of the caller's own write that
-// the HTTP request names in Authz-Revocation-After, by its identity or by the path of Authz-Revocation-Location
-// (ST-SUP-RP10-LC47). It waits through authz WaitFor with its waiter limits of tenant t and principal p, at most the
-// wait of Prefer: wait=N when the request gives one, at most the wait cap and at most half of the time that the
-// deadline of the request leaves. It sets no response header: Authz-Revocation of a command names the revocation of
-// the command's own write. A revocation of another tenant or principal, and one still pending at the end of the
-// wait, is no error: the command then decides as it does with no wait. A value that is not an identity, and more
+// AwaitRevocation waits, before a command decides its permission, for the revocation of a write of the caller's
+// tenant that the HTTP request names in Authz-Revocation-After, by its identity or by the path of
+// Authz-Revocation-Location (ST-SUP-RP10-LC47): the caller's own write, or the write of another principal of the
+// tenant that gave the caller its revocation (decision ST-SUP-Q206 (a), recommended). It waits through authz
+// WaitInTenant with its waiter limits of tenant t and principal p, at most the wait of Prefer: wait=N when the request
+// gives one, at most the wait cap and at most half of the time that the deadline of the request leaves. It sets no
+// response header: Authz-Revocation of a command names the revocation of the command's own write. A revocation of
+// another tenant, and one still pending at the end of the wait, is no error: the command then decides as it does
+// with no wait. A value that is not an identity, and more
 // than one value, is ErrBadRequest. A request with no such header waits for nothing.
 func (rt *Runtime) AwaitRevocation(r *http.Request, t tenant.Tenant, p authz.Principal) error {
 	return rt.awaitRevocation(r.Context(), t, p, r.Header.Values(authz.RevocationAfterHeader), r.Header.Values("Prefer"))
@@ -63,7 +65,10 @@ func (rt *Runtime) awaitRevocation(ctx context.Context, t tenant.Tenant, p authz
 	if deadline, ok := ctx.Deadline(); ok {
 		wait = min(wait, time.Until(deadline)/2)
 	}
-	_, _, err = rt.cfg.Authz.WaitFor(ctx, t, p, id, wait)
+	// Any principal of the tenant that holds the revocation, such as a second user to whom the maker of a row gave
+	// it, waits for it; the wait gives the command nothing but time (decision ST-SUP-Q206 (a), recommended;
+	// walkthrough 22, P3-A).
+	_, _, _, err = rt.cfg.Authz.WaitInTenant(ctx, t, p, id, wait)
 	if err != nil && !errors.Is(err, authz.ErrRevocationNotFound) {
 		return err
 	}

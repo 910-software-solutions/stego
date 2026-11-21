@@ -1583,7 +1583,7 @@ most N seconds, the wait cap (10 seconds) and half the time that the deadline
 leaves. Over gRPC, send the request metadata `authz-revocation-after`. Each
 generated CRUD write and each declared command takes it. The answer does not
 report the wait: its `Authz-Revocation` names the revocation of its own write.
-A revocation that is not yours, or one that is still pending at the end of the
+A revocation of another tenant, or one that is still pending at the end of the
 wait, does not fail the write: the write is then decided as with no header. A
 value that is not a revocation is 400, or `InvalidArgument` over gRPC. The
 browser proxy of a browser-service sends the header to the API as it is.
@@ -1594,6 +1594,36 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Act at once on a row that another user created
+
+A second user of the same tenant can also act at once on a new row, such as
+accounts receivable that converts a job that a sales user just created. Give
+the second user the `Authz-Revocation-Location` of the create, such as in the
+page or the message that names the new row. The second user sends it in
+`Authz-Revocation-After`, with `Prefer: wait=N` if needed, and the command or
+the read waits for the revocation before it decides (runtime v0.187.0;
+before, it was decided as with no header and got 404 until the relay wrote
+the tuples, in walkthrough 22 for 0.2 to 0.4 s):
+
+```bash
+curl -X POST https://<host>/api/erp/v1/jobs/$JOB/convert \
+  -H "Authorization: Bearer $SECOND_USER_TOKEN" \
+  -H "Idempotency-Key: \"$KEY\"" \
+  -H "Authz-Revocation-After: $LOCATION" \
+  -H "Prefer: wait=5" \
+  -d '{}'
+```
+
+The wait gives the second user nothing but time. The decision is the
+permission of the second user: a user with no permission on the row still
+gets 404 after the wait. A read gives `Authz-Revocation: unknown` for a
+revocation that the reader did not make, also after the wait, and the status
+route `/authz/revocations/<id>` answers 404 to each user but the maker. A
+revocation of another tenant is not found, and the request does not wait.
+Thus the location never reads data of another tenant and never tells that a
+row exists. Give it only to users who may know when the create completed.
+This is the recommendation (a) of the open question ST-SUP-Q206.
 
 ### Release notes for runtime v0.186.0
 

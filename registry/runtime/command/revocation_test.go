@@ -635,8 +635,9 @@ func TestReadYourWritesRefusals(t *testing.T) {
 		r := newRevocationEnv(t, 5*time.Second, 0)
 		queries := r.queries()
 		location := r.create("u-7@t1", "k-ryw-3", "ryw3", nil).Response.Header.Get(authz.RevocationLocationHeader)
-		// A real revocation of u-7@t1 is unknown to another principal and to another tenant, at once.
-		for _, who := range []string{"u-8@t1", "u-7@t2"} {
+		// A real revocation of u-7@t1 is unknown to another tenant, at once. Another principal of t1 waits for it and
+		// gets unknown too (T04).
+		for _, who := range []string{"u-7@t2"} {
 			answer, err, took := r.await(queries, who, "wait=5", location)
 			if err != nil || answer.Header().Get(authz.RevocationHeader) != query.RevocationUnknown || took > 2*time.Second {
 				t.Fatalf("%s waited for u-7@t1's revocation: %v %q after %s, want unknown at once", who, err,
@@ -657,6 +658,58 @@ func TestReadYourWritesRefusals(t *testing.T) {
 		answer, err, _ := r.await(queries, "u-7@t1", "wait=1", other)
 		if err != nil || answer.Header().Get(authz.RevocationHeader) != query.RevocationUnknown {
 			t.Fatalf("u-7@t1 waited for u-7@t2's revocation under a held pool: %v %q, want unknown", err, answer.Header().Get(authz.RevocationHeader))
+		}
+	})
+	t.Run("ST-SUP-RP11-LC21-T04 A second user of the tenant who has the revocation of another user's create waits for it and gets unknown, never its state", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 5*time.Second, 0, 0, clock)
+		queries := r.queries()
+		location := r.create("u-7@t1", "k-ryw-5", "ryw5", nil).Response.Header.Get(authz.RevocationLocationHeader)
+		type awaited struct {
+			answer *httptest.ResponseRecorder
+			err    error
+		}
+		answers := make(chan awaited, 1)
+		go func() {
+			answer, err, _ := r.await(queries, "u-8@t1", "wait=5", location)
+			answers <- awaited{answer, err}
+		}()
+		select {
+		case <-clock.bounds:
+		case a := <-answers:
+			t.Fatalf("the read of u-8 with the revocation of u-7 answered %v %v and did not wait", a.err, a.answer.Header())
+		}
+		select {
+		case <-clock.polls:
+		case a := <-answers:
+			t.Fatalf("the read of u-8 with the revocation of u-7 answered %v %v before it waited, want a wait for the revocation", a.err, a.answer.Header())
+		}
+		r.startRelay()
+		maker := r.bound("u-7@t1")
+		id := uuid.MustParse(strings.TrimPrefix(location, authz.RevocationPath))
+		for {
+			state, err := r.az.Status(context.Background(), maker.Tenant, maker.Principal, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.State == authz.RevocationComplete {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		clock.advance(5 * time.Second)
+		a := <-answers
+		if a.err != nil || a.answer.Header().Get(authz.RevocationHeader) != query.RevocationUnknown {
+			t.Fatalf("the read of u-8 after the wait gave %v and %s %q, want unknown", a.err, authz.RevocationHeader, a.answer.Header().Get(authz.RevocationHeader))
+		}
+		// The maker reads the state of its own revocation.
+		go func() {
+			answer, err, _ := r.await(queries, "u-7@t1", "wait=5", location)
+			answers <- awaited{answer, err}
+		}()
+		<-clock.bounds
+		if a := <-answers; a.err != nil || a.answer.Header().Get(authz.RevocationHeader) != string(authz.RevocationComplete) {
+			t.Fatalf("the read of u-7 gave %v and %q, want complete", a.err, a.answer.Header().Get(authz.RevocationHeader))
 		}
 	})
 	t.Run("ST-SUP-RP11-LC21-T03 A hostile Authz-Revocation-After value appears in no error, header or log", func(t *testing.T) {
@@ -892,10 +945,15 @@ func TestRevocationRPC(t *testing.T) {
 				t.Fatalf("%s is no bad request", name)
 			}
 		}
-		// The revocation of u-7@t1 is unknown to another principal and to another tenant, at once.
+		// The revocation of u-7@t1 is unknown to another tenant, at once. Another principal of t1 waits for it, and
+		// then gets unknown, never its state (decision ST-SUP-Q206 (a), recommended).
 		for _, who := range []string{"u-8@t1", "u-7@t2"} {
 			stream, done := await(r.identity[who], who, authz.RevocationAfterMetadata, location, authz.PreferMetadata, "wait=5")
 			b := clock.waitBound(t, nil)
+			if who == "u-8@t1" {
+				clock.polled(t, nil)
+				b.end()
+			}
 			if err := <-done; err != nil || !slices.Equal(stream.header(authz.RevocationMetadata), []string{query.RevocationUnknown}) {
 				t.Fatalf("%s waited for u-7@t1's revocation: %v %v, want unknown", who, err, stream.md)
 			}

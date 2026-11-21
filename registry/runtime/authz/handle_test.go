@@ -1427,6 +1427,44 @@ func TestHandleWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP06-LC24-T06 WaitInTenant finds a revocation of another principal of the tenant and says it is not theirs, and never one of another tenant", func(t *testing.T) {
+		env := newPG(t)
+		rt := env.runtimeOf(t, &recorder{}, nil)
+		alice, bob := mustPerson(t, "alice"), mustPerson(t, "bob")
+		tx, handle := env.begin(t, rt, "t1", alice, rel("document#viewer"))
+		revocation, err := handle.Relate(ctx, viewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.commit(t, tx, "t1")
+		// A wait of 0 reads once: bob of t1 finds the pending revocation of alice, not as his own.
+		status, own, _, err := rt.WaitInTenant(ctx, mustTenant(t, "t1"), bob, revocation.ID(), 0)
+		if err != nil || own || status.State != RevocationPending {
+			t.Fatalf("bob of t1 got %v, own %v and %v, want pending and not his own", status, own, err)
+		}
+		if status, own, _, err := rt.WaitInTenant(ctx, mustTenant(t, "t1"), alice, revocation.ID(), 0); err != nil || !own || status.State != RevocationPending {
+			t.Fatalf("alice got %v, own %v and %v, want pending and her own", status, own, err)
+		}
+		// WaitFor and Status stay for the maker alone, and no other tenant finds the revocation.
+		if _, _, err := rt.WaitFor(ctx, mustTenant(t, "t1"), bob, revocation.ID(), 0); !errors.Is(err, ErrRevocationNotFound) {
+			t.Fatalf("WaitFor of bob got %v, want not found", err)
+		}
+		for name, wait := range map[string]func() error{
+			"user:alice in t2": func() error {
+				_, _, _, err := rt.WaitInTenant(ctx, mustTenant(t, "t2"), alice, revocation.ID(), 0)
+				return err
+			},
+			"an unknown identity": func() error {
+				_, _, _, err := rt.WaitInTenant(ctx, mustTenant(t, "t1"), bob, uuid.New(), 0)
+				return err
+			},
+		} {
+			if err := wait(); !errors.Is(err, ErrRevocationNotFound) {
+				t.Errorf("%s got %v, want not found", name, err)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RP06-LC15-T03 A revocation with a parked entry reports parked", func(t *testing.T) {
 		env := newPG(t)
 		rt := env.runtimeOf(t, &recorder{}, nil)
