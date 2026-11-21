@@ -353,8 +353,11 @@ func stegoCauseClass(err error) string {
 	// SpiceDB that refused the connection of the migration job (walkthrough 19, small items); the record takes it
 	// only in the strict form of a name of the generated code.
 	var classed interface{ CauseClass() string }
-	if errors.As(err, &classed) && stegoFaultName(classed.CauseClass()) {
-		return classed.CauseClass()
+	if errors.As(err, &classed) {
+		// One call: a second call could give another value than the one checked.
+		if class := classed.CauseClass(); stegoFaultName(class) {
+			return class
+		}
 	}
 	return ""
 }
@@ -378,16 +381,21 @@ func stegoReportFailure(output io.Writer, err error) {
 		FaultClass() string
 		FaultObject() string
 	}
-	if errors.As(err, &classified) && stegoFaultName(classified.FaultClass()) && stegoFaultName(classified.FaultObject()) {
-		fault, object = classified.FaultClass(), classified.FaultObject()
+	if errors.As(err, &classified) {
+		// One call of each: a second call could give another value than the one checked.
+		if class, named := classified.FaultClass(), classified.FaultObject(); stegoFaultName(class) && stegoFaultName(named) {
+			fault, object = class, named
+		}
 	}
 	// A fault that knows its remedy names it, a fixed text of the generated code such as the section of the upgrade
 	// guide that moves a database to the role layout of the release (walkthrough 11, W11-B1). It is never the text of
 	// the cause.
 	var remedy string
 	var remedied interface{ FaultRemedy() string }
-	if fault != "" && errors.As(err, &remedied) && stegoRemedyText(remedied.FaultRemedy()) {
-		remedy = remedied.FaultRemedy()
+	if fault != "" && errors.As(err, &remedied) {
+		if text := remedied.FaultRemedy(); stegoRemedyText(text) {
+			remedy = text
+		}
 	}
 	record := struct {
 		Timestamp    string   `json:"timestamp"`
