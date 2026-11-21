@@ -51,6 +51,8 @@ Cart: generation does not rename the field customer_ref yet, because the
 collection carts names it by its declared name`. To change the name of such
 a field in the store, add a field with the new name and drop the old one.
 This changes the API, so it is a breaking change for each client.
+`stego validate` and `stego plan` also warn when the sign-off of a fill counts only
+because of a key that the change adds to `SIGNERS`; with `--strict` this is a fault.
 
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first

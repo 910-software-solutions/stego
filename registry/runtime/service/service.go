@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -225,10 +227,10 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}()
 	pools, err := p.TenantConfig(s.DatabaseURL)
 	if err != nil {
-		return nil, &databaseError{err}
+		return nil, &databaseError{err: err, settings: true}
 	}
 	if svc.pool, err = tenant.Open(ctx, pools); err != nil {
-		return nil, &databaseError{err}
+		return nil, &databaseError{err: err}
 	}
 	// A database whose migration ledger does not hold the last migration of this release has not had the migration
 	// Job of the release: the process stops, and starts again until the Job is done (ST-SUP-RP14-LC07). The check
@@ -251,14 +253,14 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	svc.blocked = blockedReason(blocking)
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
-		return nil, &databaseError{err}
+		return nil, &databaseError{err: err}
 	}
 	// The charges of checks of counted values take a small pool of their own, so a full main pool never makes a
 	// check wait for a second main connection (security review of PR #451, L2).
 	charges := pools
 	charges.Pool = tenant.PoolBounds{MaxOpen: chargeConnections, MaxIdle: 1, MaxLifetime: pools.Pool.MaxLifetime, MaxIdleTime: pools.Pool.MaxIdleTime}
 	if svc.chargeDB, err = tenant.Open(ctx, charges); err != nil {
-		return nil, &databaseError{err}
+		return nil, &databaseError{err: err}
 	}
 	if svc.queue, err = p.NewQueue(svc.pool); err != nil {
 		return nil, err
@@ -315,7 +317,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, ChargeDB: svc.chargeDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
-		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
+		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring,
+		// Each command runtime logs through the log provider of the service, so the lines command.attempts.failed and
+		// command.attempts.pool_saturated of a command or a collection are JSON lines with stego.* attributes, as each
+		// other log line of the runtime (ST-SUP-RP10-LC54; walkthrough 21, U-E).
+		Logger: svc.telemetry.LoggerProvider()}
 	// The counter of the charges of counted checks that cannot commit (ST-SUP-RP10-LC54; security review of PR #482, I4).
 	config.Meter = svc.telemetry.MeterProvider()
 	if err := ringNeeded(p, s.Ring); err != nil {
@@ -349,9 +355,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// The worker runs and the consumed messages run on the runtime of the workers' entities; a consumer runs no
 		// fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
 		config.Entities = p.WorkerEntities
-		// A consumer attempt that does not commit writes one warn log line (ST-SUP-RC35-OC06).
+		// A consumer attempt that does not commit writes one warn log line through the log provider (ST-SUP-RC35-OC06).
 		workers := config
-		workers.Logger = svc.telemetry.LoggerProvider()
 		if p.Provisioning != nil && p.declaresTenant() && svc.provider != nil {
 			// A consumer runs no fill before the tuple of its worker is in SpiceDB, which Provision and the reconcile
 			// of the controller write (ST-SUP-RC35-OC18).
@@ -365,7 +370,6 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// Provision and Retire are commands of their own, on a command runtime with no entity (ST-SUP-RC27-OC09),
 		// which logs the outcomes that write no audit row (ST-SUP-RC27-OC10).
 		config.Entities = nil
-		config.Logger = svc.telemetry.LoggerProvider()
 		provisioning, err := command.New(ctx, config)
 		if err != nil {
 			return nil, err
@@ -761,15 +765,76 @@ func (k presharedKey) GetRequestMetadata(context.Context, ...string) (map[string
 
 func (k presharedKey) RequireTransportSecurity() bool { return !k.plaintext }
 
-// databaseError is a start whose database pool did not open: the connection configuration of the adapter, the
-// connection, or the checks of the runtime role refused it.
-type databaseError struct{ err error }
+// databaseError is a start whose database pool did not open: the connection configuration of the adapter
+// (settings), the connection, or the checks of the runtime role refused it. The failure record of the process names
+// which of the three as its fault class, the database as its object, the remedy and a cause class, fixed texts with no
+// text of the cause (walkthrough 21, U-F).
+type databaseError struct {
+	err      error
+	settings bool
+}
 
 func (e *databaseError) Error() string {
 	return "service: the database pool did not open: " + e.err.Error()
 }
 
 func (e *databaseError) Unwrap() error { return e.err }
+
+// The fault classes of a database pool that did not open.
+const (
+	DatabaseSettingsFault    = "database.settings"
+	DatabaseRuntimeRoleFault = "database.runtime_role"
+	DatabaseConnectionFault  = "database.connection"
+)
+
+// FaultClass gives the fault class: the settings, the runtime role or the connection.
+func (e *databaseError) FaultClass() string {
+	switch {
+	case e.settings:
+		return DatabaseSettingsFault
+	case errors.Is(e.err, tenant.ErrRuntimeRole):
+		return DatabaseRuntimeRoleFault
+	}
+	return DatabaseConnectionFault
+}
+
+// FaultObject gives the object of the fault, the database of the service.
+func (e *databaseError) FaultObject() string { return "database" }
+
+// FaultRemedy gives what to do, a fixed text for each fault class.
+func (e *databaseError) FaultRemedy() string {
+	switch e.FaultClass() {
+	case DatabaseSettingsFault:
+		return "the connection settings of the database are refused: correct DATABASE_URL and the TLS settings of the database, then start the service again"
+	case DatabaseRuntimeRoleFault:
+		return "the runtime role fails a check, such as a role that owns a table or holds BYPASSRLS: give the service the runtime role that the migration job makes, then start the service again"
+	}
+	return "the database did not accept the connection or closed it, as while the database starts or after a restart of its server: the service starts again; when it does not pass, check DATABASE_URL and that the database runs"
+}
+
+// CauseClass gives the class of the cause that the failure record cannot class from the standard library or the
+// SQLSTATE: connection_closed for a connection that ended in the middle of a message, as when the database server
+// restarts (walkthrough 21, step 11); refused for a runtime role that fails a check; invalid_setting for a refused
+// connection setting; and connection_failed for any other cause of the connection. It never holds the text of the
+// cause.
+func (e *databaseError) CauseClass() string {
+	switch {
+	case errors.Is(e.err, io.EOF) || errors.Is(e.err, io.ErrUnexpectedEOF):
+		return "connection_closed"
+	case e.settings:
+		return "invalid_setting"
+	case errors.Is(e.err, tenant.ErrRuntimeRole):
+		return "refused"
+	}
+	return "connection_failed"
+}
+
+// UseJSONLog makes log/slog, and the standard logger with it, write each line of the process as one JSON line on
+// standard error, in the format of the console lines of the log provider, with the attributes under stego.
+// (otel.SlogHandler; ST-SUP-RP03-LC16, walkthrough 21, U-E). So the lines of the runtime that do not go through the
+// log provider, such as the lines of the seal jobs of the controller and the refused step of the migration job, are
+// JSON lines too. The generated code calls it first in NewService and in Migrate.
+func UseJSONLog() { slog.SetDefault(slog.New(otel.NewSlogHandler(os.Stderr))) }
 
 // StartStage gives the stage of a start that ReadSettings or New refused, for the failure record of the process,
 // which holds no error text and no value (ST-SUP-RP14-LC05): service.start.setting.<component>.<variable> for a

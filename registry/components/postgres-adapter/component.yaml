@@ -36,9 +36,12 @@
 # migration names of a ledger refusal, and stops the job with a refusal that names the migration, the index and the
 # table, and no row value, when two rows hold one value of a new unique key (ST-SUP-RC01-OC38, ST-SUP-RC01-OC51;
 # ST-GEN-Q48; security review of PR #476, I1).
+# Version 6.27.0 gives the refusal of a changed migration body and of a contract step that waits a fault class, the
+# table that tells it, a fixed remedy and the cause class refused, so the failure record of the migration job names
+# them with no change or row (ST-SUP-RC01-OC50, ST-SUP-RC01-OC51; walkthrough 21, U-F).
 kind: component
 name: postgres-adapter
-version: 6.26.0
+version: 6.27.0
 stage: ga
 output_namespace: internal/storage
 

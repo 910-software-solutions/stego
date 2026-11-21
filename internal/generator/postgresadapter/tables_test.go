@@ -231,7 +231,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.185.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.184.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -587,6 +587,9 @@ func TestTables(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T03")
+	})
+	t.Run("ST-SUP-RC01-OC50-T07 A contract of a seal that waits for its pass gives the failure record its fault class, the table, the remedy and the cause class", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T07")
 	})
 	t.Run("ST-SUP-RC01-OC50-T02 A database that the three releases of a seal migrated in turn and a new one get the same schema", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T02")

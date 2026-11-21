@@ -326,8 +326,7 @@ func chargeCause(err error) string {
 
 // logChargeFailure counts and logs the charge of a counted check that cannot commit, so the call answers 503: it adds
 // one to the counter AttemptsFailedEvent of the Meter of the runtime by action, entity and cause class; and logs one
-// error line
-// through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
+// error line through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
 // entity, the cause class and the count of the lines held back, and no value and no error text (ST-SUP-RP10-LC54;
 // walkthrough 20, P-C). It logs one line for each action, entity and cause class in each authz.LogEvery. With no log
 // provider, it logs the same fields with log/slog.

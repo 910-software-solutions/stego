@@ -317,11 +317,21 @@ ORDER BY r.rolname`)
 		faults = append(faults, "may run the outbox relay function stego_outbox.claim, which only the worker mode's role may")
 	}
 	if len(faults) > 0 {
-		return errors.New("tenant: the runtime role " + role + " " + strings.Join(faults, " and ") +
-			", so the service does not start (ST-STD-TXN-R03)")
+		return &roleFault{text: "tenant: the runtime role " + role + " " + strings.Join(faults, " and ") +
+			", so the service does not start (ST-STD-TXN-R03)"}
 	}
 	return nil
 }
+
+// ErrRuntimeRole matches the error of Open whose runtime role fails a check of ST-SUP-RP04-LC06, such as a role that
+// owns a table: the role is wrong, and the connection is not at fault (walkthrough 21, U-F).
+var ErrRuntimeRole = errors.New("tenant: the runtime role fails a check")
+
+// roleFault is the error of a runtime role that fails a check: its text names the role and each fault.
+type roleFault struct{ text string }
+
+func (e *roleFault) Error() string        { return e.text }
+func (e *roleFault) Is(target error) bool { return target == ErrRuntimeRole }
 
 // tableNameStatement gives the count of the parts of the SQL text of a table name, and the schema and the name of
 // the table that it names.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/fill"
 	"gopkg.in/yaml.v3"
 )
@@ -85,8 +87,22 @@ func runFillSign(args []string) error {
 	}
 	if f.SignOff != nil && !*force {
 		if signer, err := fill.VerifySignOff(f.SignOff, digest, signers); err == nil {
-			fmt.Printf("The sign-off of fill %q already signs its current evidence %s as %s, so fill.yaml stays as it is. To sign it again, run stego fill sign --force %s.\n", name, digest, signer, name)
-			return nil
+			// A sign-off whose key only the change adds to SIGNERS is not kept: the listed signer signs the fill
+			// again with their own key (walkthrough 21, T-D; decision ST-EXT-Q31).
+			base, err := readBaseSigners("")
+			if err != nil {
+				return err
+			}
+			if base.missing != "" {
+				base.noBaseNote(os.Stderr)
+			}
+			// A sign-off that does not verify against the base, for any reason, is not kept (security review of PR
+			// #485, L1).
+			if _, err := fill.VerifySignOff(f.SignOff, digest, base.signers); !base.changed || err == nil {
+				fmt.Printf("The sign-off of fill %q already signs its current evidence %s as %s, so fill.yaml stays as it is. To sign it again, run stego fill sign --force %s.\n", name, digest, signer, name)
+				return nil
+			}
+			fmt.Printf("The sign-off of fill %q signs its current evidence as %s, and SIGNERS at %s does not qualify its key: the change adds it or changes its line. So the fill is signed again with your key.\n", name, signer, base.ref)
 		}
 	}
 	key, err := personalSigningKey(input.ProjectDir)
@@ -291,4 +307,146 @@ func (k signingKey) sign(projectDir, digest string) (fill.Signature, string, err
 		}
 	}
 	return fill.Signature{KeyType: keyType, Armored: stdout.String()}, fingerprint, nil
+}
+
+// baseSigners is the SIGNERS file of a base of the change, which validate, plan and fill sign compare with the
+// SIGNERS file of the project (walkthrough 21, T-D; decision ST-EXT-Q31): ref and commit name the base, and changed
+// tells whether the two files differ. With no base, changed is false.
+type baseSigners struct {
+	ref, commit string
+	signers     fill.Signers
+	changed     bool
+	// missing says why there is no base, or is empty when there is one.
+	missing string
+}
+
+// noBaseNote writes the note that the SIGNERS check did not run, and why.
+func (b baseSigners) noBaseNote(w io.Writer) {
+	fmt.Fprintf(w, "NOTE: the check of SIGNERS against a base did not run: %s. Name the base with --base <ref>, such as the base commit of the pull request.\n", b.missing)
+}
+
+// readBaseSigners reads the SIGNERS file of the service folder at the base: at the ref that named gives, else at the
+// merge base of HEAD and the default branch of the repository (defaultBaseRef). A base that holds no SIGNERS file
+// lists no key. With no Git repository, no commit or no default branch, there is no base: changed is false and
+// missing says why. Every other failure of git is an error.
+func readBaseSigners(named string) (baseSigners, error) {
+	var base baseSigners
+	if strings.HasPrefix(named, "-") {
+		return base, fmt.Errorf("the base ref %q starts with -, which git reads as an option", named)
+	}
+	base.ref = named
+	if named == "" {
+		// Only a folder in no repository, a repository with no commit and one with no default branch have no base;
+		// every other failure of git fails, as the base check of plan does, so a check never stops in silence
+		// (security review of PR #485, M1).
+		ref, found, err := defaultBaseRef()
+		switch {
+		case err == nil && !found:
+			base.missing = "the service folder is in no Git repository"
+			return base, nil
+		case errors.Is(err, errNoCommit):
+			base.missing = "the repository of the service folder has no commit"
+			return base, nil
+		case errors.Is(err, errNoDefaultBranch):
+			base.missing = "the repository of the service folder has no default branch (refs/remotes/origin/HEAD, main or master)"
+			return base, nil
+		case err != nil:
+			return base, err
+		}
+		base.ref = ref
+		// The merge base is the version of the default branch that the change starts from: a key that the
+		// change adds is not in its SIGNERS file.
+		if commit, err := compatGit("merge-base", "HEAD", ref); err == nil {
+			base.commit = strings.TrimSpace(string(commit))
+		}
+	}
+	if base.commit == "" {
+		commit, err := compatGit("rev-parse", "--verify", "--quiet", "--end-of-options", base.ref+"^{commit}")
+		if err != nil {
+			return base, fmt.Errorf("the base ref %s names no commit of the service's repository", base.ref)
+		}
+		base.commit = strings.TrimSpace(string(commit))
+	}
+	prefix, err := compatGit("rev-parse", "--show-prefix")
+	if err != nil {
+		return base, err
+	}
+	data, _, err := readBaseFile(base.commit, string(bytes.TrimSpace(prefix))+fill.SignersFile)
+	if err != nil {
+		return base, fmt.Errorf("read %s at the base ref %s (commit %s): %w", fill.SignersFile, base.ref, base.commit, err)
+	}
+	if base.signers, err = fill.ParseSigners(data); err != nil {
+		return base, fmt.Errorf("%s at the base ref %s (commit %s): %w", fill.SignersFile, base.ref, base.commit, err)
+	}
+	current, err := os.ReadFile(fill.SignersFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return base, err
+	}
+	base.changed = !bytes.Equal(current, data)
+	return base, nil
+}
+
+// addedKeyFaults gives one fault for each fill whose sign-off counts only because of a key that the SIGNERS file of
+// the project adds to the SIGNERS file of the base (ST-EXT-UC02-R02, decision ST-EXT-Q31): validate and plan give
+// each as a warning, and as a fault with --strict. With no base, or the same SIGNERS file as the base, there is none.
+func addedKeyFaults(input compiler.ReconcilerInput, named string) ([]declaration.ValidationError, error) {
+	base, err := readBaseSigners(named)
+	if err != nil {
+		return nil, err
+	}
+	if base.missing != "" {
+		// With no base the check does not run: a note says so, and --strict refuses (security review of PR #485, M1).
+		base.noBaseNote(os.Stderr)
+		if strictSecretSources {
+			return []declaration.ValidationError{{Rule: "ST-EXT-UC02-R02", Path: fill.SignersFile, Found: base.missing,
+				Message: "--strict needs a base to check SIGNERS against, and " + base.missing + ": name it with --base <ref>, such as the base commit of the pull request"}}, nil
+		}
+		return nil, nil
+	}
+	if !base.changed {
+		return nil, nil
+	}
+	check, err := compiler.ResolveFillCheck(input)
+	if err != nil {
+		return nil, err
+	}
+	added, err := fill.AddedKeySignOffs(check, base.signers)
+	if err != nil {
+		return nil, err
+	}
+	var faults []declaration.ValidationError
+	for _, a := range added {
+		faults = append(faults, declaration.ValidationError{Rule: "ST-EXT-UC02-R02", Path: "fills/" + a.Fill + "/" + fill.ManifestFile, Found: a.Signer,
+			Message: fmt.Sprintf("the sign-off of fill %q counts only because of the key of %s, which SIGNERS at %s (commit %s) does not qualify: the change adds it or changes its line. "+
+				"Review the change of SIGNERS on its own and merge it first, or have a person whom SIGNERS at %s lists run stego fill sign --force %s",
+				a.Fill, a.Signer, base.ref, shortCommit(base.commit), base.ref, a.Fill)})
+	}
+	return faults, nil
+}
+
+// shortCommit gives the first 12 characters of a commit ID.
+func shortCommit(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
+// signersBaseUsage is the help of the flag --base of stego validate.
+const signersBaseUsage = "the commit or branch whose SIGNERS a sign-off is checked against; the merge base of HEAD and the default branch when left out"
+
+// checkAddedKeys writes a warning for each fill whose sign-off counts only because of a key that the change adds to
+// SIGNERS, and with --strict refuses the plan (walkthrough 21, T-D; decision ST-EXT-Q31).
+func checkAddedKeys(input compiler.ReconcilerInput, named string, stdout io.Writer) error {
+	added, err := addedKeyFaults(input, named)
+	if err != nil || len(added) == 0 {
+		return err
+	}
+	for _, fault := range added {
+		fmt.Fprintf(stdout, "WARNING: %s: %s\n", fault.Path, fault.Message)
+	}
+	if strictSecretSources {
+		return fmt.Errorf("--strict refuses %d fault(s) of the SIGNERS check against the base, so plan saved no plan", len(added))
+	}
+	return nil
 }

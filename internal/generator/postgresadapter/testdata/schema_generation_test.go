@@ -516,6 +516,38 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 			t.Fatalf("a foreign ledger row gave %v, want ErrForeignTables", err)
 		}
 	})
+	t.Run("ST-SUP-RC01-OC51-T04 A changed body of an applied migration gives the failure record its fault class, the ledger, the remedy and the cause class", func(t *testing.T) {
+		db := schemaDB(t)
+		if err := storage.Migrate(bg, db); err != nil {
+			t.Fatal(err)
+		}
+		applied := ledgerApplied(t, db)
+		exec(t, db, "UPDATE stego_schema.migrations SET digest=$1 WHERE version=$2", storage.Digest("CREATE TABLE earlier_body (id int)"), applied[0])
+		for name, check := range map[string]func() error{
+			"the ledger check of the job": func() error { return storage.CheckLedger(bg, db) },
+			"the ledger":                  func() error { return storage.Migrate(bg, db) },
+		} {
+			err := check()
+			// The failure record of the process takes these fixed names and texts, and never the text of the refusal
+			// (walkthrough 21, U-F).
+			var classified interface {
+				FaultClass() string
+				FaultObject() string
+				FaultRemedy() string
+			}
+			if !errors.As(err, &classified) || classified.FaultClass() != "migration_ledger.digest" || classified.FaultObject() != "stego_schema.migrations" ||
+				!strings.Contains(classified.FaultRemedy(), "migrate: the step is refused names the migration and the two digests") {
+				t.Errorf("%s gave %v, whose failure record names no fault class, ledger and remedy", name, err)
+			}
+			var caused interface{ CauseClass() string }
+			if !errors.As(err, &caused) || caused.CauseClass() != "refused" {
+				t.Errorf("%s gave %v, whose failure record names no cause class refused", name, err)
+			}
+			if classified != nil && (strings.Contains(classified.FaultRemedy(), applied[0]) || strings.Contains(classified.FaultRemedy(), "earlier_body")) {
+				t.Errorf("%s: the remedy names a migration or a body: %s", name, classified.FaultRemedy())
+			}
+		}
+	})
 	t.Run("ST-SUP-RC01-OC51-T03 A ledger of another history is refused with a fault that names the row, the migration and the remedy", func(t *testing.T) {
 		db := schemaDB(t)
 		if err := storage.Migrate(bg, db); err != nil {

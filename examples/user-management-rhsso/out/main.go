@@ -308,6 +308,12 @@ func stegoCauseClass(err error) string {
 			return "too_many_connections"
 		case code == "57P03":
 			return "database_starting"
+		// The server ended the session: an operator stopped it, or it restarts after a crash of one of its processes
+		// (walkthrough 21, U-F).
+		case code == "57P01":
+			return "admin_shutdown"
+		case code == "57P02":
+			return "crash_shutdown"
 		case code == "3D000":
 			return "database_not_found"
 		case code[:2] == "28":
@@ -336,6 +342,9 @@ func stegoCauseClass(err error) string {
 		return "connection_refused"
 	case errors.Is(err, syscall.ECONNRESET):
 		return "connection_reset"
+	// A connection that ended in the middle of a message, as when the database server restarts (walkthrough 21, U-F).
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "connection_closed"
 	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
 		return "network_unreachable"
 	case errors.Is(err, syscall.EACCES), errors.Is(err, fs.ErrPermission):

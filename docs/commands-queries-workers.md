@@ -1592,6 +1592,31 @@ worker mode, which runs the relay, runs.
   L1). The new type `kafkaoutbox.SettingError` names the setting of each
   refusal of the Kafka settings; its text does not change.
 
+### Release notes for runtime v0.184.0
+
+- `service.New` gives the log provider of the service to the command runtime
+  of its commands and collections too, not only to the runtime of its
+  workers and its provisioning. So the lines `command.attempts.failed` and
+  `command.attempts.pool_saturated` of a command are JSON lines with
+  `stego.*` attributes, and an outcome row that is not written is logged
+  (ST-SUP-RP10-LC54; walkthrough 21, U-E).
+- New `otel.SlogHandler` and `service.UseJSONLog`: each `log/slog` line of a
+  process, such as the lines of the seal and re-seal jobs of the controller
+  and the line of a refused step of the migration job, is one JSON line on
+  standard error, with the timestamp, the severity, the event name, the
+  message and the attributes under `stego.`. The event name comes from the
+  attribute `event.name` (`otel.SlogEventKey`), from the message when it is an
+  event name, or is `stego.log`. New event names `command.seal.pass`,
+  `command.reseal.pass` and `migrate.step.refused`. The generated code calls
+  `service.UseJSONLog` first in `NewService` and in `Migrate`.
+- A start whose database pool did not open gives the failure record of the
+  process its fault class (`database.connection`, `database.settings` or
+  `database.runtime_role`), the object `database`, a remedy and a cause class:
+  `connection_closed` for a connection that ended in the middle of a message,
+  as when the database server restarts, else the class of the SQLSTATE or the
+  network, or `invalid_setting`, `refused` or `connection_failed`. New
+  `tenant.ErrRuntimeRole` (walkthrough 21, U-F).
+
 ### Release notes for runtime v0.182.0
 
 - The worker mode runs the Kafka inbox of each declared subscription, each in
