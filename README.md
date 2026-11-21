@@ -774,7 +774,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego drift` | `stego drift` |
 | `stego env check` | `stego env check --requirements <platform-requirements.yaml> <environment-file>` |
 | `stego fill create` | `stego fill create <name> --slot <slot> [--component <component>] [--collection <collection>]` |
-| `stego fill sign` | `stego fill sign <name>` |
+| `stego fill sign` | `stego fill sign [--force] <name>` |
 | `stego fill status` | `stego fill status` |
 | `stego fleet` | `stego fleet --digest <digest> <checkout>...` |
 | `stego fleet vex` | `stego fleet vex --registry <folder> <checkout>...` |
