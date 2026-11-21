@@ -1276,7 +1276,8 @@ idempotent, so it refuses `acted`.
 ### Take the change events of another service
 
 A worker can consume the change events of another service through a
-subscription. See [Subscriptions](subscriptions.md).
+subscription. A service has 1 to 8 subscriptions, and one worker consumes
+each. See [Subscriptions](subscriptions.md).
 
 ### A reference held within a field
 
@@ -1423,6 +1424,36 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.182.0
+
+- The worker mode runs the Kafka inbox of each declared subscription, each in
+  its own consumer group and with its own Kafka client (ST-SUP-RP14-LC08,
+  decision on ST-SUP-Q204). `service.WorkerParts` has the new field
+  `Inboxes`: a function that gives the inbox of each subscription. The field
+  `Inbox` is deprecated; the worker mode takes it as one inbox when `Inboxes`
+  is nil. The purge timer of the outbox purges the refused records once, and
+  the readiness of the worker mode names each inbox that stopped or that fails.
+- The inbox of a subscription reads its settings by the name of the
+  subscription: the new `kafkainbox.SubscriptionTopicSetting`,
+  `SubscriptionGroupSetting`, their `_FILE` forms and
+  `SubscriptionInfiniteRetentionSetting` are patterns with `{subscription}`,
+  and `kafkainbox.Setting` gives the name of one subscription, such as
+  `STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC`. The new
+  `kafkaoutbox.ReadSubscriptionConsumer` takes the subscription. `Settings`
+  has the field `Subscription`, and the new `RetentionFitsFor` takes the name
+  of the retention setting for its error (ST-SUP-RP01-LC38). The fixed names
+  `TopicSetting` and the others, `kafkaoutbox.ReadConsumer` and
+  `RetentionFits` stay, deprecated, for the API of the runtime.
+- `kafkainbox.ReadSettings` and the new `kafkainbox.CheckSettings` refuse a
+  value of a fixed name of `kafka-consumer` before 0.5.0, such as
+  `STEGO_KAFKA_CONSUMER_TOPIC`, with an error that names it and the name to
+  set. `CheckSettings`, which the start of the worker mode calls, and the new
+  `kafkainbox.CheckGroups` also refuse two subscriptions with one consumer
+  group, naming the group setting of the second. The start of the worker mode
+  stops at the stage `service.start.setting.kafka-consumer.<variable>`.
+- The events `kafka.consumer.failed` and `kafka.consumer.start_refused` of an
+  inbox have the attribute `subscription`.
 
 ### Release notes for runtime v0.181.0
 

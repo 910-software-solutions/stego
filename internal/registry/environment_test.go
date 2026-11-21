@@ -129,6 +129,53 @@ func TestEnvironmentDeclaration(t *testing.T) {
 			t.Fatalf("a name from a setting of names is refused: %v", err)
 		}
 	})
+	t.Run("ST-SUP-INV23-T A name holds {subscription} only in a component that provides subscriptions, with its group and its need", func(t *testing.T) {
+		// Decision on ST-SUP-Q204: the settings and the topic need of each subscription by its name.
+		subscribed := `kind: component
+name: env-a
+version: 1.0.0
+stage: alpha
+config: {}
+requires: []
+provides: [subscriptions]
+slots: []
+architecture: {layer: handler, flow: "Serves the test.", ports: {subscriptions: inbound}}
+environment:
+  - name: "ENV_A_{subscription}_TOPIC"
+    type: string
+    required: false
+    description: "The topic of the subscription."
+    secret: false
+    one_of: "{subscription}-topic"
+  - name: "ENV_A_{subscription}_TOPIC_FILE"
+    type: path
+    required: false
+    description: "The file of the topic of the subscription."
+    secret: false
+    one_of: "{subscription}-topic"
+needs:
+  - {kind: topic, name: "{service}-sub-{subscription}", variable: "ENV_A_{subscription}_TOPIC", access: read}
+`
+		if _, err := ParseComponentFromBytes([]byte(subscribed), "env-a/component.yaml"); err != nil {
+			t.Fatalf("a component that provides subscriptions and names its settings by {subscription} is refused: %v", err)
+		}
+		for _, c := range []struct{ name, old, replacement, says string }{
+			{"a component that does not provide subscriptions", "provides: [subscriptions]", "provides: []", "provides the port subscriptions"},
+			{"a group with no {subscription}", "    one_of: \"{subscription}-topic\"\n", "    one_of: topic\n", "each subscription has a group of its own"},
+			{"a group with {subscription} of a fixed name", "  - name: \"ENV_A_{subscription}_TOPIC_FILE\"\n", "  - name: ENV_A_TOPIC_FILE\n", "the name of the variable does not"},
+			{"a need of each subscription with a fixed variable", "name: \"{service}-sub-{subscription}\", variable: \"ENV_A_{subscription}_TOPIC\"", "name: \"{service}-sub-{subscription}\", variable: ENV_A_OTHER", "not an environment variable"},
+			{"a fixed need with the variable of each subscription", "name: \"{service}-sub-{subscription}\"", "name: \"{service}-sub\"", "both hold {subscription} or neither"},
+			{"an unknown placeholder", "ENV_A_{subscription}_TOPIC_FILE", "ENV_A_{subscriptions}_TOPIC_FILE", "{subscriptions}"},
+		} {
+			if !strings.Contains(subscribed, c.old) {
+				t.Fatalf("%s: the fixture holds no %q", c.name, c.old)
+			}
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(subscribed, c.old, c.replacement, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), c.says) {
+				t.Errorf("%s: the component is accepted, or the refusal does not say %q: %v", c.name, c.says, err)
+			}
+		}
+	})
 	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and a name holds only a setting of a closed list of names", func(t *testing.T) {
 		expectRefused(t, []refusal{
 			{"a secret with a default", "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "default"},
@@ -380,7 +427,7 @@ func TestOneOfGroups(t *testing.T) {
 			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
 			"kafka-producer/kafka-topic":              {"STEGO_KAFKA_TOPIC", "STEGO_KAFKA_TOPIC_FILE"},
 			"kafka-consumer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
-			"kafka-consumer/kafka-consumer-topic":     {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE"},
+			"kafka-consumer/{subscription}-topic":     {"STEGO_KAFKA_CONSUMER_{subscription}_TOPIC", "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"},
 			// The mode migrate of browser-backend reads the same owner connection as postgres-adapter (ST-SUP-RC02-OC56).
 			"browser-backend/migration-database-url": {"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"},
 		}

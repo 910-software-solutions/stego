@@ -243,8 +243,8 @@ func declaresVariables(component *Component) error {
 		if variable.RequiredWhen != "" && (variable.IsRequired() || !requiredWhen.MatchString(variable.RequiredWhen)) {
 			return fault("required_when", "a condition of required when is a phrase of at most 120 lower-case letters, digits, spaces and the characters -_., of a variable that is not required on its own")
 		}
-		if variable.OneOf != "" && !groupName.MatchString(variable.OneOf) {
-			return fault("one_of", "the group %q is not a name of at most 63 lower-case letters, digits and '-', such as database-url", variable.OneOf)
+		if err := checkGroupName(component, variable); err != nil {
+			return fault("one_of", "%s", err)
 		}
 		if variable.OneOf != "" && variable.IsRequired() {
 			return fault("one_of", "the variable is required and in the group %s; a variable of a group is not required on its own, because the group needs exactly one of its variables: give required: false", variable.OneOf)
@@ -255,6 +255,9 @@ func declaresVariables(component *Component) error {
 			}
 			if err := checkNeedName(component, source.Name); err != nil {
 				return fault("secret_source", "%s", err)
+			}
+			if strings.Contains(source.Name, SubscriptionPlaceholder) && !strings.Contains(variable.Name, SubscriptionPlaceholder) {
+				return fault("secret_source", "the need %s holds %s and the name of the variable does not", source.Name, SubscriptionPlaceholder)
 			}
 			if len(source.Key) > maxNeedWord || !needWord.MatchString(source.Key) {
 				return fault("secret_source", "the key %q is not a key name of at most %d letters, digits, '-' or '_'", source.Key, maxNeedWord)
@@ -302,8 +305,44 @@ func holdsGoCode(folder string) bool {
 	return false
 }
 
-// groupName is the name of a group of one of: lower-case letters, digits and '-'.
-var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+// groupName is the name of a group of one of: at most 127 lower-case letters, digits and '-'.
+var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,125}[a-z0-9])?$`)
+
+// SubscriptionPlaceholder is the placeholder of the name of a declared subscription, in a variable name, a group of
+// one of and a need name of a component that provides SubscriptionsPort: the variable or the need is listed once for
+// each declared subscription (decision on ST-SUP-Q204).
+const SubscriptionPlaceholder = "{subscription}"
+
+// SubscriptionsPort is the port of the component that reads the declared subscriptions, kafka-consumer.
+const SubscriptionsPort = "subscriptions"
+
+// ProvidesSubscriptions tells whether the component provides SubscriptionsPort, so that its names may hold
+// SubscriptionPlaceholder.
+func ProvidesSubscriptions(component *Component) bool {
+	return slices.ContainsFunc(component.Provides, func(p Port) bool { return p.Name == SubscriptionsPort })
+}
+
+// checkGroupName holds the group of one of of a variable to a name of at most 127 lower-case letters, digits and '-'.
+// The group of a variable whose name holds SubscriptionPlaceholder holds it too, and only such a group holds it, so
+// that each subscription has a group of its own (decision on ST-SUP-Q204).
+func checkGroupName(component *Component, variable EnvironmentVariable) error {
+	if variable.OneOf == "" {
+		return nil
+	}
+	perName, perGroup := strings.Contains(variable.Name, SubscriptionPlaceholder), strings.Contains(variable.OneOf, SubscriptionPlaceholder)
+	switch {
+	case perName && !perGroup:
+		return fmt.Errorf("the name of the variable holds %s and its group %q does not; give the group %s too, so that each subscription has a group of its own", SubscriptionPlaceholder, variable.OneOf, SubscriptionPlaceholder)
+	case perGroup && !perName:
+		return fmt.Errorf("the group %q holds %s and the name of the variable does not", variable.OneOf, SubscriptionPlaceholder)
+	case perGroup && !ProvidesSubscriptions(component):
+		return fmt.Errorf("the placeholder %s is only for a component that provides the port %s", SubscriptionPlaceholder, SubscriptionsPort)
+	}
+	if !groupName.MatchString(strings.ReplaceAll(variable.OneOf, SubscriptionPlaceholder, "s")) {
+		return fmt.Errorf("the group %q is not a name of at most 127 lower-case letters, digits and '-', such as database-url", variable.OneOf)
+	}
+	return nil
+}
 
 // requiredWhen is the form of the condition of a variable that is required when it holds: a short phrase, such as
 // "the service has a secret or a pii field".
@@ -382,10 +421,16 @@ func checkVariableName(component *Component, name string) error {
 		if inner == "service" {
 			continue
 		}
+		if placeholder == SubscriptionPlaceholder {
+			if !ProvidesSubscriptions(component) {
+				return fmt.Errorf("the placeholder %s is only for a component that provides the port %s", placeholder, SubscriptionsPort)
+			}
+			continue
+		}
 		key, isSetting := strings.CutPrefix(inner, "settings.")
 		setting, declared := component.Config[key]
 		if !isSetting || !declared {
-			return fmt.Errorf("the placeholder %s is not {service} or {settings.<key>} of a setting of the component", placeholder)
+			return fmt.Errorf("the placeholder %s is not {service}, {subscription} or {settings.<key>} of a setting of the component", placeholder)
 		}
 		if setting.Secret {
 			return fmt.Errorf("the placeholder %s names the secret setting %s; a name never holds a secret", placeholder, key)

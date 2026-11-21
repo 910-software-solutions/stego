@@ -56,6 +56,52 @@ func (l testLogger) Emit(_ context.Context, record otellog.Record) {
 	l.t.Logf("%s: %s %v", record.EventName(), record.Body().AsString(), attributes)
 }
 
+// recordedLogs keeps the event name and the attributes of each record that the inbox emits.
+type recordedLogs struct {
+	noop.LoggerProvider
+	mu      sync.Mutex
+	records []string
+}
+
+func (p *recordedLogs) Logger(string, ...otellog.LoggerOption) otellog.Logger {
+	return recordingLogger{logs: p}
+}
+
+// has tells whether a record of the event holds each attribute of want, as key=value.
+func (p *recordedLogs) has(event string, want ...string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, record := range p.records {
+		if !strings.HasPrefix(record, event+":") {
+			continue
+		}
+		all := true
+		for _, w := range want {
+			all = all && strings.Contains(record, " "+w)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+type recordingLogger struct {
+	noop.Logger
+	logs *recordedLogs
+}
+
+func (l recordingLogger) Emit(_ context.Context, record otellog.Record) {
+	text := record.EventName() + ":"
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
+		text += " " + string(kv.Key) + "=" + kv.Value.Emit()
+		return true
+	})
+	l.logs.mu.Lock()
+	defer l.logs.mu.Unlock()
+	l.logs.records = append(l.logs.records, text)
+}
+
 func TestMain(m *testing.M) { os.Exit(kafkatest.Wrap(func() int { return pgtest.Main(m) })) }
 
 type decision struct{ seal.DecisionMark }
@@ -431,6 +477,86 @@ func TestInbox(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP14-LC08-T05 Each subscription reads its topic in a group of its own, and one record that two subscriptions read is a message of each", func(t *testing.T) {
+		// Decision on ST-SUP-Q204: order-changes and order-audit read the topic of orders, carrier-changes the topic of
+		// carriers, each with its own consumer group, offsets and destination, all three at once.
+		orders, carriers := e.topic(t, 2, "86400000"), e.topic(t, 1, "86400000")
+		subscriptions := []Subscription{sub,
+			{Service: "fulfilment", Name: "order-audit", Source: "orders", Worker: "audit-orders", Events: []string{"orders.order.created"}},
+			{Service: "fulfilment", Name: "carrier-changes", Source: "carriers", Worker: "track-carriers", Events: []string{"carriers.carrier.updated"}}}
+		topics := []string{orders, orders, carriers}
+		groups := []string{"fulfilment.order-changes-t05", "fulfilment.order-audit-t05", "fulfilment.carrier-changes-t05"}
+		orderEvents := []event{change("acme", "orders.order.created", "o-51"), change("acme", "orders.order.created", "o-52")}
+		carrier := change("acme", "carriers.carrier.updated", "c-1")
+		carrier.resourceKey, carrier.value = "carrier:c-1", `{"entity":"Carrier","action":"updated","id":"c-1"}`
+		e.produce(t, orders, orderEvents...)
+		e.produce(t, carriers, carrier)
+		inboxes := make([]*Inbox, len(subscriptions))
+		for i, s := range subscriptions {
+			in, err := New(Config{Subscription: s, Queue: e.queue, DB: e.worker, Retention: week,
+				Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
+					Topic: topics[i], Group: groups[i]},
+				Tenants: e.lookup(t), TenantSchema: "public", Logs: testLogs{t: t}, Options: debugOptions()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inboxes[i] = in
+		}
+		if err := CheckGroups(inboxes); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, len(inboxes))
+		for _, in := range inboxes {
+			go func() { done <- in.Run(ctx) }()
+		}
+		wants := []int64{2, 2, 1}
+		for i := range inboxes {
+			for e.committed(t, topics[i], groups[i]) < wants[i] {
+				select {
+				case err := <-done:
+					cancel()
+					t.Fatalf("an inbox stopped before each committed its records: %v", err)
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		}
+		cancel()
+		for range inboxes {
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		}
+		read := [][]event{orderEvents, orderEvents, {carrier}}
+		for i, s := range subscriptions {
+			for _, ev := range read[i] {
+				if n := e.count(t, "SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND destination = $2 AND principal = $3",
+					MessageID(s.Name, "acme", ev.eventID), s.Name, "service_account:"+s.Worker); n != 1 {
+					t.Fatalf("the destination %s holds %d messages of the event %s by its worker, want 1", s.Name, n, ev.eventID)
+				}
+			}
+		}
+		for _, ev := range orderEvents {
+			if MessageID("order-changes", "acme", ev.eventID) == MessageID("order-audit", "acme", ev.eventID) {
+				t.Fatal("two subscriptions give one message ID to one event")
+			}
+		}
+		// Two subscriptions in one group would split the partitions of the topic between them: CheckGroups refuses
+		// it, naming the group setting of the second and no value.
+		same, err := New(Config{Subscription: subscriptions[1], Queue: e.queue, DB: e.worker, Retention: week,
+			Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
+				Topic: orders, Group: groups[0]},
+			Tenants: e.lookup(t), TenantSchema: "public", Logs: testLogs{t: t}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var setting *SettingError
+		if err := CheckGroups([]*Inbox{inboxes[0], same}); !errors.As(err, &setting) || setting.Variable != "STEGO_KAFKA_CONSUMER_ORDER_AUDIT_GROUP" ||
+			strings.Contains(err.Error(), groups[0]) {
+			t.Fatalf("CheckGroups of one group gave %v", err)
+		}
+	})
+
 	t.Run("ST-SUP-RP01-LC35-T05 A record whose tenant a Retire retires after the lookup is refused, and its write waits for the Retire", func(t *testing.T) {
 		ctx := context.Background()
 		// A lookup that is stale: it read stale as active before a Retire of it.
@@ -604,8 +730,8 @@ func TestInbox(t *testing.T) {
 		}
 		infinite := e.topic(t, 1, "-1")
 		if err := e.inbox(t, infinite, "group-infinite", week).Run(context.Background()); !errors.Is(err, ErrRetention) ||
-			!strings.Contains(err.Error(), InfiniteRetentionSetting) {
-			t.Fatalf("Run on a topic of infinite retention gave %v, want ErrRetention that names %s", err, InfiniteRetentionSetting)
+			!strings.Contains(err.Error(), Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name)) {
+			t.Fatalf("Run on a topic of infinite retention gave %v, want ErrRetention that names %s", err, Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name))
 		}
 		// A compacted topic keeps the last record of each key without end (security review of PR #418, M1).
 		compact := e.topic(t, 1, "86400000", [2]string{"cleanup.policy", "compact,delete"})
@@ -663,7 +789,7 @@ func TestInbox(t *testing.T) {
 			fits   bool
 		}{{604800000, "delete", false, true}, {604800001, "delete", false, false}, {-1, "delete", false, false}, {-1, "delete", true, true},
 			{1000, "delete", false, true}, {1000, "compact", false, false}, {1000, "delete, compact", false, false}, {1000, "compact", true, true}} {
-			if err := RetentionFits(c.ms, c.policy, week, c.accept); (err == nil) != c.fits {
+			if err := RetentionFitsFor(c.ms, c.policy, week, c.accept, "X_ACCEPT_INFINITE_RETENTION"); (err == nil) != c.fits {
 				t.Fatalf("RetentionFits(%d, %s, 7d, %t) = %v, want fits %t", c.ms, c.policy, c.accept, err, c.fits)
 			}
 		}
@@ -875,35 +1001,105 @@ func TestRefusedReasons(t *testing.T) {
 }
 
 func TestSettings(t *testing.T) {
-	t.Run("ST-SUP-RP01-LC38-T01 The inbox reads its topic and group by fixed names, defaults the group, and refuses a setting by its name", func(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC38-T01 The inbox reads its topic and group by the name of its subscription, defaults the group, and refuses a setting by its name", func(t *testing.T) {
+		topic, group := Setting(SubscriptionTopicSetting, "order-changes"), Setting(SubscriptionGroupSetting, "order-changes")
+		retention := Setting(SubscriptionInfiniteRetentionSetting, "order-changes")
+		if topic != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC" || group != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_GROUP" ||
+			retention != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_ACCEPT_INFINITE_RETENTION" {
+			t.Fatalf("the settings of order-changes are %s, %s and %s", topic, group, retention)
+		}
+		if SubscriptionTopicSetting != kafkaoutbox.ConsumerSubscriptionTopicSetting || SubscriptionTopicFileSetting != kafkaoutbox.ConsumerSubscriptionTopicFileSetting ||
+			SubscriptionGroupSetting != kafkaoutbox.ConsumerSubscriptionGroupSetting || SubscriptionGroupFileSetting != kafkaoutbox.ConsumerSubscriptionGroupFileSetting {
+			t.Fatal("the names of the settings differ from those that kafkaoutbox reads")
+		}
 		t.Setenv(kafkaoutbox.BrokersSetting, "127.0.0.1:9092")
 		t.Setenv(kafkaoutbox.InsecureLoopbackSetting, "1")
 		t.Setenv(kafkaoutbox.TopicSetting, "own-events")
-		t.Setenv(TopicSetting, "")
-		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || !strings.Contains(err.Error(), TopicSetting) {
-			t.Fatalf("ReadSettings with no topic gave %v, want a refusal that names %s", err, TopicSetting)
+		t.Setenv(topic, "")
+		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || !strings.Contains(err.Error(), topic) {
+			t.Fatalf("ReadSettings with no topic gave %v, want a refusal that names %s", err, topic)
 		}
-		t.Setenv(TopicSetting, "orders-events")
+		t.Setenv(topic, "orders-events")
 		s, err := ReadSettings("fulfilment", "order-changes")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s.Topic != "orders-events" || s.Group != "fulfilment.order-changes" || s.Connection.Topic != "" || s.AcceptInfiniteRetention {
+		if s.Topic != "orders-events" || s.Group != "fulfilment.order-changes" || s.Connection.Topic != "" || s.AcceptInfiniteRetention || s.Subscription != "order-changes" {
 			t.Fatalf("ReadSettings gave %+v", s)
 		}
-		t.Setenv(GroupSetting, "platform.fulfilment")
-		t.Setenv(InfiniteRetentionSetting, "1")
+		t.Setenv(group, "platform.fulfilment")
+		t.Setenv(retention, "1")
 		if s, err = ReadSettings("fulfilment", "order-changes"); err != nil || s.Group != "platform.fulfilment" || !s.AcceptInfiniteRetention {
 			t.Fatalf("ReadSettings gave %+v, %v", s, err)
 		}
-		t.Setenv(InfiniteRetentionSetting, "yes")
-		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || !strings.Contains(err.Error(), InfiniteRetentionSetting) {
-			t.Fatalf("ReadSettings gave %v, want a refusal that names %s", err, InfiniteRetentionSetting)
+		t.Setenv(retention, "yes")
+		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || !strings.Contains(err.Error(), retention) {
+			t.Fatalf("ReadSettings gave %v, want a refusal that names %s", err, retention)
 		}
-		t.Setenv(InfiniteRetentionSetting, "")
-		t.Setenv(TopicSetting, "__consumer_offsets")
-		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || strings.Contains(err.Error(), "__consumer") {
-			t.Fatalf("ReadSettings of an internal topic gave %v, want a refusal with no value", err)
+		t.Setenv(retention, "")
+		t.Setenv(topic, "__consumer_offsets")
+		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || strings.Contains(err.Error(), "__consumer") || !strings.Contains(err.Error(), topic) {
+			t.Fatalf("ReadSettings of an internal topic gave %v, want a refusal that names %s with no value", err, topic)
+		}
+		t.Setenv(topic, "orders-events")
+		t.Setenv(group, "no spaces")
+		if _, err := ReadSettings("fulfilment", "order-changes"); err == nil || strings.Contains(err.Error(), "no spaces") || !strings.Contains(err.Error(), group) {
+			t.Fatalf("ReadSettings of a bad group gave %v, want a refusal that names %s with no value", err, group)
+		}
+	})
+	t.Run("ST-SUP-RP01-LC38-T02 The settings of two subscriptions are apart, and a setting of kafka-consumer before 0.5.0 is refused by its name with the name to set", func(t *testing.T) {
+		t.Setenv(kafkaoutbox.BrokersSetting, "127.0.0.1:9092")
+		t.Setenv(kafkaoutbox.InsecureLoopbackSetting, "1")
+		t.Setenv(Setting(SubscriptionTopicSetting, "order-changes"), "orders-events")
+		t.Setenv(Setting(SubscriptionTopicSetting, "carrier-changes"), "carriers-events")
+		t.Setenv(Setting(SubscriptionInfiniteRetentionSetting, "carrier-changes"), "1")
+		orders, err := ReadSettings("fulfilment", "order-changes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		carriers, err := ReadSettings("fulfilment", "carrier-changes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if orders.Topic != "orders-events" || orders.Group != "fulfilment.order-changes" || orders.AcceptInfiniteRetention ||
+			carriers.Topic != "carriers-events" || carriers.Group != "fulfilment.carrier-changes" || !carriers.AcceptInfiniteRetention {
+			t.Fatalf("the settings of the two subscriptions are %+v and %+v", orders, carriers)
+		}
+		if err := CheckSettings("fulfilment", []string{"order-changes", "carrier-changes"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := CheckSettings("fulfilment", []string{"order-changes", "visit-changes"}); err == nil || !strings.Contains(err.Error(), "STEGO_KAFKA_CONSUMER_VISIT_CHANGES_TOPIC") {
+			t.Fatalf("CheckSettings with no topic of visit-changes gave %v", err)
+		}
+		// One group for two subscriptions, by a group setting or by the default group of another, is refused at the
+		// start, naming the group setting of the second and no group.
+		for _, group := range []string{"fulfilment.order-changes", "fulfilment.shared"} {
+			t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), "")
+			if group == "fulfilment.shared" {
+				t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), group)
+			}
+			t.Setenv(Setting(SubscriptionGroupSetting, "carrier-changes"), group)
+			var clash *SettingError
+			if err := CheckSettings("fulfilment", []string{"order-changes", "carrier-changes"}); !errors.As(err, &clash) ||
+				clash.Variable != "STEGO_KAFKA_CONSUMER_CARRIER_CHANGES_GROUP" || strings.Contains(err.Error(), group) {
+				t.Fatalf("CheckSettings with the group %s for two subscriptions gave %v", group, err)
+			}
+		}
+		t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), "")
+		t.Setenv(Setting(SubscriptionGroupSetting, "carrier-changes"), "")
+		for _, former := range formerSettings {
+			t.Run(former.name, func(t *testing.T) {
+				t.Setenv(former.name, "a-value")
+				want := Setting(former.setting, "order-changes")
+				_, err := ReadSettings("fulfilment", "order-changes")
+				var setting *SettingError
+				if !errors.As(err, &setting) || setting.Variable != former.name || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "a-value") {
+					t.Fatalf("ReadSettings with %s gave %v, want a refusal that names it and %s, with no value", former.name, err, want)
+				}
+				if err := CheckSettings("fulfilment", []string{"order-changes", "carrier-changes"}); err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "each other subscription") {
+					t.Fatalf("CheckSettings with %s gave %v", former.name, err)
+				}
+			})
 		}
 	})
 }
@@ -1081,10 +1277,11 @@ func TestFailing(t *testing.T) {
 		e := newEnv(t)
 		reader := sdkmetric.NewManualReader()
 		meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		logs := &recordedLogs{}
 		name := "orders-" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 		in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: 7 * 24 * time.Hour, Tenants: e.lookup(t), TenantSchema: "public",
 			Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
-				Topic: name, Group: "group-failing"}, Meter: meter, FailingAfter: 2})
+				Topic: name, Group: "group-failing"}, Meter: meter, FailingAfter: 2, Logs: logs})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1122,6 +1319,11 @@ func TestFailing(t *testing.T) {
 		}
 		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION (describe-configs)" || gauge() != 1 {
 			t.Fatalf("the failing inbox gives the class %q and the gauge %d", class, gauge())
+		}
+		// The warn event of a failed session names its subscription, so a service with several tells them apart
+		// (decision on ST-SUP-Q204).
+		if !logs.has("kafka.consumer.failed", "subscription=order-changes", "failure=broker:UNKNOWN_TOPIC_OR_PARTITION (describe-configs)") {
+			t.Fatalf("no kafka.consumer.failed event names the subscription and the class: %v", logs.records)
 		}
 		e.topicNamed(t, name)
 		for in.Failing() != "" {

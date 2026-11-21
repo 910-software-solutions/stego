@@ -215,8 +215,9 @@ func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVar
 	return list, nil
 }
 
-// groupName is the name of a group of one of: lower-case letters, digits and '-'.
-var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+// groupName is the name of a group of one of: at most 127 lower-case letters, digits and '-', so that a group of each
+// subscription, such as order-changes-topic, has room for a subscription name of 63 characters (ST-SUP-Q204).
+var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,125}[a-z0-9])?$`)
 
 // Groups gives the variables of each group of one of of the list, by group, in name order.
 func Groups(list []AcceptedVariable) map[string][]AcceptedVariable {
@@ -347,7 +348,7 @@ func checkAccepted(v AcceptedVariable) error {
 		return fmt.Errorf("the mode that reads the variable is migrate, worker or api, and such a variable is not required")
 	}
 	if v.OneOf != "" && !groupName.MatchString(v.OneOf) {
-		return fmt.Errorf("the group of one of %q is not a name of at most 63 lower-case letters, digits and '-'", v.OneOf)
+		return fmt.Errorf("the group of one of %q is not a name of at most 127 lower-case letters, digits and '-'", v.OneOf)
 	}
 	if v.OneOf != "" && v.Required {
 		return fmt.Errorf("the variable is required and in the group of one of %s; a variable of a group is not required on its own, because the group needs exactly one of its variables", v.OneOf)

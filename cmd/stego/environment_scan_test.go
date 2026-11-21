@@ -53,6 +53,16 @@ var (
 		"runtime_wiring.go.tmpl": {"command", "kafka-producer", "kafka-consumer"},
 	}
 	compilerOwn = map[string][]string{"apply_hook.go": {"STEGO_TEST_APPLY_LOG", "STEGO_TEST_STOP_APPLY"}, "init.go": {"STEGO_REGISTRY"}}
+	// formerReads are the fixed names of kafka-consumer before 0.5.0, which no component declares (decision on
+	// ST-SUP-Q204), by the runtime package that reads them: kafkainbox reads them only to refuse a value with the name to
+	// set in its place, and kafkaoutbox keeps the deprecated ReadConsumer of them for the API of the runtime
+	// (ST-STD-RUNTIME-R03), which no generated code calls.
+	formerReads = map[string][]string{
+		"registry/runtime/outbox/kafkainbox": {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE",
+			"STEGO_KAFKA_CONSUMER_GROUP", "STEGO_KAFKA_CONSUMER_GROUP_FILE", "STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION"},
+		"registry/runtime/outbox/kafkaoutbox": {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE",
+			"STEGO_KAFKA_CONSUMER_GROUP", "STEGO_KAFKA_CONSUMER_GROUP_FILE"},
+	}
 	// runtimeOwners are the runtime packages whose settings a component declares, by their path in the runtime
 	// module, with the components that wire them.
 	runtimeOwners = map[string][]string{
@@ -217,6 +227,15 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 			return []scanRead{{file: file, unresolved: "the name is not a constant"}}
 		}
 		first := toks[at]
+		// A name of a setting of each subscription, SubscriptionSetting(pattern, subscription) of kafkaoutbox or
+		// Setting(pattern, subscription) of kafkainbox, is the pattern with {subscription}, as the component declares
+		// it (decision on ST-SUP-Q204).
+		for _, call := range []int{at, at + 2} {
+			if call+1 < len(toks) && (toks[call].text == "SubscriptionSetting" || toks[call].text == "Setting") && toks[call+1].t == token.LPAREN &&
+				(call == at || toks[at+1].t == token.PERIOD) && strings.Contains(file, "outbox/kafka") {
+				return resolve(file, toks, call+2, depth+1)
+			}
+		}
 		switch {
 		case first.t == token.STRING:
 			value, _ := strconv.Unquote(first.text)
@@ -655,6 +674,8 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 				relative, _ := filepath.Rel(root, r.file)
 				switch {
 				case slices.Contains(compilerOwn[filepath.Base(r.file)], r.name) && strings.Contains(r.file, "internal/compiler"):
+					continue
+				case slices.Contains(formerReads[unit.label], r.name):
 					continue
 				case strings.HasPrefix(r.unresolved, "declaration") && slices.ContainsFunc(unit.owners, func(o string) bool { return slices.Contains(declarationNamed, o) }):
 					continue
