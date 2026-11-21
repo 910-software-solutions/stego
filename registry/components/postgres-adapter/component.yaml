@@ -32,9 +32,12 @@
 # seal checkpoints at each migration job takes no ACCESS EXCLUSIVE lock on a database that has them, and the check of a
 # seal contract step runs the seal checkpoints in its own transaction (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50; security
 # review of PR #472, I2, and second review, L1).
+# Version 6.27.0 gives the refusal of a changed migration body and of a contract step that waits a fault class, the
+# table that tells it, a fixed remedy and the cause class refused, so the failure record of the migration job names
+# them with no change or row (ST-SUP-RC01-OC50, ST-SUP-RC01-OC51; walkthrough 21, U-F).
 kind: component
 name: postgres-adapter
-version: 6.23.0
+version: 6.27.0
 stage: ga
 output_namespace: internal/storage
 
