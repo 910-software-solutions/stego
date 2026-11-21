@@ -849,6 +849,10 @@ member by either name, such as `insurance_number` or `insuranceNumber`. Thus
 the request validation of the document does not check the body of a command;
 the command runtime decodes it.
 
+A service with no rest-api component, such as an rpc-service, has no such
+document; the command component writes the document of its command and query
+routes, in the same form, in `out/commands/openapi.json`.
+
 The generated clients come from this document. Bind the mixin `go-sdk` for a
 Go client (`out/sdk`) and the mixin `cli-application` for a CLI
 (`out/cli/cmd`), with `mixins: [go-sdk, cli-application]`. See the READMEs of [go-sdk](../registry/components/go-sdk/README.md) and
@@ -903,7 +907,13 @@ experimental_acceptances:
 ### The two triggers
 
 - `every 1m`: the runtime runs the fill once in each tenant at each tick, in
-  one transaction of that tenant.
+  one transaction of that tenant. The ticks are at the multiples of the
+  interval since the Unix epoch, in UTC: `every 1h` runs at the start of
+  each hour, and `every 24h` at 00:00 UTC. The first tick is the first such
+  time after the worker starts, not the start: an `every 24h` worker that
+  starts at 10:00 UTC runs first at 00:00 UTC the next day. A tick that is
+  due while the service is stopped, or while a tick of the worker runs, is
+  not run later.
 - `consumes fulfillment`: the runtime runs the fill once for each message of
   the destination `fulfillment`, in the transaction of the tenant of the
   message. A command or a worker stages these messages as an effect.

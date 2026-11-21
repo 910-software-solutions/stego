@@ -103,6 +103,9 @@ function validate(schema, data, direction, depth = 0, budget = { nodes: 100000, 
     let length = 0; for (const _ of data) { length++; if (--budget.chars < 0) return false; }
     if ((schema.minLength !== undefined && length < schema.minLength) || (schema.maxLength !== undefined && length > schema.maxLength)) return false;
     if (schema.format === "date-time" && !dateTime(data)) return false;
+    if (schema.format === "uuid" && !/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(data)) return false;
+    if (schema.format === "byte" && (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))) return false;
+    if (schema.format === "int64") { if (!/^-?(0|[1-9][0-9]{0,18})$/.test(data)) return false; const value = BigInt(data); if (value < -(2n ** 63n) || value > 2n ** 63n - 1n) return false; }
     if (schema.format === "uri") { try { if (/[^A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]/.test(data) || /%(?![0-9A-Fa-f]{2})/.test(data)) return false; new URL(data); } catch { return false; } }
   } else if (type === "number" || type === "integer") {
     if (typeof data !== "number" || !Number.isFinite(data) || (type === "integer" && !Number.isSafeInteger(data))) return false;
@@ -161,13 +164,14 @@ export function createBrowserClient() {
     } catch (error) { if (error instanceof SDKError) throw error; fail(timedOut ? "timeout" : controller.signal.aborted ? "cancelled" : "request_failed"); }
     finally { clearTimeout(timer); activeRequests--; try { supplied?.removeEventListener("abort", abort); } catch {} }
   };
-  const request = async (method, path, body, csrf, signal, traceparent) => {
+  const request = async (method, path, body, csrf, signal, traceparent, extra) => {
     const target = new URL(path, origin);
     if (target.origin !== origin || target.username || target.password || target.hash || target.href.length > 8192) fail("invalid_input");
     const headers = { Accept: "application/json" };
     if (traceparent !== undefined) headers.traceparent = traceparent;
     if (body !== undefined) { headers["Content-Type"] = "application/json"; if (encoder.encode(body).length > maxRequest) fail("invalid_input"); }
     if (csrf !== undefined) headers["X-CSRF-Token"] = csrf;
+    if (extra !== undefined) for (const [name, value] of Object.entries(extra)) headers[name] = value;
     const response = await fetcher(target.href, { method, headers, body, signal, credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
     const reader = response.body?.getReader(); let data = "", length = 0;
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -242,11 +246,13 @@ export function createBrowserClient() {
       if (input === null || typeof input !== "object" || Array.isArray(input)) fail("invalid_input");
       const allowed = new Set(op.parameters.map(p => p.name)); if (op.body) allowed.add("body");
       if (Object.keys(input).some(key => !allowed.has(key))) fail("invalid_input");
-      let path = op.path; const query = new URLSearchParams();
+      let path = op.path; const query = new URLSearchParams(); const extra = {};
       for (const param of op.parameters) {
         if (!own(input, param.name)) { if (param.required) fail("invalid_input"); continue; }
         const value = input[param.name]; if (!validate(param.schema, value, "request")) fail("invalid_input");
-        if (param.in === "path") { const text = String(value); if (!text || text === "." || text === "..") fail("invalid_input"); path = path.split("{" + param.name + "}").join(encodeURIComponent(text)); }
+        // A header parameter that the browser backend forwards: at most 1024 visible ASCII characters (ST-SUP-RC24-OC15).
+        if (param.in === "header") { if (typeof value !== "string" || !/^[\x21-\x7e]{1,1024}$/.test(value)) fail("invalid_input"); extra[param.header] = value; }
+        else if (param.in === "path") { const text = String(value); if (!text || text === "." || text === "..") fail("invalid_input"); path = path.split("{" + param.name + "}").join(encodeURIComponent(text)); }
         else query.set(param.name, String(value));
       }
       if (op.required && !own(input, "body")) fail("invalid_input");
@@ -256,7 +262,7 @@ export function createBrowserClient() {
       const body = own(input, "body") ? JSON.stringify(input.body) : undefined; if (body !== undefined && encoder.encode(body).length > maxRequest) fail("invalid_input");
       let csrf;
       if (op.method !== "GET" && op.method !== "HEAD") { const value = await session(signal, traceparent); if (!value.authenticated) fail("reauth_required", 401); csrf = value.csrf_token; }
-      const result = await request(op.method, path, body, csrf, signal, traceparent);
+      const result = await request(op.method, path, body, csrf, signal, traceparent, extra);
       if (!own(op.responses, String(result.status))) fail("invalid_response");
       const schema = op.responses[String(result.status)];
       if (schema === null ? result.body !== undefined : !validate(schema, result.body, "response")) fail("invalid_response");

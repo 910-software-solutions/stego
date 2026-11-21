@@ -72,7 +72,7 @@ func (*Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	if m == nil {
-		return nil, &gen.Wiring{}, nil
+		return routeDocument(ctx, nil), &gen.Wiring{}, nil
 	}
 	files, err := m.messageFiles()
 	if err != nil {
@@ -95,11 +95,22 @@ func (*Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		gen.File{Path: path.Join(ctx.OutputNamespace, handlersFolder, "fills.go"), Content: bound},
 		gen.File{Path: path.Join(ctx.OutputNamespace, handlersFolder, "handlers.go"), Content: handlers},
 	)
+	files = routeDocument(ctx, files)
 	if err := gen.ValidateNamespace(ctx.OutputNamespace, files); err != nil {
 		return nil, nil, err
 	}
 	wiring := &gen.Wiring{GoModRequires: map[string]string{protobufModule: protobufPin, grpcModule: grpcPin}}
 	return files, wiring, nil
+}
+
+// routeDocument adds openapi.json to files when the compiler gives the component the OpenAPI document of the command
+// and query routes of a service with no rest-api component (ST-SUP-RC32-OC29); the client components are made from
+// the same document.
+func routeDocument(ctx gen.Context, files []gen.File) []gen.File {
+	if ctx.ServiceOpenAPI == nil {
+		return files
+	}
+	return append(files, gen.File{Path: path.Join(ctx.OutputNamespace, "openapi.json"), Content: ctx.ServiceOpenAPI})
 }
 
 // handlersFolder is the folder of the handlers package under the output namespace. Its code holds the runtime; the
