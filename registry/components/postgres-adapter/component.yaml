@@ -21,9 +21,13 @@
 # Version 6.20.0 makes the seal checkpoint keep the database instance where a start of the seal job last saw the row,
 # and the time of that first sight, so the 3-minute wait of the first pass applies also after a restore, which keeps
 # created_at from the dump (ST-SUP-RP09-LC15; security review of PR #470).
+# Version 6.21.0 adds the OID and the file node of stego_schema.seals to the database instance of the seal checkpoint,
+# makes the first start in a new instance end the pass of the row, also a completed one, and makes the contract step of
+# a seal refuse a pass that did not run in this instance (ST-SUP-RP09-LC15, ST-SUP-RC01-OC50; security review of
+# PR #471, L1, L3).
 kind: component
 name: postgres-adapter
-version: 6.20.0
+version: 6.21.0
 stage: ga
 output_namespace: internal/storage
 
