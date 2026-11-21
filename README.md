@@ -688,7 +688,8 @@ procedure](docs/upgrade.md#the-procedure)). In the example, the branch
    step or its `schema_history` line: `stego apply` writes them again, after
    the steps of `main`.
 3. Put the fill folders of the branch back, with their Go files and tests:
-   `cp -r ../keep-hide-review fills/hide-review`. The evidence in its
+   `rm -rf fills/hide-review && cp -r ../keep-hide-review fills/hide-review`.
+   The evidence in its
    `fill.yaml` is now stale, because the contract of the fill changed.
 4. Run the chain:
 
@@ -752,6 +753,12 @@ evidence with a key that `SIGNERS` lists, writes nothing, and says so. Thus a
 fill that no branch changed keeps its `fill.yaml`, and gives no conflict at
 the merge. To sign such a fill again, such as with your own key in place of
 the key of another person, give `--force`.
+
+A change to `SIGNERS` in a branch is a change of who may qualify fills. Review
+it on its own before the merge, and protect `SIGNERS` with a CODEOWNERS rule.
+When your policy needs the reviewer's own signature on each merged fill, run
+`stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`:
+the check does not read the revocation or the expiry of a key.
 
 ## Commands
 
