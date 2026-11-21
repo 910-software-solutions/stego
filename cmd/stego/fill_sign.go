@@ -20,16 +20,30 @@ import (
 // ST-EXT-CMD03): it signs the digest of the fill's current evidence with the
 // person's own SSH or GPG key, as their git configuration names it, and
 // writes the sign-off into the fill manifest. It refuses a fill with no
-// evidence or with stale evidence. STEGO holds no key: it makes, stores and
+// evidence or with stale evidence. It keeps a sign-off that already signs the
+// current evidence with a key that SIGNERS lists, writes nothing and says so,
+// unless --force is given: a second sign-off of the same evidence changes
+// fill.yaml for no gain and gives a merge conflict in a fill that no branch
+// changed (walkthrough 19, W19-T4). STEGO holds no key: it makes, stores and
 // uses none of its own.
 func runFillSign(args []string) error {
 	fs := flag.NewFlagSet("fill sign", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	force := fs.Bool("force", false, "sign the fill again also when its sign-off already signs its current evidence")
+	// The flag may come before or after the name.
+	var names, flags []string
+	for _, arg := range args {
+		if arg == "--force" || arg == "-force" {
+			flags = append(flags, arg)
+		} else {
+			names = append(names, arg)
+		}
+	}
+	if err := fs.Parse(append(flags, names...)); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
-		return fmt.Errorf("fill name is required: stego fill sign <name>")
+		return fmt.Errorf("fill name is required: stego fill sign [--force] <name>")
 	}
 	name := fs.Arg(0)
 	if _, err := fillPackageName(name); err != nil {
@@ -63,15 +77,21 @@ func runFillSign(args []string) error {
 	if err != nil {
 		return err
 	}
+	signers, err := fill.ReadSigners(input.ProjectDir)
+	if err != nil {
+		return err
+	}
+	if f.SignOff != nil && !*force {
+		if signer, err := fill.VerifySignOff(f.SignOff, digest, signers); err == nil {
+			fmt.Printf("The sign-off of fill %q already signs its current evidence %s as %s, so fill.yaml stays as it is. To sign it again, run stego fill sign --force %s.\n", name, digest, signer, name)
+			return nil
+		}
+	}
 	key, err := personalSigningKey(input.ProjectDir)
 	if err != nil {
 		return err
 	}
 	signature, err := key.sign(input.ProjectDir, digest)
-	if err != nil {
-		return err
-	}
-	signers, err := fill.ReadSigners(input.ProjectDir)
 	if err != nil {
 		return err
 	}
