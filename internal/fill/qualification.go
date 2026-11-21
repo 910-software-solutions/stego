@@ -631,3 +631,49 @@ func fillFolders(projectDir string) ([]string, error) {
 	}
 	return names, nil
 }
+
+// AddedKeySignOff is a fill whose sign-off verifies against the SIGNERS file of the project and not against the
+// SIGNERS file of a base, such as the merge base of the branch: its sign-off counts only because of a key that the
+// change adds to SIGNERS (walkthrough 21, T-D). Signer is the identity that the SIGNERS file of the project lists for
+// the key.
+type AddedKeySignOff struct {
+	Fill   string
+	Signer string
+}
+
+// AddedKeySignOffs gives each fill that the declaration binds and that is qualified, whose sign-off does not verify
+// against base because base does not list its key, in the order of the fill names (ST-EXT-UC02-R02, decision
+// ST-EXT-Q31). It writes nothing. A fill that is not qualified is not given: the checks of qualification name it.
+func AddedKeySignOffs(check compiler.FillCheck, base Signers) ([]AddedKeySignOff, error) {
+	signers, err := ReadSigners(check.ProjectDir)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := projectQualification(check, false)
+	if err != nil {
+		return nil, err
+	}
+	var added []AddedKeySignOff
+	for _, row := range rows {
+		if row.Standing != Qualified {
+			continue
+		}
+		f, err := ReadManifest(filepath.Join(check.ProjectDir, "fills", row.Fill, ManifestFile), check)
+		if err != nil {
+			return nil, err
+		}
+		digest, err := EvidenceDigest(f)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := VerifySignOff(f.SignOff, digest, base); !errors.Is(err, ErrUnlistedKey) {
+			continue
+		}
+		signer, err := VerifySignOff(f.SignOff, digest, signers)
+		if err != nil {
+			return nil, err
+		}
+		added = append(added, AddedKeySignOff{Fill: row.Fill, Signer: signer})
+	}
+	return added, nil
+}

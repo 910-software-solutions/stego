@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -732,6 +733,79 @@ func TestFillQualification(t *testing.T) {
 				t.Errorf("the fingerprint %q of SIG_CREATED changed fill.yaml", fpr)
 			}
 			delete(p.keys.homes, "fake-gpg")
+		}
+	})
+	t.Run("ST-EXT-UC02-R02-T16 validate and plan name each fill whose sign-off counts only because of a key that the change adds to SIGNERS, --strict refuses it, and fill sign does not keep it", func(t *testing.T) {
+		p := newFillProject(t)
+		p.bind(t, slotBinding{"qualified-fill", "before_create", "org-users"})
+		p.must(t, "no-key", "apply")
+		git := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", append([]string{"-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"}, args...)...)
+			cmd.Dir = p.dir
+			cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+			}
+		}
+		git("init", "-q", "-b", "main")
+		git("add", "-A")
+		git("commit", "-q", "-m", "main")
+		// The branch of carol adds her own key to SIGNERS, and her sign-off of unlisted-fill now verifies against it
+		// (walkthrough 21, T-D).
+		git("switch", "-q", "-c", "feature/carol")
+		p.write(t, "service.yaml", fillBaseService+"slots:\n  - {slot: before_create, collection: org-users, gate: [qualified-fill, unlisted-fill]}\n")
+		p.write(t, "SIGNERS", "carol@example.test "+p.keys.unlistedPublic+"\n"+p.keys.signers)
+		named := func(output string) bool {
+			return strings.Contains(output, `fill "unlisted-fill" counts only because of the key of carol@example.test`) && strings.Contains(output, "refs/heads/main") &&
+				!strings.Contains(output, `fill "qualified-fill" counts`)
+		}
+		stdout, stderr, err := p.stego(t, "no-key", "validate")
+		if err != nil || !named(stdout) {
+			t.Fatalf("validate on the branch gave %v, want exit 0 and a warning that names unlisted-fill and the base:\n%s\n%s", err, stdout, stderr)
+		}
+		stdout, stderr, err = p.stego(t, "no-key", "validate", "--json")
+		var document struct {
+			Accepted bool `json:"accepted"`
+			Warnings []struct{ Rule, Path, Found string }
+		}
+		if jsonErr := json.Unmarshal([]byte(stdout), &document); err != nil || jsonErr != nil || !document.Accepted {
+			t.Fatalf("validate --json on the branch gave %v, %v:\n%s\n%s", err, jsonErr, stdout, stderr)
+		}
+		found := false
+		for _, w := range document.Warnings {
+			found = found || (w.Rule == "ST-EXT-UC02-R02" && w.Path == "fills/unlisted-fill/fill.yaml" && w.Found == "carol@example.test")
+		}
+		if !found {
+			t.Errorf("validate --json gives no warning of rule ST-EXT-UC02-R02 for unlisted-fill:\n%s", stdout)
+		}
+		if stdout, stderr, err = p.stego(t, "no-key", "validate", "--strict"); err == nil || !named(stdout+stderr) {
+			t.Errorf("validate --strict on the branch gave %v, want a refusal that names unlisted-fill:\n%s\n%s", err, stdout, stderr)
+		}
+		if stdout, stderr, err = p.stego(t, "no-key", "plan"); err != nil || !named(stdout) || !strings.Contains(stdout, "WARNING: fills/unlisted-fill/fill.yaml") {
+			t.Errorf("plan on the branch gave %v, want exit 0 and a warning that names unlisted-fill:\n%s\n%s", err, stdout, stderr)
+		}
+		if stdout, stderr, err = p.stego(t, "no-key", "plan", "--strict"); err == nil || !strings.Contains(stdout+stderr, "--strict refuses 1 fill(s)") {
+			t.Errorf("plan --strict on the branch gave %v, want a refusal:\n%s\n%s", err, stdout, stderr)
+		}
+		// A listed signer of the base signs unlisted-fill again with their own key: fill sign does not keep the
+		// sign-off of the added key.
+		stdout = p.must(t, "listed-ssh", "fill", "sign", "unlisted-fill")
+		if !strings.Contains(stdout, "SIGNERS at refs/heads/main does not list") {
+			t.Errorf("fill sign does not say that the change adds the key of the sign-off:\n%s", stdout)
+		}
+		if f := p.manifest(t, "unlisted-fill"); sshVerify(t, p.keys.listedSSHPublic, f.SignOff, f.SignOff.EvidenceDigest) != nil {
+			t.Fatal("fill sign kept the sign-off of the added key on unlisted-fill")
+		}
+		if stdout, stderr, err = p.stego(t, "no-key", "validate", "--strict"); err != nil || strings.Contains(stdout, "counts only because") {
+			t.Errorf("validate --strict after the listed signer signed gave %v:\n%s\n%s", err, stdout, stderr)
+		}
+		// With --base at the branch itself, SIGNERS is the same, and validate names no fill.
+		p.must(t, "unlisted-ssh", "fill", "sign", "unlisted-fill", "--force")
+		git("add", "-A")
+		git("commit", "-q", "-m", "carol")
+		if stdout, stderr, err = p.stego(t, "no-key", "validate", "--base", "feature/carol"); err != nil || strings.Contains(stdout, "counts only because") {
+			t.Errorf("validate --base feature/carol gave %v, want no warning:\n%s\n%s", err, stdout, stderr)
 		}
 	})
 
