@@ -263,6 +263,8 @@ func normalized(table tableModel) tableModel {
 	table.foreign = slices.SortedFunc(slices.Values(table.foreign), func(a, b foreignModel) int { return strings.Compare(a.name, b.name) })
 	table.search = slices.Sorted(slices.Values(table.search))
 	table.unique = slices.SortedFunc(slices.Values(table.unique), func(a, b []string) int { return slices.Compare(a, b) })
+	// Which columns hold a secret is a mark of the manifest, not of the schema that a step changes.
+	table.secret = nil
 	return table
 }
 
