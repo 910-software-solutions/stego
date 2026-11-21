@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -696,6 +697,32 @@ func TestNewStruct(t *testing.T) {
 			if s, err := NewStruct(value); err == nil || s != nil {
 				t.Errorf("NewStruct of %s gave %v, %v; want an error and no Struct", name, s, err)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC57-T02 NewStruct refuses a value of more than MaxStructNodes values, also of one shared map at each level, before it walks it", func(t *testing.T) {
+		// A map that holds the map of the level below two times: 60 levels, a few hundred maps, and 2^60 values for
+		// a walk. With no bound on the values, the check and the conversion never end.
+		shared := map[string]any{"leaf": 1}
+		for range 60 {
+			shared = map[string]any{"a": shared, "b": shared}
+		}
+		if s, err := NewStruct(shared); err == nil || s != nil || !strings.Contains(err.Error(), "at most 100000 values") {
+			t.Fatalf("NewStruct of shared maps gave %v, %v; want the refusal of too many values", s, err)
+		}
+		// The most values that it takes, and one more: MaxStructNodes counts the root object too.
+		flat := func(n int) map[string]any {
+			m := map[string]any{}
+			for i := range n {
+				m[strconv.Itoa(i)] = i
+			}
+			return m
+		}
+		if _, err := NewStruct(flat(MaxStructNodes - 1)); err != nil {
+			t.Fatalf("NewStruct refuses %d values: %v", MaxStructNodes, err)
+		}
+		if s, err := NewStruct(flat(MaxStructNodes)); err == nil || s != nil {
+			t.Fatalf("NewStruct of %d values gave %v, %v; want an error", MaxStructNodes+1, s, err)
 		}
 	})
 }

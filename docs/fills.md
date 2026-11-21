@@ -1048,8 +1048,10 @@ Each value is `nil`, a `bool`, a Go number, a `json.Number`, a `string`, a
 `[]byte` (it becomes base64 text), a `map[string]any` or a `[]any`. A number
 becomes a JSON number, which holds an integer exactly only up to 2^53: give a
 larger integer, such as an ID, as a string. `NewStruct` refuses another type,
-a key or a string that is not valid UTF-8, and objects and lists nested more
-than 64 levels, such as a map that holds itself, with an error. A member of
+a key or a string that is not valid UTF-8, objects and lists nested more
+than 64 levels, such as a map that holds itself, and a value of more than
+100,000 values in all, with an error. A map or a list that a value holds at
+two places counts at each place (runtime v0.186.0). A member of
 the type `google.protobuf.Value` or `ListValue` is a value of the `Fields` of
 such a Struct, such as `summary.Fields["sites"].GetListValue()`. To read such a
 member of a request, call its methods, such as `req.Filter.AsMap()`. The

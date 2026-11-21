@@ -821,30 +821,42 @@ func NewToken(size int) ([]byte, error) {
 // that holds itself, is refused with an error, so a fill cannot make the conversion recurse until the process stops.
 const MaxStructDepth = 64
 
+// MaxStructNodes is the most values, of objects, lists and their members at all levels, that NewStruct takes. A
+// value with more, such as maps that hold one shared map two times at each level, whose walk doubles at each level,
+// is refused before the conversion walks it (security review of PR #475, I2).
+const MaxStructNodes = 100000
+
 // NewStruct gives a google.protobuf.Struct of fields, for a member of type google.protobuf.Struct of a command or
 // worker message that a fill makes (ST-SUP-RP10-LC57; walkthrough 19, W19-P1). The fill allow list keeps
 // google.golang.org/protobuf out of a fill, and the contract reaches this package, so a fill makes such a member
 // only through NewStruct. Each value is nil, a bool, a number of a Go number type, a json.Number, a string (valid
 // UTF-8), a []byte (as base64 text), a map[string]any or a []any, as structpb.NewValue takes it; a number becomes a
 // JSON number (float64), so an integer above 2^53 loses its exact value: give it as a string. NewStruct refuses any
-// other value, a key or a string that is not valid UTF-8, and a value nested more than MaxStructDepth levels, with an
-// error and no Struct. A member of type google.protobuf.Value or ListValue is a value of the Fields of such a Struct.
+// other value, a key or a string that is not valid UTF-8, a value nested more than MaxStructDepth levels and a value
+// of more than MaxStructNodes values, with an error and no Struct. A member of type google.protobuf.Value or ListValue is a value of the Fields of such a Struct.
 func NewStruct(fields map[string]any) (*structpb.Struct, error) {
-	if err := structDepth(fields, 1); err != nil {
+	nodes := 0
+	if err := structDepth(fields, 1, &nodes); err != nil {
 		return nil, err
 	}
 	return structpb.NewStruct(fields)
 }
 
-// structDepth refuses a value whose objects and lists nest more than MaxStructDepth levels.
-func structDepth(value any, depth int) error {
+// structDepth refuses a value whose objects and lists nest more than MaxStructDepth levels, or that holds more than
+// MaxStructNodes values in all, which nodes counts as the walk visits them, so a shared map is counted at each place
+// that holds it, as the conversion walks it.
+func structDepth(value any, depth int, nodes *int) error {
+	*nodes++
+	if *nodes > MaxStructNodes {
+		return fmt.Errorf("a Struct holds at most %d values", MaxStructNodes)
+	}
 	switch v := value.(type) {
 	case map[string]any:
 		if depth > MaxStructDepth {
 			return fmt.Errorf("a Struct nests at most %d levels of objects and lists", MaxStructDepth)
 		}
 		for _, item := range v {
-			if err := structDepth(item, depth+1); err != nil {
+			if err := structDepth(item, depth+1, nodes); err != nil {
 				return err
 			}
 		}
@@ -853,7 +865,7 @@ func structDepth(value any, depth int) error {
 			return fmt.Errorf("a Struct nests at most %d levels of objects and lists", MaxStructDepth)
 		}
 		for _, item := range v {
-			if err := structDepth(item, depth+1); err != nil {
+			if err := structDepth(item, depth+1, nodes); err != nil {
 				return err
 			}
 		}
