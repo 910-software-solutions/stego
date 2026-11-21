@@ -12,9 +12,11 @@
 # authzRevocationLocation, preferenceApplied and idempotentReplayed, and the seconds of Retry-After in
 # SDKError.retryAfter, so a page can send Authz-Revocation-After right after a create (ST-SUP-RC24-OC07;
 # walkthrough 21, P-D).
+# Version 1.6.0 gives idempotentReplayed as a boolean: true for Idempotent-Replayed: true, and false else, such as for
+# a first write, where 1.5.0 gave null (ST-SUP-RC24-OC07; walkthrough 22, small items).
 kind: component
 name: typescript-sdk
-version: 1.5.0
+version: 1.6.0
 stage: ga
 output_namespace: tssdk
 config:

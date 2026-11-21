@@ -196,7 +196,7 @@ export function createBrowserClient() {
     if (data !== "") { if ((response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase() !== "application/json") fail("invalid_response"); try { result = parseJSON(data); } catch { fail("invalid_response"); } }
     return { status: response.status, body: result, etag: response.headers.get("ETag"),
       authzRevocation: responseHeader(response, "Authz-Revocation"), authzRevocationLocation: responseHeader(response, "Authz-Revocation-Location"),
-      preferenceApplied: responseHeader(response, "Preference-Applied"), idempotentReplayed: responseHeader(response, "Idempotent-Replayed") };
+      preferenceApplied: responseHeader(response, "Preference-Applied"), idempotentReplayed: responseHeader(response, "Idempotent-Replayed") === "true" };
   };
   const session = async (signal, traceparent) => {
     const result = await request("GET", "/auth/session", undefined, undefined, signal, traceparent);
