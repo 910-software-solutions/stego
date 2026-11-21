@@ -1144,6 +1144,9 @@ func TestEventDataEmission(t *testing.T) {
 			t.Errorf("the declaration of Wallet gives event data:\n%s", wallet)
 		}
 		buildEntityFile(t, source)
+	})
+}
+
 func TestTypedRepository(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC26-T01 A parent where the runtime refuses one does not compile, and a move takes its parents", func(t *testing.T) {
 		const head = "package %s\n\nimport (\n\t\"context\"\n\n\tcommands \"example.com/orders/out/commands\"\n)\n\n" +
