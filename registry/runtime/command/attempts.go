@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -126,7 +129,7 @@ func (k *rowCounter) Charge() bool {
 		s.mu.Lock()
 		s.chargeFailed = true
 		s.mu.Unlock()
-		slog.Error("command.attempts.failed", "action", s.action, "entity", k.key.counter.spec.Entity)
+		s.rt.logChargeFailure(s.action, k.key.counter.spec.Entity, err)
 		return false
 	}
 	if s.rt.charged != nil {
@@ -184,6 +187,43 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 		return false, err
 	}
 	return charged, nil
+}
+
+// AttemptsFailedEvent is the event name of the error log line of a charge of a counted check that cannot commit.
+const AttemptsFailedEvent = "command.attempts.failed"
+
+// chargeCause gives the fixed cause class of a charge that cannot commit, and never the error text: unavailable for a
+// database that cannot serve now (tenant.Unavailable), deadline and canceled for the end of its context, and internal
+// for any other error.
+func chargeCause(err error) string {
+	switch {
+	case tenant.Unavailable(err):
+		return "unavailable"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	return "internal"
+}
+
+// logChargeFailure logs the charge of a counted check that cannot commit, so the call answers 503: one error line
+// through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
+// entity and the cause class, and no value and no error text (ST-SUP-RP10-LC54; walkthrough 20, P-C). With no log
+// provider, it logs the same fields with log/slog.
+func (rt *Runtime) logChargeFailure(action, entity string, err error) {
+	cause := chargeCause(err)
+	if rt.logger == nil {
+		slog.Error(AttemptsFailedEvent, "action", action, "entity", entity, "cause", cause)
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(AttemptsFailedEvent)
+	record.SetSeverity(otellog.SeverityError)
+	record.SetSeverityText("ERROR")
+	record.SetBody(attribute.StringValue("the charge of a counted check did not commit, so the check fails and the call answers 503"))
+	record.AddAttributes(attribute.String("stego.action", action), attribute.String("stego.entity", entity), attribute.String("stego.cause", cause))
+	rt.logger.Emit(context.Background(), record)
 }
 
 // bindCounted binds the value of a counted target to the counter of its row after the scan of the row.
