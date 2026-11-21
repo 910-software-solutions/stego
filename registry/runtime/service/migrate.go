@@ -159,7 +159,9 @@ func (e *StepError) Unwrap() error { return e.Err }
 func (e *StepError) CauseClass() string {
 	var classed interface{ CauseClass() string }
 	if errors.As(e.Err, &classed) {
-		if class := classed.CauseClass(); class != "" {
+		// The class of a cause is used only in the strict form of a name, so a class with a value never leaves the
+		// step (security review of PR #478, I2).
+		if class := classed.CauseClass(); causeName.MatchString(class) {
 			return class
 		}
 	}
@@ -168,6 +170,9 @@ func (e *StepError) CauseClass() string {
 	}
 	return ""
 }
+
+// causeName is the strict form of a cause class: a name of the generated code, as the failure record takes it.
+var causeName = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,127}$`)
 
 // failed gives the failure of a step of the migration job.
 func failed(step string, err error) error { return &StepError{Step: step, Err: err} }

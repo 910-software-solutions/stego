@@ -2038,3 +2038,27 @@ func TestWorkerFillCauses(t *testing.T) {
 		}
 	})
 }
+
+// TestWorkerStopNotCounted proves that a stop of the worker never parks a valid message (security review of PR #478,
+// L1).
+func TestWorkerStopNotCounted(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC06-T11 A fill canceled while the run's context is done is not counted for the poison bound, and one with a live context is", func(t *testing.T) {
+		live := context.Background()
+		stopped, stop := context.WithCancel(context.Background())
+		stop()
+		canceled := fmt.Errorf("call the partner: %w", context.Canceled)
+		// The fourth attempt in a row with the same class: a counted fifth attempt parks the message.
+		d := outbox.Delivery{FailureCode: streakPrefix + string(probe.WorkerRolledBack) + ".fill_canceled.4"}
+		if err := poisonStreak(live, d, canceled); !outbox.IsPermanent(err) {
+			t.Fatalf("a fifth fill_canceled with a live context gave %v, want the permanent refusal poison", err)
+		}
+		if err := poisonStreak(stopped, d, canceled); outbox.IsPermanent(err) || outbox.IsConflict(err) {
+			t.Fatalf("a fill canceled by a stop of the worker gave %v, want a transient refusal that is not counted", err)
+		}
+		// Another fill error of a stopped run is still counted.
+		d.FailureCode = streakPrefix + string(probe.WorkerRolledBack) + ".fill_error.4"
+		if err := poisonStreak(stopped, d, errors.New("no buyer")); !outbox.IsPermanent(err) {
+			t.Fatalf("a fifth fill_error gave %v, want the permanent refusal poison", err)
+		}
+	})
+}

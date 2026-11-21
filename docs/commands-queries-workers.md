@@ -1195,7 +1195,7 @@ When the fill fails with the same outcome and cause class in 5 attempts in a
 row, the runtime parks the message as poison (failure code `poison`) and
 raises the alert of a parked message. Only the errors that the fill causes are
 counted: an error of the fill (`fill_error`, `fill_json`, `fill_parse` and
-`fill_canceled`), a row that is not there, an invalid value, a
+`fill_canceled`, but not a fill canceled because the worker stops), a row that is not there, an invalid value, a
 refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the

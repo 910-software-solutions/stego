@@ -3097,6 +3097,9 @@ func TestMigrateCauseClass(t *testing.T) {
 			{status.Error(codes.DeadlineExceeded, "late"), "timeout"},
 			{status.Error(codes.DataLoss, "lost"), "provider_error"},
 			{errors.New("no row for buyer@example.com"), ""},
+			// A class that is not in the strict form of a name is dropped (security review of PR #478, I2).
+			{fmt.Errorf("authz: %w", ownClass("Refused by 10.1.2.3")), ""},
+			{fmt.Errorf("authz: %w", ownClass("unavailable")), "unavailable"},
 		} {
 			step := &StepError{Step: StepAuthorizationSchema, Err: c.err}
 			if got := step.CauseClass(); got != c.want {
@@ -3124,3 +3127,9 @@ func TestMigrateCauseClass(t *testing.T) {
 		}
 	})
 }
+
+// ownClass is a cause that gives its own cause class.
+type ownClass string
+
+func (c ownClass) Error() string      { return "own class " + string(c) }
+func (c ownClass) CauseClass() string { return string(c) }
