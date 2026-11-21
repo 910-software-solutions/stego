@@ -281,11 +281,16 @@ func TestVerifySignOff(t *testing.T) {
 		gpg("", then, "--quick-gen-key", "expired-gpg <expired-gpg@example.com>", "ed25519", "sign", "1d")
 		gpg("", "--quick-gen-key", "revoked-gpg <revoked-gpg@example.com>", "ed25519", "sign", "never")
 		gpg("", "--quick-gen-key", "valid-gpg <valid-gpg@example.com>", "ed25519", "sign", "never")
-		expired, revoked, valid := fingerprintOf("expired-gpg"), fingerprintOf("revoked-gpg"), fingerprintOf("valid-gpg")
+		// A primary key that only certifies, with a signing subkey that is revoked after it signed (security review
+		// of PR #487, I1): gpgv gives REVKEYSIG with the subkey and VALIDSIG with the primary key.
+		gpg("", "--quick-gen-key", "subkey-gpg <subkey-gpg@example.com>", "ed25519", "cert", "never")
+		expired, revoked, valid, subkey := fingerprintOf("expired-gpg"), fingerprintOf("revoked-gpg"), fingerprintOf("valid-gpg"), fingerprintOf("subkey-gpg")
+		gpg("", "--quick-add-key", subkey, "ed25519", "sign", "never")
 		sign := func(fingerprint string, faked ...string) string {
 			return gpg(digest, append(faked, "--detach-sign", "--armor", "--local-user", fingerprint)...)
 		}
-		signOffs := map[string]string{"expired": sign(expired, then), "revoked": sign(revoked), "valid": sign(valid)}
+		signOffs := map[string]string{"expired": sign(expired, then), "revoked": sign(revoked), "valid": sign(valid), "subkey": sign(subkey)}
+		gpg("key 1\nrevkey\ny\n0\n\ny\nsave\n", "--command-fd", "0", "--edit-key", subkey)
 		// The key is revoked after it signed, with the revocation certificate that gpg made for it.
 		certificate, err := os.ReadFile(filepath.Join(home, "openpgp-revocs.d", revoked+".rev"))
 		if err != nil {
@@ -293,7 +298,7 @@ func TestVerifySignOff(t *testing.T) {
 		}
 		gpg(strings.Replace(string(certificate), ":-----BEGIN", "-----BEGIN", 1), "--import")
 		var listed strings.Builder
-		for _, name := range []string{"expired", "revoked", "valid"} {
+		for _, name := range []string{"expired", "revoked", "valid", "subkey"} {
 			listed.WriteString(name + "-gpg@example.com gpg\n" + gpg("", "--armor", "--export", name+"-gpg@example.com") + "\n")
 		}
 		signers := mustSigners(t, []byte(listed.String()))
