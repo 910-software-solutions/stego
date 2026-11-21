@@ -68,10 +68,13 @@ const applyLookupPages=32
 // applyLookupTimeout bounds the time of one lookup, all its pages together, below the 15 s of each request times
 // applyLookupPages. Only the tests of this package change it.
 var applyLookupTimeout=60*time.Second
-func applyLookup(ctx context.Context,transport *client.Client,headers http.Header,p *applyPlan)(map[string]json.RawMessage,error){
+// applyLookup finds the resource of a plan. Each request waits for the revocation r, and its answer can end that wait
+// (ST-SUP-RC04-OC37); r may be nil.
+func applyLookup(ctx context.Context,transport *client.Client,headers http.Header,p *applyPlan,r *lookupRevocation)(map[string]json.RawMessage,error){
  lookup,cancel:=context.WithTimeout(ctx,applyLookupTimeout);defer cancel()
  get:=func(route string)(client.Response,error){
-  response,err:=transport.Do(lookup,"GET",route,headers,nil)
+  response,err:=transport.Do(lookup,"GET",route,r.headers(headers),nil)
+  if err==nil{r.seen(ctx,response)}
   if err!=nil&&lookup.Err()!=nil&&ctx.Err()==nil{return response,errors.New("apply lookup exceeded its time limit; select metadata.id")}
   return response,err
  }
