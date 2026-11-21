@@ -61,7 +61,7 @@ func MigrationWithConsumers(purgeRole, runtimeRole string, consumerRoles []strin
 	if purgeRole == runtimeRole || slices.Contains(consumerRoles, purgeRole) {
 		return "", fmt.Errorf("idempotency: the purge role must be a role apart from the runtime role and the consumer roles")
 	}
-	text := strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration)
+	text := strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration + attemptsMigration)
 	for _, role := range consumerRoles {
 		text += "\nGRANT SELECT, INSERT, UPDATE ON idempotency_keys TO " + role + ";\n"
 	}
@@ -125,7 +125,7 @@ func ManifestWithConsumers(schema, purgeRole, runtimeRole string, consumerRoles 
 			// The lookup index of the purge: a start without it alerts and starts (decision on ST-SUP-Q123 (b)).
 			Indexes: []manifest.Index{{Name: "idempotency_keys_pkey", Columns: []string{"tenant_id", "principal_id", "key"}},
 				{Name: "idempotency_keys_expires_at", Columns: []string{"expires_at"}, Lookup: true}},
-			RowSecurity: true, Policies: policies, CheckGrants: true, Grants: grants}},
+			RowSecurity: true, Policies: policies, CheckGrants: true, Grants: grants}, attemptsTable(schema, runtimeRole, wall)},
 		Functions: []manifest.Function{{Name: schema + "." + PurgeFunction, Args: "timestamptz, integer", Language: "plpgsql",
 			Source: strings.ReplaceAll(source, "%1$I", schema), SecurityDefiner: true, Config: []string{"search_path=pg_catalog, pg_temp"},
 			Owner: purgeRole, Execute: []string{runtimeRole}, Returns: "bigint"}},
@@ -134,6 +134,54 @@ func ManifestWithConsumers(schema, purgeRole, runtimeRole string, consumerRoles 
 		Schemas:  []manifest.Schema{{Name: schema, Shared: true}},
 		Confined: []string{purgeRole},
 	}, nil
+}
+
+// AttemptsTable is the table of the counts of the checks of each compare-only field with a limit of wrong attempts
+// and each row, which the migration of the key table makes beside it, and which the command runtime charges before
+// each check (ST-SUP-RP10-LC54, security review of PR #451, H1).
+const AttemptsTable = "attempt_counts"
+
+// attemptsMigration makes the table of the counts: the tenant, the counter as <entity>.<field>, the row ID and the
+// checks since the last reset, under row-level security with the tenant policy, with SELECT, INSERT, UPDATE and DELETE
+// for the runtime role only. Each object is read in the catalog first, so a run that changes nothing takes no lock
+// that conflicts with a request of the running release.
+var attemptsMigration = func() string {
+	const table = "'attempt_counts'"
+	return `
+CREATE TABLE IF NOT EXISTS attempt_counts (
+	tenant_id text NOT NULL,
+	counter text NOT NULL,
+	row_id text NOT NULL,
+	checks integer NOT NULL CHECK (checks >= 0),
+	PRIMARY KEY (tenant_id, counter, row_id)
+);
+` + catalogfirst.Unless(catalogfirst.RowSecurity(table), `ALTER TABLE attempt_counts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attempt_counts FORCE ROW LEVEL SECURITY;`) +
+		catalogfirst.Unless(catalogfirst.Policy{Relation: table, Name: "attempt_counts_tenant", Command: catalogfirst.EveryCommand, Using: catalogfirst.TenantForm, Check: catalogfirst.TenantForm}.Holds(),
+			`DROP POLICY IF EXISTS attempt_counts_tenant ON attempt_counts;
+CREATE POLICY attempt_counts_tenant ON attempt_counts
+	USING (tenant_id = pg_catalog.current_setting('app.tenant', true))
+	WITH CHECK (tenant_id = pg_catalog.current_setting('app.tenant', true));`) + `
+GRANT SELECT, INSERT, UPDATE, DELETE ON attempt_counts TO {{runtime}};
+`
+}()
+
+// attemptsTable is the manifest of the table of the counts in schema: its columns, its keys, the tenant policy and the
+// grants of the runtime role, exactly.
+func attemptsTable(schema, runtimeRole, wall string) manifest.Table {
+	return manifest.Table{Schema: schema, Name: AttemptsTable,
+		Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "counter", Type: "text", NotNull: true},
+			{Name: "row_id", Type: "text", NotNull: true}, {Name: "checks", Type: "integer", NotNull: true}},
+		Constraints: []manifest.Constraint{
+			{Name: "attempt_counts_pkey", Kind: manifest.KindPrimaryKey, Definition: "PRIMARY KEY (tenant_id, counter, row_id)"},
+			{Name: "attempt_counts_checks_check", Kind: manifest.KindCheck, Definition: "CHECK ((checks >= 0))"},
+		},
+		Indexes:     []manifest.Index{{Name: "attempt_counts_pkey", Columns: []string{"tenant_id", "counter", "row_id"}}},
+		RowSecurity: true,
+		Policies:    []manifest.Policy{{Name: "attempt_counts_tenant", Command: catalogfirst.EveryCommand, Using: wall, WithCheck: wall}},
+		CheckGrants: true,
+		Grants:      []manifest.Grant{{Role: runtimeRole, Privileges: []string{"SELECT", "INSERT", "UPDATE", "DELETE"}}},
+	}
 }
 
 // rolePattern is a lower-case SQL name of at most 63 characters, which needs no quotes.

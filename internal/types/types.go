@@ -105,6 +105,10 @@ type Field struct {
 	// (a)). create lets only a create set it; never lets no collection write set it, and a create stores its
 	// default. Omitted means always. A command or a worker may change the field in each case.
 	Writable string `yaml:"writable,omitempty" json:"Writable,omitempty"`
+	// Attempts limits the wrong checks of a compare-only secret field: the runtime counts each check of the field
+	// before it verifies the value, and fails each check at the limit (ST-DECL-EN03, ST-DECL-INV104, decision
+	// ST-SUP-Q185 (a), security review of PR #451, H1). Nil is no limit.
+	Attempts *FieldAttempts `yaml:"attempts,omitempty" json:"Attempts,omitempty"`
 	// Column is the stored column of the field when it is not Name: generation names a renamed field in the API by
 	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
 	// declaration never sets it.
@@ -120,6 +124,29 @@ type Field struct {
 	// clear, in a column of its type with its CHECKs: the stored shape before a seal from secret (walkthrough 13,
 	// W13-B1). The declaration never sets it.
 	ClearStored bool `yaml:"-" json:"ClearStored,omitempty"`
+}
+
+// FieldAttempts is the limit of wrong checks of a compare-only secret field (ST-DECL-EN03 Attempts), from 1 to 100
+// (ST-DECL-INV104).
+type FieldAttempts struct {
+	Limit int `yaml:"limit" json:"Limit"`
+}
+
+// EntityEvents is the event fields of an entity (ST-DECL-EN02 Events, ST-DECL-INV105, decision ST-SUP-Q184 (c)): the
+// fields that each change event of the entity carries, in order, the reason of each pii field among them, and the
+// version, which is 1 when it is omitted.
+type EntityEvents struct {
+	Fields     []string          `yaml:"fields" json:"Fields"`
+	Version    *int              `yaml:"version,omitempty" json:"Version,omitempty"`
+	PIIReasons map[string]string `yaml:"pii_reasons,omitempty" json:"PIIReasons,omitempty"`
+}
+
+// EventVersion gives the version of the event fields: Version, or 1 when it is omitted.
+func (e *EntityEvents) EventVersion() int {
+	if e == nil || e.Version == nil {
+		return 1
+	}
+	return *e.Version
 }
 
 // ServerTimestampNames are the timestamp field names that always hold a time the server sets: the time a row was
@@ -193,6 +220,9 @@ type Entity struct {
 	// (ST-DECL-EN02, ST-GEN-Q47). The entity stays declared as it was, with the collections over it, so that the
 	// baseline and the contract come from the declaration alone; the declaration keeps it apart from Entities.
 	DroppedBy string `yaml:"dropped_by,omitempty" json:"DroppedBy,omitempty"`
+	// Events are the fields that each change event of the entity carries, or nil for an event with no field value
+	// (ST-DECL-EN02, ST-DECL-INV105, decision ST-SUP-Q184 (c)).
+	Events *EntityEvents `yaml:"events,omitempty" json:"Events,omitempty"`
 }
 
 // Convention captures the archetype's conventions.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"regexp"
 	"slices"
@@ -775,6 +776,13 @@ func consumerGrants(p *Parts) []tableGrant {
 	for _, table := range p.Workers.ConsumerTables {
 		grants = append(grants, tableGrant{schema: "public", table: table, privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	}
+	// A consuming worker that only reads an entity gets SELECT on its table and nothing more (ST-SUP-RC35-OC19).
+	for _, table := range slices.Sorted(maps.Keys(p.Workers.ConsumerReadTables)) {
+		if !slices.Contains(p.Workers.ConsumerTables, table) {
+			grants = append(grants, tableGrant{schema: "public", table: table, privileges: []string{"SELECT"},
+				columns: p.Workers.ConsumerReadTables[table]})
+		}
+	}
 	grants = append(grants,
 		// The insert of an audit event returns no row, so it needs INSERT only (security review of PR #337, L4).
 		tableGrant{schema: audit.RecordSchema, table: audit.EventsTable, privileges: []string{"INSERT"}},
@@ -834,7 +842,7 @@ func workerGrants(m Migration) (tables, floor string, err error) {
 			floorText.WriteString("REVOKE ALL ON TABLE " + quote(m.Parts.AuthzSchema) + "." + quote(table) + " FROM " + role + ";\n")
 		}
 	}
-	for _, table := range m.Parts.Workers.ConsumerTables {
+	for _, table := range append(append([]string(nil), m.Parts.Workers.ConsumerTables...), slices.Sorted(maps.Keys(m.Parts.Workers.ConsumerReadTables))...) {
 		if !sqlName.MatchString(table) || !runtimeTables[quote("public")+"."+quote(table)] {
 			return "", "", fmt.Errorf("the consumer table %q is not a table that the runtime role gets a grant on", table)
 		}
