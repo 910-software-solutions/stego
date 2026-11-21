@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -641,6 +643,57 @@ func TestServeSecretNeedsRing(t *testing.T) {
 				if refused := err != nil && strings.Contains(err.Error(), "debug_redact"); refused != c.refused {
 					t.Errorf("%s of %s gave %v, want refused %t", name, c.name, err, c.refused)
 				}
+			}
+		}
+	})
+}
+
+func TestNewStruct(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC57-T01 NewStruct gives a Struct of the JSON values of a fill, and refuses another value, invalid UTF-8 and a value nested too deep", func(t *testing.T) {
+		fields := map[string]any{"site": "s-1", "count": 3, "ratio": 0.5, "open": true, "none": nil,
+			"sites": []any{"a", map[string]any{"n": int64(2)}}, "raw": []byte{1, 2}}
+		s, err := NewStruct(fields)
+		if err != nil {
+			t.Fatalf("NewStruct of JSON values: %v", err)
+		}
+		got, err := protojson.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back map[string]any
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"site": "s-1", "count": 3.0, "ratio": 0.5, "open": true, "none": nil,
+			"sites": []any{"a", map[string]any{"n": 2.0}}, "raw": "AQI="}
+		if !reflect.DeepEqual(back, want) {
+			t.Fatalf("NewStruct gave %s, want %v", got, want)
+		}
+		// The deepest values that it takes, of objects alone and with a list, and one level more.
+		deep := func(levels int) map[string]any {
+			m := map[string]any{"leaf": 1}
+			for i := 1; i < levels; i++ {
+				m = map[string]any{"next": m}
+			}
+			return m
+		}
+		for _, value := range []map[string]any{deep(MaxStructDepth), {"list": []any{deep(MaxStructDepth - 2)}}} {
+			if _, err := NewStruct(value); err != nil {
+				t.Fatalf("NewStruct refuses a value of %d levels: %v", MaxStructDepth, err)
+			}
+		}
+		loop := map[string]any{}
+		loop["self"] = loop
+		for name, value := range map[string]map[string]any{
+			"a value of another type":        {"when": struct{}{}},
+			"a string that is not UTF-8":     {"name": "\xff"},
+			"a key that is not UTF-8":        {"\xff": 1},
+			"one level of objects too many":  deep(MaxStructDepth + 1),
+			"one level with a list too many": {"list": []any{deep(MaxStructDepth - 1)}},
+			"a map that holds itself":        loop,
+		} {
+			if s, err := NewStruct(value); err == nil || s != nil {
+				t.Errorf("NewStruct of %s gave %v, %v; want an error and no Struct", name, s, err)
 			}
 		}
 	})

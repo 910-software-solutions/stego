@@ -1400,7 +1400,7 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
-### Release notes for runtime v0.173.0
+### Release notes for runtime v0.176.0
 
 - A worker can declare `reads: [Entity]`. Its fill gets a read-only
   repository `<Entity>Reader`, of the new type `command.Reader`, with `Get` and
@@ -1867,4 +1867,6 @@ and passed.
 
 Upgrade: a project whose fills of commands, queries or workers have no
 signed evidence is refused at plan. Run `stego test`, then
-`stego fill sign <name>` for each fill that plan names.
+`stego fill sign <name>` for each fill that plan names. `stego fill sign` keeps a
+sign-off that already covers the current evidence with a key that `SIGNERS`
+lists, and writes nothing; give `--force` to sign it again with your key.
