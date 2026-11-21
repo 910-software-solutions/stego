@@ -43,6 +43,9 @@ through queries.
    with a key that `SIGNERS` lists; give `--force` to sign again. With a key
    that `SIGNERS` does not list, it signs, prints a warning with the key
    fingerprint, and plan, apply, build and deps refuse the fill.
+   `stego validate` and `stego plan` also warn when the sign-off counts only
+   because of a key that the change adds to `SIGNERS`; with `--strict` this is
+   a fault.
 
 4. Generate, resolve the dependencies and build:
 

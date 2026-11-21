@@ -633,6 +633,30 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC50-T07 A contract of a seal that waits for its pass gives the failure record its fault class, the table, the remedy and the cause class", func(t *testing.T) {
+		own, db, _ := base(t)
+		expand(t, own, db)
+		err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) })
+		// The failure record of the process takes these fixed names and texts, and never the text of the refusal,
+		// which names the change (walkthrough 21, U-F).
+		var classified interface {
+			FaultClass() string
+			FaultObject() string
+			FaultRemedy() string
+		}
+		if !errors.As(err, &classified) || classified.FaultClass() != "schema_change.seal_pending" || classified.FaultObject() != "stego_schema.seals" ||
+			!strings.Contains(classified.FaultRemedy(), "until the seal job completes a pass") {
+			t.Fatalf("the contract before a pass ends with %v, whose failure record names no fault class, table and remedy", err)
+		}
+		if strings.Contains(classified.FaultRemedy(), "vault-note-seal") {
+			t.Errorf("the remedy names the change: %s", classified.FaultRemedy())
+		}
+		var caused interface{ CauseClass() string }
+		if !errors.As(err, &caused) || caused.CauseClass() != "refused" {
+			t.Errorf("the contract before a pass ends with %v, whose failure record names no cause class refused", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
 		own, db, reader := base(t)
 		expand(t, own, db)

@@ -304,6 +304,8 @@ func Modes() ([]string, error) {
 // of the worker mode too when the process runs it, so a missing one stops the start at its stage
 // (ST-SUP-RP14-LC05).
 func NewService(ctx context.Context) (rt *Runtime, err error) {
+	// Each log/slog line of the process is a JSON line, as each line of the log provider (walkthrough 21, U-E).
+	service.UseJSONLog()
 	selection, err := selectModes()
 	if err != nil {
 		return nil, err
@@ -497,6 +499,8 @@ func (rt *Runtime) Close() error { return rt.svc.Close() }
 // the grants of the runtime role, the audit partitions, the check of the schema manifest of the declared parts, which
 // a start only alerts, and the backfills.
 func Migrate(ctx context.Context) error {
+	// Each log/slog line of the migration job, such as the line of a refused step, is a JSON line (walkthrough 21, U-E).
+	service.UseJSONLog()
 	settings, err := service.ReadMigrationSettings()
 	if err != nil {
 		return &service.StepError{Step: service.StepSettings, Err: err}

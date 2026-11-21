@@ -132,6 +132,7 @@ func TestFailureRecordDatabaseCause(t *testing.T) {
 			{"55P03", "lock_timeout", "55P03"}, {"57014", "statement_timeout", "57014"}, {"40P01", "deadlock", "40P01"},
 			{"42501", "not_granted", "42501"}, {"28P01", "authentication_failed", "28P01"}, {"08006", "connection_failed", "08006"},
 			{"3D000", "database_not_found", "3D000"}, {"23505", "constraint_violation", "23505"}, {"42P01", "schema", "42P01"},
+			{"57P01", "admin_shutdown", "57P01"}, {"57P02", "crash_shutdown", "57P02"},
 			{"XX000", "database", "XX000"}, {"55p03", "", ""}, {"password=secret", "", ""}, {"", "", ""},
 		} {
 			var output bytes.Buffer
@@ -170,6 +171,7 @@ func TestFailureRecordDatabaseCause(t *testing.T) {
 			{fmt.Errorf("client: %w", missing), "file_not_found"},
 			{x509.UnknownAuthorityError{}, "certificate_refused"},
 			{fmt.Errorf("discovery: %w", context.DeadlineExceeded), "timeout"},
+			{fmt.Errorf("tenant: open the database: %w", io.ErrUnexpectedEOF), "connection_closed"},
 			{privateFailure{}, ""},
 			// A cause that gives its own class, such as a refused call to SpiceDB, names it in the strict form only.
 			{fmt.Errorf("migrate: %w", classedFailure{"unavailable"}), "unavailable"},

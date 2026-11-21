@@ -651,6 +651,12 @@ func (r *ledgerRefusal) Is(target error) bool { return target == ErrMigrationLed
 func (r *ledgerRefusal) FaultClass() string   { return "migration_ledger.history" }
 func (r *ledgerRefusal) FaultObject() string  { return "stego_schema.migrations" }
 func (r *ledgerRefusal) FaultRemedy() string  { return r.remedy }
+func (r *ledgerRefusal) CauseClass() string   { return refusedCause }
+
+// refusedCause is the cause class of the failure record of a step that a
+// check of the ledger or of a contract step refused: the job changed
+// nothing, and the remedy says what to do (walkthrough 21, U-F).
+const refusedCause = "refused"
 
 // earlierDigest tells whether digest is one of the earlier digests of m.
 func earlierDigest(m Migration, digest string) bool {
@@ -665,12 +671,23 @@ func earlierDigest(m Migration, digest string) bool {
 // digestRefusal is the refusal of a ledger row whose digest is not the body
 // digest of the registered migration of the same name: its text names the
 // migration, the two digests and the remedy, and no part of a body, so the
-// migration job may log it (Refusal). It matches ErrMigrationLedger.
+// migration job may log it (Refusal). It matches ErrMigrationLedger. The
+// failure record of the process names its fault class, the ledger, its
+// remedy and the cause class refused, fixed texts with no name of a row
+// (walkthrough 21, U-F).
 type digestRefusal struct{ text string }
+
+// digestRemedy is the remedy of a ledger row whose digest is not the body
+// digest of this release.
+const digestRemedy = "the body of an applied migration changed: deploy the release that applied it, or a release that keeps its body and brings the change in a new schema step; the line migrate: the step is refused names the migration and the two digests"
 
 func (r *digestRefusal) Error() string        { return r.text }
 func (r *digestRefusal) Refusal() string      { return r.text }
 func (r *digestRefusal) Is(target error) bool { return target == ErrMigrationLedger }
+func (r *digestRefusal) FaultClass() string   { return "migration_ledger.digest" }
+func (r *digestRefusal) FaultObject() string  { return "stego_schema.migrations" }
+func (r *digestRefusal) FaultRemedy() string  { return digestRemedy }
+func (r *digestRefusal) CauseClass() string   { return refusedCause }
 
 // applyPending applies the migrations after the recorded history, one
 // transaction each, at read committed whatever the default isolation of the
@@ -1066,7 +1083,7 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 		if c.Seal && s.Long && violatesCheck(err) && strings.Contains(s.SQL, "VALIDATE CONSTRAINT "+quoteIdentifier(c.Check)) {
 			// The VALIDATE of the completeness CHECK, Check, reads every row, also a row of a tenant that the tenant
 			// list does not hold, which the seal job does not seal (security review of PR #443, I4; re-review N5).
-			return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: a row has a clear value and no sealed value, and the seal job has sealed each row of the listed tenants, so the row is of a tenant that the tenant list stego_tenants does not hold; provision that tenant and run the release of the expand step %s until the seal job completes a pass, or remove the rows of that tenant", c.Change, c.Expand)}
+			return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: a row has a clear value and no sealed value, and the seal job has sealed each row of the listed tenants, so the row is of a tenant that the tenant list stego_tenants does not hold; provision that tenant and run the release of the expand step %s until the seal job completes a pass, or remove the rows of that tenant", c.Change, c.Expand), wait: sealWait}
 		}
 		if !lockTimedOut(err) {
 			return err
@@ -1129,11 +1146,33 @@ func (r *keyRefusal) Unwrap() error   { return r.err }
 
 // contractRefusal is the refusal of a contract step: its text names the
 // change, the counts and the labels of the running releases, and no row
-// value, so the migration job may log it (Refusal).
-type contractRefusal struct{ text string }
+// value, so the migration job may log it (Refusal). The failure record of the
+// process names what the step waits for as its fault class, the table that
+// tells it, the remedy and the cause class refused: fixed texts with no name
+// of a change or a row (walkthrough 21, U-F).
+type contractRefusal struct {
+	text string
+	wait contractWait
+}
 
-func (r *contractRefusal) Error() string   { return r.text }
-func (r *contractRefusal) Refusal() string { return r.text }
+// contractWait is what a contract step waits for: its fault class, the table
+// that tells it, and the remedy.
+type contractWait struct{ fault, object, remedy string }
+
+// The waits of a contract step.
+var (
+	sealWait     = contractWait{"schema_change.seal_pending", "stego_schema.seals", "the contract step of a seal waits for a complete pass of the seal job: run the release of the expand step, with its controller, until the seal job completes a pass, then run the migration job again; the line migrate: the step is refused names the change and the state"}
+	backfillWait = contractWait{"schema_change.backfill_pending", "stego_schema.backfills", "the contract step waits for the backfill of its change: run the migration job of the release before until the backfill completes, then run the migration job again; the line migrate: the step is refused names the change and the rows left"}
+	reportsWait  = contractWait{"schema_change.release_reports", "stego_schema.releases", "the contract step finds no table of the release reports: run the migration job of the release of the expand step first; the line migrate: the step is refused names the change"}
+	releaseWait  = contractWait{"schema_change.release_before_running", "stego_schema.releases", "a release before the expand step still runs: stop it, then run the migration job again; the line migrate: the step is refused names the change and the releases"}
+)
+
+func (r *contractRefusal) Error() string       { return r.text }
+func (r *contractRefusal) Refusal() string     { return r.text }
+func (r *contractRefusal) FaultClass() string  { return r.wait.fault }
+func (r *contractRefusal) FaultObject() string { return r.wait.object }
+func (r *contractRefusal) FaultRemedy() string { return r.wait.remedy }
+func (r *contractRefusal) CauseClass() string  { return refusedCause }
 
 // checkContract checks the contract step c in the transaction tx
 // (ST-SUP-RC01-OC24): while the sync trigger of the change or the old column
@@ -1242,7 +1281,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 		if err == nil {
 			count = fmt.Sprint(left)
 		}
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count), wait: backfillWait}
 	}
 	// A last count of the rows with the old column set and the new one empty: a write that the completeness CHECK
 	// let through, as a value that does not convert with no fill value, would lose its value when the old column
@@ -1252,7 +1291,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left), wait: backfillWait}
 	}
 	return runningReleases(ctx, tx, c)
 }
@@ -1310,14 +1349,14 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 		}
 	}
 	if state != "" {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand), wait: sealWait}
 	}
 	left, err := rowsLeft(ctx, tx, c)
 	if err != nil {
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.173.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand), wait: sealWait}
 	}
 	return runningReleases(ctx, tx, c)
 }
@@ -1377,7 +1416,7 @@ func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 		return err
 	}
 	if !table {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s finds no table stego_schema.releases of the release reports, which the expand migration of the change makes", c.Change)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s finds no table stego_schema.releases of the release reports, which the expand migration of the change makes", c.Change), wait: reportsWait}
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT r.version, pg_catalog.count(*) FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < $1 COLLATE \"C\" AND r.seen_at > pg_catalog.clock_timestamp() - r.every_ms * $2::integer * interval '1 millisecond' GROUP BY r.version ORDER BY r.version COLLATE \"C\"", c.Expand, releaseWindow)
 	if err != nil {
@@ -1405,7 +1444,7 @@ func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 		if c.Drop && c.From == "" {
 			old = "the old table"
 		}
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need %s; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand, old)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need %s; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand, old), wait: releaseWait}
 	}
 	return nil
 }

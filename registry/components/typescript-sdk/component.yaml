@@ -8,9 +8,13 @@
 # Version 1.4.0 reads the code of an error answer of the media type application/problem+json too, as a command
 # refusal gives it, and takes an error code with a dot in error_codes, such as the refusal code shipment.not_draft
 # (ST-SUP-RC24-OC09; walkthrough 20, P-A).
+# Version 1.5.0 gives the response headers that a client needs in the result, authzRevocation,
+# authzRevocationLocation, preferenceApplied and idempotentReplayed, and the seconds of Retry-After in
+# SDKError.retryAfter, so a page can send Authz-Revocation-After right after a create (ST-SUP-RC24-OC07;
+# walkthrough 21, P-D).
 kind: component
 name: typescript-sdk
-version: 1.4.0
+version: 1.5.0
 stage: ga
 output_namespace: tssdk
 config:

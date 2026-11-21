@@ -43,6 +43,30 @@ test('ST-SUP-RC24-OC07-T01 The emitted client rejects invalid responses and unsa
     await assert.rejects(sdk.getRecord({id: 'r1'}), error('invalid_response'));
   }
 });
+test('ST-SUP-RC24-OC07-T02 The result gives the documented response headers that a client needs, and null for a missing or bad value', async () => {
+  // A create answers its revocation; the client sends the location in authzRevocationAfter of the next write
+  // (walkthrough 21, P-D).
+  const location = '/api/records/stego/revocations/0d7d5b4e-3b9b-4f61-9a43-6a2d3c1b1e10';
+  const sdk = client(async (url) => url.endsWith('/auth/session') ? session() : json(record, 201,
+    {'Authz-Revocation': 'pending', 'Authz-Revocation-Location': location, 'Preference-Applied': 'wait=5', 'Idempotent-Replayed': 'true', ETag: '"v1"'}));
+  const created = await sdk.createRecord({body: requestRecord});
+  assert.deepEqual([created.authzRevocation, created.authzRevocationLocation, created.preferenceApplied, created.idempotentReplayed, created.etag],
+    ['pending', location, 'wait=5', 'true', '"v1"']);
+  const bare = await client(async () => json(record)).getRecord({id: 'r1'});
+  assert.deepEqual([bare.authzRevocation, bare.authzRevocationLocation, bare.preferenceApplied, bare.idempotentReplayed], [null, null, null, null]);
+  const long = await client(async () => json(record, 200, {'Authz-Revocation-Location': '/' + 'a'.repeat(1024)})).getRecord({id: 'r1'});
+  assert.equal(long.authzRevocationLocation, null);
+  // A refusal that the client may send again after a wait gives the seconds of Retry-After, and nothing else.
+  await assert.rejects(client(async () => json({private: 'private'}, 503, {'Retry-After': '2'})).getRecord({id: 'r1'}),
+    e => e instanceof SDKError && e.status === 503 && e.retryAfter === 2 && !e.message.includes('private'));
+  await assert.rejects(client(async () => json({}, 503, {'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT'})).getRecord({id: 'r1'}),
+    e => e instanceof SDKError && e.retryAfter === undefined);
+});
+test('ST-SUP-RC24-OC07-T03 SDKError.retryAfter is at most 3600 seconds', async () => {
+  for (const [value, want] of [['3600', 3600], ['3601', 3600], ['999999999', 3600], ['0', 0]]) {
+    await assert.rejects(client(async () => json({}, 503, {'Retry-After': value})).getRecord({id: 'r1'}), e => e instanceof SDKError && e.retryAfter === want);
+  }
+});
 test('ST-SUP-RC24-OC09-T01 HTTP errors and exceptions of the emitted client expose no private data', async () => {
   for (const status of [401, 403, 404, 409, 503]) { const sdk = client(async () => json({private: 'private'}, status)); await assert.rejects(sdk.getRecord({id: 'r1'}), error(status === 401 ? 'reauth_required' : 'http_error', status)); }
   const sdk = client(async () => { throw new Error('private'); }); await assert.rejects(sdk.getRecord({id: 'r1'}), error('request_failed'));

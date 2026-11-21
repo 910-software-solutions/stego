@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -353,7 +354,7 @@ func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 				}
 			}
 		}
-		slog.InfoContext(ctx, "command: re-seal of a secret column", "entity", c.Entity, "column", c.Column,
+		slog.InfoContext(ctx, "command: re-seal of a secret column", otel.SlogEventKey, ResealPassEvent, "entity", c.Entity, "column", c.Column,
 			"moved", results[i].Moved, "left", results[i].Left, "failed", results[i].Failed, "first_key", r.ring.First())
 	}
 	return results, errors.Join(failed...)

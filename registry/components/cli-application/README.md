@@ -58,6 +58,10 @@ component writes (`<out>/commands/openapi.json`), in the package
   of the base, declare it with a unique step of the field `name` (see
   [Unique steps](../../../docs/schema-changes.md#unique-steps)).
 
+The fills of the service follow the STEGO gates: `stego validate` and `stego plan`
+also warn when the sign-off of a fill counts only because of a key that the
+change adds to `SIGNERS`; with `--strict` this is a fault.
+
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
 `IdempotentWritesFrom` sets it: each command, and the create and the patch of a

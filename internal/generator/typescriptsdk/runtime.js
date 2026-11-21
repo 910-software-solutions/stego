@@ -5,13 +5,21 @@ const maxRequest = 1 << 20;
 const maxResponse = 4 << 20;
 let activeRequests = 0;
 export class SDKError extends Error {
-  constructor(code, status = 0, apiCode) {
+  constructor(code, status = 0, apiCode, retryAfter) {
     super("SDK request failed: " + code);
     this.name = "SDKError";
     this.code = code;
     this.status = status;
     this.apiCode = contract.errorCodes.includes(apiCode) ? apiCode : undefined;
+    // At most one hour, so a service cannot make a client wait for days (security review of PR #485, I2).
+    this.retryAfter = typeof retryAfter === "string" && /^[0-9]{1,9}$/.test(retryAfter) ? Math.min(Number(retryAfter), 3600) : undefined;
   }
+}
+// The documented response headers that a client needs (walkthrough 21, P-D): each value has 1 to 1024 visible ASCII
+// characters or spaces, or the result gives null.
+function responseHeader(response, name) {
+  const value = response.headers.get(name);
+  return typeof value === "string" && value.length > 0 && value.length <= 1024 && /^[\x20-\x7e]+$/.test(value) ? value : null;
 }
 function fail(code, status = 0) { throw new SDKError(code, status); }
 function unicode(value) {
@@ -182,11 +190,13 @@ export function createBrowserClient() {
       if (response.status !== 401 && (media === "application/json" || media === "application/problem+json")) {
         try { const value = parseJSON(data); if (value && typeof value === "object" && own(value, "code") && contract.errorCodes.includes(value.code)) apiCode = value.code; } catch {}
       }
-      throw new SDKError(response.status === 401 ? "reauth_required" : "http_error", response.status, apiCode);
+      throw new SDKError(response.status === 401 ? "reauth_required" : "http_error", response.status, apiCode, response.headers.get("Retry-After") ?? undefined);
     }
     let result;
     if (data !== "") { if ((response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase() !== "application/json") fail("invalid_response"); try { result = parseJSON(data); } catch { fail("invalid_response"); } }
-    return { status: response.status, body: result, etag: response.headers.get("ETag") };
+    return { status: response.status, body: result, etag: response.headers.get("ETag"),
+      authzRevocation: responseHeader(response, "Authz-Revocation"), authzRevocationLocation: responseHeader(response, "Authz-Revocation-Location"),
+      preferenceApplied: responseHeader(response, "Preference-Applied"), idempotentReplayed: responseHeader(response, "Idempotent-Replayed") };
   };
   const session = async (signal, traceparent) => {
     const result = await request("GET", "/auth/session", undefined, undefined, signal, traceparent);

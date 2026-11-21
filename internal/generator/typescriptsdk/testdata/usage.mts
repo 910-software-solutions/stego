@@ -4,6 +4,9 @@ const client: Client = createBrowserClient();
 const body: RequestSchemas['Record'] = {id: 'r1', name: 'One', count: 0, enabled: false, description: null};
 const response = await client.createRecord({body});
 const name: string = response.body.name;
+// The revocation of the create goes into the next write of the child (walkthrough 21, P-D).
+const after: string | null = response.authzRevocationLocation;
+void after;
 await client.getRecord({id: 'r1', search: 'One'}, {signal: new AbortController().signal, traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'});
 await client.deleteRecord({id: 'r1'});
 // @ts-expect-error A required path argument is absent.

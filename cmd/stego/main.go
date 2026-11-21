@@ -489,6 +489,9 @@ func runPlan(args []string) error {
 	if err := checkPinStanding(input, plan, os.Stdout); err != nil {
 		return err
 	}
+	if err := checkAddedKeys(input, *baseRef, os.Stdout); err != nil {
+		return err
+	}
 	if err := refuseChangedBodies(gate, plan, os.Stdout); err != nil {
 		return err
 	}
@@ -725,6 +728,7 @@ func runValidate(args []string) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	structured := fs.Bool("json", false, "print the faults as one JSON document")
 	fs.BoolVar(&strictSecretSources, "strict", false, strictUsage)
+	baseRef := fs.String("base", "", signersBaseUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -743,6 +747,19 @@ func runValidate(args []string) error {
 	result, err := compiler.Validate(input)
 	if err != nil {
 		return err
+	}
+	if !result.HasErrors() {
+		// A sign-off that counts only because of a key that the change adds to SIGNERS is a warning, and a fault
+		// with --strict (walkthrough 21, T-D; decision ST-EXT-Q31).
+		added, err := addedKeyFaults(input, *baseRef)
+		if err != nil {
+			return err
+		}
+		if strictSecretSources {
+			result.Errors = append(result.Errors, added...)
+		} else {
+			result.Warnings = append(result.Warnings, added...)
+		}
 	}
 
 	if !*structured {
@@ -1366,7 +1383,7 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 var strictSecretSources bool
 
 // strictUsage is the help of the flag --strict.
-const strictUsage = "refuse a secret source of an environment variable whose secret need the service does not state with that key, in place of a warning"
+const strictUsage = "refuse a secret source of an environment variable whose secret need the service does not state with that key, and in validate and plan a sign-off that counts only because of a key that the change adds to SIGNERS, in place of a warning"
 
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
 // (delivery.WriteRequirements, ST-DLV-CMD01): the needs, the environment variables that each component declares,
