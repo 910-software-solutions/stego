@@ -39,6 +39,7 @@ const subjectType = "user"
 // The problem types of the idempotency key (ST-SUP-RC30-OC02).
 const (
 	keyMissingType = "about:blank"
+	keyInvalidType = "about:blank"
 	keyBusyType    = "about:blank"
 	keyReusedType  = "about:blank"
 )
@@ -341,15 +342,16 @@ func answerKey(w http.ResponseWriter, r *http.Request, result command.Result) {
 	handleError(w, r, problem)
 }
 
-// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one; the
-// detail of a malformed key tells that the key is an RFC 9651 string in double quotes.
+// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, with the type
+// idempotency-key-missing, or that has a malformed one, with the type idempotency-key-invalid and a detail that tells
+// that the key is an RFC 9651 string in double quotes (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
 func keyMissing(w http.ResponseWriter, r *http.Request, err error) {
-	detail := "the Idempotency-Key header is absent"
-	if errors.Is(err, idempotency.ErrKeyMalformed) {
-		detail = "the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\""
-	}
-	problem := BadRequest(detail)
+	problem := BadRequest("the Idempotency-Key header is absent")
 	problem.Type = keyMissingType
+	if errors.Is(err, idempotency.ErrKeyMalformed) {
+		problem = BadRequest("the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\"")
+		problem.Type = keyInvalidType
+	}
 	handleError(w, r, problem)
 }
 
