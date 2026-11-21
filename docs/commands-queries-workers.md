@@ -1436,6 +1436,21 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.186.0
+
+- A consumer run that fails after a decision denied a row with an empty
+  authorization token, whose relations the relay has not written yet, is a
+  transient refusal with the outcome `undecided` and the new cause class
+  `relations_pending` in `probe.WorkerCauses` (ST-SUP-RP10-LC17). The poison
+  count does not count it, and a declared refusal or a deny of the staging
+  principal of such a run does not park the message. A panic stays a panic,
+  and a run that commits does not change. Walkthrough 21: a consuming worker
+  failed about one first attempt in three with `fill_error`, as the list of
+  an update event did not give the row of its create event.
+- `command.NewStruct` refuses a value of more than `command.MaxStructNodes`
+  (100,000) values in all, counted at each place that holds a shared map or
+  list, before the conversion walks it (ST-SUP-RP10-LC57).
+
 ### Release notes for runtime v0.182.0
 
 - The worker mode runs the Kafka inbox of each declared subscription, each in
