@@ -42,11 +42,26 @@ type applyFixture struct {
 	directory string
 	// last is the body of the last write.
 	last map[string]any
+	// lag hides a created row from the list until a list request names its revocation in Authz-Revocation-After, as
+	// a list hides a row until its owner relationship is written; each write then answers Authz-Revocation-Location.
+	// unique answers 409 to a create of a name that a row has. hide hides a created row from that many lists.
+	// conditional gives each row a generation, and a patch needs If-Match with it.
+	lag, unique, conditional bool
+	hide                     int
+	revocations              map[string]string
+	settled                  map[string]bool
+	hidden                   map[string]int
+	// after, prefer and ifMatch are the Authz-Revocation-After and Prefer of each list request and the If-Match of
+	// each patch.
+	after, prefer, ifMatch []string
+	conflicts              int
+	// afterList runs, under the lock, after each list answer.
+	afterList func()
 }
 
 func applySetup(t *testing.T) *applyFixture {
 	t.Helper()
-	f := &applyFixture{directory: privateDir(t), rows: map[string]map[string]any{}}
+	f := &applyFixture{directory: privateDir(t), rows: map[string]map[string]any{}, revocations: map[string]string{}, hidden: map[string]int{}, settled: map[string]bool{}}
 	t.Setenv("TEST_CLI_CONFIG", filepath.Join(f.directory, "config.json"))
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -110,10 +125,22 @@ func applySetup(t *testing.T) *applyFixture {
 				<-r.Context().Done()
 				return
 			}
+			if f.lag || f.unique {
+				f.after, f.prefer = append(f.after, r.Header.Get("Authz-Revocation-After")), append(f.prefer, r.Header.Get("Prefer"))
+			}
+			// A wait for a revocation completes it, as the list then reads at least as fresh as its token.
+			f.settled[r.Header.Get("Authz-Revocation-After")] = true
 			var items []map[string]any
 			for _, path := range slices.Sorted(maps.Keys(f.rows)) {
 				row := f.rows[path]
 				if strings.HasPrefix(path, r.URL.Path+"/") && query.Get("search") == "name = '"+strings.ReplaceAll(row["name"].(string), "'", "''")+"'" {
+					if f.lag && f.revocations[path] != "" && !f.settled[f.revocations[path]] {
+						continue
+					}
+					if f.hidden[path] > 0 {
+						f.hidden[path]--
+						continue
+					}
 					items = append(items, row)
 				}
 			}
@@ -134,6 +161,9 @@ func applySetup(t *testing.T) *applyFixture {
 				page["next"] = "c" + strconv.Itoa(at+1)
 			}
 			json.NewEncoder(w).Encode(page)
+			if f.afterList != nil {
+				f.afterList()
+			}
 			return
 		}
 		f.writes++
@@ -148,7 +178,25 @@ func applySetup(t *testing.T) *applyFixture {
 			fmt.Fprint(w, `{"private":"do-not-print"}`)
 			return
 		}
+		if f.unique && r.Method == "POST" {
+			for path, row := range f.rows {
+				if strings.HasPrefix(path, r.URL.Path+"/") && row["name"] == body["name"] {
+					f.conflicts++
+					w.Header().Set("Content-Type", "application/problem+json")
+					w.WriteHeader(409)
+					fmt.Fprint(w, `{"type":"https://errors.example.test/conflict","status":409,"detail":"private-detail"}`)
+					return
+				}
+			}
+		}
 		path, id := r.URL.Path, ""
+		if f.conditional && r.Method == "PATCH" {
+			f.ifMatch = append(f.ifMatch, r.Header.Get("If-Match"))
+			if stored, ok := f.rows[r.URL.Path]; ok && r.Header.Get("If-Match") != fmt.Sprintf("%q", fmt.Sprint(stored["generation"])) {
+				w.WriteHeader(412)
+				return
+			}
+		}
 		if r.Method == "POST" {
 			id = fmt.Sprintf("id-%d", f.writes)
 			path += "/" + id
@@ -163,7 +211,23 @@ func applySetup(t *testing.T) *applyFixture {
 			body = merged
 		}
 		body["id"] = id
+		if f.conditional {
+			generation := 1
+			if stored, ok := f.rows[path]; ok {
+				generation = stored["generation"].(int) + 1
+			}
+			body["generation"] = generation
+		}
 		f.rows[path] = body
+		if f.lag || f.unique {
+			revocation := fmt.Sprintf("/authz/revocations/%08x-0000-4000-8000-%012x", f.writes, f.writes)
+			f.revocations[path] = revocation
+			w.Header().Set("Authz-Revocation", "pending")
+			w.Header().Set("Authz-Revocation-Location", revocation)
+		}
+		if f.hide > 0 && r.Method == "POST" {
+			f.hidden[path] = f.hide
+		}
 		f.order = append(f.order, body["name"].(string))
 		if body["name"] == "second" && f.mode == "unknown-write" {
 			w.WriteHeader(500)
@@ -610,6 +674,152 @@ func TestApplyNamesMissingField(t *testing.T) {
 		_, output, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json")
 		if err == nil || err.Error() != `Record "second": the required apply field count is missing` || strings.Contains(output, "PRIVATEVALUE") || f.writes != 0 {
 			t.Fatal("the refusal does not name the missing field, or a write was sent", err, output, f.writes)
+		}
+	})
+}
+
+// applyCount counts the rows of the fixture.
+func (f *applyFixture) applyCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.rows)
+}
+
+func TestApplyWaitsForLastWrite(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC37-T01 Apply keeps the revocation of its last write in the configuration and sends it on each later lookup, so quick applies make one row", func(t *testing.T) {
+		f := applySetup(t)
+		f.lag = true
+		app := applyDefinition()
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", `{"count": 1}`))
+		for i := 0; i < 4; i++ {
+			results, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json")
+			want := "unchanged"
+			if i == 0 {
+				want = "created"
+			}
+			if err != nil || len(results) != 1 || results[0].Status != want {
+				t.Fatal("apply", i, results, err)
+			}
+		}
+		if f.applyCount() != 1 {
+			t.Fatalf("four quick applies made %d rows", f.applyCount())
+		}
+		f.mu.Lock()
+		after, prefer := slices.Clone(f.after), slices.Clone(f.prefer)
+		f.mu.Unlock()
+		if after[0] != "" || after[1] != "/authz/revocations/00000001-0000-4000-8000-000000000001" || prefer[1] != "wait=10" {
+			t.Fatal("the lookups did not send the revocation of the last write", after, prefer)
+		}
+		config, err := os.ReadFile(filepath.Join(f.directory, "config.json"))
+		if err != nil || !strings.Contains(string(config), `"revocation":"/authz/revocations/00000001-0000-4000-8000-000000000001"`) {
+			t.Fatal("the configuration does not keep the revocation", string(config), err)
+		}
+		if info, err := os.Stat(filepath.Join(f.directory, "config.json")); err != nil || info.Mode().Perm() != 0600 {
+			t.Fatal("the configuration is not private", err)
+		}
+		// A command write keeps its revocation too, and the next apply lookup sends it.
+		var output bytes.Buffer
+		if err := Run(context.Background(), app, []string{"create", "record", "--name", "other"}, &output); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err != nil {
+			t.Fatal(err)
+		}
+		f.mu.Lock()
+		last := f.after[len(f.after)-1]
+		f.mu.Unlock()
+		if last != "/authz/revocations/00000002-0000-4000-8000-000000000002" {
+			t.Fatal("the lookup did not send the revocation of the command write", last)
+		}
+		// A configuration that holds a value of another form is refused.
+		changed := strings.Replace(string(config), "/authz/revocations/", "/other/", 1)
+		if err := os.WriteFile(filepath.Join(f.directory, "config.json"), []byte(changed), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err == nil || !strings.Contains(err.Error(), "invalid configuration file") {
+			t.Fatal("a configuration with another revocation form was accepted", err)
+		}
+	})
+}
+
+func TestApplyCreateConflict(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC36-T02 A create that the unique name refuses is looked up again with no other write: unchanged for the same values, failed for other values or a resource that the lookup does not show", func(t *testing.T) {
+		f := applySetup(t)
+		f.unique, f.hide = true, 1
+		app := applyDefinition()
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", `{"count": 1}`))
+		if results, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json"); err != nil || results[0].Status != "created" {
+			t.Fatal("apply creation", results, err)
+		}
+		// The list hides the new row from the next lookup, so apply creates, gets 409 and looks it up again.
+		f.mu.Lock()
+		f.revocations = map[string]string{}
+		f.mu.Unlock()
+		results, _, err := runApplyTest(t, app, "apply", "-f", path, "-o", "json")
+		if err != nil || len(results) != 1 || results[0].Status != "unchanged" || results[0].ID != "id-1" || f.conflicts != 1 || f.applyCount() != 1 {
+			t.Fatal("a create that 409 refused was not found as unchanged", results, err, f.conflicts)
+		}
+		writes := f.writes
+		f.mu.Lock()
+		f.hidden["/records/id-1"] = 1
+		f.mu.Unlock()
+		other := applyFile(t, filepath.Join(f.directory, "other.yaml"), manifest("Record", "first", `{"count": 2}`))
+		results, output, err := runApplyTest(t, app, "apply", "-f", other, "-o", "json")
+		if err == nil || !strings.Contains(err.Error(), `Record "first": a resource of this name exists, and it has other values; apply again to patch it (HTTP 409)`) || results[0].Status != "failed" || f.writes != writes+1 || strings.Contains(err.Error()+output, "private-detail") {
+			t.Fatal("a create that 409 refused for other values did not fail with no other write", results, err, f.writes)
+		}
+		f.mu.Lock()
+		f.hidden["/records/id-1"] = 2
+		f.mu.Unlock()
+		results, _, err = runApplyTest(t, app, "apply", "-f", path, "-o", "json")
+		if err == nil || !strings.Contains(err.Error(), "the lookup does not show it") || results[0].Status != "failed" || f.applyCount() != 1 {
+			t.Fatal("a create that 409 refused for a hidden resource did not fail", results, err)
+		}
+		// A kind whose name the service does not hold unique has no apply resource, and apply names why.
+		app.UnappliedKinds = []string{"Gadget"}
+		gadget := applyFile(t, filepath.Join(f.directory, "gadget.yaml"), manifest("Gadget", "first", `{}`))
+		if _, _, err := runApplyTest(t, app, "apply", "-f", gadget, "--dry-run"); err == nil || !strings.Contains(err.Error(), "apply does not manage the kind Gadget: the service does not hold its name unique") {
+			t.Fatal("apply did not name why it does not manage a kind", err)
+		}
+	})
+}
+
+func TestApplyConditionalPatch(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC38-T02 A conditional patch sends If-Match with the generation that apply read, fails on 412, and is refused before any write with no generation", func(t *testing.T) {
+		f := applySetup(t)
+		f.conditional = true
+		app := applyDefinition()
+		app.Resources[0].ConditionalPatch = true
+		first := applyFile(t, filepath.Join(f.directory, "first.yaml"), manifest("Record", "first", `{"count": 1}`))
+		second := applyFile(t, filepath.Join(f.directory, "second.yaml"), manifest("Record", "first", `{"count": 2}`))
+		if results, _, err := runApplyTest(t, app, "apply", "-f", first, "-o", "json"); err != nil || results[0].Status != "created" {
+			t.Fatal("apply creation", results, err)
+		}
+		if results, _, err := runApplyTest(t, app, "apply", "-f", second, "-o", "json"); err != nil || results[0].Status != "configured" || len(f.ifMatch) != 1 || f.ifMatch[0] != `"1"` {
+			t.Fatal("the patch did not send If-Match with the read generation", results, err, f.ifMatch)
+		}
+		// Another writer changes the resource after the lookup read it: the stored generation is no longer the one read.
+		stale := applyFile(t, filepath.Join(f.directory, "stale.yaml"), manifest("Record", "first", `{"count": 3}`))
+		f.mu.Lock()
+		// The list answers an empty first page, then the page with the resource.
+		pages := 0
+		f.afterList = func() {
+			if pages++; pages == 2 {
+				f.rows["/records/id-1"]["generation"] = 5
+			}
+		}
+		f.mu.Unlock()
+		results, _, err := runApplyTest(t, app, "apply", "-f", stale, "-o", "json")
+		if err == nil || !strings.Contains(err.Error(), `Record "first": the resource changed after apply read it; apply again (HTTP 412)`) || results[0].Status != "failed" {
+			t.Fatal("a stale patch did not fail", results, err)
+		}
+		writes := f.writes
+		f.mu.Lock()
+		f.afterList = nil
+		delete(f.rows["/records/id-1"], "generation")
+		f.mu.Unlock()
+		if _, _, err := runApplyTest(t, app, "apply", "-f", stale, "-o", "json"); err == nil || !strings.Contains(err.Error(), "does not return the generation") || f.writes != writes {
+			t.Fatal("a resource with no generation was not refused before any write", err)
 		}
 	})
 }

@@ -11,7 +11,80 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/cliapplication"
+	"github.com/jsell-rh/stego/internal/types"
 )
+
+// noteEntities gives the entity Note of serviceDocument with the field name as given.
+func noteEntities(name types.Field) []types.Entity {
+	return []types.Entity{{Name: "Note", Fields: []types.Field{name, {Name: "size", Type: "int64"}, {Name: "owner", Type: "string"}}}}
+}
+
+// factoryApp gives the definitions of the package app that the generator makes from document for ctx.
+func factoryApp(t *testing.T, ctx gen.Context, document string) string {
+	t.Helper()
+	ctx.ModuleName, ctx.OutDirName, ctx.OutputNamespace, ctx.ServiceName, ctx.ComponentConfig, ctx.ServiceOpenAPI = "example.com/notes-cli", "out", "cli", "notes", map[string]any{}, []byte(document)
+	files, _, err := new(cliapplication.Generator).Generate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.Path == "cli/app/commands.go" {
+			return string(file.Bytes())
+		}
+	}
+	t.Fatal("no definitions")
+	return ""
+}
+
+func TestFactoryApplyIdentity(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC36-T01 A collection gets an apply resource only when its entity holds the name unique within the scope of the collection", func(t *testing.T) {
+		resource := `{Kind: "Note", APIVersion: "notes/v1"`
+		for _, c := range []struct {
+			about     string
+			name      types.Field
+			composite []string
+			implicit  map[string]string
+			applies   bool
+		}{
+			{"a unique name", types.Field{Name: "name", Type: "string", Unique: true}, nil, nil, true},
+			{"a name that is not unique", types.Field{Name: "name", Type: "string"}, nil, nil, false},
+			{"a name unique with an implicit field", types.Field{Name: "name", Type: "string"}, []string{"owner", "name"}, map[string]string{"owner": "caller"}, true},
+			{"a name unique with a field that is not implicit", types.Field{Name: "name", Type: "string"}, []string{"owner", "name"}, nil, false},
+			{"a unique composite without the name", types.Field{Name: "name", Type: "string"}, []string{"owner", "size"}, map[string]string{"owner": "caller", "size": "1"}, false},
+		} {
+			entities := noteEntities(c.name)
+			if c.composite != nil {
+				entities[0].Fields[2].UniqueComposite = c.composite
+			}
+			app := factoryApp(t, gen.Context{Entities: entities, Collections: []types.Collection{{Name: "notes", Entity: "Note", Implicit: c.implicit}}}, serviceDocument)
+			if strings.Contains(app, resource) != c.applies {
+				t.Errorf("%s: apply resource %t, want %t:\n%s", c.about, strings.Contains(app, resource), c.applies, app)
+			}
+			if strings.Contains(app, `UnappliedKinds: []string{"Note"}`) == c.applies {
+				t.Errorf("%s: the definitions do not name the kind that apply does not manage:\n%s", c.about, app)
+			}
+			if !strings.Contains(app, `{Name: []string{"create-notes"}`) {
+				t.Errorf("%s: the create command is missing", c.about)
+			}
+		}
+	})
+}
+
+func TestFactoryConditionalPatch(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC38-T01 An apply resource whose patch takes If-Match states it, and one whose patch does not take it does not", func(t *testing.T) {
+		ctx := gen.Context{Entities: noteEntities(types.Field{Name: "name", Type: "string", Unique: true})}
+		if app := factoryApp(t, ctx, serviceDocument); strings.Contains(app, "ConditionalPatch") {
+			t.Errorf("a patch with no If-Match states a conditional patch:\n%s", app)
+		}
+		conditional := strings.Replace(serviceDocument, `"patch": {"operationId": "patchNotes", "parameters": [`, `"patch": {"operationId": "patchNotes", "parameters": [{"name": "If-Match", "in": "header", "schema": {"type": "string"}}, `, 1)
+		if conditional == serviceDocument {
+			t.Fatal("the document did not change")
+		}
+		if app := factoryApp(t, ctx, conditional); !strings.Contains(app, "IdempotentWrites: false, ConditionalPatch: true,") {
+			t.Errorf("a patch with If-Match does not state a conditional patch:\n%s", app)
+		}
+	})
+}
 
 // serviceDocument is an OpenAPI document as the rest-api component emits it: a collection of notes with a create, a
 // list, a read and a patch, and a command with a path parameter.
@@ -39,7 +112,7 @@ const serviceDocument = `{"openapi": "3.0.3", "info": {"title": "Generated API",
 
 func TestFactoryFromDocument(t *testing.T) {
 	t.Run("ST-SUP-RC04-OC32-T01 With no factory the commands and the apply resources come from the service's OpenAPI document, and with neither the CLI is refused", func(t *testing.T) {
-		ctx := gen.Context{ModuleName: "example.com/notes-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "notes", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(serviceDocument)}
+		ctx := gen.Context{ModuleName: "example.com/notes-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "notes", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(serviceDocument), Entities: noteEntities(types.Field{Name: "name", Type: "string", Unique: true})}
 		files, wiring, err := new(cliapplication.Generator).Generate(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -114,7 +187,7 @@ func TestFactoryStrictRequest(t *testing.T) {
 		if document == serviceDocument {
 			t.Fatal("the document has no create request to close")
 		}
-		ctx := gen.Context{ModuleName: "example.com/notes-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "notes", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(document)}
+		ctx := gen.Context{ModuleName: "example.com/notes-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "notes", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(document), Entities: noteEntities(types.Field{Name: "name", Type: "string", Unique: true})}
 		files, _, err := new(cliapplication.Generator).Generate(ctx)
 		if err != nil {
 			t.Fatal(err)
