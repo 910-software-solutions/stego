@@ -41,8 +41,10 @@ argument supplies an abort signal and trace context. Results contain `status`,
   (`Authz-Revocation-Location`).
 - `preferenceApplied`: the wait that the service took from `prefer`, such as
   `wait=5` (`Preference-Applied`).
-- `idempotentReplayed`: set when the answer is the stored answer of an earlier
-  request with the same key (`Idempotent-Replayed`).
+- `idempotentReplayed`: `true` when the answer is the stored answer of an
+  earlier request with the same key (`Idempotent-Replayed: true`), and
+  `false` else, such as for a first write (typescript-sdk 1.6.0; before, a
+  text `"true"` or `null`).
 
 A value that is longer than 1024 characters or that is not visible ASCII is
 `null`. `SDKError.retryAfter` gives the seconds of `Retry-After` of an error

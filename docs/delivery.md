@@ -319,7 +319,11 @@ record never holds the error text. It gives:
   `timeout` or `file_not_found`. For a call to SpiceDB, the class of its gRPC status code: `unavailable` (SpiceDB is
   not there or refused the connection), `timeout`, `canceled`, `authentication_failed` (the key is wrong),
   `permission_denied`, `insufficient_resources`, `precondition_failed`, `invalid_argument`, `not_found`,
-  `unimplemented`, or `provider_error` for another code. For a check that refused the step, `refused`.
+  `unimplemented`, or `provider_error` for another code. A refusal of SpiceDB (`invalid_argument` or
+  `precondition_failed`) adds the fixed class of its reason after a period (runtime v0.187.0):
+  `invalid_argument.relationships_exist` for a schema that removes a definition or a relation that still has
+  relationships, or the reason of the SpiceDB API, such as `invalid_argument.schema_type_error`. Remove the
+  relationships first, or keep the definition for one more release. For a check that refused the step, `refused`.
 - `fault`, `object` and `remedy`: for a refused check, its fault class, the object and what to do, such as
   `migration_ledger.digest` with `stego_schema.migrations` at the stage `migrate.ledger_check`, or
   `schema_change.seal_pending` with `stego_schema.seals` at the stage `migrate.tables`. The line

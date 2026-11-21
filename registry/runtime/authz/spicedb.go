@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -545,6 +546,50 @@ func CodeClass(code codes.Code) string {
 		return "unimplemented"
 	}
 	return "provider_error"
+}
+
+// StatusClass gives the fixed cause class of a gRPC status error for the failure record of a process: the class of
+// its code (CodeClass), and for a refusal also the fixed class of its reason after a period, such as
+// invalid_argument.relationships_exist for a schema write that would remove a definition or a relation that still
+// has relationships (walkthrough 22, small items). The reason class is relationships_exist for that refusal, or
+// else the reason of its error details when that is a value of the SpiceDB enum ErrorReason, in lower case with no
+// prefix, such as schema_type_error. It never holds a text of the server: the message is only matched against a
+// fixed form. It is empty for an error that is no gRPC status.
+func StatusClass(err error) string {
+	s, ok := status.FromError(err)
+	if !ok || err == nil {
+		return ""
+	}
+	class := CodeClass(s.Code())
+	if reason := refusalReason(s); reason != "" && class != "" {
+		return class + "." + reason
+	}
+	return class
+}
+
+// refusalReason gives the fixed class of the reason of a refusal of SpiceDB, or empty: relationships_exist when the
+// message says that a definition or a relation cannot be deleted while relationships exist, and else the reason of
+// its error details when the enum ErrorReason of the SpiceDB API holds it.
+func refusalReason(s *status.Status) string {
+	switch s.Code() {
+	case codes.InvalidArgument, codes.FailedPrecondition:
+	default:
+		return ""
+	}
+	message := strings.ToLower(s.Message())
+	if strings.Contains(message, "cannot delete") && (strings.Contains(message, "relationships exist") || strings.Contains(message, "relationship exists")) {
+		return "relationships_exist"
+	}
+	for _, detail := range s.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok {
+			continue
+		}
+		if _, known := v1.ErrorReason_value[info.GetReason()]; known && info.GetReason() != v1.ErrorReason_ERROR_REASON_UNSPECIFIED.String() {
+			return strings.ToLower(strings.TrimPrefix(info.GetReason(), "ERROR_REASON_"))
+		}
+	}
+	return ""
 }
 
 // spiceError maps a gRPC error of SpiceDB to a fixed text for what and its status code. InvalidArgument,

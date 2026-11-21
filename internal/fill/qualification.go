@@ -110,10 +110,12 @@ func capabilitySlot(ref types.SlotRef) bool {
 
 // nextSteps tells what to run so that a fill of the standing becomes
 // qualified: stego test, then stego fill sign; only stego fill sign; or, for a
-// key that SIGNERS does not list, what to list or sign with.
+// key that SIGNERS does not list, to sign with a listed key first, as the key
+// can be one that a change removed from SIGNERS to revoke it (walkthrough 22,
+// T-K).
 func nextSteps(fill string, standing Standing, reasons []string) string {
-	if standing == Unsigned && slices.Contains(reasons, "SIGNERS does not list its key") {
-		return fmt.Sprintf("list the signer's public key in the project's SIGNERS file, or run stego fill sign %s with a key that SIGNERS lists", fill)
+	if standing == Unsigned && slices.Contains(reasons, reasonUnlistedKey) {
+		return fmt.Sprintf("run stego fill sign %s with a key that SIGNERS lists; add the signer's public key to the project's SIGNERS file only for a key that was not removed from SIGNERS to revoke it, in a change that a person whom SIGNERS lists reviews on its own", fill)
 	}
 	if standing == Unsigned {
 		return fmt.Sprintf("run stego fill sign %s", fill)
@@ -121,10 +123,12 @@ func nextSteps(fill string, standing Standing, reasons []string) string {
 	return fmt.Sprintf("run stego test, then stego fill sign %s", fill)
 }
 
-// The reasons of a fill that has no evidence and of a fill that has evidence and no sign-off.
+// The reasons of a fill that has no evidence, of a fill that has evidence and no sign-off, and of a sign-off whose key
+// SIGNERS does not list.
 const (
-	reasonNoEvidence = "it has no evidence"
-	reasonNoSignOff  = "it has no sign-off"
+	reasonNoEvidence  = "it has no evidence"
+	reasonNoSignOff   = "it has no sign-off"
+	reasonUnlistedKey = "SIGNERS does not list its key"
 )
 
 // assess gives the standing of a fill and, when it is not qualified, why.
@@ -162,7 +166,7 @@ func assess(f *Fill, current Current, signers Signers) (Standing, string) {
 	if _, err := VerifySignOff(f.SignOff, digest, signers); err != nil {
 		switch {
 		case errors.Is(err, ErrUnlistedKey):
-			return Unsigned, "SIGNERS does not list its key"
+			return Unsigned, reasonUnlistedKey
 		case errors.Is(err, ErrKeyNotValid):
 			return Unsigned, "the key of its sign-off is revoked or expired"
 		default:

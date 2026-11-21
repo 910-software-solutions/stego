@@ -51,9 +51,14 @@ test('ST-SUP-RC24-OC07-T02 The result gives the documented response headers that
     {'Authz-Revocation': 'pending', 'Authz-Revocation-Location': location, 'Preference-Applied': 'wait=5', 'Idempotent-Replayed': 'true', ETag: '"v1"'}));
   const created = await sdk.createRecord({body: requestRecord});
   assert.deepEqual([created.authzRevocation, created.authzRevocationLocation, created.preferenceApplied, created.idempotentReplayed, created.etag],
-    ['pending', location, 'wait=5', 'true', '"v1"']);
+    ['pending', location, 'wait=5', true, '"v1"']);
   const bare = await client(async () => json(record)).getRecord({id: 'r1'});
-  assert.deepEqual([bare.authzRevocation, bare.authzRevocationLocation, bare.preferenceApplied, bare.idempotentReplayed], [null, null, null, null]);
+  assert.deepEqual([bare.authzRevocation, bare.authzRevocationLocation, bare.preferenceApplied, bare.idempotentReplayed], [null, null, null, false]);
+  // A first write answers with no Idempotent-Replayed, so idempotentReplayed is false, not null (walkthrough 22).
+  const first = await client(async (url) => url.endsWith('/auth/session') ? session() : json(record, 201, {'Authz-Revocation': 'pending'})).createRecord({body: requestRecord});
+  assert.strictEqual(first.idempotentReplayed, false);
+  const odd = await client(async () => json(record, 200, {'Idempotent-Replayed': 'yes'})).getRecord({id: 'r1'});
+  assert.strictEqual(odd.idempotentReplayed, false);
   const long = await client(async () => json(record, 200, {'Authz-Revocation-Location': '/' + 'a'.repeat(1024)})).getRecord({id: 'r1'});
   assert.equal(long.authzRevocationLocation, null);
   // A refusal that the client may send again after a wait gives the seconds of Retry-After, and nothing else.

@@ -453,6 +453,15 @@ func runPlan(args []string) error {
 			if err := checkBeforeSteps(os.Stdout); err != nil {
 				return err
 			}
+			// The SIGNERS check runs also before the stop at the add steps, so plan --strict never exits 0 on a
+			// branch whose fills count only because of a key that it adds (walkthrough 22, T-G).
+			input, err := buildReconcilerInput()
+			if err != nil {
+				return err
+			}
+			if err := checkAddedKeys(input, *baseRef, os.Stdout); err != nil {
+				return err
+			}
 			printSchemaSteps(os.Stdout, "Apply writes the", gate.steps)
 			fmt.Println("\nThe declaration needs these add steps, so plan saved no plan; run stego apply, which writes them in service.yaml.")
 			return nil

@@ -700,7 +700,11 @@ change of the branch to it again.
 
 Do these steps in this order. `<base>` is the commit of `main` before the
 merge, or the tag of the release that runs now (see [the upgrade
-procedure](docs/upgrade.md#the-procedure)). In the example, the branch
+procedure](docs/upgrade.md#the-procedure)). The SIGNERS check of
+`stego validate` and `stego plan` reads the `SIGNERS` of `<base>`. With the
+tag of a release, each fill that a key signed which a reviewed change added
+after that release gets a warning, so give that check the commit of `main`
+(see [Who signs the fills](#who-signs-the-fills)). In the example, the branch
 `feature/reviews` adds the fill `hide-review`.
 
 First get the last state of the branches, and see if `main` changed after the
@@ -724,6 +728,11 @@ declaration. Then do these steps, and not the steps below:
 
    If the command shows a change, stop. Review the change of `SIGNERS` on its
    own, before the merge (see [Who signs the fills](#who-signs-the-fills)).
+   When the branch is itself that change, such as a branch that only adds a
+   key, see that it changes nothing else:
+   `git diff --stat main origin/<branch>` names only `SIGNERS`. Then a person
+   whom the `SIGNERS` of `main` lists reviews the change, and you merge the
+   branch with step 3.
 2. Review each fill that the branch changes:
    `git diff --stat main origin/feature/reviews -- fills`.
 3. Merge the branch with `git merge --ff-only origin/feature/reviews`.
@@ -740,16 +749,22 @@ declaration. Then do these steps, and not the steps below:
 
 Else do these steps:
 
-1. See if the branch changes `SIGNERS`, as for a fast-forward:
+1. See if the `SIGNERS` of the branch is not the `SIGNERS` of `main`. Use
+   two dots: the diff compares the two files as they are now:
 
    ```sh
-   git diff main...origin/feature/reviews -- SIGNERS
+   git diff main origin/feature/reviews -- SIGNERS
    ```
 
-   If the command shows a change, stop. Review the change of `SIGNERS` on its
-   own, before the merge (see [Who signs the fills](#who-signs-the-fills)).
-   Merge it in a change of its own first, or take the `SIGNERS` of `main` in
-   the next step, as the command below does.
+   If the command shows nothing, go to step 2. This is also true after the
+   change of `SIGNERS` of the branch was merged on its own. If it shows a
+   change, the branch changes `SIGNERS`, or `main` changed it after the branch
+   started. Do not merge a change of the branch to `SIGNERS` with this
+   merge. Review it on its own (see [Who signs the fills](#who-signs-the-fills))
+   and merge it in a change of its own first, or leave it out: step 2 takes
+   the `SIGNERS` of `main`. Do not use three dots (`main...`) here: that diff
+   shows the change of the branch against the commit where it started, and
+   thus shows the change also after `main` merged it.
 2. Start the merge, keep a copy of the fill folders of the branch, and take
    the generated files, the declaration files and `SIGNERS` of `main`.
    `git restore` also removes the files that the branch added in these
@@ -873,8 +888,31 @@ stego validate --strict --base "$PR_BASE_SHA"
 
 For GitHub Actions, `PR_BASE_SHA` is `${{ github.event.pull_request.base.sha }}`,
 and the checkout needs that commit, such as with `fetch-depth: 0`.
+In a release pipeline, the base of the SIGNERS check is the commit of the
+default branch that you release, such as `--base origin/main`: each pull
+request checked its change of `SIGNERS` before the merge. Do not give it the
+tag of the running release. Then each key that was added after that release
+looks added, and `--strict` refuses its fills (see [the upgrade
+procedure](docs/upgrade.md#the-procedure)).
 When your policy needs the reviewer's own signature on each merged fill, run
-`stego fill sign --force <fill>`. To revoke a key, remove it from `SIGNERS`.
+`stego fill sign --force <fill>`.
+
+To revoke a key, remove its line from `SIGNERS`, and sign each fill that it
+signed again with a key that `SIGNERS` lists, in the same change. Else each
+such fill is not qualified after the merge, and `stego validate`, `stego plan`
+and the build refuse it. To find the fills, remove the line, then run:
+
+```sh
+stego fill status
+```
+
+Each fill whose sign-off only the removed key made shows `unsigned` with the
+reason `SIGNERS does not list its key`. Run `stego test` and
+`stego fill sign <fill>` for each, with your own key. The fault of such a fill
+says to sign it with a listed key. Do not add the removed key to `SIGNERS`
+again. A person whom the `SIGNERS` of the base lists reviews the change, as
+for each change of `SIGNERS`.
+
 A GPG key of `SIGNERS` that is revoked or expired, as its armored block in
 `SIGNERS` says, no longer qualifies a fill, also for a sign-off that it made
 before (STEGO 3.252.0): sign such fills again with a valid key. For an SSH
@@ -914,11 +952,12 @@ The person in `SIGNERS` gets the branch of the author, such as
 ```sh
 git fetch origin
 git switch feature/reviews
-git diff origin/main...feature/reviews -- SIGNERS
+git diff origin/main feature/reviews -- SIGNERS
 ```
 
 If the last command shows a change, review the change of `SIGNERS` on its own
-first (see [Who signs the fills](#who-signs-the-fills)). Then they review the
+first (see [Who signs the fills](#who-signs-the-fills)). The diff has two dots,
+so it shows nothing once `main` holds the same `SIGNERS`. Then they review the
 fills, and run the chain from step 3 of [The chain on a
 branch](#the-chain-on-a-branch) on the branch with their own key: `stego test`, `stego fill sign <fill>`, `stego validate`,
 `stego plan`, `stego apply`, `stego test`, `stego fill sign <fill>`,

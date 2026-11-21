@@ -884,32 +884,43 @@ var ErrWaitBeforeCommit = errors.New("authz: Wait is refused before the transact
 // The state is expired after the retention; otherwise failed when a person discarded a tuple, parked while a tuple
 // is parked, pending until every tuple is done, and complete with the floor of the last tuple's done transaction.
 func (r *Runtime) Status(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID) (RevocationStatus, error) {
+	status, _, err := r.status(ctx, t, p, id, false)
+	return status, err
+}
+
+// status is Status for the principal p alone, or, when anyPrincipal is true, for any principal of tenant t; own then
+// tells whether p made the write. A revocation of another tenant is never read: the statement names the tenant, and
+// row-level security holds the transaction to it.
+func (r *Runtime) status(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, anyPrincipal bool) (status RevocationStatus, own bool, err error) {
 	if p.IsZero() {
-		return RevocationStatus{}, errors.New("authz: no principal")
+		return RevocationStatus{}, false, errors.New("authz: no principal")
 	}
 	tx, err := tenant.Begin(ctx, r.db, t, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return RevocationStatus{}, err
+		return RevocationStatus{}, false, err
 	}
 	var count sql.NullInt64
 	var done, parked, discarded int64
 	var token string
 	var created time.Time
-	err = tx.QueryRowContext(ctx, "SELECT tuple_count, done, parked, discarded, token, created_at FROM "+r.schema+
-		".authz_revocations WHERE id = $1 AND tenant_id = $2 AND principal = $3", id, t.ID(), p.subject.String()).
-		Scan(&count, &done, &parked, &discarded, &token, &created)
+	query := "SELECT tuple_count, done, parked, discarded, token, created_at, principal = $3 FROM " + r.schema +
+		".authz_revocations WHERE id = $1 AND tenant_id = $2"
+	if !anyPrincipal {
+		query += " AND principal = $3"
+	}
+	err = tx.QueryRowContext(ctx, query, id, t.ID(), p.subject.String()).Scan(&count, &done, &parked, &discarded, &token, &created, &own)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Rollback()
-		return RevocationStatus{}, ErrRevocationNotFound
+		return RevocationStatus{}, false, ErrRevocationNotFound
 	}
 	if err != nil {
 		_ = tx.Rollback()
-		return RevocationStatus{}, fixed("authz: the revocation record cannot be read", err)
+		return RevocationStatus{}, false, fixed("authz: the revocation record cannot be read", err)
 	}
 	if err := tenant.Commit(ctx, tx, t); err != nil {
-		return RevocationStatus{}, err
+		return RevocationStatus{}, false, err
 	}
-	status := RevocationStatus{ID: id}
+	status = RevocationStatus{ID: id}
 	switch {
 	case created.Before(r.clock.Now().Add(-r.retention)):
 		status.State = RevocationExpired
@@ -922,10 +933,10 @@ func (r *Runtime) Status(ctx context.Context, t tenant.Tenant, p Principal, id u
 	default:
 		status.State = RevocationComplete
 		if status.Token, err = ParseToken(token); err != nil {
-			return RevocationStatus{}, err
+			return RevocationStatus{}, false, err
 		}
 	}
-	return status, nil
+	return status, own, nil
 }
 
 // DefaultWaitCap is the longest wait of WaitFor when Config gives none (ST-SUP-RP06-LC24).
@@ -1002,9 +1013,28 @@ func (h *Handle) Current(ctx context.Context) (Revocation, bool, error) {
 // answers ErrRevocationNotFound to any other tenant and principal, as Status does, and also when the wait ends
 // before a read found the revocation of t and p: it answers pending only after a read found it.
 func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, wait time.Duration) (status RevocationStatus, allowed time.Duration, err error) {
+	status, _, allowed, err = r.waitFor(ctx, t, p, id, wait, false)
+	return status, allowed, err
+}
+
+// WaitInTenant is WaitFor for a revocation that any principal of tenant t made, such as the revocation of the create
+// of a row that its maker gave to a second user, so the command or the read of the second user that names it in
+// Authz-Revocation-After is decided on the tuples of the write (decision ST-SUP-Q206 (a), recommended; walkthrough
+// 22, P3-A). The identity of the revocation is a random value that only the answer of the write gives, so it acts as
+// a capability to wait in its tenant, and gives nothing more: own tells whether p made the write, and a caller MUST
+// NOT give p the state of a revocation that is not its own. A revocation of another tenant is never read, and gives
+// ErrRevocationNotFound at once, as an identity that no write made does. The waiter limits are those of t and p, the
+// caller.
+func (r *Runtime) WaitInTenant(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, wait time.Duration) (status RevocationStatus, own bool, allowed time.Duration, err error) {
+	return r.waitFor(ctx, t, p, id, wait, true)
+}
+
+// waitFor is WaitFor for the principal p alone, or WaitInTenant for any principal of tenant t when anyPrincipal is
+// true.
+func (r *Runtime) waitFor(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, wait time.Duration, anyPrincipal bool) (status RevocationStatus, own bool, allowed time.Duration, err error) {
 	if wait <= 0 || !r.startWait(t, p) {
-		status, err = r.Status(ctx, t, p, id)
-		return status, 0, err
+		status, own, err = r.status(ctx, t, p, id, anyPrincipal)
+		return status, own, 0, err
 	}
 	defer r.endWait(t, p)
 	allowed = min(wait, r.waitCap)
@@ -1014,28 +1044,29 @@ func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id 
 	poll := r.poll
 	for {
 		r.waitReads.Add(1)
-		status, err = r.Status(waitCtx, t, p, id)
+		var read bool
+		status, read, err = r.status(waitCtx, t, p, id, anyPrincipal)
 		if err != nil {
 			if waitCtx.Err() != nil && ctx.Err() == nil && !errors.Is(err, ErrRevocationNotFound) {
 				// The wait ended during a read. The last answer is pending only when a read of this call found the
 				// revocation of t and p; else the call cannot tell it from one that is not theirs.
 				if found {
-					return RevocationStatus{ID: id, State: RevocationPending}, allowed, nil
+					return RevocationStatus{ID: id, State: RevocationPending}, own, allowed, nil
 				}
-				return RevocationStatus{}, allowed, ErrRevocationNotFound
+				return RevocationStatus{}, false, allowed, ErrRevocationNotFound
 			}
-			return RevocationStatus{}, allowed, err
+			return RevocationStatus{}, false, allowed, err
 		}
-		found = true
+		found, own = true, read
 		if status.State != RevocationPending {
-			return status, allowed, nil
+			return status, own, allowed, nil
 		}
 		select {
 		case <-waitCtx.Done():
 			if ctx.Err() == nil && allowed == r.waitCap {
 				pendingPastCap(ctx, r.waitCap)
 			}
-			return status, allowed, ctx.Err()
+			return status, own, allowed, ctx.Err()
 		case <-r.waitClock.After(poll):
 		}
 		poll = nextPoll(poll)

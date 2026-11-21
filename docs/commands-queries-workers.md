@@ -1583,7 +1583,7 @@ most N seconds, the wait cap (10 seconds) and half the time that the deadline
 leaves. Over gRPC, send the request metadata `authz-revocation-after`. Each
 generated CRUD write and each declared command takes it. The answer does not
 report the wait: its `Authz-Revocation` names the revocation of its own write.
-A revocation that is not yours, or one that is still pending at the end of the
+A revocation of another tenant, or one that is still pending at the end of the
 wait, does not fail the write: the write is then decided as with no header. A
 value that is not a revocation is 400, or `InvalidArgument` over gRPC. The
 browser proxy of a browser-service sends the header to the API as it is.
@@ -1594,6 +1594,60 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Act at once on a row that another user created
+
+A second user of the same tenant can also act at once on a new row, such as
+accounts receivable that converts a job that a sales user just created. Give
+the second user the `Authz-Revocation-Location` of the create, such as in the
+page or the message that names the new row. The second user sends it in
+`Authz-Revocation-After`, with `Prefer: wait=N` if needed, and the command or
+the read waits for the revocation before it decides (runtime v0.187.0;
+before, it was decided as with no header and got 404 until the relay wrote
+the tuples, in walkthrough 22 for 0.2 to 0.4 s):
+
+```bash
+curl -X POST https://<host>/api/erp/v1/jobs/$JOB/convert \
+  -H "Authorization: Bearer $SECOND_USER_TOKEN" \
+  -H "Idempotency-Key: \"$KEY\"" \
+  -H "Authz-Revocation-After: $LOCATION" \
+  -H "Prefer: wait=5" \
+  -d '{}'
+```
+
+The wait gives the second user nothing but time. The decision is the
+permission of the second user: a user with no permission on the row still
+gets 404 after the wait. A read gives `Authz-Revocation: unknown` for a
+revocation that the reader did not make, also after the wait, and the status
+route `/authz/revocations/<id>` answers 404 to each user but the maker. A
+revocation of another tenant is not found, and the request does not wait.
+Thus the location never reads data of another tenant and never tells that a
+row exists. Give it only to users who may know when the create completed.
+This is the recommendation (a) of the open question ST-SUP-Q206.
+
+### Release notes for runtime v0.187.0
+
+- `AwaitRevocation`, `AwaitRevocationRPC`, `AwaitWrite` and `AwaitWriteRPC`
+  wait for a revocation that any principal of the caller's tenant made, so a
+  second user who has the location of a create acts at once on the new row
+  (walkthrough 22, P3-A; recommendation (a) of ST-SUP-Q206, open for the
+  Product owner). New method `authz.Runtime.WaitInTenant`, which tells
+  whether the caller made the write. A read answers `unknown` for a
+  revocation of another principal, also after the wait. `WaitFor`, `Status`
+  and the status route do not change. A revocation of another tenant is not
+  found at once.
+- `command.attempts.pool_saturated` comes when a charge of a counted check
+  must wait for a slot while the charges hold each shared slot of the pool of
+  the charges (ST-SUP-RP10-LC54; walkthrough 22, P1-PS). Before, the line
+  could not come: the slots keep the connections in use under the size of
+  the pool. The line gives `stego.pool.in_use` (the slots in use),
+  `stego.pool.max_open` and `stego.pool.waiting` (the charges that wait), and
+  no value and no tenant. A charge that waits only for the limit of its own
+  tenant does not write it.
+- New function `authz.StatusClass`: the class of a gRPC status code, and for
+  a refusal the fixed class of its reason after a period, such as
+  `invalid_argument.relationships_exist`. The failure record of the migration
+  Job gives it as its cause (ST-SUP-RP14-LC03).
 
 ### Release notes for runtime v0.186.0
 
@@ -1730,7 +1784,8 @@ worker mode, which runs the relay, runs.
   connection of the pool of the charges is in use, the runtime writes the warn
   line `command.attempts.pool_saturated` through its log provider, with the
   entity and the counts of the pool and no value, at most once in 10 s
-  (security review of PR #479, L3).
+  (security review of PR #479, L3). From runtime v0.187.0 it writes the line
+  when a charge waits for a slot (see the release notes of v0.187.0).
 
 ### Release notes for runtime v0.178.0
 
