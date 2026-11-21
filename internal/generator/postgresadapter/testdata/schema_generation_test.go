@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -513,6 +515,51 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 		if err := storage.CheckLedger(bg, db); !errors.Is(err, storage.ErrForeignTables) {
 			t.Fatalf("a foreign ledger row gave %v, want ErrForeignTables", err)
 		}
+	})
+	t.Run("ST-SUP-RC01-OC51-T03 A ledger of another history is refused with a fault that names the row, the migration and the remedy", func(t *testing.T) {
+		db := schemaDB(t)
+		if err := storage.Migrate(bg, db); err != nil {
+			t.Fatal(err)
+		}
+		applied := ledgerApplied(t, db)
+		last := applied[len(applied)-1]
+		// The database ran the build of a branch whose step took the place of the last migration of this release, as
+		// a shared preview database does after the merge gives the steps other numbers (walkthrough 19, W19-T2).
+		const branch = "step_0099_other-branch_expand"
+		exec(t, db, "UPDATE stego_schema.migrations SET version=$1 WHERE version=$2", branch, last)
+		refusal := func(name string, err error, want error, says ...string) {
+			t.Helper()
+			if !errors.Is(err, want) {
+				t.Fatalf("%s gave %v, want %v", name, err, want)
+			}
+			var refused interface{ Refusal() string }
+			if !errors.As(err, &refused) {
+				t.Fatalf("%s gave %v, which the migration job does not log as a refusal", name, err)
+			}
+			for _, text := range says {
+				if !strings.Contains(refused.Refusal(), text) {
+					t.Errorf("%s: the refusal does not say %q: %s", name, text, refused.Refusal())
+				}
+			}
+		}
+		row := fmt.Sprintf("the ledger row %d names the migration %s", len(applied), branch)
+		for name, check := range map[string]struct {
+			run  func() error
+			want error
+		}{
+			"the ledger check of the job": {func() error { return storage.CheckLedger(bg, db) }, storage.ErrForeignTables},
+			"the ledger":                  {func() error { return storage.Migrate(bg, db) }, storage.ErrMigrationLedger},
+		} {
+			refusal(name, check.run(), check.want, row, "has the migration "+last+" at that place", "another history", "restore a backup", "new preview database", "changed nothing")
+		}
+		if got := ledgerApplied(t, db); !slices.Contains(got, branch) || slices.Contains(got, last) {
+			t.Fatalf("a refused run changed the ledger: %v", got)
+		}
+		// A row after this release that is not a schema step names the row and the release to deploy.
+		exec(t, db, "UPDATE stego_schema.migrations SET version=$1 WHERE version=$2", last, branch)
+		exec(t, db, "INSERT INTO stego_schema.migrations(version,digest) VALUES('zzz_later','x')")
+		refusal("a later row", storage.CheckLedger(bg, db), storage.ErrForeignTables,
+			fmt.Sprintf("the ledger row %d names the migration zzz_later", len(applied)+1), "after the last migration "+last, "Deploy that release or a later one")
 	})
 }
 

@@ -233,7 +233,7 @@ var reservedTypeNames = map[string]bool{
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
-	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "refreshSealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
+	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "ledgerRefusal": true, "lastName": true, "foreignLedger": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "refreshSealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
 	"stegotenancy":             true,
@@ -874,17 +874,23 @@ func checkLedger(applied, registered []Migration) error {
 	for i, row := range applied {
 		if i >= len(registered) {
 			if !row.Step {
-				return ErrMigrationLedger
+				return &ledgerRefusal{text: fmt.Sprintf("the ledger row %d names the migration %s, which is after the last migration %s of this release and is not a schema step: "+
+					"a later release applied it. Deploy that release or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, lastName(registered))}
 			}
 			for _, name := range row.CompatibleWith {
 				if !known[name] {
-					return ErrMigrationLedger
+					return &ledgerRefusal{text: fmt.Sprintf("the ledger row %d names the schema step %s of a later release, which needs the migration %s, and this release does not hold it: "+
+						"deploy the release of the step or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, name)}
 				}
 			}
 			continue
 		}
 		if row.Name != registered[i].Name {
-			return ErrMigrationLedger
+			return &ledgerRefusal{text: fmt.Sprintf("the ledger row %d names the migration %s, and this release has the migration %s at that place: "+
+				"the database ran the migrations of another history, such as the build of a branch whose schema steps took other numbers before the merge. "+
+				"The body of an applied migration never changes, and nothing removes a ledger row. Run this release on a database that ran only releases of its own history: "+
+				"restore a backup made before the other build, or make the database again, such as a new preview database; the job changed nothing (ST-SUP-RC01-OC51)",
+				i+1, row.Name, registered[i].Name)}
 		}
 		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
 			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
@@ -895,6 +901,26 @@ func checkLedger(applied, registered []Migration) error {
 	}
 	return nil
 }
+
+// lastName gives the name of the last migration of registered, or none.
+func lastName(registered []Migration) string {
+	if len(registered) == 0 {
+		return "(none)"
+	}
+	return registered[len(registered)-1].Name
+}
+
+// ledgerRefusal is the refusal of a ledger that is not the history of this
+// release, other than a changed body: a row of another migration at the
+// place of one of this release, or a row after this release that it cannot
+// accept. Its text names the row, the migration and the remedy, and no part
+// of a body, so the migration job may log it (Refusal). It matches
+// ErrMigrationLedger.
+type ledgerRefusal struct{ text string }
+
+func (r *ledgerRefusal) Error() string        { return r.text }
+func (r *ledgerRefusal) Refusal() string      { return r.text }
+func (r *ledgerRefusal) Is(target error) bool { return target == ErrMigrationLedger }
 
 // earlierDigest tells whether digest is one of the earlier digests of m.
 func earlierDigest(m Migration, digest string) bool {
