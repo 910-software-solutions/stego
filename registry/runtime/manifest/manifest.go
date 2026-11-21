@@ -155,6 +155,9 @@ type Column struct {
 	Default    string
 	Identity   string
 	Droppable  bool
+	// Secret marks a column that holds the sealed bytes or the hash of a secret field. Check takes no unique index of
+	// a later step on it (acceptUnique; ST-SUP-RP15-LC01, security review of PR #484, L2).
+	Secret bool
 }
 
 // builtinType is a column type of pg_catalog whose input and comparison functions are built in and have no side
@@ -1901,7 +1904,8 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 			case i.expressions || i.predicate != "":
 				extra = append(extra, n)
 			case i.unique:
-				if t.Entity && plainTable && !i.primary && i.immediate && i.distinct && i.plainKeys && acceptUnique(t, n, i.columns, primary, stepCols) {
+				// An index that a build left invalid or not ready is no step form (security review of PR #484, L1).
+				if t.Entity && plainTable && !i.primary && i.valid && i.ready && i.immediate && i.distinct && i.plainKeys && acceptUnique(t, n, i.columns, primary, stepCols) {
 					continue
 				}
 				unique = append(unique, n)

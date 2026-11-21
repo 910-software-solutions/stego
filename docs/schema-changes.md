@@ -224,8 +224,21 @@ key starts with the tenant column. From the end of the build, a write of the
 release before that gives a second row one value of the key fails with 409
 `conflict`, which names no field.
 
+A unique key also tells a writer that a row holds a value. A create or an
+update that gives a row the value of another row of the same tenant gets 409,
+also when the writer cannot read that row. On a `pii` field, such as an email
+address, a user of one tenant can so learn that the email address is already
+in the tenant. Before you make a `pii` field unique, weigh that against the
+need for the key: who can write rows of the entity, and whether a 409 tells
+them more than the list that they can read. A field of sensitivity `secret`
+can never be unique.
+
 The schema check of the release before accepts the new unique index from
-runtime library v0.183.0, so its pods can restart after the index migration.
+runtime library v0.183.0, when the index is valid and ready and its columns
+hold no secret, so its pods can restart after the index migration. While
+the index builds, it is not valid yet: a pod of the release before that
+restarts then fails its schema check until the build ends, so do not restart
+those pods during the index migration.
 `stego compat` refuses a new unique step on a base that runs an earlier runtime
 library, and names the version to deploy first. When you make a field of the
 base unique with no step, `stego compat` names the unique step to declare.

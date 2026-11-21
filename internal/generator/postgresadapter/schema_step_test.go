@@ -752,6 +752,18 @@ func TestUniqueOfFieldStep(t *testing.T) {
 		if source := generated(t, files, "uniquem/schema_manifest.go"); !strings.Contains(source, `{Name: "sites_name_key", Columns: []string{"tenant_id", "name"}}`) {
 			t.Errorf("the manifest of the release of the step does not name its unique index:\n%s", source)
 		}
+		// The manifest marks the column of a secret Secret, so the schema check of the release before takes no
+		// unique index of a later step on it (ST-SUP-RP15-LC01; security review of PR #484, L2).
+		sealed := uniqueBase("uniques", "uniquestenancy")
+		sealed.Entities[0].Fields = append(sealed.Entities[0].Fields, types.Field{Name: "token", Type: types.FieldTypeString, Sensitivity: "secret"})
+		files, _, err = new(postgresadapter.Generator).Generate(sealed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := generated(t, files, "uniques/schema_manifest.go")
+		if !strings.Contains(source, `{Name: "token", Type: "bytea", NotNull: true, Secret: true}`) || strings.Contains(source, `{Name: "region", Type: "text", NotNull: true, Secret: true}`) {
+			t.Errorf("the manifest does not mark only the secret column Secret:\n%s", source)
+		}
 		// A unique change that names no field of the entity is a unique of an invariant, which generation does not
 		// build yet.
 		invariant := uniqueHead("uniquei", "uniqueitenancy")

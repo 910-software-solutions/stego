@@ -998,7 +998,7 @@ func TestUnnamedCode(t *testing.T) {
 		}
 		// The unique index of a later add step on an entity table, in the exact form that the add step of the generator
 		// gives, or a unique step of a field: the tenant column first, then the key columns, listed or not, named as
-		// UniqueName names it, valid or still building.
+		// UniqueName names it, valid and ready.
 		const slug = `ALTER TABLE public.books ADD COLUMN "slug" text;` + "\n"
 		for _, c := range []struct{ name, setup string }{
 			{"a unique field", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public."books" ("tenant_id", "slug");` + "\n"},
