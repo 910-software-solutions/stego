@@ -2,6 +2,7 @@ package fill
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,6 +243,75 @@ func TestVerifySignOff(t *testing.T) {
 		expired := mustSigners(t, []byte(fields[0]+" valid-before=\"20200101\" "+fields[1]+"\n"))
 		if principal, err := VerifySignOff(sshSignOff(k.listedSSH, digest), digest, expired); err == nil {
 			t.Fatalf("accepted a sign-off by an expired key as %s", principal)
+		}
+	})
+
+	t.Run("ST-EXT-DS02-T07 A sign-off by a listed GPG key that is revoked or expired is refused, as gpgv reports it", func(t *testing.T) {
+		home := filepath.Join(k.dir, "gnupg-not-valid")
+		if err := os.Mkdir(home, 0700); err != nil {
+			t.Fatal(err)
+		}
+		gpg := func(input string, args ...string) string {
+			t.Helper()
+			cmd := exec.Command("gpg", append([]string{"--batch", "--passphrase", "", "--pinentry-mode", "loopback"}, args...)...)
+			cmd.Env = append(os.Environ(), "GNUPGHOME="+home)
+			cmd.Stdin = strings.NewReader(input)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("gpg %v: %v", args, err)
+			}
+			return string(out)
+		}
+		defer func() {
+			stop := exec.Command("gpgconf", "--kill", "gpg-agent")
+			stop.Env = append(os.Environ(), "GNUPGHOME="+home)
+			_ = stop.Run()
+		}()
+		fingerprintOf := func(name string) string {
+			for _, line := range strings.Split(gpg("", "--with-colons", "--list-keys", name+"@example.com"), "\n") {
+				if strings.HasPrefix(line, "fpr:") {
+					return strings.Split(line, ":")[9]
+				}
+			}
+			t.Fatalf("no fingerprint of %s", name)
+			return ""
+		}
+		// The expired key is made and signs with a clock of 2020; it expired one day later.
+		const then = "--faked-system-time=20200101T000000!"
+		gpg("", then, "--quick-gen-key", "expired-gpg <expired-gpg@example.com>", "ed25519", "sign", "1d")
+		gpg("", "--quick-gen-key", "revoked-gpg <revoked-gpg@example.com>", "ed25519", "sign", "never")
+		gpg("", "--quick-gen-key", "valid-gpg <valid-gpg@example.com>", "ed25519", "sign", "never")
+		expired, revoked, valid := fingerprintOf("expired-gpg"), fingerprintOf("revoked-gpg"), fingerprintOf("valid-gpg")
+		sign := func(fingerprint string, faked ...string) string {
+			return gpg(digest, append(faked, "--detach-sign", "--armor", "--local-user", fingerprint)...)
+		}
+		signOffs := map[string]string{"expired": sign(expired, then), "revoked": sign(revoked), "valid": sign(valid)}
+		// The key is revoked after it signed, with the revocation certificate that gpg made for it.
+		certificate, err := os.ReadFile(filepath.Join(home, "openpgp-revocs.d", revoked+".rev"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gpg(strings.Replace(string(certificate), ":-----BEGIN", "-----BEGIN", 1), "--import")
+		var listed strings.Builder
+		for _, name := range []string{"expired", "revoked", "valid"} {
+			listed.WriteString(name + "-gpg@example.com gpg\n" + gpg("", "--armor", "--export", name+"-gpg@example.com") + "\n")
+		}
+		signers := mustSigners(t, []byte(listed.String()))
+		for name, armored := range signOffs {
+			signOff := &FillSignOff{EvidenceDigest: digest, Signature: Signature{KeyType: KeyGPG, Signer: name + "-gpg@example.com", Armored: armored}, SignedAt: time.Now()}
+			principal, err := VerifySignOff(signOff, digest, signers)
+			if name == "valid" {
+				if err != nil || principal != "valid-gpg@example.com" {
+					t.Fatalf("refused the sign-off of the valid key beside the others: %q, %v", principal, err)
+				}
+				continue
+			}
+			if !errors.Is(err, ErrKeyNotValid) || principal != "" {
+				t.Errorf("%s: got %q, %v; want %v", name, principal, err, ErrKeyNotValid)
+			}
+			if Principal(signOff.Signature, digest, signers) != "" {
+				t.Errorf("%s: Principal names the key", name)
+			}
 		}
 	})
 }

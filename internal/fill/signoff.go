@@ -71,6 +71,9 @@ var (
 	ErrOtherEvidence = errors.New("the sign-off signs other evidence")
 	ErrNotCovered    = errors.New("the signature does not cover the evidence")
 	ErrUnlistedKey   = errors.New("SIGNERS does not list the key")
+	// ErrKeyNotValid is a GPG signature that verifies with a key of SIGNERS that is revoked or expired, or that
+	// has expired itself, as gpgv reports it (security review of PR #475, I1).
+	ErrKeyNotValid = errors.New("the key that made the signature is revoked or expired")
 )
 
 // Signers is the SIGNERS file as STEGO reads it. Each SSH key is a line in
@@ -231,7 +234,7 @@ func verifyOpenPGP(signature, digest string, signers Signers) (string, error) {
 	verify := exec.Command("gpgv", "--homedir", home, "--status-fd", "1", "--keyring", keyringFile, signatureFile, "-")
 	verify.Stdin = strings.NewReader(digest)
 	output, runErr := verify.Output()
-	var valid, unlisted, bad bool
+	var valid, unlisted, bad, notValid bool
 	var fingerprint string
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
@@ -250,7 +253,15 @@ func verifyOpenPGP(signature, digest string, signers Signers) (string, error) {
 			}
 		case "BADSIG":
 			bad = true
+		case "EXPKEYSIG", "REVKEYSIG", "EXPSIG":
+			// gpgv gives VALIDSIG and exit status 0 also for a good signature of a key that the armored block of
+			// SIGNERS marks as revoked or expired, and for a signature that has expired: such a key never counts
+			// (security review of PR #475, I1).
+			notValid = true
 		}
+	}
+	if notValid && !bad {
+		return "", ErrKeyNotValid
 	}
 	if runErr == nil && valid && !bad {
 		for _, signer := range signers.openPGP {
