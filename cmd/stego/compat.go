@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -77,7 +78,7 @@ func runCompat(args []string, stdout io.Writer) error {
 		return err
 	}
 	if headState.LastApplied != nil {
-		bodies, err := compiler.MigrationBodyFaults(base, headState.LastApplied.Files)
+		bodies, err := compiler.MigrationBodyFaults(base, headState.LastApplied.Files, recordedMigrateFiles(headState.LastApplied.Files))
 		if err != nil {
 			return err
 		}
@@ -640,6 +641,36 @@ func printSchemaSteps(stdout io.Writer, verb string, steps []types.SchemaChange)
 	}
 }
 
+// plannedMigrateFiles gives the content of each generated migrate.go of the adapter that the plan writes, by its path
+// in the output folder, from which the check of a changed body reads the earlier digests that the head registers
+// (ST-GEN-INV38, ST-SUP-RC01-OC51).
+func plannedMigrateFiles(plan *compiler.Plan) map[string][]byte {
+	files := map[string][]byte{}
+	for _, file := range plan.GeneratedFiles {
+		if path.Base(file.Path) == postgresadapter.MigrateFile {
+			files[file.Path] = file.Bytes()
+		}
+	}
+	return files
+}
+
+// recordedMigrateFiles gives the content of each generated migrate.go of the adapter in the out folder that the
+// record of the head lists, by its path in the output folder, and only when the file holds the digest that the record
+// lists: compat generates nothing, so a file that apply did not write gives no earlier digest (ST-GEN-INV38).
+func recordedMigrateFiles(recorded map[string]string) map[string][]byte {
+	files := map[string][]byte{}
+	for name, digest := range recorded {
+		if path.Base(name) != postgresadapter.MigrateFile {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join("out", filepath.FromSlash(name)))
+		if err == nil && compiler.HashBytes(content) == digest {
+			files[name] = content
+		}
+	}
+	return files
+}
+
 // refuseChangedBodies refuses a plan whose generated SQL file of a ledgered migration that the record at the base
 // lists has another digest than that record lists (ST-GEN-INV38), for plan and apply before anything is written. A
 // gate that checked no base refuses nothing.
@@ -647,7 +678,7 @@ func refuseChangedBodies(gate baseGate, plan *compiler.Plan, stdout io.Writer) e
 	if !gate.checked || plan == nil || plan.NewState == nil || plan.NewState.LastApplied == nil {
 		return nil
 	}
-	faults, err := compiler.MigrationBodyFaults(gate.base, plan.NewState.LastApplied.Files)
+	faults, err := compiler.MigrationBodyFaults(gate.base, plan.NewState.LastApplied.Files, plannedMigrateFiles(plan))
 	if err != nil || len(faults) == 0 {
 		return err
 	}

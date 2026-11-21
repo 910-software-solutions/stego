@@ -38,7 +38,8 @@ the fills is essential complexity.
 3. Write application code for domain rules. **Fills** implement typed slot
    contracts. The CLI component still takes a factory for its command
    definitions. Test each fill with `stego test`, and sign off its evidence
-   with `stego fill sign`.
+   with `stego fill sign`. `stego test` exits non-zero when a fill records no
+   evidence, and names the fill.
 4. Run `stego apply` for deterministic Go and browser code generation.
    Plan and apply stop on a bound fill that is not qualified. Validate stops
    on it too, but warns only of a fill with no evidence or no sign-off.
