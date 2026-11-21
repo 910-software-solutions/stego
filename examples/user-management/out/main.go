@@ -306,8 +306,9 @@ func stegoSQLState(err error) string {
 
 // stegoCauseClass gives the fixed class of a cause that a start or the migration job meets: of the database by its
 // SQLSTATE, such as lock_timeout for 55P03 (#423), of the operating system, such as a listen port that another
-// process holds (walkthrough 8, W8-B5), of the network, of a file and of a certificate; and empty for any other
-// cause. It never holds the text of the cause.
+// process holds (walkthrough 8, W8-B5), of the network, of a file and of a certificate; the class that the cause
+// gives itself (CauseClass) in the strict form of a name; and empty for any other cause. It never holds the text of
+// the cause.
 func stegoCauseClass(err error) string {
 	if code := stegoSQLState(err); code != "" {
 		switch {
@@ -366,6 +367,16 @@ func stegoCauseClass(err error) string {
 	case errors.Is(err, fs.ErrNotExist):
 		return "file_not_found"
 	}
+	// A cause that the standard library does not class may give its own fixed class, such as unavailable for a
+	// SpiceDB that refused the connection of the migration job (walkthrough 19, small items); the record takes it
+	// only in the strict form of a name of the generated code.
+	var classed interface{ CauseClass() string }
+	if errors.As(err, &classed) {
+		// One call: a second call could give another value than the one checked.
+		if class := classed.CauseClass(); stegoFaultName(class) {
+			return class
+		}
+	}
 	return ""
 }
 
@@ -388,16 +399,21 @@ func stegoReportFailure(output io.Writer, err error) {
 		FaultClass() string
 		FaultObject() string
 	}
-	if errors.As(err, &classified) && stegoFaultName(classified.FaultClass()) && stegoFaultName(classified.FaultObject()) {
-		fault, object = classified.FaultClass(), classified.FaultObject()
+	if errors.As(err, &classified) {
+		// One call of each: a second call could give another value than the one checked.
+		if class, named := classified.FaultClass(), classified.FaultObject(); stegoFaultName(class) && stegoFaultName(named) {
+			fault, object = class, named
+		}
 	}
 	// A fault that knows its remedy names it, a fixed text of the generated code such as the section of the upgrade
 	// guide that moves a database to the role layout of the release (walkthrough 11, W11-B1). It is never the text of
 	// the cause.
 	var remedy string
 	var remedied interface{ FaultRemedy() string }
-	if fault != "" && errors.As(err, &remedied) && stegoRemedyText(remedied.FaultRemedy()) {
-		remedy = remedied.FaultRemedy()
+	if fault != "" && errors.As(err, &remedied) {
+		if text := remedied.FaultRemedy(); stegoRemedyText(text) {
+			remedy = text
+		}
 	}
 	record := struct {
 		Timestamp    string   `json:"timestamp"`

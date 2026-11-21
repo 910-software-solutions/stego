@@ -19,6 +19,8 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	legacyrouter "github.com/getkin/kin-openapi/routers/legacy"
+
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 )
 
 //go:embed openapi.json
@@ -61,6 +63,18 @@ func NewValidationMiddleware() func(http.Handler) http.Handler {
 			if route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions["x-stego-command"] == true {
 				next.ServeHTTP(w, r)
 				return
+			}
+
+			// The Idempotency-Key header is read before the body, as a command reads it (ST-SUP-RC30-OC02).
+			if header := route.Operation.Parameters.GetByInAndName(openapi3.ParameterInHeader, "Idempotency-Key"); header != nil {
+				key, err := idempotency.KeyFrom(r.Header, header.Required)
+				if err != nil {
+					keyMissing(w, r, err)
+					return
+				}
+				if key != "" {
+					w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
+				}
 			}
 
 			// Buffer the body for validation; restore it for the handler.

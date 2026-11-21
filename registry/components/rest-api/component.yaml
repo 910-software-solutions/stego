@@ -74,9 +74,13 @@
 # Version 4.33.0 gives the problem types of the Idempotency-Key, under the problem base, to the refusals of a create
 # and a patch also when the idempotency component is not active, as a command does: a malformed key gets
 # idempotency-key-invalid, not about:blank (ST-SUP-RC20-OC56; walkthrough 19, W19-U3).
+# Version 4.34.0 reads the Idempotency-Key header of a create and a patch before the body, in the request check and
+# in the handler, as a command does: a malformed key gets idempotency-key-invalid, and an absent required key
+# idempotency-key-missing, also when the body is not valid (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a); walkthrough
+# 19, W19-U3).
 kind: component
 name: rest-api
-version: 4.33.0
+version: 4.34.0
 stage: ga
 output_namespace: internal/api
 

@@ -1168,10 +1168,34 @@ the cause class. It never gives the error text or a value of the message. The
 attempt is also sent as `worker.run.failed` with the worker, the outcome and
 the cause class.
 
+An error of the fill that is not an error of the handle gets one of these
+cause classes. The runtime reads the type of each error in the chain of the
+error (`errors.As`), never its text:
+
+| Cause | What the chain of the error holds |
+|---|---|
+| `fill_json` | An `encoding/json` `SyntaxError`, `UnmarshalTypeError` or `InvalidUnmarshalError`, such as from a decode of the payload. |
+| `fill_parse` | A `strconv` `NumError` or a `time` `ParseError`. |
+| `fill_canceled` | `context.Canceled`. |
+| `fill_error` | Another error. |
+
+The text of a fill error can hold a value of the message or of a row, so no
+log line and no observation gives it. To tell an operator more, the fill logs
+its own context with `log/slog`, which the fill allow list takes, before it
+returns the error: names and counts, never a value. For example:
+
+```go
+	if err := json.Unmarshal(payload, &reply); err != nil {
+		slog.WarnContext(ctx, "apply-partner-replies: the reply does not decode", "bytes", len(payload))
+		return fmt.Errorf("decode the reply: %w", err)
+	}
+```
+
 When the fill fails with the same outcome and cause class in 5 attempts in a
 row, the runtime parks the message as poison (failure code `poison`) and
 raises the alert of a parked message. Only the errors that the fill causes are
-counted: an error of the fill, a row that is not there, an invalid value, a
+counted: an error of the fill (`fill_error`, `fill_json`, `fill_parse` and
+`fill_canceled`, but not a fill canceled because the worker stops), a row that is not there, an invalid value, a
 refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
@@ -1399,6 +1423,22 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.177.0
+
+- The cause of `worker.run.failed` and of the log line
+  `command.consumer.run_failed` is `fill_json`, `fill_parse` or
+  `fill_canceled` for a fill error whose chain holds an `encoding/json` error,
+  a `strconv` `NumError` or a `time` `ParseError`, or `context.Canceled`, and
+  `fill_error` for another fill error. The runtime reads the type of the
+  error, never its text. The three new classes count for the poison bound as
+  `fill_error` does (ST-SUP-RC35-OC06, decision ST-SUP-Q203 (b)). New values
+  of `probe.WorkerCauses`. See [A failed run of a consuming
+  worker](#a-failed-run-of-a-consuming-worker).
+- The failure record of a migration Job step that SpiceDB failed gives the
+  cause class of the gRPC status code, such as `unavailable`, never the text
+  (ST-SUP-RP14-LC03). New method `service.StepError.CauseClass`, new function
+  `authz.CodeClass`. See [When the Job fails](delivery.md#when-the-job-fails).
 
 ### Release notes for runtime v0.176.0
 
