@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1983,4 +1984,55 @@ func (r *tupleReader) last() authz.Filter {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.filter
+}
+
+// TestWorkerFillCauses proves the fixed cause classes of a fill error that the handle did not give (decision
+// ST-SUP-Q203 (b)): the class comes from the type of an error in the chain, never from its text.
+func TestWorkerFillCauses(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC06-T10 A fill error is classed fill_json, fill_parse or fill_canceled by the type of an error in its chain, and fill_error else, never by its text", func(t *testing.T) {
+		var syntax *json.SyntaxError
+		syntaxErr := json.Unmarshal([]byte("{"), &struct{}{})
+		if !errors.As(syntaxErr, &syntax) {
+			t.Fatalf("json.Unmarshal of { gave %T, want *json.SyntaxError", syntaxErr)
+		}
+		var typed struct{ N int }
+		typeErr := json.Unmarshal([]byte(`{"N":"buyer@example.com"}`), &typed)
+		invalidErr := json.Unmarshal([]byte("{}"), nil)
+		_, numberErr := strconv.Atoi("buyer@example.com")
+		_, parseErr := time.Parse(time.RFC3339, "buyer@example.com")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		for _, c := range []struct {
+			err  error
+			want string
+		}{
+			{fmt.Errorf("no buyer %s: %w", "buyer@example.com", syntaxErr), "fill_json"},
+			{fmt.Errorf("decode: %w", typeErr), "fill_json"},
+			{fmt.Errorf("decode: %w", invalidErr), "fill_json"},
+			{fmt.Errorf("qty: %w", numberErr), "fill_parse"},
+			{fmt.Errorf("due: %w", parseErr), "fill_parse"},
+			{fmt.Errorf("call: %w", ctx.Err()), "fill_canceled"},
+			{errors.New("fill_json fill_parse fill_canceled"), "fill_error"},
+			{errors.New("no buyer buyer@example.com"), "fill_error"},
+			// An error of the handle keeps its class, also when its chain holds a json error.
+			{fmt.Errorf("%w: %w", ErrInvalid, syntaxErr), "invalid"},
+		} {
+			outcome, cause := consumerOutcome(c.err)
+			if outcome != probe.WorkerRolledBack || cause != c.want {
+				t.Errorf("the fill error %T gave %s %s, want rolled_back %s", c.err, outcome, cause, c.want)
+			}
+			if !slices.Contains(probe.WorkerCauses, cause) {
+				t.Errorf("the cause %s is not one of probe.WorkerCauses, so worker.run.failed would refuse it", cause)
+			}
+			if strings.Contains(cause, "@") {
+				t.Errorf("the cause %q holds a value of the error text", cause)
+			}
+		}
+		// The new classes count for the poison bound as fill_error does.
+		for _, cause := range []string{"fill_error", "fill_json", "fill_parse", "fill_canceled"} {
+			if !streakCauses[cause] {
+				t.Errorf("the cause %s does not count for the poison bound", cause)
+			}
+		}
+	})
 }
