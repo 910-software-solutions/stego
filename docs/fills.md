@@ -68,7 +68,7 @@ entities:
       - { name: label, type: string, min_length: 1, max_length: 80 }
       - { name: balance, type: int64, min: 0, default: 0, writable: never }
       - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 15m} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 24h} }
     events:
       fields: [customer_id, label, balance]
   - name: Transaction
@@ -340,7 +340,7 @@ Each field of an entity is one item of `fields`:
 | `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
-| `attempts` | For a compare-only secret only: `{limit: <1 to 100>, unlock_after: <1m to 24h>}`, the limit of wrong checks and the time after which a locked row opens again. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
+| `attempts` | For a compare-only secret only: `{limit: <1 to 100>, unlock_after: <1m to 24h>}`, the limit of wrong checks and, when you give it, the time after which a locked row opens again. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
 
 An entity can also declare `events`, the fields that its change events carry.
 See [The fields of a change event](#the-fields-of-a-change-event).
@@ -554,14 +554,16 @@ example declares a limit of wrong PINs on the field (runtime v0.176.0):
 
 <!-- excerpt -->
 ```yaml
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 15m} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 24h} }
 ```
 
-Only a compare-only secret can have `attempts`. The limit is from 1 to 100, as
-NIST SP 800-63B (5.2.2) asks for each account. `unlock_after` is the time
-after which a row at its limit opens again: a duration in whole seconds from
-`1m` to `24h`, and `15m` when you do not give it (runtime v0.188.0). `stego
-validate` refuses each other limit and each other duration.
+Only a compare-only secret can have `attempts`. The limit is from 1 to 100.
+`unlock_after` is optional (runtime v0.188.0). It is the time after which a
+row at its limit opens again: a duration in whole seconds from `1m` to `24h`.
+With no `unlock_after`, a row at its limit stays locked until a new value or
+a reset command, as before. `stego validate` refuses each other limit and
+each other duration. It warns when `unlock_after` is shorter than `24h` on a
+secret whose `min_length` is 6 or less, or that has no `min_length`.
 
 The fill does not change. The runtime binds each PIN that a read of the handle
 gives to the count of its row:
@@ -617,17 +619,21 @@ gives to the count of its row:
   the counts use the audit pool.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
-- The count decays (runtime v0.188.0). When the last count of a row is
-  `unlock_after` or longer ago, the next check counts as the first again. Thus
-  a row at its limit opens again `unlock_after` after its last counted check,
-  also when another user locked it. The time is the clock of the database. A
-  check at the limit counts nothing, so it does not make the lock longer or
-  shorter, and no request can make the time shorter. A count that a release
-  before v0.188.0 wrote has no time, and the next check counts as the first.
-  The decay also lets a caller try the limit again after each window: with
-  `limit: 5` and `unlock_after: 15m`, at most 480 checks of one row in a day.
-  For a PIN of 4 digits, give a longer `unlock_after`, such as `24h`, or a
-  longer PIN.
+- With `unlock_after`, the count decays (runtime v0.188.0). When the last
+  count of a row is `unlock_after` or longer ago, the next check counts as the
+  first again. Thus a row at its limit opens again `unlock_after` after its
+  last counted check, also when another user locked it. The time is the clock
+  of the database. A check at the limit counts nothing, so it does not make
+  the lock longer or shorter, and no request can make the time shorter.
+- A second count never decays: the checks since the last match or new value.
+  At 10 times the limit, and at most 100, the row stays locked until a new
+  value or a reset command, also after `unlock_after`. NIST SP 800-63B (5.2.2)
+  limits the consecutive failed attempts on one account to 100, and allows a
+  waiting time only as a further control. With `limit: 5` and
+  `unlock_after: 24h`, a guesser gets 5 checks a day and 50 in all.
+- A count that a release before v0.188.0 wrote has no time. Its next check
+  gives it the time of that check, so a row that was locked at the upgrade
+  stays locked for one more window.
 - In a worker, `Matches` gives `false` and counts nothing.
 - The count is not a field of the entity: the runtime keeps it in a table of
   its own, `attempt_counts`, which the migration job makes. A count never
@@ -676,9 +682,16 @@ A support desk can unlock a row before `unlock_after`. Declare a command with
   `resource_type`, a `permission` and a `resource_member`;
 - its permission is also the permission of an operation of the entity, or of
   another command, query or worker on the resource type, such as `operate` of
-  `withdraw`. The reset needs a permission of its own, so a caller who can
-  check the PIN cannot also reset its count. In the schema above, only a
-  support agent of the tenant or an admin has `unlock_pin`.
+  `withdraw`;
+- in the schema, its permission names such a permission, or has a part, a
+  relation or an arrow, that such a permission has too, such as
+  `unlock_pin = customer->edit` beside `operate = customer->edit`, or
+  `unlock_pin = owner + support` beside `edit = owner`.
+
+The reset needs a permission of its own, so a caller who can check the PIN
+cannot also reset its count. In the schema above, only a support agent of the
+tenant or an admin has `unlock_pin`. Keep it so: validate compares the parts
+of the expressions, not who holds each relation.
 
 The code of the command gets one helper for each field, such as
 `UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of
@@ -711,8 +724,14 @@ func New() commands.UnlockPinFill {
   error, the count stays.
 - The reset gives only an error. It gives no PIN, no hash and no count, and the
   answer is the same for a locked and for an open wallet.
-- A reset is no change of the row: it writes no audit row of the wallet and
-  no change event.
+- Each reset that commits writes one audit row: the action is the command,
+  the resource is the wallet, and the only state is
+  `{"attempts_reset": "Wallet.pin"}`. A reset that is denied or that rolls
+  back writes none. A reset writes no change event. With `audit.level:
+  metadata`, the row has no state, and the action still names the command.
+- The command that resets a field does not check it: `Matches` on that field
+  gives `false`, counts nothing, and the command answers 500. Else a holder of
+  the reset permission could check the PIN with no limit.
 
 To set a new PIN instead, write a command that gives a new value with
 `sealed.ComparedOf`, as `change-pin` does below. A new value also sets the

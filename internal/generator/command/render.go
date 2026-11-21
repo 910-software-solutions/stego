@@ -24,7 +24,7 @@ func (m *model) probeType(c *command) string {
 func (m *model) usesTime() bool {
 	for _, e := range m.entities {
 		for _, f := range e.fields {
-			if strings.Contains(f.goType, "time.Time") || f.limit > 0 {
+			if strings.Contains(f.goType, "time.Time") || f.unlockAfter > 0 {
 				return true
 			}
 		}

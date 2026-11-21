@@ -129,20 +129,18 @@ type Field struct {
 
 // FieldAttempts is the limit of wrong checks of a compare-only secret field (ST-DECL-EN03 Attempts), from 1 to 100
 // (ST-DECL-INV104), and UnlockAfter, the window after the last charge in which a count decays, so a row at its limit
-// opens again: a Go duration from 1m to 24h in whole seconds, and 15m when it is empty (decision ST-SUP-Q205 (c)).
+// opens again: a Go duration from 1m to 24h in whole seconds, or empty for no decay (decisions ST-SUP-Q205 (c) and
+// ST-SUP-Q207 (a)).
 type FieldAttempts struct {
 	Limit       int    `yaml:"limit" json:"Limit"`
 	UnlockAfter string `yaml:"unlock_after,omitempty" json:"UnlockAfter,omitempty"`
 }
 
-// DefaultUnlockAfter is the window of the decay of a count of wrong checks when the declaration gives none.
-const DefaultUnlockAfter = 15 * time.Minute
-
-// UnlockAfterDuration gives the window of the decay: DefaultUnlockAfter when UnlockAfter is empty, and else its parsed
-// value, or an error for a text that is not a Go duration.
+// UnlockAfterDuration gives the window of the decay: 0, no decay, when UnlockAfter is empty, and else its parsed value,
+// or an error for a text that is not a Go duration.
 func (a FieldAttempts) UnlockAfterDuration() (time.Duration, error) {
 	if a.UnlockAfter == "" {
-		return DefaultUnlockAfter, nil
+		return 0, nil
 	}
 	return time.ParseDuration(a.UnlockAfter)
 }

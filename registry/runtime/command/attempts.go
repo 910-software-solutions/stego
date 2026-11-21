@@ -45,23 +45,35 @@ import (
 // count, in the attempt that read it, so a fill cannot copy it to a field with no limit or to a row with a new count
 // (security review of PR #479, L1).
 //
-// A count decays with time (decision ST-SUP-Q205 (c)): a charge whose count was last charged UnlockAfter or longer
-// before, on the clock of the database, starts the count again at 1, so a row at its limit opens again after the
-// declared window, which a client cannot make shorter: the window is the declaration's, the time is the database's,
-// and a check at the limit charges nothing, so it moves the time of the last charge neither back nor forward. A
-// command that declares the reset of the field (CommandSpec.Resets) sets the count to 0 with ResetAttempts, decided
-// with its own permission on the row, and gives the fill no value, no hash and no count.
+// A count of a counter with an UnlockAfter decays with time (decision ST-SUP-Q205 (c); ST-SUP-Q207 (a)): a charge
+// whose count was last charged UnlockAfter or longer before, on the clock of the database, starts the count again at
+// 1, so a row at its limit opens again after the declared window, which a client cannot make shorter: the window is
+// the declaration's, the time is the database's, and a check at the limit charges nothing, so it moves the time of
+// the last charge neither back nor forward. A counter with no UnlockAfter does not decay. A second count, failures,
+// never decays: the checks since the last match or new value. At FailureCap of them, min(10 x limit, 100) as NIST SP
+// 800-63B 5.2.2 caps the consecutive failures of one account, the row stays locked until a reset or a new value. A
+// count with no time, as a charge of a release before leaves it, counts as charged at its next charge. A command that
+// declares the reset of the field (CommandSpec.Resets) sets both counts to 0 with ResetAttempts, decided with its own
+// permission on the row and written to the audit log, and gives the fill no value, no hash and no count; such a
+// command checks no value of the field.
 
 // maxAttempts is the highest limit of a counter (ST-DECL-INV104).
 const maxAttempts = 100
 
-// The window of the decay of a count (ST-DECL-INV104, decision ST-SUP-Q205 (c)): DefaultUnlockAfter for a counter
-// that gives none, from MinUnlockAfter to MaxUnlockAfter, in whole seconds.
+// The window of the decay of a count (ST-DECL-INV104, decisions ST-SUP-Q205 (c) and ST-SUP-Q207 (a)): from
+// MinUnlockAfter to MaxUnlockAfter, in whole seconds, or none.
 const (
-	DefaultUnlockAfter = 15 * time.Minute
-	MinUnlockAfter     = time.Minute
-	MaxUnlockAfter     = 24 * time.Hour
+	MinUnlockAfter = time.Minute
+	MaxUnlockAfter = 24 * time.Hour
 )
+
+// maxFailures is the highest cap of the failures of a row: the most consecutive failed attempts that a verifier of a
+// memorized secret may allow on one account (NIST SP 800-63B, 5.2.2).
+const maxFailures = 100
+
+// FailureCap gives the cap of the failures of a row of a counter with the limit: min(10 x limit, 100). At the cap the
+// row stays locked until a reset or a new value, also after the window of the decay (decision ST-SUP-Q207 (a)).
+func FailureCap(limit int) int { return min(10*limit, maxFailures) }
 
 // chargeBound bounds the short transaction of one charge.
 const chargeBound = 5 * time.Second
@@ -121,26 +133,34 @@ func (c *charges) pay(key chargeKey, n int) {
 }
 
 // The statements of the counts in the table idempotency.AttemptsTable, which the migration job makes beside the key
-// table. Each takes the tenant as $1, the counter as $2 and the row ID as $3; the charge takes the limit as $4 and the
-// window of the decay in seconds as $5, and gives no row at the limit. The charge counts again from 1 when the last
-// charge of the row is the window or longer before the start of its statement on the clock of the database, or has no
-// time, as a charge of a release before the decay leaves (decision ST-SUP-Q205 (c)). At the limit it changes nothing,
-// so checks at the limit never move the end of the window.
+// table. Each takes the tenant as $1, the counter as $2 and the row ID as $3. The charge takes the limit as $4, the
+// window of the decay in seconds as $5, 0 for none, and the cap of the failures as $6, and gives no row at the limit
+// or at the cap. It counts the checks again from 1 when the window is not 0 and the last charge of the row is the
+// window or longer before the start of its statement on the clock of the database (decision ST-SUP-Q205 (c)); the
+// failures never start again (decision ST-SUP-Q207 (a)). At the limit and at the cap it changes nothing, so checks
+// there never move the end of the window. stampStatement runs first: it gives a count with no time, as a charge of a
+// release before leaves it, the time of this charge, so such a count is charged now and not past its window
+// (security review of PR #489, L1). A count of a release before has no failures, and counts its checks as them.
 const (
-	chargeStatement = `INSERT INTO public.attempt_counts AS a (tenant_id, counter, row_id, checks, charged_at)
-VALUES ($1, $2, $3, 1, pg_catalog.statement_timestamp())
+	stampStatement = `UPDATE public.attempt_counts SET charged_at = pg_catalog.statement_timestamp()
+WHERE tenant_id = $1 AND counter = $2 AND row_id = $3 AND charged_at IS NULL`
+	chargeStatement = `INSERT INTO public.attempt_counts AS a (tenant_id, counter, row_id, checks, failures, charged_at)
+VALUES ($1, $2, $3, 1, 1, pg_catalog.statement_timestamp())
 ON CONFLICT (tenant_id, counter, row_id) DO UPDATE SET
-checks = CASE WHEN a.charged_at IS NULL OR a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)
+checks = CASE WHEN $5::double precision > 0 AND a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)
 THEN 1 ELSE a.checks + 1 END,
+failures = COALESCE(a.failures, a.checks) + 1,
 charged_at = pg_catalog.statement_timestamp()
-WHERE a.checks < $4 OR a.charged_at IS NULL OR a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)
+WHERE COALESCE(a.failures, a.checks) < $6 AND (a.checks < $4 OR ($5::double precision > 0
+AND a.charged_at <= pg_catalog.statement_timestamp() - pg_catalog.make_interval(secs => $5::double precision)))
 RETURNING a.checks`
 	resetStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1 AND counter = $2 AND row_id = $3`
 )
 
 // CounterSpec is the generated declaration of the limit of wrong attempts of one compare-only field
 // (ST-SUP-RC32-OC24): the entity, the field, the limit and the window of the decay of a count, UnlockAfter, which is
-// DefaultUnlockAfter when it is zero, as in the code of a generator before the decay (decision ST-SUP-Q205 (c)).
+// zero for a count that does not decay, as in the code of a generator before the decay (decisions ST-SUP-Q205 (c) and
+// ST-SUP-Q207 (a)).
 type CounterSpec struct {
 	Entity, Field string
 	Limit         int
@@ -151,7 +171,7 @@ type CounterSpec struct {
 type Counter struct{ spec CounterSpec }
 
 // NewCounter checks the declaration of a counter: its names, a limit from 1 to 100, and a window of the decay from
-// MinUnlockAfter to MaxUnlockAfter in whole seconds, or zero for DefaultUnlockAfter.
+// MinUnlockAfter to MaxUnlockAfter in whole seconds, or zero for none.
 func NewCounter(spec CounterSpec) (*Counter, error) {
 	if spec.Entity == "" || spec.Field == "" || strings.Contains(spec.Entity+spec.Field, ".") {
 		return nil, errors.New("command: a counter needs its entity and its field, with no period in them")
@@ -159,17 +179,14 @@ func NewCounter(spec CounterSpec) (*Counter, error) {
 	if spec.Limit < 1 || spec.Limit > maxAttempts {
 		return nil, fmt.Errorf("command: the counter of %s.%s has the limit %d; give 1 to %d", spec.Entity, spec.Field, spec.Limit, maxAttempts)
 	}
-	if spec.UnlockAfter == 0 {
-		spec.UnlockAfter = DefaultUnlockAfter
-	}
-	if u := spec.UnlockAfter; u < MinUnlockAfter || u > MaxUnlockAfter || u%time.Second != 0 {
-		return nil, fmt.Errorf("command: the counter of %s.%s unlocks after %s; give whole seconds from %s to %s", spec.Entity, spec.Field, u, MinUnlockAfter, MaxUnlockAfter)
+	if u := spec.UnlockAfter; u != 0 && (u < MinUnlockAfter || u > MaxUnlockAfter || u%time.Second != 0) {
+		return nil, fmt.Errorf("command: the counter of %s.%s unlocks after %s; give none, or whole seconds from %s to %s", spec.Entity, spec.Field, u, MinUnlockAfter, MaxUnlockAfter)
 	}
 	return &Counter{spec: spec}, nil
 }
 
 // UnlockAfter is the window of the decay of the counter: a row at its limit opens again this long after its last
-// charge.
+// charge, while its failures are below FailureCap. Zero is no decay.
 func (c *Counter) UnlockAfter() time.Duration { return c.spec.UnlockAfter }
 
 // name is the counter as the table of the counts holds it.
@@ -230,6 +247,13 @@ type rowCounter struct {
 func (k *rowCounter) Charge() bool {
 	s := k.s
 	s.mu.Lock()
+	if s.resets[k.key.counter.name()] {
+		// A command that may reset the count does not check the value: else a holder of its permission could check
+		// with no limit, resetting the count after each check (security review of PR #489, I1).
+		_ = s.breakWith(internalf("the command declares the reset of the attempts of %s and checks its value", k.key.counter.name()))
+		s.mu.Unlock()
+		return false
+	}
 	open := !s.closed && s.mode == modeCommand
 	paid := chargeKey{attemptKey: k.key, stored: k.stored}
 	var n int
@@ -303,9 +327,19 @@ func ResetAttempts[P any](ctx context.Context, h *Handle[P], c *Counter, on Ref)
 	if err := s.decideCommandOn(ctx, r.resourceType, r.entity, r.id, r.token); err != nil {
 		return err
 	}
+	// The reset is audited as a write of the row: the action is the command, the resource the row, and the only
+	// state is the marker of the field, so the chain records each reset with the command (security review of PR #489,
+	// M1). Run records the event just before COMMIT, so a reset that rolls back writes no row.
+	if err := s.buffer(r.resourceType, nil, r.id, nil, map[string]any{AttemptsResetMarker: c.name()}); err != nil {
+		return err
+	}
 	s.resetAttemptsHeld(attemptKey{counter: c, row: strings.ToLower(r.id)})
 	return nil
 }
+
+// AttemptsResetMarker is the key of the after state of the audit row of a reset of attempts, whose value is the
+// counter as <entity>.<field>.
+const AttemptsResetMarker = "attempts_reset"
 
 // checkResets checks the declared resets of the attempts of a command: each names <entity>.<field> of an entity that
 // the command writes, and the command decides a permission of its own on a row, not on the service-level resource
@@ -379,10 +413,15 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 		_ = tx.Rollback()
 		return false, err
 	}
+	rt.record(stampStatement, nil)
+	if _, err := tx.ExecContext(ctx, stampStatement, t.ID(), key.counter.name(), key.row); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
 	rt.record(chargeStatement, nil)
 	var checks int
 	err = tx.QueryRowContext(ctx, chargeStatement, t.ID(), key.counter.name(), key.row, key.counter.spec.Limit,
-		int64(key.counter.spec.UnlockAfter/time.Second)).Scan(&checks)
+		int64(key.counter.spec.UnlockAfter/time.Second), FailureCap(key.counter.spec.Limit)).Scan(&checks)
 	charged := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		_ = tx.Rollback()

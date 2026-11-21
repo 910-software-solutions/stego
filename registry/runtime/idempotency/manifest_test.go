@@ -170,8 +170,8 @@ func TestAttemptsDecayColumn(t *testing.T) {
 		if err := db.QueryRowContext(ctx, "SELECT current_schema(), pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'attempt_counts'::regclass").Scan(&schema, &owner); err != nil {
 			t.Fatal(err)
 		}
-		// The table of a release before the decay has no charged_at.
-		if _, err := db.ExecContext(ctx, `ALTER TABLE attempt_counts DROP COLUMN charged_at`); err != nil {
+		// The table of a release before the decay has no charged_at and no failures.
+		if _, err := db.ExecContext(ctx, `ALTER TABLE attempt_counts DROP COLUMN charged_at, DROP COLUMN failures`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO attempt_counts (tenant_id, counter, row_id, checks) VALUES ('t1', 'Wallet.pin', 'w1', 5)`); err != nil {
@@ -182,11 +182,12 @@ func TestAttemptsDecayColumn(t *testing.T) {
 		}
 		var checks int
 		var at sql.NullTime
-		if err := db.QueryRowContext(ctx, `SELECT checks, charged_at FROM attempt_counts WHERE row_id = 'w1'`).Scan(&checks, &at); err != nil {
+		var failures sql.NullInt64
+		if err := db.QueryRowContext(ctx, `SELECT checks, charged_at, failures FROM attempt_counts WHERE row_id = 'w1'`).Scan(&checks, &at, &failures); err != nil {
 			t.Fatal(err)
 		}
-		if checks != 5 || at.Valid {
-			t.Fatalf("the migration left the count %d and the time %v, want 5 and no time", checks, at)
+		if checks != 5 || at.Valid || failures.Valid {
+			t.Fatalf("the migration left the count %d, the time %v and the failures %v, want 5, no time and no failures", checks, at, failures)
 		}
 		const runtimeRole = "idem_test_runtime"
 		if _, err := db.ExecContext(ctx, "GRANT SELECT, INSERT, UPDATE ON idempotency_keys TO "+runtimeRole); err != nil {
@@ -200,12 +201,13 @@ func TestAttemptsDecayColumn(t *testing.T) {
 		if err := manifest.Check(ctx, admin, m); err != nil {
 			t.Fatalf("the manifest refused the table with charged_at: %v", err)
 		}
-		// The manifest of a release before lists no charged_at, and still holds the table, so its pods start.
+		// The manifest of a release before lists no charged_at and no failures, and still holds the table, so its pods
+		// start.
 		before := m
 		before.Tables = slices.Clone(m.Tables)
 		for i, table := range before.Tables {
 			if table.Name == AttemptsTable {
-				table.Columns = slices.DeleteFunc(slices.Clone(table.Columns), func(c manifest.Column) bool { return c.Name == "charged_at" })
+				table.Columns = slices.DeleteFunc(slices.Clone(table.Columns), func(c manifest.Column) bool { return c.Name == "charged_at" || c.Name == "failures" })
 				before.Tables[i] = table
 			}
 		}

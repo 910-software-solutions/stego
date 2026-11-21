@@ -1112,7 +1112,7 @@ func TestCounterEmission(t *testing.T) {
 		}
 		text := string(source)
 		for _, want := range []string{
-			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5, UnlockAfter: 900 * time.Second}))`,
+			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5}))`,
 			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin)`,
 			`command.HashCountedOf(walletPinCounter, id, v.Pin)`,
 		} {

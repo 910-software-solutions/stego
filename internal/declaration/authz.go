@@ -358,6 +358,7 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 		return append(faults, operationsAuthorization(service, nil)...)
 	}
 	faults = append(faults, operationsAuthorization(service, schema)...)
+	faults = append(faults, validateResetSchema(service, schema)...)
 	faults = append(faults, validateSchemaNames(service, schema)...)
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
