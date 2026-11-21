@@ -9,14 +9,87 @@ import (
  "errors"
  "fmt"
  "io"
+ "net/http"
  "os"
+ "regexp"
  "path/filepath"
  "strings"
  "syscall"
  client {{printf "%q" .Client}}
 )
 
-type configuration struct{URL string `json:"url"`;CAFile string `json:"ca_file"`;TokenFile string `json:"token_file"`;OAuth *oauthSession `json:"oauth,omitempty"`}
+// Revocation is the Authz-Revocation-Location of the last write of the CLI with this configuration, which each apply
+// lookup sends in Authz-Revocation-After, and RevocationAt is when the CLI kept it (ST-SUP-RC04-OC37). A new login
+// starts with none.
+type configuration struct{URL string `json:"url"`;CAFile string `json:"ca_file"`;TokenFile string `json:"token_file"`;OAuth *oauthSession `json:"oauth,omitempty"`;Revocation string `json:"revocation,omitempty"`;RevocationAt time.Time `json:"revocation_at,omitzero"`}
+// revocationLocation is the form of the Authz-Revocation-Location that the CLI keeps: the path of the revocation
+// status route and the identity of a revocation, a UUID in its canonical form.
+var revocationLocation=regexp.MustCompile(`^/authz/revocations/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+// revocationAge is the age after which a lookup no longer sends a kept revocation: by then its relationships are
+// written, or they are stuck, and a wait would only slow each lookup (security review of PR #474, L2).
+const revocationAge=10*time.Minute
+// revocationNow gives the time of a kept revocation. Only the tests of this package change it.
+var revocationNow=time.Now
+// sameSource tells whether two configurations send requests to one service with one credential: the URL, the CA
+// file, the token file, and the issuer, client, subject and login nonce of an OIDC session, which a refresh keeps. A
+// revocation of a write is kept only in the configuration that sent the write, not in one of a later login (security
+// review of PR #474, L1).
+func sameSource(a,b configuration)bool{
+ if a.URL!=b.URL||a.CAFile!=b.CAFile||a.TokenFile!=b.TokenFile||(a.OAuth==nil)!=(b.OAuth==nil){return false}
+ return a.OAuth==nil||(a.OAuth.Issuer==b.OAuth.Issuer&&a.OAuth.ClientID==b.OAuth.ClientID&&a.OAuth.Subject==b.OAuth.Subject&&a.OAuth.Nonce==b.OAuth.Nonce)
+}
+// lookupRevocation is the revocation that the lookups of one apply wait for: the kept one, while it is younger than
+// revocationAge, then that of each later write of the apply (ST-SUP-RC04-OC37). sent is the configuration of the
+// requests of the apply.
+type lookupRevocation struct{value string;app Application;sent configuration}
+func newLookupRevocation(app Application,cfg configuration)*lookupRevocation{
+ r:=&lookupRevocation{app:app,sent:cfg}
+ if cfg.Revocation!=""&&revocationNow().Sub(cfg.RevocationAt)<revocationAge{r.value=cfg.Revocation}
+ return r
+}
+// headers gives the headers of a lookup: with Authz-Revocation-After and Prefer: wait=10 when there is a
+// revocation, so the list waits for it, within the 15 s of a request, before it reads.
+func (r *lookupRevocation)headers(headers http.Header)http.Header{
+ if r==nil||r.value==""{return headers}
+ headers=headers.Clone();headers.Set("Authz-Revocation-After",r.value);headers.Set("Prefer","wait=10");return headers
+}
+// seen reads the Authz-Revocation of a lookup answer. A state that is not pending (complete, failed, parked, expired,
+// or unknown for a revocation that is not the caller's own) ends the wait: the later lookups send no revocation, and
+// the configuration no longer keeps it, so a stuck revocation does not slow each later lookup (security review of PR
+// #474, L2).
+func (r *lookupRevocation)seen(ctx context.Context,response client.Response){
+ if r==nil||r.value==""{return}
+ switch response.Header.Get("Authz-Revocation"){
+ case "complete","failed","parked","expired","unknown":
+ default:return
+ }
+ value:=r.value;r.value=""
+ root,name,release,err:=configGuard(ctx,r.app,false);if err!=nil{return};defer release()
+ cfg,err:=loadConfiguration(root,name);if err!=nil||cfg.Revocation!=value{return}
+ cfg.Revocation,cfg.RevocationAt="",time.Time{}
+ _ = saveConfiguration(root,name,cfg)
+}
+// keep takes the revocation of a successful write for the later lookups of the apply, and keeps it in the
+// configuration.
+func (r *lookupRevocation)keep(ctx context.Context,response client.Response){
+ if value:=keepRevocation(ctx,r.app,r.sent,response);value!=""{r.value=value}
+}
+// keepRevocation keeps the Authz-Revocation-Location of a successful write in the configuration file, under its lock,
+// with the time, and gives it; it gives "" for an answer with no such header or another form, and keeps nothing then.
+// It keeps nothing when the configuration is no longer of the same source as sent, the configuration that sent the
+// write, such as after a login to another service. A failure to keep it changes no outcome of the write: the CLI
+// writes a warning (ST-SUP-RC04-OC37).
+func keepRevocation(ctx context.Context,app Application,sent configuration,response client.Response)string{
+ values:=response.Header.Values("Authz-Revocation-Location")
+ if len(values)!=1||!revocationLocation.MatchString(values[0]){return ""}
+ warn:=func(){_,_ = fmt.Fprintln(warnings,"warning: the CLI could not keep the revocation of the write in its configuration; a later apply can miss the resource of this write while its relationships are written")}
+ root,name,release,err:=configGuard(ctx,app,false);if err!=nil{warn();return values[0]};defer release()
+ cfg,err:=loadConfiguration(root,name);if err!=nil{warn();return values[0]}
+ if !sameSource(cfg,sent){return values[0]}
+ cfg.Revocation,cfg.RevocationAt=values[0],revocationNow().UTC()
+ if saveConfiguration(root,name,cfg)!=nil{warn()}
+ return values[0]
+}
 func configLocation(app Application)(string,error){
  if value:=os.Getenv(app.ConfigEnv);value!=""{return filepath.Abs(value)}
  base,err:=os.UserConfigDir();if err!=nil{return "",errors.New("cannot locate CLI configuration")}
@@ -74,7 +147,7 @@ func loadConfiguration(root *os.Root,name string)(configuration,error){
  data,err:=readRegular(file,65536,true);if err!=nil{return cfg,err}
  if _,err:=object(data);err!=nil{return cfg,err}
  decoder:=json.NewDecoder(bytes.NewReader(data));decoder.DisallowUnknownFields()
- if decoder.Decode(&cfg)!=nil||cfg.URL==""||(cfg.OAuth==nil&&!filepath.IsAbs(cfg.TokenFile))||(cfg.OAuth!=nil&&(cfg.TokenFile!=""||!validSession(cfg.OAuth)))||(cfg.CAFile!=""&&!filepath.IsAbs(cfg.CAFile)){return configuration{},errors.New("invalid configuration file")}
+ if decoder.Decode(&cfg)!=nil||cfg.URL==""||(cfg.OAuth==nil&&!filepath.IsAbs(cfg.TokenFile))||(cfg.OAuth!=nil&&(cfg.TokenFile!=""||!validSession(cfg.OAuth)))||(cfg.CAFile!=""&&!filepath.IsAbs(cfg.CAFile))||(cfg.Revocation!=""&&(!revocationLocation.MatchString(cfg.Revocation)||cfg.RevocationAt.IsZero()))||(cfg.Revocation==""&&!cfg.RevocationAt.IsZero()){return configuration{},errors.New("invalid configuration file")}
  return cfg,nil
 }
 func logout(ctx context.Context,app Application)error{

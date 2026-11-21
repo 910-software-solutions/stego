@@ -49,7 +49,12 @@ component writes (`<out>/commands/openapi.json`), in the package
   name of the entity, and the API version is `<service>/v1`, such as
   `sellers/v1` for the service `sellers`. A scoped collection, whose path
   names its parent, gets no apply resource: use its create and patch
-  commands.
+  commands. When the entity holds its `name` unique (the field `name` is
+  `unique: true`, or a `unique_composite` holds `name` and, apart from it,
+  only `implicit` fields of the collection), the service answers 409 to a
+  second create of a name (ST-SUP-RC04-OC36). Warning: when the name is not
+  unique, two clients that apply one new name at the same time can make two
+  resources; `unique: true` on the field `name` closes this.
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
@@ -289,6 +294,36 @@ the first write, with `apply cannot change the field <field> of <kind>
 is refused in the same way, because apply cannot compare it. To
 change a create-only field, use a command of the service that changes it, or
 delete the resource and apply again when the collection has a delete.
+
+A create that the service answers 409, because a resource of that name
+exists, is looked up again, and apply sends no other write for it. The status
+is `unchanged` when the lookup finds the resource with the values of the
+document. Otherwise the status is `failed`, and the error says that a
+resource with a unique value of the document exists, and that the resource
+of this name has other values (apply again to patch it), or that the lookup
+does not find it by its name, such as a resource that you may not read or a
+resource with another unique value of the document (ST-SUP-RC04-OC36).
+
+The list of a service can show a new resource only after its relationships
+are written. So the CLI keeps the `Authz-Revocation-Location` of its last
+successful write in its configuration file, and each apply lookup sends it in
+`Authz-Revocation-After` with `Prefer: wait=10`. The list then waits for that
+write before it reads, so an apply soon after a create finds the resource
+(ST-SUP-RC04-OC37). Each configuration file keeps its own value; a new login
+starts with none. The CLI keeps the value only in the configuration that sent
+the write: after a login to another service, a write of the earlier one keeps
+nothing. A lookup no longer sends a value older than 10 minutes, or one whose
+`Authz-Revocation` answer is `complete`, `failed`, `parked`, `expired` or
+`unknown`; the CLI then removes it from the configuration.
+
+Apply decides each patch, and the status `unchanged`, from the resource as
+its lookup read it. When another writer changes the resource after that read,
+apply can report `unchanged` and send no patch, or send a patch that replaces
+the change of the other writer, as `kubectl apply` can. When the patch of the
+collection takes `If-Match`, the definitions state `ConditionalPatch`, and
+apply sends `If-Match` with the generation that it read. Then a change after
+the read gives the status `failed` with `the resource changed after apply
+read it; apply again` (ST-SUP-RC04-OC38).
 
 Apply compares a create-only field only when its type is a string, an
 integer, a boolean or a list of strings. It compares a string as text: a

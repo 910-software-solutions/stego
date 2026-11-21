@@ -130,3 +130,21 @@ func TestScopedAccessWarningsAncestors(t *testing.T) {
 		}
 	})
 }
+
+func TestScopeFieldDefault(t *testing.T) {
+	t.Run("ST-DECL-INV106-T Checking refuses a default on a field that a collection names in its scope, and accepts the field with no default", func(t *testing.T) {
+		entities := func(def any) []types.Entity {
+			return []types.Entity{{Name: "Organization", Fields: []types.Field{{Name: "name", Type: "string"}}},
+				{Name: "Project", Fields: []types.Field{{Name: "org_id", Type: types.FieldTypeRef, Default: def}, {Name: "size", Type: "int32", Default: 1}}}}
+		}
+		collections := []types.Collection{{Name: "org-projects", Entity: "Project", Operations: []types.Operation{types.OpCreate}, Scope: map[string]string{"org_id": "Organization"}}}
+		faults := validateCollectionReferences(collections, entities("org-1"))
+		if len(faults) != 1 || faults[0].Path != "collections.org-projects.scope.org_id" || faults[0].Found != "org-1" ||
+			!strings.Contains(faults[0].Message, `collection "org-projects" has scope field "org_id", which declares the default org-1`) {
+			t.Fatalf("want one fault for the default of the scope field, got %+v", faults)
+		}
+		if faults := validateCollectionReferences(collections, entities(nil)); len(faults) != 0 {
+			t.Fatalf("a scope field with no default is refused: %+v", faults)
+		}
+	})
+}
