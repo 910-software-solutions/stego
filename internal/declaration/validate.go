@@ -912,6 +912,21 @@ func validateCollectionReferences(collections []types.Collection, entities []typ
 					Message:  fmt.Sprintf("collection %q has scope field %q which is not a field on entity %q", c.Name, fieldName, c.Entity),
 				})
 			}
+			// The parent of a row of a scoped collection comes from the path, so a default of the scope field could
+			// only differ from it (ST-DECL-INV106; security review of PR #473, I1).
+			for _, e := range entities {
+				for _, f := range e.Fields {
+					if e.Name == c.Entity && f.Name == fieldName && f.Default != nil {
+						errs = append(errs, ValidationError{
+							Category: "collection",
+							Rule:     "collection-scope",
+							Path:     collectionPath(c.Name) + ".scope." + fieldName,
+							Found:    fmt.Sprint(f.Default),
+							Message:  fmt.Sprintf("collection %q has scope field %q, which declares the default %v; the parent of a row comes from the path, so remove the default of %s.%s", c.Name, fieldName, f.Default, c.Entity, fieldName),
+						})
+					}
+				}
+			}
 			if !entityNames[targetEntity] {
 				errs = append(errs, ValidationError{
 					Category: "collection",
