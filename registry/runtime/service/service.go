@@ -316,6 +316,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, ChargeDB: svc.chargeDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
+	// The counter of the charges of counted checks that cannot commit (ST-SUP-RP10-LC54; security review of PR #482, I4).
+	config.Meter = svc.telemetry.MeterProvider()
 	if err := ringNeeded(p, s.Ring); err != nil {
 		return nil, err
 	}
