@@ -356,7 +356,10 @@ is done, and then starts. The process also stops at the stage `service.start.mig
 digest of the body of a migration of its release: the error line names the migration and the two digests. The body of
 an applied migration never changes, and nothing repairs a digest. The migration Job refuses the same database at its
 ledger check, with the same fault. `stego plan`, `stego apply` and `stego compat` refuse such a release before it is
-made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. To wait in a script, after the two commands:
+made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. One other body passes the Job, the start
+check and these commands: the body of the expand step of a seal, or of a step after it, that postgres-adapter 6.14.0 to
+6.20.0 wrote with the functions of the seal checkpoints in it. The release registers the digest of that body as an earlier
+digest of the same migration, so a database of such a release upgrades with no change. To wait in a script, after the two commands:
 
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h

@@ -1788,9 +1788,61 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep, checkpoi
 	}
 
 	return gen.File{
-		Path:    path.Join(ns, "migrate.go"),
+		Path:    path.Join(ns, MigrateFile),
 		Content: formatted,
 	}, nil
+}
+
+// MigrateFile is the name of the generated Go file of the ledger, in the output namespace of the adapter, which holds
+// the Register calls of the migrations and their earlier digests.
+const MigrateFile = "migrate.go"
+
+// EarlierDigests reads the generated migrate.go of the adapter and gives the earlier digests that it registers for
+// each migration, by the migration name: the digests of the bodies that earlier versions of the adapter wrote for
+// the migration with the text of the seal checkpoints in them (RegisterEarlierDigests, ST-SUP-RC01-OC51). These are
+// the digests that the ledger check of the release accepts as well as the digest of the body. It refuses a call
+// whose arguments are not each one string literal, so that it never gives a digest that the release does not
+// register.
+func EarlierDigests(migrate []byte) (map[string][]string, error) {
+	tree, err := parser.ParseFile(token.NewFileSet(), MigrateFile, migrate, 0)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", MigrateFile, err)
+	}
+	digests := map[string][]string{}
+	var refused error
+	ast.Inspect(tree, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || refused != nil {
+			return refused == nil
+		}
+		if name, ok := call.Fun.(*ast.Ident); !ok || name.Name != "RegisterEarlierDigests" {
+			return true
+		}
+		var values []string
+		for _, arg := range call.Args {
+			literal, ok := arg.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				refused = fmt.Errorf("%s: a RegisterEarlierDigests call has an argument that is not a string literal", MigrateFile)
+				return false
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				refused = fmt.Errorf("%s: %w", MigrateFile, err)
+				return false
+			}
+			values = append(values, value)
+		}
+		if len(values) < 2 || call.Ellipsis.IsValid() {
+			refused = fmt.Errorf("%s: a RegisterEarlierDigests call does not name a migration and its earlier digests", MigrateFile)
+			return false
+		}
+		digests[values[0]] = append(digests[values[0]], values[1:]...)
+		return true
+	})
+	if refused != nil {
+		return nil, refused
+	}
+	return digests, nil
 }
 
 // migrationCall is one Register call of a function migration in a generated
