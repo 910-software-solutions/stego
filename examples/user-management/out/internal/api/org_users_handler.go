@@ -263,11 +263,6 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chain := [1]string{scope}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
-	if err != nil {
-		handleError(w, r, BadRequest("the body cannot be read"))
-		return
-	}
 	key, err := idempotency.KeyFrom(r.Header, false)
 	if err != nil {
 		keyMissing(w, r, err)
@@ -279,6 +274,11 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	requestID := command.NewID()
 	if key == "" {
 		key = requestKey(requestID)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
+	if err != nil {
+		handleError(w, r, BadRequest("the body cannot be read"))
+		return
 	}
 	given, err := decodeOrgUsers(body)
 	if err != nil {
@@ -871,11 +871,6 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chain := [1]string{scope}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
-	if err != nil {
-		handleError(w, r, BadRequest("the body cannot be read"))
-		return
-	}
 	key, err := idempotency.KeyFrom(r.Header, false)
 	if err != nil {
 		keyMissing(w, r, err)
@@ -887,6 +882,11 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	requestID := command.NewID()
 	if key == "" {
 		key = requestKey(requestID)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
+	if err != nil {
+		handleError(w, r, BadRequest("the body cannot be read"))
+		return
 	}
 	if _, err := decodeOrgUsersPatch(body); err != nil {
 		h.rt.answerWrite(w, r, command.Request{}, "patch", "member", "User", false, err)

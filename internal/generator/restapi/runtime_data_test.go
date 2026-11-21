@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -863,6 +864,8 @@ func TestBodyLimit(t *testing.T) {
 	}))
 	large := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":\""+strings.Repeat("a", MaxRequestBody)+"\"}"))
 	large.Header.Set("Content-Type", "application/json")
+	// A create of todos requires the key, which the check reads before the body (ST-SUP-RC30-OC02).
+	large.Header.Set("Idempotency-Key", "\"k-1\"")
 	answer := httptest.NewRecorder()
 	handler.ServeHTTP(answer, large)
 	if answer.Code != http.StatusRequestEntityTooLarge || called {
@@ -870,6 +873,7 @@ func TestBodyLimit(t *testing.T) {
 	}
 	small := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":7}"))
 	small.Header.Set("Content-Type", "application/json")
+	small.Header.Set("Idempotency-Key", "\"k-2\"")
 	answer = httptest.NewRecorder()
 	handler.ServeHTTP(answer, small)
 	if answer.Code != http.StatusBadRequest || called {
@@ -896,6 +900,8 @@ func TestEveryField(t *testing.T) {
 	}))
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":7,\"done\":\"no\"}"))
 	r.Header.Set("Content-Type", "application/json")
+	// A create of todos requires the key, which the check reads before the body (ST-SUP-RC30-OC02).
+	r.Header.Set("Idempotency-Key", "\"k-1\"")
 	answer := httptest.NewRecorder()
 	handler.ServeHTTP(answer, r)
 	var problem struct {
@@ -940,6 +946,8 @@ func TestRequiredMember(t *testing.T) {
 		reached = false
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
+		// A create of todos requires the key, which the check reads before the body (ST-SUP-RC30-OC02).
+		r.Header.Set("Idempotency-Key", "\"k-1\"")
 		answer := httptest.NewRecorder()
 		handler.ServeHTTP(answer, r)
 		return answer
@@ -1004,6 +1012,8 @@ func TestUnknownMember(t *testing.T) {
 	} {
 		r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
 		r.Header.Set("Content-Type", "application/json")
+		// A create of todos requires the key, which the check reads before the body (ST-SUP-RC30-OC02).
+		r.Header.Set("Idempotency-Key", "\"k-1\"")
 		answer := httptest.NewRecorder()
 		handler.ServeHTTP(answer, r)
 		var problem struct {
@@ -1018,6 +1028,85 @@ func TestUnknownMember(t *testing.T) {
 	}
 }
 `
+
+// keyFirstCheck is a test of the generated validation.go: the Idempotency-Key header of a create and a patch is read
+// before the body, as a command reads it, so a malformed key gets idempotency-key-invalid and an absent required key
+// idempotency-key-missing also when the body is not valid, and a valid key with a body that is not valid gets the
+// validation problem with Idempotency-Kept: 1. KEY_BASE is the problem base of the key types, and KEY_REQUIRED tells
+// whether the create requires the key.
+const keyFirstCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestKeyFirst(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a request with a body that is not valid reached the handler")
+	}))
+	send := func(method, path, key string, set bool) (*httptest.ResponseRecorder, string) {
+		r := httptest.NewRequest(method, path, strings.NewReader("{\"title\":7}"))
+		r.Header.Set("Content-Type", "application/json")
+		if set {
+			r.Header.Set("Idempotency-Key", key)
+		}
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		var problem struct {
+			Type string \x60json:"type"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); err != nil || answer.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s with the key %q got %d (%v): %s", method, path, key, answer.Code, err, answer.Body)
+		}
+		return answer, problem.Type
+	}
+	const todo = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	for _, c := range []struct{ method, path string }{{http.MethodPost, "/api/v1/todos"}, {http.MethodPatch, todo}} {
+		for _, key := range []string{"k-unquoted", "\"\""} {
+			if answer, got := send(c.method, c.path, key, true); got != "KEY_BASE"+"idempotency-key-invalid" || answer.Header().Get("Idempotency-Kept") != "" {
+				t.Errorf("%s %s with the malformed key %q and a body that is not valid got the type %q, want %sidempotency-key-invalid: %s", c.method, c.path, key, got, "KEY_BASE", answer.Body)
+			}
+		}
+		answer, got := send(c.method, c.path, "\"k-1\"", true)
+		if !strings.HasSuffix(got, "/validation-error") || answer.Header().Get("Idempotency-Kept") != "1" {
+			t.Errorf("%s %s with a valid key and a body that is not valid got the type %q and Idempotency-Kept %q, want validation-error and 1", c.method, c.path, got, answer.Header().Get("Idempotency-Kept"))
+		}
+	}
+	answer, got := send(http.MethodPost, "/api/v1/todos", "", false)
+	want := "validation-error"
+	if KEY_REQUIRED {
+		want = "KEY_BASE" + "idempotency-key-missing"
+	}
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("a create with no key and a body that is not valid got the type %q, want %s: %s", got, want, answer.Body)
+	}
+}
+`
+
+// TestValidationKeyFirst runs keyFirstCheck on the generated service of crudContext, with the idempotency component and
+// Required on create and patch, and with no idempotency component, whose key types sit under the problem base too.
+func TestValidationKeyFirst(t *testing.T) {
+	t.Run("ST-SUP-RC30-OC02-T04 A create or a patch with a malformed Idempotency-Key gets idempotency-key-invalid under the problem base before the check of its body, with or without the idempotency component", func(t *testing.T) {
+		for _, component := range []bool{true, false} {
+			ctx := crudContext()
+			ctx.Conventions.RequestValidation = "openapi-schema"
+			if !component {
+				ctx.Idempotency = nil
+				delete(ctx.PeerNamespaces, "idempotency")
+			}
+			p := newCrudProject(t, ctx, crudFiles(t, ctx))
+			check := strings.ReplaceAll(strings.ReplaceAll(keyFirstCheck, "KEY_BASE", ctx.ErrorTypeBase), "KEY_REQUIRED", strconv.FormatBool(component))
+			p.write("out/api/key_first_test.go", []byte(strings.ReplaceAll(check, "\\x60", "`")))
+			if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestKeyFirst$", "./out/api"); err != nil {
+				t.Fatalf("with the idempotency component %v, the check of the key before the body failed: %v\n%s", component, err, output)
+			}
+		}
+	})
+}
 
 func TestValidationEveryField(t *testing.T) {
 	ctx := crudContext()

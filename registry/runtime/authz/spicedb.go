@@ -510,6 +510,43 @@ func (e *providerError) Is(target error) bool { return target == ErrProvider }
 // Unwrap gives the context error of a call that its context ended, so the kind stays readable.
 func (e *providerError) Unwrap() error { return e.cause }
 
+// CauseClass gives the fixed class of the status code of the call, such as unavailable for a SpiceDB that refused
+// the connection, for the failure record of the process (CodeClass). It never holds the provider text.
+func (e *providerError) CauseClass() string { return CodeClass(e.code) }
+
+// CodeClass gives the fixed cause class of a gRPC status code, for the failure record of a process that a call to
+// SpiceDB or another gRPC server failed: unavailable, timeout, canceled, authentication_failed, permission_denied,
+// insufficient_resources, precondition_failed, invalid_argument, not_found, unimplemented, and provider_error for any
+// other code; empty for OK. A code is a fixed value of the protocol, never a text of the server (walkthrough 19,
+// small items).
+func CodeClass(code codes.Code) string {
+	switch code {
+	case codes.OK:
+		return ""
+	case codes.Unavailable:
+		return "unavailable"
+	case codes.DeadlineExceeded:
+		return "timeout"
+	case codes.Canceled:
+		return "canceled"
+	case codes.Unauthenticated:
+		return "authentication_failed"
+	case codes.PermissionDenied:
+		return "permission_denied"
+	case codes.ResourceExhausted:
+		return "insufficient_resources"
+	case codes.FailedPrecondition:
+		return "precondition_failed"
+	case codes.InvalidArgument:
+		return "invalid_argument"
+	case codes.NotFound:
+		return "not_found"
+	case codes.Unimplemented:
+		return "unimplemented"
+	}
+	return "provider_error"
+}
+
 // spiceError maps a gRPC error of SpiceDB to a fixed text for what and its status code. InvalidArgument,
 // FailedPrecondition, NotFound and OutOfRange are refusals that a retry does not change, and so is ResourceExhausted
 // with the reason ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED: SpiceDB gives it for a check whose relations go deeper than its

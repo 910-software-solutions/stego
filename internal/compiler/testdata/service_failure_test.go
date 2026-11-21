@@ -171,6 +171,10 @@ func TestFailureRecordDatabaseCause(t *testing.T) {
 			{x509.UnknownAuthorityError{}, "certificate_refused"},
 			{fmt.Errorf("discovery: %w", context.DeadlineExceeded), "timeout"},
 			{privateFailure{}, ""},
+			// A cause that gives its own class, such as a refused call to SpiceDB, names it in the strict form only.
+			{fmt.Errorf("migrate: %w", classedFailure{"unavailable"}), "unavailable"},
+			{classedFailure{"Connection refused by upstream.invalid"}, ""},
+			{classedFailure{""}, ""},
 		} {
 			var output bytes.Buffer
 			stegoReportFailure(&output, &stegoServiceFailure{stage: "browser.upstream", cause: c.cause})
@@ -282,3 +286,9 @@ func TestFailureTaskNamesAreData(t *testing.T) {
 		}
 	})
 }
+
+// classedFailure is a cause that gives its own cause class and whose text holds a value.
+type classedFailure struct{ class string }
+
+func (c classedFailure) Error() string      { return "dial upstream.invalid: " + c.class }
+func (c classedFailure) CauseClass() string { return c.class }

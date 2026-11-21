@@ -2211,8 +2211,22 @@ func (w *runtimeHandlerWriter) start(body bool) {
 		}
 	}
 	if body {
-		w.f("\tbody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body cannot be read\"))\n\t\treturn\n\t}\n")
+		w.readBody()
 	}
+}
+
+// keyedStart writes the start of a create or a patch: the binding of the verified caller, the read of the
+// idempotency key and then the read of the body, in the order of a command (Serve), so a malformed key gets
+// idempotency-key-invalid also when the body cannot be read (ST-SUP-RC30-OC02; walkthrough 19, W19-U3).
+func (w *runtimeHandlerWriter) keyedStart(op types.Operation) {
+	w.start(false)
+	w.key(op)
+	w.readBody()
+}
+
+// readBody writes the read of the body, at most MaxRequestBody bytes.
+func (w *runtimeHandlerWriter) readBody() {
+	w.f("\tbody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body cannot be read\"))\n\t\treturn\n\t}\n")
 }
 
 // ancestors writes the parent chain check of a fill (ST-SUP-RC20-OC24, ST-SUP-Q156). It decides a permission only on
@@ -2309,8 +2323,7 @@ func (w *runtimeHandlerWriter) create() {
 	c, e := w.c, w.c.entity
 	w.f("// Create runs the generated command create of %s through Run: the before slots run in its fill, before the\n// write; the row, its audit row and the idempotency key commit together (ST-SUP-RC20-OC37).\n", c.decl.Name)
 	w.f("func (h *%sHandler) Create(w http.ResponseWriter, r *http.Request) {\n", c.pascal)
-	w.start(true)
-	w.key(types.OpCreate)
+	w.keyedStart(types.OpCreate)
 	w.decodeBody("create")
 	w.f("\tfingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, %sCreateFields)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n", c.camel)
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
@@ -2597,8 +2610,7 @@ func (w *runtimeHandlerWriter) patch() {
 	fields := c.patchFields()
 	w.f("// Patch runs the generated command patch of %s through Run: it changes only the fields that the request\n// gives (ST-SUP-RC20-OC15).\n", c.decl.Name)
 	w.f("func (h *%sHandler) Patch(w http.ResponseWriter, r *http.Request) {\n\tid := canonicalID(r.PathValue(\"id\"))\n", c.pascal)
-	w.start(true)
-	w.key(types.OpPatch)
+	w.keyedStart(types.OpPatch)
 	w.f("\tif _, err := decode%sPatch(body); err != nil {\n", c.pascal)
 	w.f("\t\th.rt.answerWrite(w, r, command.Request{}, \"patch\", %q, %q, false, err)\n\t\treturn\n\t}\n", e.ResourceType, e.Name)
 	w.f("\tfingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, %sPatchFields)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n", c.camel)

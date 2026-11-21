@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1983,4 +1985,80 @@ func (r *tupleReader) last() authz.Filter {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.filter
+}
+
+// TestWorkerFillCauses proves the fixed cause classes of a fill error that the handle did not give (decision
+// ST-SUP-Q203 (b)): the class comes from the type of an error in the chain, never from its text.
+func TestWorkerFillCauses(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC06-T10 A fill error is classed fill_json, fill_parse or fill_canceled by the type of an error in its chain, and fill_error else, never by its text", func(t *testing.T) {
+		var syntax *json.SyntaxError
+		syntaxErr := json.Unmarshal([]byte("{"), &struct{}{})
+		if !errors.As(syntaxErr, &syntax) {
+			t.Fatalf("json.Unmarshal of { gave %T, want *json.SyntaxError", syntaxErr)
+		}
+		var typed struct{ N int }
+		typeErr := json.Unmarshal([]byte(`{"N":"buyer@example.com"}`), &typed)
+		// The error that json.Unmarshal gives for a target that is not a pointer.
+		invalidErr := error(&json.InvalidUnmarshalError{Type: reflect.TypeOf(0)})
+		_, numberErr := strconv.Atoi("buyer@example.com")
+		_, parseErr := time.Parse(time.RFC3339, "buyer@example.com")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		for _, c := range []struct {
+			err  error
+			want string
+		}{
+			{fmt.Errorf("no buyer %s: %w", "buyer@example.com", syntaxErr), "fill_json"},
+			{fmt.Errorf("decode: %w", typeErr), "fill_json"},
+			{fmt.Errorf("decode: %w", invalidErr), "fill_json"},
+			{fmt.Errorf("qty: %w", numberErr), "fill_parse"},
+			{fmt.Errorf("due: %w", parseErr), "fill_parse"},
+			{fmt.Errorf("call: %w", ctx.Err()), "fill_canceled"},
+			{errors.New("fill_json fill_parse fill_canceled"), "fill_error"},
+			{errors.New("no buyer buyer@example.com"), "fill_error"},
+			// An error of the handle keeps its class, also when its chain holds a json error.
+			{fmt.Errorf("%w: %w", ErrInvalid, syntaxErr), "invalid"},
+		} {
+			outcome, cause := consumerOutcome(c.err)
+			if outcome != probe.WorkerRolledBack || cause != c.want {
+				t.Errorf("the fill error %T gave %s %s, want rolled_back %s", c.err, outcome, cause, c.want)
+			}
+			if !slices.Contains(probe.WorkerCauses, cause) {
+				t.Errorf("the cause %s is not one of probe.WorkerCauses, so worker.run.failed would refuse it", cause)
+			}
+			if strings.Contains(cause, "@") {
+				t.Errorf("the cause %q holds a value of the error text", cause)
+			}
+		}
+		// The new classes count for the poison bound as fill_error does.
+		for _, cause := range []string{"fill_error", "fill_json", "fill_parse", "fill_canceled"} {
+			if !streakCauses[cause] {
+				t.Errorf("the cause %s does not count for the poison bound", cause)
+			}
+		}
+	})
+}
+
+// TestWorkerStopNotCounted proves that a stop of the worker never parks a valid message (security review of PR #478,
+// L1).
+func TestWorkerStopNotCounted(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC06-T11 A fill canceled while the run's context is done is not counted for the poison bound, and one with a live context is", func(t *testing.T) {
+		live := context.Background()
+		stopped, stop := context.WithCancel(context.Background())
+		stop()
+		canceled := fmt.Errorf("call the partner: %w", context.Canceled)
+		// The fourth attempt in a row with the same class: a counted fifth attempt parks the message.
+		d := outbox.Delivery{FailureCode: streakPrefix + string(probe.WorkerRolledBack) + ".fill_canceled.4"}
+		if err := poisonStreak(live, d, canceled); !outbox.IsPermanent(err) {
+			t.Fatalf("a fifth fill_canceled with a live context gave %v, want the permanent refusal poison", err)
+		}
+		if err := poisonStreak(stopped, d, canceled); outbox.IsPermanent(err) || outbox.IsConflict(err) {
+			t.Fatalf("a fill canceled by a stop of the worker gave %v, want a transient refusal that is not counted", err)
+		}
+		// Another fill error of a stopped run is still counted.
+		d.FailureCode = streakPrefix + string(probe.WorkerRolledBack) + ".fill_error.4"
+		if err := poisonStreak(stopped, d, errors.New("no buyer")); !outbox.IsPermanent(err) {
+			t.Fatalf("a fifth fill_error gave %v, want the permanent refusal poison", err)
+		}
+	})
 }
