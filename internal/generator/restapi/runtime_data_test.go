@@ -805,6 +805,8 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC35-T02 A tenant in a header is not accepted",
 	"ST-SUP-RC20-OC35-T03 A tenant in a query parameter is not accepted",
 	"ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted",
+	"ST-SUP-RC20-OC55-T01 A create, an update and an upsert refuse a member that they do not take, also in another letter case, store nothing, and take a read row sent back",
+	"ST-SUP-RC20-OC55-T07 A write refuses a member given twice, cuts a long member name, and ignores a server-set member of another type",
 	"ST-SUP-RC30-OC04-T01 The key row commits with the write",
 	"ST-SUP-RC30-OC04-T03 The same key from another tenant or principal is a new key",
 	"ST-SUP-RC28-OC02-T02 A committed mutation leaves exactly one audit row",
@@ -829,7 +831,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC14-T01 An upsert with optimistic concurrency updates only under the If-Match of the stored generation",
 	"ST-SUP-RC20-OC13-T04 An upsert finds its row only under its own parent and implicit value",
 	"ST-SUP-RC20-OC13-T05 An upsert calls its validate gate before both branches and on_entity_changed after both",
-	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a patch keeps the implicit value",
+	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a write that gives the implicit field another value is refused",
 	"ST-SUP-RC20-OC23-T07 A read of a row whose optional implicit field is NULL is not found",
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
@@ -975,12 +977,55 @@ func TestRequiredMember(t *testing.T) {
 }
 `
 
+// unknownMemberCheck is a test of the generated validation.go: a create, an update, an upsert and a patch whose body
+// holds a member that the closed schema does not take get a 400 validation problem whose entry names the member in its
+// field, before any decode of the handler, and the problem holds no value of the body.
+const unknownMemberCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestUnknownMember(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a body with an unknown member reached the handler")
+	}))
+	const todo = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	const ticket = "{\"folder_id\":\"0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69\",\"code\":\"c1\",\"title\":\"t\",\"sku\":\"s1\","
+	for _, c := range []struct{ method, path, body, member string }{
+		{http.MethodPost, "/api/v1/todos", "{\"title\":\"t\",\"Title\":\"value-x\"}", "Title"},
+		{http.MethodPut, todo, "{\"title\":\"t\",\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPatch, todo, "{\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPut, "/api/v1/tickets", ticket + "\"tenant_id\":\"value-x\"}", "tenant_id"},
+	} {
+		r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		var problem struct {
+			Errors []struct {
+				Field string \x60json:"field"\x60
+			} \x60json:"validation_errors"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil || len(problem.Errors) != 1 ||
+			problem.Errors[0].Field != c.member || strings.Contains(answer.Body.String(), "value-x") {
+			t.Fatalf("%s %s %s got %d (%v): %s, want one entry whose field is %s and no value", c.method, c.path, c.body, answer.Code, err, answer.Body, c.member)
+		}
+	}
+}
+`
+
 func TestValidationEveryField(t *testing.T) {
 	ctx := crudContext()
 	ctx.Conventions.RequestValidation = "openapi-schema"
 	p := newCrudProject(t, ctx, crudFiles(t, ctx))
 	p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
 	p.write("out/api/required_member_test.go", []byte(strings.ReplaceAll(requiredMemberCheck, "\\x60", "`")))
+	p.write("out/api/unknown_member_test.go", []byte(strings.ReplaceAll(unknownMemberCheck, "\\x60", "`")))
 	t.Run("ST-SUP-RC20-OC05-T04 A body with two bad members gets a validation problem with one entry for each", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestEveryField$", "./out/api"); err != nil {
 			t.Fatalf("the check of every field failed: %v\n%s", err, output)
@@ -989,6 +1034,11 @@ func TestValidationEveryField(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC05-T07 A create or a PUT that leaves out a required member gets a validation problem that names it", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestRequiredMember$", "./out/api"); err != nil {
 			t.Fatalf("the check of a missing required member failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC55-T06 The request check names an unknown member of a create, an update, an upsert and a patch in the field of its entry", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestUnknownMember$", "./out/api"); err != nil {
+			t.Fatalf("the check of an unknown member failed: %v\n%s", err, output)
 		}
 	})
 }

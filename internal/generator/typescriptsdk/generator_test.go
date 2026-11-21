@@ -101,6 +101,39 @@ func TestGeneration(t *testing.T) {
 		}
 	}
 }
+func TestStrictRequest(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC55-T04 The TypeScript client is made from a document whose closed request schemas hold x-kept and x-output-only members", func(t *testing.T) {
+		document := strings.Replace(sample, `            schema: {$ref: '#/components/schemas/Record'}
+      responses:
+        '201':`, `            schema: {$ref: '#/components/schemas/RecordCreateRequest'}
+      responses:
+        '201':`, 1) + `    RecordCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        kind: {type: string, enum: [Record]}
+        name: {type: string}
+        mode: {type: string, x-kept: true, description: The body may leave it out or give its default.}
+        id: {nullable: true, x-output-only: true, description: The server sets this member.}
+`
+		c := fixture()
+		c.Inputs["api.yaml"] = []byte(document)
+		g := new(Generator)
+		if err := g.ValidateContext(c); err != nil {
+			t.Fatalf("a document with a closed request schema is refused: %v", err)
+		}
+		files, _, err := g.Generate(c)
+		if err != nil || len(files) != 3 {
+			t.Fatalf("the client of a document with a closed request schema: %d files, %v", len(files), err)
+		}
+		c.Inputs["api.yaml"] = []byte(strings.Replace(document, "x-output-only: true", "x-other: true", 1))
+		if g.ValidateContext(c) == nil {
+			t.Error("a document with the extension x-other passed preflight")
+		}
+	})
+}
+
 func TestGeneratedRuntime(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

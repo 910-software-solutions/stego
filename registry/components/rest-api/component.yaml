@@ -55,11 +55,17 @@
 # (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
 # Version 4.26.0 marks the root of a command response x-stego-opaque when the message holds a google.protobuf.Any,
 # Struct, Value or ListValue member at any depth; the mark asks no key ring (ST-SUP-RC20-OC54, ST-SUP-Q194 (a)).
-# Version 4.27.0 stages the declared event fields of an entity in the change event of each collection write, as a
+# Version 4.27.0 refuses each member of a create, an update or an upsert body that is not kind, id, href or a field of
+# the entity, in its exact letter case, with a 400 validation problem that names the member; refuses an implicit field
+# with another value than that of the collection; and closes the create-request and update-request schemas of the
+# OpenAPI document with additionalProperties: false, with the members that the server sets marked x-output-only and the
+# members that a body may only repeat marked x-kept (ST-SUP-RC20-OC55, ST-SUP-RC20-OC20, ST-SUP-RC20-OC23,
+# ST-SUP-RC20-OC35, ST-SUP-RC20-OC47, decision ST-SUP-Q195).
+# Version 4.29.0 stages the declared event fields of an entity in the change event of each collection write, as a
 # command does (ST-SUP-RC20-OC40, ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: rest-api
-version: 4.27.0
+version: 4.29.0
 stage: ga
 output_namespace: internal/api
 

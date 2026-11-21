@@ -3645,8 +3645,20 @@ func TestIsServerManaged(t *testing.T) {
 	})
 }
 
+// notWritten fails t unless the request schema gives the member name only as an optional member with the mark, and
+// no default, so a client never writes it (ST-SUP-RC20-OC20, ST-SUP-RC20-OC55).
+func notWritten(t *testing.T, request map[string]any, name, mark string) {
+	t.Helper()
+	props, _ := request["properties"].(map[string]any)
+	member, ok := props[name].(map[string]any)
+	required, _ := request["required"].([]any)
+	if !ok || member[mark] != true || member["default"] != nil || slices.Contains(required, any(name)) {
+		t.Errorf("the request schema gives %s %v (required %v), want an optional %s member with no default", name, props[name], required, mark)
+	}
+}
+
 func TestGenerate_CreateRequestSchemaExcludesScopeFields(t *testing.T) {
-	t.Run("ST-SUP-RC20-OC20-T02 A create-request schema leaves out the scope fields", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC20-T02 A create-request schema gives a scope field only as an optional x-kept member", func(t *testing.T) {
 		g := &Generator{}
 		ctx := gen.Context{
 			Conventions: types.Convention{Layout: "flat"},
@@ -3686,10 +3698,9 @@ func TestGenerate_CreateRequestSchemaExcludesScopeFields(t *testing.T) {
 		createReq := schemas["UserCreateRequest"].(map[string]any)
 		props := createReq["properties"].(map[string]any)
 
-		// Scope field org_id should be excluded from CreateRequest.
-		if _, ok := props["org_id"]; ok {
-			t.Error("UserCreateRequest should not include scope field 'org_id'")
-		}
+		// The path gives the scope field org_id: the body may only repeat it, so it is an optional x-kept member
+		// (ST-SUP-RC20-OC20, ST-SUP-RC20-OC55).
+		notWritten(t, createReq, "org_id", "x-kept")
 		// email should be present.
 		if _, ok := props["email"]; !ok {
 			t.Error("UserCreateRequest should include client-provided field 'email'")
@@ -3698,7 +3709,7 @@ func TestGenerate_CreateRequestSchemaExcludesScopeFields(t *testing.T) {
 }
 
 func TestGenerate_CreateRequestSchemaExcludesImplicitFields(t *testing.T) {
-	t.Run("ST-SUP-RC20-OC20-T03 A create-request schema leaves out the implicit fields", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC20-T03 A create-request schema gives an implicit field only as an optional x-kept member", func(t *testing.T) {
 		g := &Generator{}
 		ctx := gen.Context{
 			Conventions: types.Convention{Layout: "flat"},
@@ -3743,10 +3754,8 @@ func TestGenerate_CreateRequestSchemaExcludesImplicitFields(t *testing.T) {
 		createReq := schemas["AuditEventCreateRequest"].(map[string]any)
 		props := createReq["properties"].(map[string]any)
 
-		// Implicit field source_type should be excluded from CreateRequest.
-		if _, ok := props["source_type"]; ok {
-			t.Error("AuditEventCreateRequest should not include implicit field 'source_type'")
-		}
+		// The collection sets the implicit field source_type: the body may only repeat it (ST-SUP-RC20-OC23).
+		notWritten(t, createReq, "source_type", "x-kept")
 		// Non-implicit fields should be present.
 		if _, ok := props["message"]; !ok {
 			t.Error("AuditEventCreateRequest should include client-provided field 'message'")
@@ -3813,9 +3822,7 @@ func TestGenerate_CreateRequestSchemaExcludesImplicitFieldAcrossCollections(t *t
 	// category is implicit in auto-events, so it should be excluded from
 	// the entity-wide CreateRequest schema even though all-events does
 	// not declare it as implicit.
-	if _, ok := props["category"]; ok {
-		t.Error("EventCreateRequest should not include field 'category' (implicit in at least one collection)")
-	}
+	notWritten(t, createReq, "category", "x-kept")
 	if _, ok := props["title"]; !ok {
 		t.Error("EventCreateRequest should include client-provided field 'title'")
 	}
@@ -4722,7 +4729,7 @@ func TestRuntimeWrites(t *testing.T) {
 			t.Errorf("the patch request of orders is %v, want the members qty and kind (Order) and additionalProperties false", patch)
 		}
 		decode := handlerFunc(t, files, "orders", "decodeOrdersPatch")
-		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: unknown,", "json.Unmarshal(bodyBytes, &patch)")
+		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: memberName(unknown),", "json.Unmarshal(bodyBytes, &patch)")
 	})
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")
@@ -4780,14 +4787,17 @@ func TestRuntimeWrites(t *testing.T) {
 	if err := json.Unmarshal(files["api/openapi.json"], &document); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("ST-SUP-RC20-OC20-T01 The emitted create-request schema leaves out the fields a client cannot set", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC20-T01 The emitted create-request schema gives the fields a client cannot set only as x-output-only members", func(t *testing.T) {
 		request, ok := document.Components.Schemas["TodoCreateRequest"]
 		if !ok {
 			t.Fatal("the document has no TodoCreateRequest")
 		}
-		for _, name := range []string{"id", "created_by", "updated_by", "generation"} {
-			if _, ok := request.Properties[name]; ok {
-				t.Errorf("TodoCreateRequest holds the server-managed field %s", name)
+		// The server sets them, so a body may give them as a read does, and the server clears the value: an optional
+		// member with no type, no constraint and no default (ST-SUP-RC20-OC20, ST-SUP-RC20-OC55).
+		for _, name := range []string{"id", "href", "created_by", "updated_by", "generation"} {
+			var member map[string]any
+			if err := json.Unmarshal(request.Properties[name], &member); err != nil || member["x-output-only"] != true || member["nullable"] != true || len(member) != 3 || member["description"] == nil {
+				t.Errorf("TodoCreateRequest holds the server-managed member %s as %s, want only x-output-only, nullable and a description", name, request.Properties[name])
 			}
 		}
 		for _, name := range []string{"title", "done", "meta"} {
@@ -4796,7 +4806,7 @@ func TestRuntimeWrites(t *testing.T) {
 			}
 		}
 	})
-	t.Run("ST-SUP-RC20-OC20-T05 A create-request schema holds a client-set timestamp as an RFC 3339 time and leaves out a server-managed one", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC20-T05 A create-request schema holds a client-set timestamp as an RFC 3339 time and a server-managed one only as an x-output-only member", func(t *testing.T) {
 		var schemas struct {
 			Components struct {
 				Schemas map[string]struct {
@@ -4804,6 +4814,7 @@ func TestRuntimeWrites(t *testing.T) {
 						Type        string `json:"type"`
 						Format      string `json:"format"`
 						Description string `json:"description"`
+						OutputOnly  bool   `json:"x-output-only"`
 					} `json:"properties"`
 					Required []string `json:"required"`
 				} `json:"schemas"`
@@ -4822,10 +4833,10 @@ func TestRuntimeWrites(t *testing.T) {
 				t.Errorf("MeetingCreateRequest holds %s as %+v (present %t), want a string of format date-time described as an RFC 3339 time in UTC", name, p, ok)
 			}
 		}
-		if _, ok := request.Properties["noted_at"]; ok {
-			t.Error("MeetingCreateRequest holds the server-managed timestamp noted_at")
+		if p := request.Properties["noted_at"]; !p.OutputOnly || p.Type != "" || p.Format != "" {
+			t.Errorf("MeetingCreateRequest holds the server-managed timestamp noted_at as %+v, want an x-output-only member with no type", p)
 		}
-		if !slices.Contains(request.Required, "starts_at") || slices.Contains(request.Required, "ends_at") {
+		if !slices.Contains(request.Required, "starts_at") || slices.Contains(request.Required, "ends_at") || slices.Contains(request.Required, "noted_at") {
 			t.Errorf("MeetingCreateRequest requires %v, want starts_at and not ends_at", request.Required)
 		}
 		patch, ok := schemas.Components.Schemas["MeetingsPatchRequest"]

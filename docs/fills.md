@@ -1048,7 +1048,7 @@ type Change struct {
 
 A worker handle has no network client, so a consuming fill cannot read a row
 from the service `wallets`. Thus an entity declares the fields that its change
-events carry (runtime v0.167.0, rest-api 4.27.0):
+events carry (runtime v0.167.0, rest-api 4.29.0):
 
 <!-- excerpt -->
 ```yaml
