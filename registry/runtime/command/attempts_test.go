@@ -11,10 +11,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
@@ -287,7 +289,10 @@ func TestAttempts(t *testing.T) {
 	t.Run("ST-SUP-RP10-LC54-T04 A charge that cannot commit logs one error line through the log provider of the runtime, with the cause class and no value", func(t *testing.T) {
 		logs := &logRecorder{}
 		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs))).Logger("test")
-		defer func() { rt.logger = nil }()
+		held := statementLog
+		// A new log, so the line of the failed charge of the test before is not held back.
+		statementLog = authz.NewCauseLog(nil)
+		defer func() { rt.logger, statementLog = nil, held }()
 		e.exec("REVOKE INSERT, UPDATE ON attempt_counts FROM " + e.roles[0])
 		defer e.exec("GRANT INSERT, UPDATE ON attempt_counts TO " + e.roles[0])
 		if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
@@ -307,7 +312,7 @@ func TestAttempts(t *testing.T) {
 			got[string(kv.Key)] = kv.Value.Emit()
 			return true
 		})
-		want := map[string]string{"stego.action": "withdraw", "stego.entity": "PinWallet", "stego.cause": "internal"}
+		want := map[string]string{"stego.action": "withdraw", "stego.entity": "PinWallet", "stego.cause": "internal", "stego.held_back": "0"}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("the line has the attributes %v, want %v", got, want)
 		}
@@ -321,6 +326,51 @@ func TestAttempts(t *testing.T) {
 			if got := chargeCause(c.err); got != c.want {
 				t.Errorf("chargeCause(%v) = %s, want %s", c.err, got, c.want)
 			}
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T08 A flood of charges that cannot commit logs one line for each action, entity and cause in each LogEvery", func(t *testing.T) {
+		logs := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs))).Logger("test")
+		tick := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+		held := statementLog
+		statementLog = authz.NewCauseLog(func() time.Time { return tick })
+		defer func() { rt.logger, statementLog = nil, held }()
+		e.exec("REVOKE INSERT, UPDATE ON attempt_counts FROM " + e.roles[0])
+		defer e.exec("GRANT INSERT, UPDATE ON attempt_counts TO " + e.roles[0])
+		failed := func() []sdklog.Record {
+			var lines []sdklog.Record
+			for _, r := range logs.all() {
+				if r.EventName() == AttemptsFailedEvent {
+					lines = append(lines, r)
+				}
+			}
+			return lines
+		}
+		for range 3 {
+			if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("a failed charge gave %v, want ErrUnavailable", err)
+			}
+		}
+		if lines := failed(); len(lines) != 1 {
+			t.Fatalf("3 failed charges in one LogEvery logged %d lines of %s, want 1", len(lines), AttemptsFailedEvent)
+		}
+		tick = tick.Add(authz.LogEvery)
+		if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("a failed charge gave %v, want ErrUnavailable", err)
+		}
+		lines := failed()
+		if len(lines) != 2 {
+			t.Fatalf("a failed charge after LogEvery logged %d lines in all, want 2", len(lines))
+		}
+		got := ""
+		lines[1].WalkAttributes(func(kv attribute.KeyValue) bool {
+			if kv.Key == "stego.held_back" {
+				got = kv.Value.Emit()
+			}
+			return true
+		})
+		if got != "2" {
+			t.Fatalf("the second line holds back %q lines, want 2", got)
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T03 A rerun of the call after a conflict does not charge the checks of an earlier attempt again", func(t *testing.T) {
@@ -500,6 +550,76 @@ func TestAttemptPools(t *testing.T) {
 		}
 		if got := chargeDB.Stats().OpenConnections; got != 1 {
 			t.Fatalf("the pool of the charges has %d open connections, want the one of the charges", got)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T09 The charges of one tenant hold at most half of the pool of the charges, so another tenant's check runs", func(t *testing.T) {
+		const walletID, right = "0198a1b2-0000-7000-8000-000000000004", "4711"
+		e := newEnv(t)
+		pinWallets(t, e, walletID, right)
+		hash, err := sealed.Hash(right)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) VALUES ('t2', $1, 100, $2)`, walletID, hash); err != nil {
+			t.Fatal(err)
+		}
+		wallets := pinWalletEntity(t)
+		chargeDB := e.openPool(e.dsn(e.roles[0]))
+		chargeDB.SetMaxOpenConns(4)
+		rt := e.runtime(func(c *Config) { c.Entities, c.ChargeDB = []Declared{wallets}, chargeDB })
+		// The charges of t1 keep their connection until release closes; begun counts those that have one.
+		release := make(chan struct{})
+		var begun atomic.Int32
+		rt.chargeBegun = func(id string) {
+			if id == "t1" {
+				begun.Add(1)
+				<-release
+			}
+		}
+		cmd := e.command("withdraw", nil, wallets)
+		check := func(tenantID, key, pin string) error {
+			_, err := e.runOn(rt, cmd, e.request(tenantID, u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				w, err := r.Get(ctx, walletID)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				if !w.Value().PIN.Matches(pin) {
+					return idempotency.Response{}, errors.New("pin.wrong")
+				}
+				return ok, nil
+			})
+			return err
+		}
+		const flood = 4
+		results := make(chan error, flood)
+		for i := range flood {
+			go func() { results <- check("t1", fmt.Sprintf("flood-%d", i), "0000") }()
+		}
+		// Each check of t1 has a connection or waits for a slot of t1.
+		for begun.Load() < flood && (begun.Load() < 2 || rt.chargeSlots.waiting("t1") < flood) {
+			runtime.Gosched()
+		}
+		if n := begun.Load(); n != 2 {
+			close(release)
+			t.Fatalf("%d charges of t1 hold a connection of the pool of 4, want 2", n)
+		}
+		// The check of t2 gets a connection while the charges of t1 hold theirs.
+		if err := check("t2", "other", right); err != nil {
+			close(release)
+			t.Fatalf("the check of t2 behind the charges of t1 gave %v, want the match", err)
+		}
+		close(release)
+		for range flood {
+			if err := <-results; err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("a check of t1 gave %v, want the refusal of the wrong PIN", err)
+			}
+		}
+		if n := rt.chargeSlots.waiting("t1"); n != 0 {
+			t.Fatalf("the slots of t1 keep %d charges after the checks, want none", n)
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T07 A charge ends at its lock timeout behind a reset, and a full pool of the charges is logged with no value", func(t *testing.T) {

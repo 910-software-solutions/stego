@@ -162,7 +162,11 @@ type Runtime struct {
 	chargeErr func(error)
 	// saturationLogged is the time, in Unix nanoseconds, of the last log that the pool of the charges is full.
 	saturationLogged atomic.Int64
-	beforeCommit     func(ctx context.Context, tx *sql.Tx) error
+	// chargeSlots limits the charges of each tenant that run at one time on the pool of the charges (security review
+	// of PR #481, L1), and chargeBegun, set only by the tests, gets the tenant of each charge that has its connection.
+	chargeSlots  tenantSlots
+	chargeBegun  func(tenantID string)
+	beforeCommit func(ctx context.Context, tx *sql.Tx) error
 	// rerun, when set by a test, gets the random wait before each rerun and the time left after it.
 	rerun func(n int, wait, left time.Duration)
 	// step, when set by a test, runs right after lock_timeout is set before a statement of the wrapper, the enqueue,

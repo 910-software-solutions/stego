@@ -571,6 +571,10 @@ gives to the count of its row:
   answers 503 (runtime v0.180.0). When each connection of the small pool of
   the counts is in use, the runtime writes the warn line
   `command.attempts.pool_saturated`, with no value.
+- The counts of one tenant use at most half of the connections of that pool
+  at one time. A count of a tenant that uses its half waits for one of its
+  own connections, so the checks of one tenant do not make the checks of
+  another tenant wait (runtime v0.181.0).
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.

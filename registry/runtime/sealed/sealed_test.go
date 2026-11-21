@@ -260,8 +260,13 @@ func TestCompare(t *testing.T) {
 		if stored, err := CountedByKey(ComparedHash(hash), k, nil).Stored(); err != nil || stored != hash {
 			t.Fatalf("a value with a nil key gave %q and %v, want the hash", stored, err)
 		}
-		if stored, err := CountedBy(ComparedHash(hash), k).StoredBy(context.Background(), key); !errors.Is(err, ErrCounted) || stored != "" {
-			t.Fatalf("a value that CountedBy bound with no key gave %q and %v, want ErrCounted", stored, err)
+		// CountedBy binds no counter with no key: the value stays a plain stored value, and Matches charges nothing.
+		before := k.charges
+		if plain := CountedBy(ComparedHash(hash), k); plain.IsCounted() || !plain.Matches("4711") || k.charges != before {
+			t.Fatalf("CountedBy with no key gave a counted value, or charged its counter %d times", k.charges-before)
+		}
+		if stored, err := CountedBy(ComparedHash(hash), k).Stored(); err != nil || stored != hash {
+			t.Fatalf("a value of CountedBy gave %q and %v, want the hash", stored, err)
 		}
 		if stored, err := CountedByKey(ComparedOf("4712"), k, key).Stored(); err != nil || !Matches(stored, "4712") {
 			t.Fatalf("a new text with a counter gave %v, want its hash", err)
