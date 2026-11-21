@@ -89,6 +89,9 @@ Do these steps for each upgrade. Do them in this order.
      manifest` is an alert. A pod of the new release must not write it.
    - The parked list of each destination of a consuming worker (see [Add a
      subscription to a running service](#add-a-subscription-to-a-running-service)).
+   - The parked list of the destination `authz`, when the release adds a
+     relation to `authz/schema.zed` (see [Resolve the parked messages of the
+     destination authz](#resolve-the-parked-messages-of-the-destination-authz)).
 7. If you must go back, go back by one release only. See [Which older releases
    can run on a newer database](operations.md#which-older-releases-can-run-on-a-newer-database).
 
@@ -730,6 +733,86 @@ Do these steps:
 From runtime v0.134.0, look at the parked list once after the first start
 all the same: a message that parks has another cause, such as a row that the
 fill needs and that does not exist.
+
+## Resolve the parked messages of the destination authz
+
+The messages of the destination `authz` are the relationship writes of the
+rows: the relay writes them to SpiceDB. In a rolling update, the worker of the
+release before and the worker of the new release run at the same time, and
+both take the messages of the outbox.
+
+A release can add a relation to `authz/schema.zed`, such as `relation tenant:
+tenant` on `payout` with `permission edit = owner + tenant->approver`. The
+migration Job writes the new schema to SpiceDB before the rollout. Then the
+pods of the new release write the tuples of the new relation for each row
+that they make.
+
+- From runtime v0.189.0, the relay of the release before does not write a
+  tuple of a relation that its release does not know. It leaves the message in
+  pending, with the failure code `authz-relation-unknown` and no attempt
+  counted, and the relay of the new release writes it. A message that no relay
+  writes within one hour is parked. The line `outbox.parked` then has the cause
+  `not_understood`. The relay of the release before also leaves a payload of a
+  newer runtime (`authz-payload-newer`) and the delete of a retired tenant of a
+  new resource type (`authz-type-unknown`).
+- Before runtime v0.189.0, the relay of the release before parks such a
+  message at once, with the failure code `delivery-refused-permanent`. A row
+  that the new release made during the rollout then has no tuple of the new
+  relation, and a check that needs it gives 404. Thus, when you upgrade from a
+  release before runtime v0.189.0 with such a release, do the steps below after
+  the rollout. To prevent the parks, scale the Deployment `<service>-worker`
+  of the release before to 0 before the rollout, and accept that the messages
+  wait until the new worker starts.
+
+Do these steps in each tenant, after the last pod of the release before
+stopped:
+
+1. Give the operator the permission `resolve` on the destination `authz` in
+   the tenant: the relation `operator` on `outbox_destination`, with the
+   tenant-qualified ID of `authz`. For the tenant `acme` and the user `ops` of
+   the issuer `https://idp.example.test`:
+
+   ```bash
+   b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+   zed relationship create "outbox_destination:$(b64 acme)/$(b64 authz)" operator "user:$(b64 https://idp.example.test)|$(b64 ops)"
+   ```
+
+   SpiceDB can take up to its quantization interval to use the grant (see
+   [Operations](operations.md)). The schema must declare `outbox_destination`
+   with the relation `operator` (see [See and resolve the parked
+   messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)).
+2. Write the header file of the token of the operator, as in step 5 of [Add a
+   subscription to a running service](#add-a-subscription-to-a-running-service),
+   and list the parked messages of `authz`:
+
+   ```sh
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/authz/parked"
+   ```
+
+   Each message has the failure code. A message of a new relation has
+   `delivery-refused-permanent` before runtime v0.189.0, and
+   `authz-relation-unknown` from runtime v0.189.0.
+3. Send each parked message again with `not_acted`, then remove the header
+   file. Do not use `discarded`: a discarded message of `authz` is a
+   relationship change that SpiceDB never gets. The destination `authz` refuses
+   `acted`.
+
+   ```sh
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/authz/parked" |
+     jq -r '.items[].id' | while read -r id; do
+       curl -sS -X POST -H @auth-header -H 'Content-Type: application/json' \
+         -d '{"resolution": "not_acted"}' "https://<host><base path>/stego/outbox/authz/parked/$id:resolve"
+     done
+   shred -u auth-header
+   ```
+
+   Do this again while the list has a `next` cursor.
+4. List the parked messages again. The relay of the new release writes each
+   message that you sent again. A message that parks again has another cause,
+   such as a relation that `authz/schema.zed` of the release does not hold.
+   Correct the cause, then send it again.
+5. Remove the grant of step 1 with `zed relationship delete` and the same
+   three arguments, unless the operator keeps it.
 
 ## A Go build fails with "could not import log/slog"
 

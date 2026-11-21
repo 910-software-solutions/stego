@@ -1395,6 +1395,25 @@ same authentication as the other routes:
   discards it. The answer is 204, and the audit row
   `resolve-parked-message` is written in the same transaction.
 
+Each park writes one log line `outbox.parked` at the level WARN, and adds one
+to the metric `outbox.parked`. Both name the destination, the state that the
+message left and the cause, one of these fixed classes (ST-SUP-RP01-LC12):
+
+- `refused`: the destination refused the message for good.
+- `not_understood`: the worker of no release could read the message within
+  one hour (ST-SUP-RP01-LC40). A worker of an older release leaves such a
+  message in pending for a worker of a newer release, and counts it in the
+  metric `outbox.not_understood`.
+- `attempts_exhausted`, `lookups_exhausted`: the attempts or the status
+  lookups of the message are at their limit.
+- `outcome_unknown`: the outcome of the send is not known, and the
+  destination cannot find it.
+- `tenant_not_active`: the tenant of the message is not active.
+
+The line also has the failure code of the message, such as
+`delivery-refused-permanent` or `poison`, which the list route gives too.
+Neither holds an error text or a value of the message.
+
 The destination decides which resolutions it accepts (ST-SUP-RP01-LC13):
 
 - An idempotent destination refuses `acted` with 409. To send such a message

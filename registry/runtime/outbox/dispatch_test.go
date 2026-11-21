@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -606,7 +607,8 @@ func TestDispatchPark(t *testing.T) {
 			t.Fatalf("outbox.parked is %+v", found)
 		}
 		sum, ok := found[0].Data.(metricdata.Sum[int64])
-		want := attribute.NewSet(attribute.String("destination", "billing"), attribute.String("state", "outcome_unknown"))
+		want := attribute.NewSet(attribute.String("destination", "billing"), attribute.String("state", "outcome_unknown"),
+			attribute.String("cause", CauseOutcomeUnknown))
 		if !ok || len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != 1 || !sum.DataPoints[0].Attributes.Equals(&want) {
 			t.Fatalf("outbox.parked holds %+v", found[0].Data)
 		}
@@ -620,8 +622,60 @@ func TestDispatchPark(t *testing.T) {
 			got[string(kv.Key)] = kv.Value.AsString()
 			return true
 		})
-		if got["destination"] != "billing" || got["state"] != "outcome_unknown" {
+		if got["destination"] != "billing" || got["state"] != "outcome_unknown" || got["cause"] != CauseOutcomeUnknown ||
+			got["failure_code"] != "outcome-unknown" {
 			t.Fatalf("the alert event names %v", got)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC12-T03 Each park names a fixed cause class and the failure code, and no error text", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		refused, exhausted := message("billing", "charge:1"), message("billing", "charge:2")
+		enqueue(t, db, q, refused, exhausted)
+		reader, provider := metricReader()
+		events := &eventExporter{}
+		logs := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(events)))
+		w := newWorker(t, q, func(c *WorkerConfig) { c.Meter = provider; c.Logger = logs; c.MaxAttempts = 1 })
+		register(t, w, Destination{Name: "billing", Handler: func(_ context.Context, _ *sql.Tx, d Delivery) error {
+			if d.ID == refused.ID {
+				return WithFailureCode(PermanentRefusal(errors.New("400 secret-body")), "poison")
+			}
+			return TransientRefusal(errors.New("503 secret-body"))
+		}})
+		for i := 0; i < 2; i++ {
+			cycle(t, w)
+		}
+		if a, b := readRow(t, db, refused.ID), readRow(t, db, exhausted.ID); a.State != Parked || b.State != Parked {
+			t.Fatalf("the messages are %+v and %+v", a, b)
+		}
+		causes := map[string]string{}
+		events.mu.Lock()
+		for _, record := range events.records {
+			got := map[string]string{}
+			record.WalkAttributes(func(kv attribute.KeyValue) bool {
+				got[string(kv.Key)] = kv.Value.AsString()
+				return true
+			})
+			if strings.Contains(record.Body().AsString(), "secret") || strings.Contains(strings.Join(slices.Collect(maps.Values(got)), " "), "secret") {
+				t.Fatalf("the alert event holds an error text: %v", got)
+			}
+			causes[got["failure_code"]] = got["cause"]
+		}
+		events.mu.Unlock()
+		if causes["poison"] != CauseRefused || causes["attempts-exhausted"] != CauseAttemptsExhausted || len(causes) != 2 {
+			t.Fatalf("the alert events name the causes %v, want refused for poison and attempts_exhausted", causes)
+		}
+		found := collect(t, reader, "outbox.parked")
+		sum, ok := found[0].Data.(metricdata.Sum[int64])
+		if !ok || len(sum.DataPoints) != 2 {
+			t.Fatalf("outbox.parked holds %+v", found[0].Data)
+		}
+		for _, point := range sum.DataPoints {
+			cause, _ := point.Attributes.Value("cause")
+			if !slices.Contains(ParkCauses(), cause.AsString()) {
+				t.Fatalf("the metric names the cause %q, which is not a fixed class", cause.AsString())
+			}
 		}
 	})
 
@@ -1739,6 +1793,116 @@ func TestKeyOrder(t *testing.T) {
 		}
 		if n, got := auditRows(t, db, update.ID), handled(); n != 1 || len(got) != 3 {
 			t.Fatalf("the update has %d audit rows and the destination got %d deliveries, want 1 and 3", n, len(got))
+		}
+	})
+}
+
+func TestDispatchNotUnderstood(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC40-T01 A message that the handler cannot read waits uncounted, holds its key, and a worker that reads it delivers it in order", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		first, second := message("authz", "document:1"), message("authz", "document:1")
+		enqueue(t, db, q, first, second)
+		older := newWorker(t, q, nil)
+		var olderCalls atomic.Int32
+		register(t, older, Destination{Name: "authz", MustLand: true, Handler: func(_ context.Context, _ *sql.Tx, d Delivery) error {
+			olderCalls.Add(1)
+			if d.ID == first.ID {
+				return WithFailureCode(NotUnderstood(errors.New("a relation of a newer schema")), "authz-relation-unknown")
+			}
+			return nil
+		}})
+		for i := 0; i < 3; i++ {
+			cycle(t, older)
+		}
+		row := readRow(t, db, first.ID)
+		if row.State != Pending || row.Attempts != 0 || row.FailureCode != "authz-relation-unknown" || olderCalls.Load() != 1 {
+			t.Fatalf("the message that the older worker cannot read is %+v after %d calls, want pending with no attempt", row, olderCalls.Load())
+		}
+		if later := readRow(t, db, second.ID); later.State != Pending || later.Attempts != 0 {
+			t.Fatalf("the later message of the key is %+v, want held behind the first", later)
+		}
+		if older.Stats().NotUnderstood != 1 || older.Stats().Parked != 0 {
+			t.Fatalf("the older worker has the stats %+v", older.Stats())
+		}
+		// The worker of the newer release reads both, in the order of the key.
+		newer := newWorker(t, q, nil)
+		var order []uuid.UUID
+		var mu sync.Mutex
+		register(t, newer, Destination{Name: "authz", MustLand: true, Handler: func(_ context.Context, _ *sql.Tx, d Delivery) error {
+			mu.Lock()
+			defer mu.Unlock()
+			order = append(order, d.ID)
+			return nil
+		}})
+		clock.Advance(time.Minute)
+		for i := 0; i < 3; i++ {
+			cycle(t, newer)
+		}
+		if a, b := readRow(t, db, first.ID), readRow(t, db, second.ID); a.State != Done || b.State != Done {
+			t.Fatalf("after the newer worker the messages are %+v and %+v", a, b)
+		}
+		if len(order) != 2 || order[0] != first.ID || order[1] != second.ID {
+			t.Fatalf("the newer worker delivered %v, want the first and then the second", order)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC40-T02 A message that no handler reads within the bound is parked with the cause not_understood and an alert", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		m := message("authz", "document:2")
+		enqueue(t, db, q, m)
+		reader, provider := metricReader()
+		events := &eventExporter{}
+		logs := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(events)))
+		w := newWorker(t, q, func(c *WorkerConfig) { c.Meter = provider; c.Logger = logs })
+		register(t, w, Destination{Name: "authz", MustLand: true, NotUnderstoodBound: 10 * time.Minute,
+			Handler: func(context.Context, *sql.Tx, Delivery) error {
+				return NotUnderstood(errors.New("a payload of a newer release"))
+			}})
+		cycle(t, w)
+		if row := readRow(t, db, m.ID); row.State != Pending || row.FailureCode != NotUnderstoodCode {
+			t.Fatalf("within the bound the message is %+v, want pending", row)
+		}
+		clock.Advance(10 * time.Minute)
+		cycle(t, w)
+		row := readRow(t, db, m.ID)
+		if row.State != Parked || row.Attempts != 0 || row.FailureCode != NotUnderstoodCode || row.ParkedFrom.String != string(Dispatching) {
+			t.Fatalf("after the bound the message is %+v, want parked from dispatching with no attempt", row)
+		}
+		found := collect(t, reader, "outbox.parked")
+		sum, ok := found[0].Data.(metricdata.Sum[int64])
+		want := attribute.NewSet(attribute.String("destination", "authz"), attribute.String("state", "dispatching"),
+			attribute.String("cause", CauseNotUnderstood))
+		if !ok || len(sum.DataPoints) != 1 || !sum.DataPoints[0].Attributes.Equals(&want) {
+			t.Fatalf("outbox.parked holds %+v", found[0].Data)
+		}
+		if left := collect(t, reader, "outbox.not_understood"); len(left) != 1 {
+			t.Fatalf("outbox.not_understood is %+v", left)
+		}
+		events.mu.Lock()
+		defer events.mu.Unlock()
+		got := map[string]string{}
+		for _, record := range events.records {
+			if record.EventName() == "outbox.parked" {
+				record.WalkAttributes(func(kv attribute.KeyValue) bool {
+					got[string(kv.Key)] = kv.Value.AsString()
+					return true
+				})
+			}
+		}
+		if got["cause"] != CauseNotUnderstood || got["failure_code"] != NotUnderstoodCode || got["destination"] != "authz" {
+			t.Fatalf("the alert event names %v", got)
+		}
+		// Register refuses a negative bound and one longer than seven days.
+		for _, bound := range []time.Duration{-time.Second, MaxNotUnderstoodBound + time.Second} {
+			other := newWorker(t, q, nil)
+			if err := other.Register(Destination{Name: "authz", Handler: func(context.Context, *sql.Tx, Delivery) error { return nil },
+				NotUnderstoodBound: bound}); err == nil {
+				t.Errorf("Register took the not-understood bound %s", bound)
+			}
 		}
 	})
 }

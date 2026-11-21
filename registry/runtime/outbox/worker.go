@@ -48,6 +48,11 @@ type Destination struct {
 	// read of the list sends the message back to pending (ST-SUP-RC27-OC12). With no WorkerConfig.Tenants it checks
 	// nothing.
 	ActiveTenants bool
+	// NotUnderstoodBound is how long a message that the handler cannot read (NotUnderstood) waits in pending for a
+	// worker of a newer release that reads it, from its enqueue; then it is parked with the cause not_understood
+	// (ST-SUP-RP01-LC40). Zero is DefaultNotUnderstoodBound, one hour; Register refuses a negative bound and one
+	// longer than seven days.
+	NotUnderstoodBound time.Duration
 	// Failing, when set, gives the fixed failure class of the destination while it fails each delivery in a row, or
 	// empty. The readiness of the worker mode names it (Worker.Failing), as it names a Kafka inbox that fails.
 	Failing func() string
@@ -91,6 +96,9 @@ type WorkerConfig struct {
 	Tenants TenantList
 }
 
+// MaxNotUnderstoodBound is the longest not-understood bound of a destination (ST-SUP-RP01-LC40).
+const MaxNotUnderstoodBound = 7 * 24 * time.Hour
+
 // DefaultRetention is the retention of a done message when the configuration does not change it.
 const DefaultRetention = 7 * 24 * time.Hour
 
@@ -116,13 +124,16 @@ type WorkerStats struct {
 	DatabaseFailures    uint64
 	LostLeases          uint64
 	UnknownDestinations uint64
-	UnknownOutcomes     uint64
-	Conflicts           uint64
-	Lookups             uint64
-	Parked              uint64
-	StateHookFailures   uint64
-	DonePurged          uint64
-	PurgeBatches        uint64
+	// NotUnderstood counts the messages that a handler could not read and left for a newer release
+	// (ST-SUP-RP01-LC40).
+	NotUnderstood     uint64
+	UnknownOutcomes   uint64
+	Conflicts         uint64
+	Lookups           uint64
+	Parked            uint64
+	StateHookFailures uint64
+	DonePurged        uint64
+	PurgeBatches      uint64
 }
 
 // Worker claims messages and takes each one's next step. It is a library value: the service builds it, registers
@@ -153,6 +164,7 @@ type Worker struct {
 	databaseFailures    atomic.Uint64
 	lostLeases          atomic.Uint64
 	unknownDestinations atomic.Uint64
+	notUnderstood       atomic.Uint64
 	unknownOutcomes     atomic.Uint64
 	conflicts           atomic.Uint64
 	lookups             atomic.Uint64
@@ -222,6 +234,9 @@ func (w *Worker) Register(d Destination) error {
 	}
 	if d.SettleTime > time.Hour {
 		return fmt.Errorf("outbox: the settle time of %s is longer than one hour", d.Name)
+	}
+	if d.NotUnderstoodBound < 0 || d.NotUnderstoodBound > MaxNotUnderstoodBound {
+		return fmt.Errorf("outbox: the not-understood bound of %s is not from 0 to seven days", d.Name)
 	}
 	if w.started.Load() {
 		return errors.New("outbox: a destination is registered before Run")
@@ -310,7 +325,7 @@ func (w *Worker) Stats() WorkerStats {
 	return WorkerStats{
 		Delivered: w.delivered.Load(), Retried: w.retried.Load(),
 		DeliveryFailures: w.deliveryFailures.Load(), DatabaseFailures: w.databaseFailures.Load(),
-		LostLeases: w.lostLeases.Load(), UnknownDestinations: w.unknownDestinations.Load(),
+		LostLeases: w.lostLeases.Load(), UnknownDestinations: w.unknownDestinations.Load(), NotUnderstood: w.notUnderstood.Load(),
 		UnknownOutcomes: w.unknownOutcomes.Load(), Conflicts: w.conflicts.Load(), Lookups: w.lookups.Load(),
 		Parked: w.parked.Load(), StateHookFailures: w.hookFailures.Load(), DonePurged: w.donePurged.Load(),
 		PurgeBatches: w.purgeBatches.Load(),
@@ -612,6 +627,7 @@ func waitWorker(ctx context.Context, delay time.Duration) bool {
 type metrics struct {
 	delay   metric.Float64Histogram
 	parks   metric.Int64Counter
+	lefts   metric.Int64Counter
 	hooks   metric.Int64Counter
 	freed   metric.Int64Counter
 	frees   metric.Int64Counter
@@ -639,6 +655,11 @@ func newMetrics(provider metric.MeterProvider, logs otellog.LoggerProvider, w *W
 	}
 	m.parks, err = meter.Int64Counter("outbox.parked",
 		metric.WithDescription("The messages parked, by destination and the state they left."))
+	if err != nil {
+		return nil, err
+	}
+	m.lefts, err = meter.Int64Counter("outbox.not_understood",
+		metric.WithDescription("The messages that a handler could not read and left in pending for a worker of a newer release, by destination."))
 	if err != nil {
 		return nil, err
 	}
@@ -687,15 +708,25 @@ func (m *metrics) delivered(ctx context.Context, destination string, delay time.
 	m.delay.Record(ctx, delay.Seconds(), metric.WithAttributes(attribute.String("destination", destination)))
 }
 
-// parked raises the one alert event and metric of a parked message, which name the destination and the state the
-// message left.
-func (m *metrics) parked(ctx context.Context, destination string, from State) {
+// left counts one message that a handler could not read and left in pending, labelled by its destination only
+// (ST-SUP-RP01-LC40). The alert is the park at the bound.
+func (m *metrics) left(ctx context.Context, destination string) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.lefts.Add(ctx, 1, metric.WithAttributes(attribute.String("destination", destination)))
+}
+
+// parked raises the one alert event and metric of a parked message, which name the destination, the state the
+// message left and the fixed cause class of the park; the event also names the failure code, a short label that
+// holds no error text and no value of the message (ST-SUP-RP01-LC12).
+func (m *metrics) parked(ctx context.Context, destination string, from State, cause, failureCode string) {
 	if m == nil {
 		return
 	}
 	if m.enabled {
 		m.parks.Add(ctx, 1, metric.WithAttributes(attribute.String("destination", destination),
-			attribute.String("state", string(from))))
+			attribute.String("state", string(from)), attribute.String("cause", cause)))
 	}
 	if m.logger != nil {
 		var record otellog.Record
@@ -703,7 +734,11 @@ func (m *metrics) parked(ctx context.Context, destination string, from State) {
 		record.SetSeverity(otellog.SeverityWarn)
 		record.SetSeverityText("WARN")
 		record.SetBody(attribute.StringValue("an outbox message is parked and waits for a person"))
-		record.AddAttributes(attribute.String("destination", destination), attribute.String("state", string(from)))
+		record.AddAttributes(attribute.String("destination", destination), attribute.String("state", string(from)),
+			attribute.String("cause", cause))
+		if labelPattern.MatchString(failureCode) {
+			record.AddAttributes(attribute.String("failure_code", failureCode))
+		}
 		m.logger.Emit(ctx, record)
 	}
 }

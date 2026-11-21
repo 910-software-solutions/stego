@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -293,7 +295,7 @@ func TestRelay(t *testing.T) {
 		env.waitState(t, id, outbox.Parked)
 	})
 
-	t.Run("ST-SUP-RP06-LC06-T06 The relay parks a tuple of a relation that is not on its allow list, and writes nothing", func(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC06-T06 The relay parks a tuple of the floor marker, leaves a tuple of a relation that is not on its allow list, and writes neither", func(t *testing.T) {
 		env := newPG(t)
 		fake := &fakeRelationships{}
 		worker := env.newWorker(t, env.relay(t, fake), nil)
@@ -305,11 +307,16 @@ func TestRelay(t *testing.T) {
 			Relation: DefaultMarker.Relation, Subject: Subject{Type: DefaultMarker.Subject.Type, ID: qualify("t1", "m")}})
 		// Each on a resource key of its own: the outbox delivers one key in order, and a parked entry holds its key.
 		removed := env.enqueue(t, "t1", OperationDeleteRelation, Tuple{Resource: doc("2"), Relation: "editor"})
-		for _, id := range []uuid.UUID{undeclared, marker, removed} {
-			env.waitState(t, id, outbox.Parked)
-		}
+		env.waitState(t, marker, outbox.Parked)
 		declared := env.enqueue(t, "t1", OperationTouch, Tuple{Resource: doc("3"), Relation: "viewer", Subject: user("bob")})
 		env.waitState(t, declared, outbox.Done)
+		// A relation that is not on the allow list can be of a newer release: the relay leaves it in pending, with no
+		// attempt counted, for the relay of that release (ST-SUP-RP01-LC40).
+		for _, id := range []uuid.UUID{undeclared, removed} {
+			waitFor(t, func() bool {
+				return leftFor(t, env, id, UnknownRelationCode)
+			})
+		}
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		for _, batch := range fake.touches {
@@ -330,6 +337,59 @@ func TestRelay(t *testing.T) {
 			if _, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: relations, Relationships: &fakeRelationships{}, DB: fakeDB(t), Schema: "public"}); err == nil {
 				t.Errorf("NewRelay took %s", name)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP06-LC06-T07 The relay leaves a payload, an operation and a resource type of a newer release, and writes nothing for them", func(t *testing.T) {
+		env := newPG(t)
+		fake := &fakeRelationships{}
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: fake, DB: env.relayDB,
+			Schema: env.schema, Types: []string{"document", "folder", "user"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, env.newWorker(t, relay, nil))
+		tuple := `"tuple":{"resource_type":"document","resource_id":"` + qualify("t1", "%s") + `","relation":"viewer","subject_type":"user","subject_id":"bob"}`
+		body := func(key, head string) []byte {
+			return []byte("{" + head + "," + strings.Replace(tuple, "%s", key, 1) + "}")
+		}
+		revocation := `"revocation":"` + uuid.NewString() + `"`
+		newer := map[string]uuid.UUID{
+			"a later version": env.enqueueRaw(t, "t1", "document:n1", "authz.touch", body("n1", `"v":3,"op":"touch",`+revocation), uuid.NewString()),
+			"a field this release does not know": env.enqueueRaw(t, "t1", "document:n2", "authz.touch",
+				body("n2", `"v":2,"op":"touch","expires_at":"2027-01-01T00:00:00Z",`+revocation), uuid.NewString()),
+			"an operation this release does not know": env.enqueueRaw(t, "t1", "document:n3", "authz.touch",
+				body("n3", `"v":2,"op":"touch_with_expiry",`+revocation), uuid.NewString()),
+		}
+		tenantDelete := func(resourceType string) uuid.UUID {
+			return env.enqueueRaw(t, "t1", resourceType+":", "authz.delete_tenant", []byte(`{"v":2,"op":"delete_tenant",`+revocation+
+				`,"tuple":{"resource_type":"`+resourceType+`","resource_id":"`+TenantPrefix(mustTenant(t, "t1"))+`","relation":"","subject_type":"","subject_id":""}}`), uuid.NewString())
+		}
+		unknownType, knownType := tenantDelete("invoice"), tenantDelete("folder")
+		// A payload of version 1 with an operation that no release knows is still refused for good.
+		poison := env.enqueueRaw(t, "t1", "document:p1", "authz.touch", body("p1", `"v":1,"op":"create",`+revocation), uuid.NewString())
+		env.waitState(t, knownType, outbox.Done)
+		env.waitState(t, poison, outbox.Parked)
+		for _, id := range newer {
+			waitFor(t, func() bool {
+				return leftFor(t, env, id, NewerPayloadCode)
+			})
+		}
+		waitFor(t, func() bool {
+			return leftFor(t, env, unknownType, UnknownTypeCode)
+		})
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, batch := range fake.touches {
+			for _, touch := range batch {
+				if touch.Resource.Type != DefaultMarker.Resource.Type {
+					t.Fatalf("the provider got the tuple %s of a message that the relay cannot read", touch.Name())
+				}
+			}
+		}
+		if _, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: fake, DB: fakeDB(t), Schema: "public",
+			Types: []string{"Document"}}); err == nil {
+			t.Error("NewRelay took a resource type that is not a name")
 		}
 	})
 
@@ -594,6 +654,26 @@ func TestRelay(t *testing.T) {
 }
 
 // person is the subject of the verified identity of the test for the user ID id, as a handle bound to it decides.
+// waitFor waits until condition holds, with no bound of its own: the timeout of the test run ends a wait that never
+// ends.
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	for !condition() {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// leftFor tells whether the message id is pending with no attempt and the failure code code, as the relay leaves a
+// message that it cannot read; a message that is parked or done fails the test at once.
+func leftFor(t *testing.T, env *pgEnv, id uuid.UUID, code string) bool {
+	t.Helper()
+	got := env.scalar(t, "SELECT state || ' ' || attempts || ' ' || failure_code FROM stego_outbox.messages WHERE id = $1", id)
+	if strings.HasPrefix(got, "parked ") || strings.HasPrefix(got, "done ") {
+		t.Fatalf("the message that the relay cannot read is %s, want pending 0 %s", got, code)
+	}
+	return got == "pending 0 "+code
+}
+
 func person(t *testing.T, id string) Subject {
 	t.Helper()
 	return mustPerson(t, id).Subject()
@@ -1630,3 +1710,176 @@ var testRelations = []Relation{{ResourceType: "document", Name: "viewer"}, {Reso
 	{ResourceType: "document", Name: "owner"}, {ResourceType: "document", Name: "parent"}, {ResourceType: "order", Name: "viewer"},
 	{ResourceType: "order", Name: "parent"}, {ResourceType: "order", Name: "tenant"}, {ResourceType: "group", Name: "member"},
 	{ResourceType: "user", Name: "delegate"}, {ResourceType: "service", Name: "operator"}, {ResourceType: "report", Name: "viewer"}}
+
+// The schemas of the two releases of the rolling test: release 2 adds the relation tenant to payout, and the
+// permission edit through it (walkthrough 23, P2-R).
+const (
+	releaseOneSchema = `definition user {}
+
+definition stego_floor {
+	relation marker: stego_floor
+}
+
+definition tenant {
+	relation approver: user
+}
+
+definition payout {
+	relation owner: user
+	permission edit = owner
+}
+`
+	releaseTwoSchema = `definition user {}
+
+definition stego_floor {
+	relation marker: stego_floor
+}
+
+definition tenant {
+	relation approver: user
+}
+
+definition payout {
+	relation owner: user
+	relation tenant: tenant
+	permission edit = owner + tenant->approver
+}
+`
+)
+
+func TestRollingRelease(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC06-T08 In a rolling release that adds a relation, the relay of the release before leaves the new tuples to the new relay, and no row loses a relation", func(t *testing.T) {
+		ctx := context.Background()
+		env, db := newPG(t), startSpiceDB(t, releaseOneSchema)
+		one := []Relation{rel("payout#owner"), rel("tenant#approver")}
+		two := append(slices.Clone(one), rel("payout#tenant"))
+		relayOf := func(relations []Relation, types []string) *Relay {
+			relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: relations, Relationships: db.provider, DB: env.relayDB,
+				Schema: env.schema, Types: types})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := relay.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			return relay
+		}
+		rt := env.runtimeOf(t, db.provider, nil)
+		t1 := mustTenant(t, "t1")
+		tenantResource, err := NewResource(t1, "tenant", "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// create stages the tuples of one payout as the command of a release does: release 1 relates the owner,
+		// release 2 also the tenant.
+		create := func(key string, release int) {
+			t.Helper()
+			allowed := one
+			if release == 2 {
+				allowed = two
+			}
+			tx, handle := env.begin(t, rt, "t1", mustPerson(t, "alice"), allowed...)
+			payout, err := NewResource(t1, "payout", key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := handle.Relate(ctx, Tuple{Resource: payout, Relation: "owner", Subject: person(t, "olga")}); err != nil {
+				t.Fatal(err)
+			}
+			if release == 2 {
+				if _, err := handle.Relate(ctx, Tuple{Resource: payout, Relation: "tenant", Subject: Subject{Type: "tenant", ID: tenantResource.ID}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env.commit(t, tx, "t1")
+		}
+		stateCounts := func() string {
+			return env.scalar(t, "SELECT string_agg(state || '=' || n, ',' ORDER BY state) FROM (SELECT state, count(*) AS n FROM stego_outbox.messages WHERE destination = 'authz' GROUP BY state) AS s")
+		}
+
+		// Release 1 runs alone: its api writes the approver of the tenant and two payouts, and its worker lands them.
+		oldCtx, stopOld := context.WithCancel(ctx)
+		oldWorker := env.newWorker(t, relayOf(one, []string{"user", "stego_floor", "tenant", "payout"}), nil)
+		oldDone := make(chan struct{})
+		go func() { defer close(oldDone); _ = oldWorker.Run(oldCtx) }()
+		t.Cleanup(func() { stopOld(); <-oldDone })
+		tx, handle := env.begin(t, rt, "t1", mustPerson(t, "alice"), one...)
+		if _, err := handle.Relate(ctx, Tuple{Resource: tenantResource, Relation: "approver", Subject: person(t, "amir")}); err != nil {
+			t.Fatal(err)
+		}
+		env.commit(t, tx, "t1")
+		for i := 0; i < 2; i++ {
+			create(fmt.Sprintf("p1-%d", i), 1)
+		}
+		env.waitAll(t, outbox.Done)
+
+		// The migration job of release 2 writes its schema; the rollout starts its api before its worker, so the old
+		// worker meets the new tuples first.
+		if _, err := db.schema.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: releaseTwoSchema}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 5; i++ {
+			create(fmt.Sprintf("p2-%d", i), 2)
+		}
+		waitFor(t, func() bool {
+			if parked := env.scalar(t, "SELECT count(*)::text FROM stego_outbox.messages WHERE state = 'parked'"); parked != "0" {
+				t.Fatalf("the relay of release 1 parked %s messages of release 2 (%s)", parked, stateCounts())
+			}
+			return oldWorker.Stats().NotUnderstood >= 5
+		})
+		if got := env.scalar(t, "SELECT count(*)::text FROM stego_outbox.messages WHERE state = 'parked'"); got != "0" {
+			t.Fatalf("the relay of release 1 parked %s messages of release 2 (%s)", got, stateCounts())
+		}
+
+		// Both releases run: the pods of release 1 still take requests while the worker of release 2 starts.
+		newWorker := env.newWorker(t, relayOf(two, []string{"user", "stego_floor", "tenant", "payout"}), nil)
+		run(t, newWorker)
+		for i := 0; i < 5; i++ {
+			create(fmt.Sprintf("p3-%d", i), 2)
+			create(fmt.Sprintf("p4-%d", i), 1)
+		}
+		// The rollout ends: release 1 stops.
+		waitFor(t, func() bool {
+			return env.scalar(t, "SELECT count(*)::text FROM stego_outbox.messages WHERE destination = 'authz' AND state NOT IN ('done', 'parked')") == "0"
+		})
+		stopOld()
+		<-oldDone
+		if got := stateCounts(); strings.Contains(got, "parked") {
+			t.Fatalf("the rollout parked messages: %s", got)
+		}
+		floor, err := ParseToken(floorText(t, env))
+		if err != nil {
+			t.Fatal(err)
+		}
+		can := func(who, key string) bool {
+			payout, err := NewResource(t1, "payout", key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := db.provider.Evaluate(ctx, EvaluationRequest{Subject: person(t, who), Action: Action{Name: "edit"},
+				Resource: payout, Consistency: AtLeast(floor)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return result.Allowed
+		}
+		for _, prefix := range []string{"p1", "p2", "p3", "p4"} {
+			for i := 0; i < 5; i++ {
+				key := fmt.Sprintf("%s-%d", prefix, i)
+				if prefix == "p1" && i >= 2 {
+					continue
+				}
+				if !can("olga", key) {
+					t.Errorf("the owner cannot edit the payout %s", key)
+				}
+				// A payout of release 2 has its tenant tuple, so the approver of the tenant can edit it.
+				if wantTenant := prefix == "p2" || prefix == "p3"; can("amir", key) != wantTenant {
+					t.Errorf("the approver can edit the payout %s: %v, want %v", key, !wantTenant, wantTenant)
+				}
+			}
+		}
+		if newWorker.Stats().NotUnderstood != 0 {
+			t.Fatalf("the relay of release 2 could not read %d messages", newWorker.Stats().NotUnderstood)
+		}
+	})
+}

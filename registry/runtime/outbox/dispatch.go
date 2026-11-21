@@ -62,6 +62,7 @@ const (
 	markTransientRefusal
 	markPermanentRefusal
 	markConflict
+	markNotUnderstood
 )
 
 type markedError struct {
@@ -97,6 +98,17 @@ func TransientRefusal(err error) error { return &markedError{mark: markTransient
 // PermanentRefusal marks err as a refusal of the destination that a retry does not change, such as a 400. The
 // message is parked (ST-SUP-RP01-LC09, ST-SUP-RP01-LC12).
 func PermanentRefusal(err error) error { return &markedError{mark: markPermanentRefusal, err: err} }
+
+// NotUnderstood marks err as a message that the handler of this release cannot read, such as an authz tuple of a
+// relation that a later release added to the schema: the handler did nothing, and a handler of a newer release, in
+// another worker of the same queue, may read it. The message goes back to pending with no attempt counted and the
+// wait of an unknown destination, for a worker that reads it, until it is older than the not-understood bound of its
+// destination; then it is parked with the cause not_understood and an alert (ST-SUP-RP01-LC40). A handler MUST give
+// it only before it acts, and never for a message that no release can read, which is a permanent refusal.
+func NotUnderstood(err error) error { return &markedError{mark: markNotUnderstood, err: err} }
+
+// IsNotUnderstood reports whether err is marked as a message that the handler cannot read.
+func IsNotUnderstood(err error) bool { return markOf(err) == markNotUnderstood }
 
 // Conflict marks err as a conflict of a consumer, such as the error that RunConsumer returns (ST-SUP-RP10-LC26). The
 // message goes back to pending with a backoff, and the first 20 conflicts in a row count no attempt
@@ -167,6 +179,9 @@ type outcome struct {
 	failureCode string
 	conflict    bool
 	notSent     bool // no request reached the destination: the attempt is not counted
+	// notUnderstood is true when the handler cannot read the message, which a handler of a newer release may read
+	// (ST-SUP-RP01-LC40).
+	notUnderstood bool
 }
 
 // classify gives the state that an attempt ends in (ST-SUP-RP01-LC09). A conflict ends in pending, also when the
@@ -188,6 +203,8 @@ func classify(err error, expired bool) outcome {
 		return outcome{to: Pending, failureCode: coded(err, "delivery-refused")}
 	case m == markPermanentRefusal:
 		return outcome{to: Parked, failureCode: coded(err, "delivery-refused-permanent")}
+	case m == markNotUnderstood:
+		return outcome{to: Pending, failureCode: coded(err, NotUnderstoodCode), notUnderstood: true}
 	default:
 		return outcome{to: OutcomeUnknown, failureCode: "delivery-failed"}
 	}
@@ -371,6 +388,10 @@ func (w *Worker) dispatch(ctx context.Context, d Delivery, reg Destination) {
 		return
 	}
 	_ = tx.Rollback()
+	if result.notUnderstood {
+		w.leave(ctx, d, reg, result.failureCode)
+		return
+	}
 	switch result.to {
 	case Pending:
 		if result.conflict {
@@ -556,7 +577,7 @@ func (w *Worker) apply(ctx context.Context, tx *sql.Tx, d Delivery, reg Destinat
 		w.retried.Add(1)
 	case Parked:
 		w.parked.Add(1)
-		w.metrics.parked(finish, d.Destination, from)
+		w.metrics.parked(finish, d.Destination, from, parkCause(c), c.failureCode)
 	}
 	return true
 }
@@ -645,6 +666,75 @@ func (w *Worker) SetResolver(destination, subject string) error {
 // name the destination and that state (ST-SUP-RP01-LC12).
 func (w *Worker) park(ctx context.Context, d Delivery, reg Destination, c change) {
 	w.apply(ctx, nil, d, reg, Parked, c)
+}
+
+// NotUnderstoodCode is the failure code of a message that a handler cannot read, when the handler gives none
+// (ST-SUP-RP01-LC40).
+const NotUnderstoodCode = "not-understood"
+
+// DefaultNotUnderstoodBound is the not-understood bound of a destination that gives none: a message that no handler
+// reads within one hour of its enqueue is parked (ST-SUP-RP01-LC40). A rollout of a release takes minutes; a release
+// that stays paused for longer needs a destination with a longer bound.
+const DefaultNotUnderstoodBound = time.Hour
+
+// leave takes the next step of a message that the handler cannot read (ST-SUP-RP01-LC40): it is not an attempt, so
+// the count of the claim is taken back. A message younger than the not-understood bound of its destination goes back
+// to pending with the wait of an unknown destination, so a worker of a newer release, which reads it, can claim it,
+// and the later messages of its key keep their place behind it; an older one is parked with the cause
+// not_understood and the alert of a park. A failed read of the age counts as younger: the message is never parked
+// because of a read that failed.
+func (w *Worker) leave(ctx context.Context, d Delivery, reg Destination, code string) {
+	w.notUnderstood.Add(1)
+	w.metrics.left(ctx, d.Destination)
+	bound := reg.NotUnderstoodBound
+	if bound == 0 {
+		bound = DefaultNotUnderstoodBound
+	}
+	age, err := w.queue.age(ctx, d)
+	if err != nil {
+		w.databaseFailures.Add(1)
+	} else if age >= bound {
+		w.park(ctx, d, reg, change{attempts: -1, failureCode: code, cause: CauseNotUnderstood})
+		return
+	}
+	w.finish(ctx, d, reg, Pending, change{attempts: -1, delay: w.unknownDelay(), failureCode: code})
+}
+
+// The fixed cause classes of a parked message, which the alert of each park names (ST-SUP-RP01-LC12): the handler
+// refused the message for good, no handler read it within the not-understood bound, its attempts or its status
+// lookups are exhausted, its outcome is not known and its destination cannot learn it, or its tenant is not active.
+const (
+	CauseRefused           = "refused"
+	CauseNotUnderstood     = "not_understood"
+	CauseAttemptsExhausted = "attempts_exhausted"
+	CauseLookupsExhausted  = "lookups_exhausted"
+	CauseOutcomeUnknown    = "outcome_unknown"
+	CauseTenantNotActive   = "tenant_not_active"
+)
+
+// ParkCauses returns the fixed cause classes of a parked message.
+func ParkCauses() []string {
+	return []string{CauseRefused, CauseNotUnderstood, CauseAttemptsExhausted, CauseLookupsExhausted, CauseOutcomeUnknown,
+		CauseTenantNotActive}
+}
+
+// parkCause gives the fixed cause class of the park c: the class that the step set, else the class of the failure
+// code of the worker, else refused, for a permanent refusal of the handler with a code of its own, such as poison.
+func parkCause(c change) string {
+	if c.cause != "" {
+		return c.cause
+	}
+	switch c.failureCode {
+	case "attempts-exhausted":
+		return CauseAttemptsExhausted
+	case "lookups-exhausted":
+		return CauseLookupsExhausted
+	case "outcome-unknown":
+		return CauseOutcomeUnknown
+	case "tenant-not-active":
+		return CauseTenantNotActive
+	}
+	return CauseRefused
 }
 
 // releaseLease ends the lease of a claimed message in outcome unknown or reconciling and keeps its state, in a
