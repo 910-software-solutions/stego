@@ -958,7 +958,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego registry search` | `stego registry search [--provides <port>] [--requires <port>] [--slot <slot>]` |
 | `stego registry sunsets` | `stego registry sunsets <checkout>...` |
 | `stego test` | `stego test [--] [<test arguments>...]` |
-| `stego validate` | `stego validate [--json] [--strict]` |
+| `stego validate` | `stego validate [--json] [--strict] [--base <ref>]` |
 | `stego version` | `stego version [--json]` |
 <!-- stego:end -->
 
