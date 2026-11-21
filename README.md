@@ -329,6 +329,19 @@ collection is an apply resource only when it has `create`, `list` and
 `name` (see the [cli-application
 README](registry/components/cli-application/README.md#the-apply-command)).
 
+A create, an update and an upsert take in the body only the fields of the
+entity, by their API names, and `kind`. The names must match in letter case.
+The body may also give `id`, `href` and each field that the server sets, as a
+read gives them, so a client can send back a row that it read: the server
+ignores these values. Each other member, such as a typo, the declared name of
+a renamed field or `tenant_id`, gets a 400 validation problem that names the
+member (rest-api 4.27.0), and the request changes nothing. An implicit field
+of the collection may only be left out or given with the value of the
+collection. The OpenAPI document gives the body as the schema
+`<Entity>CreateRequest` or `<Entity>UpdateRequest`, with
+`additionalProperties: false`; it marks a member that the server sets
+`x-output-only`, and a member that the body may only repeat `x-kept`.
+
 The path of a scoped collection names the parent of a create, an update or an
 upsert. A body may leave the scope field out, or give the value of the path. A
 body that gives another value gets a 400 validation problem that names the

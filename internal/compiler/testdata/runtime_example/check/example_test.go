@@ -438,8 +438,12 @@ func TestExample(t *testing.T) {
 		if first.status != http.StatusCreated || second.status != http.StatusOK || first.member(t, "id") != second.member(t, "id") {
 			t.Errorf("the upserts answered %d %s and %d %s, want 201 and 200 for one row", first.status, first.body, second.status, second.body)
 		}
-		// The activity entries of a user carry the implicit source type, under the path prefix of their collection.
-		event := s.send(owner, http.MethodPost, "/user-activity", `{"source_type":"Organization","source_id":"`+userID+`","action":"login"}`)
+		// The activity entries of a user carry the implicit source type, under the path prefix of their collection. A
+		// body that gives another source type is refused, and one that leaves it out gets it (ST-SUP-RC20-OC23).
+		if r := s.send(owner, http.MethodPost, "/user-activity", `{"source_type":"Organization","source_id":"`+userID+`","action":"login"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"source_type"`) {
+			t.Errorf("a user activity entry with the source type Organization answered %d %s, want 400 that names source_type", r.status, r.body)
+		}
+		event := s.send(owner, http.MethodPost, "/user-activity", `{"source_id":"`+userID+`","action":"login"}`)
 		if event.status != http.StatusCreated || event.member(t, "source_type") != "User" {
 			t.Errorf("the create of a user activity entry answered %d %s, want 201 with the source type User", event.status, event.body)
 		}
