@@ -109,6 +109,10 @@ runtime v0.165.0, except for the cases below.
   body without it: a create gives 201, and the value is lost. See [A client
   that still sends the dropped field](schema-changes.md#a-client-that-still-sends-the-dropped-field).
   From 3.215.0, a patch refuses such a member with 400 and names it.
+- **An entity that a drop removes.** From the expand step of the drop, the
+  new release serves no route of the entity and its collections, so a
+  request to such a route gets 404. The release before still serves them
+  until it stops. See [Remove an entity](schema-changes.md#remove-an-entity).
 - **A generated client of the release before.** The CLI and the SDKs hold the
   OpenAPI document of the release that you built them from. Thus they do not
   know a later change of the document:
