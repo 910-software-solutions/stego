@@ -778,6 +778,11 @@ func TestServeUnknownMember(t *testing.T) {
 			{`{"address":{"postal_code":"1"},"` + long + `":1}`, strings.Repeat("é", 64)},
 			{`{"extra":{"any":"thing"},"shipmentId":7}`, ""},
 			{`[1]`, ""},
+			// Control characters and a non-BMP character that strconv.Quote writes as Go escapes, which JSON refuses
+			// (security review of PR #480, L1).
+			{`{"a\u0007b":1}`, "a\u0007b"},
+			{`{"\u001b[31m":1}`, "\u001b[31m"},
+			{`{"x\udb40\udc01":1}`, "x\U000e0001"},
 		} {
 			r := httptest.NewRequest(http.MethodPost, "/commands/ship", strings.NewReader(c.body))
 			r.Header.Set("Authorization", "Bearer "+token)

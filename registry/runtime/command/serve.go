@@ -748,12 +748,12 @@ func (rt *Runtime) writeFieldProblem(w http.ResponseWriter, httpStatus int, prob
 		title = http.StatusText(httpStatus)
 	}
 	var b strings.Builder
-	b.WriteString("{\"type\":" + strconv.Quote(problemType) + ",\"title\":" + strconv.Quote(title) + ",\"status\":" + strconv.Itoa(httpStatus))
+	b.WriteString("{\"type\":" + jsonString(problemType) + ",\"title\":" + jsonString(title) + ",\"status\":" + strconv.Itoa(httpStatus))
 	if code != "" {
-		b.WriteString(",\"code\":" + strconv.Quote(code))
+		b.WriteString(",\"code\":" + jsonString(code))
 	}
 	if field != "" {
-		b.WriteString(",\"field\":" + strconv.Quote(field))
+		b.WriteString(",\"field\":" + jsonString(field))
 	}
 	b.WriteString("}")
 	w.Header().Set("Content-Type", "application/problem+json")
@@ -761,6 +761,17 @@ func (rt *Runtime) writeFieldProblem(w http.ResponseWriter, httpStatus int, prob
 	w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, b.String())
+}
+
+// jsonString gives s as a JSON string. strconv.Quote is not JSON: it writes Go escapes, such as \x1b, \a and
+// \U000e0001, which a JSON parser refuses, and the field of a problem holds a member name that the client chose
+// (security review of PR #480, L1).
+func jsonString(s string) string {
+	out, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(out)
 }
 
 // remoteIP is the host part of a remote address.
