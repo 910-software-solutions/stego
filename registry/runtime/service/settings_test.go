@@ -443,6 +443,9 @@ func TestStartStages(t *testing.T) {
 				if err != nil {
 					return
 				}
+				// The server reads the startup message first and then closes, so the client reads the end of the
+				// stream (EOF) and not a reset of a connection with unread data.
+				_, _ = conn.Read(make([]byte, 1024))
 				_ = conn.Close()
 			}
 		}()
