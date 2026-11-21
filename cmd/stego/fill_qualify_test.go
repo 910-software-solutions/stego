@@ -887,6 +887,23 @@ func TestFillQualification(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-EXT-UC02-R02-T21 The warning of a sign-off that counts only because of an added key names a way on that needs no key of the base", func(t *testing.T) {
+		p := newFillProject(t)
+		signersRepo(t, p, "carol@example.test "+p.keys.unlistedPublic+"\n"+p.keys.signers)
+		// The key that SIGNERS of the base lists can be gone, such as the key of a member who left: the remedy must
+		// also name the merge of the SIGNERS change and a base that holds it (walkthrough 23, U-H).
+		stdout, stderr, err := p.stego(t, "no-key", "plan")
+		if err != nil {
+			t.Fatalf("plan on the branch gave %v:\n%s\n%s", err, stdout, stderr)
+		}
+		for _, want := range []string{"merge it first, then check against a base that holds it", "--base origin/main in a release pipeline",
+			"only while a key that SIGNERS at refs/heads/main lists is still at hand, have its holder run stego fill sign --force unlisted-fill"} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("the warning does not name %q:\n%s", want, stdout)
+			}
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R02-T17 With no base, validate and fill sign say that the SIGNERS check did not run, --strict refuses and names --base, and another failure of git fails", func(t *testing.T) {
 		p := newFillProject(t)
 		git := signersRepo(t, p, "carol@example.test "+p.keys.unlistedPublic+"\n"+p.keys.signers)
