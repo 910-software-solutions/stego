@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"go/scanner"
 	"go/token"
@@ -57,7 +58,11 @@ var (
 	// ST-SUP-Q204), by the runtime package that reads them: kafkainbox reads them only to refuse a value with the name to
 	// set in its place, and kafkaoutbox keeps the deprecated ReadConsumer of them for the API of the runtime
 	// (ST-STD-RUNTIME-R03), which no generated code calls.
-	formerReads = map[string][]string{
+	// formerReaders are the functions of each package of formerReads that may read a name of formerReads: the scan
+	// refuses a read of one of them in any other function, as a real read of the name would pass the scan (security
+	// review of PR #483, I1).
+	formerReaders = map[string]string{"registry/runtime/outbox/kafkainbox": "CheckFormer", "registry/runtime/outbox/kafkaoutbox": "ReadConsumer"}
+	formerReads   = map[string][]string{
 		"registry/runtime/outbox/kafkainbox": {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE",
 			"STEGO_KAFKA_CONSUMER_GROUP", "STEGO_KAFKA_CONSUMER_GROUP_FILE", "STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION"},
 		"registry/runtime/outbox/kafkaoutbox": {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE",
@@ -89,9 +94,11 @@ var (
 	}
 )
 
-// scanRead is one read that the scan finds: the name, or "" with why it cannot be followed.
+// scanRead is one read that the scan finds: the name, or "" with why it cannot be followed, and fn, the function
+// that gives the name, such as the function around os.Getenv("NAME"), or the caller that gives the name to a
+// parameter of a getenv function.
 type scanRead struct {
-	name, file, unresolved string
+	name, file, unresolved, fn string
 }
 
 var (
@@ -227,29 +234,35 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 			return []scanRead{{file: file, unresolved: "the name is not a constant"}}
 		}
 		first := toks[at]
-		// A name of a setting of each subscription, SubscriptionSetting(pattern, subscription) of kafkaoutbox or
+		// A name of a setting of each subscription, kafkaoutbox.SubscriptionSetting(pattern, subscription) or
 		// Setting(pattern, subscription) of kafkainbox, is the pattern with {subscription}, as the component declares
-		// it (decision on ST-SUP-Q204).
-		for _, call := range []int{at, at + 2} {
-			if call+1 < len(toks) && (toks[call].text == "SubscriptionSetting" || toks[call].text == "Setting") && toks[call+1].t == token.LPAREN &&
-				(call == at || toks[at+1].t == token.PERIOD) && strings.Contains(file, "outbox/kafka") {
-				return resolve(file, toks, call+2, depth+1)
+		// it (decision on ST-SUP-Q204). Only these helpers are followed, and a pattern with no {subscription} is a
+		// name the scan cannot follow (security review of PR #483, L2).
+		if pattern := subscriptionPattern(file, toks, at); pattern >= 0 {
+			var out []scanRead
+			for _, r := range resolve(file, toks, pattern, depth+1) {
+				if r.name != "" && !strings.Contains(r.name, "{subscription}") {
+					r = scanRead{file: file, unresolved: "the pattern " + r.name + " of a setting of each subscription has no {subscription}"}
+				}
+				out = append(out, r)
 			}
+			return out
 		}
+		fn := enclosingFunc(toks, at)
 		switch {
 		case first.t == token.STRING:
 			value, _ := strconv.Unquote(first.text)
 			if at+2 < len(toks) && toks[at+1].t == token.ADD {
 				return []scanRead{{file: file, unresolved: "the name is built from parts"}}
 			}
-			return []scanRead{{name: value, file: file}}
+			return []scanRead{{name: value, file: file, fn: fn}}
 		case first.text == "{":
 			return []scanRead{{file: file, unresolved: "declaration"}}
 		case first.t == token.IDENT && at+2 < len(toks) && toks[at+1].t == token.PERIOD && toks[at+2].t == token.IDENT:
 			// A field of a struct: each text that a struct literal of the unit gives the field.
 			var out []scanRead
 			for _, value := range fields[toks[at+2].text] {
-				out = append(out, scanRead{name: value, file: file})
+				out = append(out, scanRead{name: value, file: file, fn: fn})
 			}
 			if len(out) == 0 {
 				return []scanRead{{file: file, unresolved: "the field " + toks[at+2].text + " is given no constant"}}
@@ -269,7 +282,7 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 			if values, ok := consts[name]; ok && suffix == "" {
 				var out []scanRead
 				for _, value := range values {
-					out = append(out, scanRead{name: value, file: file})
+					out = append(out, scanRead{name: value, file: file, fn: fn})
 				}
 				return out
 			}
@@ -351,7 +364,7 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 				if toks[i+3].t == token.LPAREN && i+4 < len(toks) && toks[i+4].t == token.STRING && toks[i+2].text == "ExpandEnv" {
 					text, _ := strconv.Unquote(toks[i+4].text)
 					for _, match := range expansion.FindAllStringSubmatch(text, -1) {
-						reads = append(reads, scanRead{name: match[1] + match[2], file: x.file})
+						reads = append(reads, scanRead{name: match[1] + match[2], file: x.file, fn: enclosingFunc(toks, i)})
 					}
 					continue
 				}
@@ -394,6 +407,58 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 		}
 	}
 	return reads
+}
+
+// subscriptionPattern gives the position of the pattern argument when the expression at the position is a call of a
+// helper that gives the name of a setting of each subscription, or -1: kafkaoutbox.SubscriptionSetting(pattern,
+// subscription) in a file of a package under outbox/kafka, SubscriptionSetting(pattern, subscription) in a file of
+// kafkaoutbox, which declares it, and Setting(pattern, subscription) in a file of kafkainbox, which declares it. A
+// call of another function of the same name, such as x.Setting, is no such helper.
+func subscriptionPattern(file string, toks []tok, at int) int {
+	dir := filepath.ToSlash(filepath.Dir(file))
+	unqualified := at+1 < len(toks) && toks[at+1].t == token.LPAREN && (at == 0 || toks[at-1].t != token.PERIOD)
+	switch {
+	case at+3 < len(toks) && toks[at].text == "kafkaoutbox" && toks[at+1].t == token.PERIOD && toks[at+2].text == "SubscriptionSetting" &&
+		toks[at+3].t == token.LPAREN && strings.Contains(dir, "/outbox/kafka"):
+		return at + 4
+	case unqualified && toks[at].text == "SubscriptionSetting" && strings.HasSuffix(dir, "/outbox/kafkaoutbox"):
+		return at + 2
+	case unqualified && toks[at].text == "Setting" && strings.HasSuffix(dir, "/outbox/kafkainbox"):
+		return at + 2
+	}
+	return -1
+}
+
+// enclosingFunc gives the name of the declared function or method around a position, or "" outside each one. A
+// function literal is part of the function around it.
+func enclosingFunc(toks []tok, at int) string {
+	for i := at - 1; i >= 0; i-- {
+		if toks[i].t != token.FUNC {
+			continue
+		}
+		j := i + 1
+		if j < len(toks) && toks[j].t == token.LPAREN {
+			// A method: skip the receiver.
+			for j < len(toks) && toks[j].t != token.RPAREN {
+				j++
+			}
+			j++
+		}
+		if j+1 < len(toks) && toks[j].t == token.IDENT && toks[j+1].t == token.LPAREN {
+			return toks[j].text
+		}
+	}
+	return ""
+}
+
+// formerFault gives the fault of a read r of a name of formerReads in the unit with the label in a function that is
+// not the function of formerReaders, or nothing.
+func formerFault(where, label string, r scanRead) string {
+	if reader := formerReaders[label]; r.fn != reader {
+		return where + ": reads the environment variable " + r.name + " of kafka-consumer before 0.5.0 in " + cmp.Or(r.fn, "no function") +
+			"; only " + cmp.Or(reader, "no function") + " of the package may read it"
+	}
+	return ""
 }
 
 // enclosingParam gives the function around a position whose parameter has the name, and the index of the
@@ -676,6 +741,9 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 				case slices.Contains(compilerOwn[filepath.Base(r.file)], r.name) && strings.Contains(r.file, "internal/compiler"):
 					continue
 				case slices.Contains(formerReads[unit.label], r.name):
+					if fault := formerFault(relative, unit.label, r); fault != "" {
+						faults = append(faults, fault)
+					}
 					continue
 				case strings.HasPrefix(r.unresolved, "declaration") && slices.ContainsFunc(unit.owners, func(o string) bool { return slices.Contains(declarationNamed, o) }):
 					continue
@@ -997,6 +1065,115 @@ func f(s string) {
 			if !strings.Contains(text, want) {
 				t.Errorf("the scan does not fail on %s: %s", want, text)
 			}
+		}
+	})
+	t.Run("ST-SUP-UC01-R10-T08 The release scan follows only the helpers of kafkaoutbox and kafkainbox that name a setting of each subscription, and only a pattern with {subscription}", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "registry", "runtime", "outbox", "kafkainbox")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		source := `package kafkainbox
+
+import (
+	"os"
+
+	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
+)
+
+const (
+	SubscriptionTopicSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
+	plainSetting             = "STEGO_KAFKA_PLAIN"
+)
+
+func Setting(setting, subscription string) string { return kafkaoutbox.SubscriptionSetting(setting, subscription) }
+
+func read(subscription string, other helper) {
+	_ = os.Getenv(Setting(SubscriptionTopicSetting, subscription))
+	_ = os.Getenv(kafkaoutbox.SubscriptionSetting(SubscriptionTopicSetting, subscription))
+	_ = os.Getenv(other.Setting(SubscriptionTopicSetting, subscription))
+	_ = os.Getenv(Setting(plainSetting, subscription))
+}
+`
+		file := filepath.Join(dir, "settings.go")
+		if err := os.WriteFile(file, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var names, unresolved []string
+		for _, r := range unitReads(t, scanUnit{label: "registry/runtime/outbox/kafkainbox", files: []string{file}, owners: []string{"kafka-consumer"}}, false) {
+			if r.name != "" {
+				names = append(names, r.name)
+			} else {
+				unresolved = append(unresolved, r.unresolved)
+			}
+		}
+		if strings.Join(names, " ") != "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC STEGO_KAFKA_CONSUMER_{subscription}_TOPIC" {
+			t.Errorf("the scan follows the names %v, want the pattern of the two helpers only", names)
+		}
+		text := strings.Join(unresolved, "; ")
+		for _, want := range []string{"the field Setting is given no constant", "the pattern STEGO_KAFKA_PLAIN of a setting of each subscription has no {subscription}"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the scan does not fail with %q: %s", want, text)
+			}
+		}
+	})
+	t.Run("ST-SUP-UC01-R10-T09 The release scan refuses a read of a name of kafka-consumer before 0.5.0 outside the one function that may read it", func(t *testing.T) {
+		root := t.TempDir()
+		sources := map[string]string{
+			"kafkainbox": `package kafkainbox
+
+import "os"
+
+type formerSetting struct{ name string }
+
+var formerSettings = []formerSetting{{name: "STEGO_KAFKA_CONSUMER_TOPIC"}}
+
+func CheckFormer() {
+	for _, former := range formerSettings {
+		_ = os.Getenv(former.name)
+	}
+}
+
+func ReadSettings() string { return os.Getenv("STEGO_KAFKA_CONSUMER_GROUP") }
+`,
+			"kafkaoutbox": `package kafkaoutbox
+
+import "os"
+
+func value(name string) string { return os.Getenv(name) }
+
+func ReadConsumer() string { return value("STEGO_KAFKA_CONSUMER_TOPIC") }
+
+func ReadSettings() string { return value("STEGO_KAFKA_CONSUMER_GROUP_FILE") }
+`,
+		}
+		var faults []string
+		for pkg, source := range sources {
+			label := "registry/runtime/outbox/" + pkg
+			dir := filepath.Join(root, filepath.FromSlash(label))
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(dir, "settings.go")
+			if err := os.WriteFile(file, []byte(source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range unitReads(t, scanUnit{label: label, files: []string{file}, owners: []string{"kafka-consumer"}}, false) {
+				if !slices.Contains(formerReads[label], r.name) {
+					t.Errorf("%s: the scan finds the read %+v, want only names of kafka-consumer before 0.5.0", label, r)
+					continue
+				}
+				if fault := formerFault(label+"/settings.go", label, r); fault != "" {
+					faults = append(faults, fault)
+				}
+			}
+		}
+		slices.Sort(faults)
+		want := []string{
+			"registry/runtime/outbox/kafkainbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_GROUP of kafka-consumer before 0.5.0 in ReadSettings; only CheckFormer of the package may read it",
+			"registry/runtime/outbox/kafkaoutbox/settings.go: reads the environment variable STEGO_KAFKA_CONSUMER_GROUP_FILE of kafka-consumer before 0.5.0 in ReadSettings; only ReadConsumer of the package may read it",
+		}
+		if !slices.Equal(faults, want) {
+			t.Errorf("the faults of the reads of the former names are\n%s\nwant\n%s", strings.Join(faults, "\n"), strings.Join(want, "\n"))
 		}
 	})
 }
