@@ -520,7 +520,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		}
 		key, err := idempotency.KeyFrom(r.Header, true)
 		if err != nil {
-			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.Problem(err)), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxTenantBody))

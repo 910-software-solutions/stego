@@ -46,7 +46,7 @@ func validateApply(resources []ApplyResource)error{
  return nil
 }
 func applyFields(fields []Field,body map[string]json.RawMessage,required bool)error{
- allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required apply field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return fmt.Errorf("the required apply field %s is missing",f.Key)}}}
  for key,value:=range body{f,ok:=allowed[key];if !ok||!fieldValue(f,value){return errors.New("invalid apply field")}}
  return nil
 }
@@ -64,6 +64,14 @@ func keepCreateOnly(p *applyPlan,row map[string]json.RawMessage)error{
   delete(p.body,f.Key)
  }
  return nil
+}
+// storedPatch tells whether each field of the patch of a found resource has the value that the service returned for
+// it. Then apply sends no patch and reports unchanged, as kubectl apply does; a field that the answer does not give,
+// or whose type apply cannot compare, sends the patch (ST-SUP-RC04-OC35; walkthrough 18).
+func storedPatch(p *applyPlan,row map[string]json.RawMessage)bool{
+ fields:=map[string]Field{};for _,f:=range p.resource.PatchFields{fields[f.Key]=f}
+ for key,value:=range p.body{f,ok:=fields[key];stored,given:=row[key];if !ok||!given||!sameApplyValue(f,value,stored){return false}}
+ return true
 }
 // sameApplyValue tells whether a value of a document is the value that the service returned for the field: the same
 // text, number, truth value or list, or both null.
@@ -149,9 +157,9 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
    p.path+="/"+url.PathEscape(p.id)
    if targets[p.path]{return errors.New("multiple apply documents select the same resource")};targets[p.path]=true
    p.method="PATCH";fields=p.resource.PatchFields
-   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}else if err:=keepCreateOnly(p,row);err!=nil{return err}
+   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}else if err:=keepCreateOnly(p,row);err!=nil{return err}else if storedPatch(p,row){p.method="UNCHANGED"}
   }
-  if err:=applyFields(fields,p.body,true);err!=nil{return err}
+  if err:=applyFields(fields,p.body,true);err!=nil{return fmt.Errorf("%s %q: %w",p.resource.Kind,p.name,err)}
   p.payload,err=json.Marshal(p.body);if err!=nil||len(p.payload)>65536{return errApplyInput};results[i].ID=p.id
  }
  headers.Set("Content-Type","application/json")
@@ -168,7 +176,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
     if lookupErr==nil&&row!=nil{var id string;if json.Unmarshal(row["id"],&id)==nil{results[i].ID=id;results[i].Status="unchanged";continue}}
    }
    success:=response.StatusCode==200||(p.method=="POST"&&response.StatusCode==201)
-   if !success{if !retried&&response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)",response.StatusCode)}else{
+   if !success{if !retried&&response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)%s",response.StatusCode,problemFacts(response))}else{
     row,decodeErr:=object(response.Body);var id,name string
     valid:=decodeErr==nil&&json.Unmarshal(row["id"],&id)==nil&&identifier.MatchString(id)&&(p.id==""||p.id==id)
     if len(p.resource.ImmutableIdentity)>0{valid=valid&&immutableMatches(&p,row)==nil}else{valid=valid&&json.Unmarshal(row["name"],&name)==nil&&name==p.name}

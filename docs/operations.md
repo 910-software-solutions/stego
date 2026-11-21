@@ -543,7 +543,7 @@ Do these steps in this order:
      3-minute wait does not apply after a restore, and the stop of the release
      before is the only guard.
    - A pass that completed before the dump does not count after the restore
-     (runtime v0.170.0 and postgres-adapter 6.21.0 or later). The first run
+     (runtime v0.172.0 and postgres-adapter 6.21.0 or later). The first run
      after the restore ends that pass and waits, and the next run does a new
      pass. Until the new pass completes, the migration Job of the contract
      step refuses with `the last pass of the seal job did not run in this

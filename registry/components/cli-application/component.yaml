@@ -20,6 +20,10 @@
 # sets (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
 # Version 1.22.0 makes the definitions of a service with no rest-api component, such as an rpc-service, from the
 # document of its command and query routes that the command component writes (ST-SUP-RC04-OC32, ST-SUP-Q198 (a)).
+# Version 1.24.0 names the field, the kind and the name of a document when apply refuses a missing required field
+# (ST-SUP-RC04-OC23); gives the last segment of the problem type and at most five failed fields of a problem answer
+# as printable text of at most 120 characters (ST-SUP-RC04-OC11); and reports unchanged, with no patch, when each field
+# of the patch of a found resource has the stored value (ST-SUP-RC04-OC35). Walkthrough 18.
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -35,7 +39,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.22.0
+version: 1.24.0
 stage: ga
 output_namespace: cli
 config:

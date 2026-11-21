@@ -28,8 +28,11 @@ const (
 	KeptHeader = "Idempotency-Kept"
 	// KeptValue is the value of KeptHeader.
 	KeptValue = "1"
-	// ProblemMissing is the problem type of a 400 for an absent or malformed key.
+	// ProblemMissing is the problem type of a 400 for an absent key.
 	ProblemMissing = "idempotency-key-missing"
+	// ProblemInvalid is the problem type of a 400 for a key header that is not one structured string of 1 to 255
+	// characters, so that a client tells it apart from an absent key (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
+	ProblemInvalid = "idempotency-key-invalid"
 	// ProblemInProgress is the problem type of a 409 for a duplicate of a request that is not complete.
 	ProblemInProgress = "idempotency-key-in-progress"
 	// ProblemReused is the problem type of a 422 for a used key with another fingerprint.
@@ -41,7 +44,7 @@ const (
 	ConflictCode = "conflict"
 )
 
-// The errors of KeyFrom. Each one is a 400 with the problem type ProblemMissing.
+// The errors of KeyFrom. Each one is a 400 with the problem type that Problem gives.
 var (
 	// ErrKeyMissing is the error for a request with no Idempotency-Key to an operation that requires the key.
 	ErrKeyMissing = errors.New("idempotency: the request has no Idempotency-Key header")
@@ -390,7 +393,7 @@ func (req Request) lockID() int64 {
 // KeyFrom reads the inbound key from the request header (ST-SUP-RP07-LC04). The header must be one RFC 9651
 // structured string, such as "abc" with its quotes, of 1 to 255 characters, with no parameters. With no header,
 // KeyFrom returns ErrKeyMissing when required is true and an empty key otherwise; a header that is not such a string
-// is ErrKeyMalformed. The service answers either error with 400 and the problem type ProblemMissing.
+// is ErrKeyMalformed. The service answers either error with 400 and the problem type that Problem gives.
 func KeyFrom(header http.Header, required bool) (string, error) {
 	values := header.Values(KeyHeader)
 	if len(values) == 0 {
@@ -529,4 +532,13 @@ func (r *headerReader) string() string {
 	s := string(r.data[:n])
 	r.data = r.data[n:]
 	return s
+}
+
+// Problem gives the problem type slug of a 400 for an error of KeyFrom: ProblemInvalid for ErrKeyMalformed, and
+// ProblemMissing for ErrKeyMissing and each other error (ST-SUP-RP07-LC04, decision ST-SUP-Q202 (a)).
+func Problem(err error) string {
+	if errors.Is(err, ErrKeyMalformed) {
+		return ProblemInvalid
+	}
+	return ProblemMissing
 }
