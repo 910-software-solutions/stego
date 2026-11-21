@@ -63,7 +63,9 @@ type recordedLogs struct {
 	records []string
 }
 
-func (p *recordedLogs) Logger(string, ...otellog.LoggerOption) otellog.Logger { return recordingLogger{logs: p} }
+func (p *recordedLogs) Logger(string, ...otellog.LoggerOption) otellog.Logger {
+	return recordingLogger{logs: p}
+}
 
 // has tells whether a record of the event holds each attribute of want, as key=value.
 func (p *recordedLogs) has(event string, want ...string) bool {
