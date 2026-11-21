@@ -942,6 +942,33 @@ func TestApplySecretField(t *testing.T) {
 		if _, _, err := runApplyTest(t, app, "apply", "-f", folder); err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || f.calls != 0 {
 			t.Fatal("apply did not refuse a shared file of a directory", err)
 		}
+		// Standard input: a shared file redirected to it is refused; a pipe holds no file that another user can read
+		// (security review of PR #487, L2).
+		original := os.Stdin
+		defer func() { os.Stdin = original }()
+		redirected, err := os.Open(shared)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer redirected.Close()
+		os.Stdin = redirected
+		if _, _, err := runApplyTest(t, app, "apply", "-f", "-", "--dry-run"); err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || f.calls != 0 {
+			t.Fatal("apply did not refuse a shared file on standard input", err)
+		}
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		if _, err := writer.WriteString(document); err != nil {
+			t.Fatal(err)
+		}
+		writer.Close()
+		os.Stdin = reader
+		if result, _, err := runApplyTest(t, app, "apply", "-f", "-", "--dry-run", "-o", "json"); err != nil || len(result) != 1 || result[0].Status != "validated" || f.calls != 0 {
+			t.Fatal("apply refused a secret field from a pipe", result, err)
+		}
+		os.Stdin = original
 		// From a private file, the create sends the secret field.
 		private := applyFile(t, filepath.Join(f.directory, "private.yaml"), document)
 		first, output, err := runApplyTest(t, app, "apply", "-f", private, "-o", "json")

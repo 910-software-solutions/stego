@@ -59,9 +59,9 @@ component writes (`<out>/commands/openapi.json`), in the package
   [Unique steps](../../../docs/schema-changes.md#unique-steps)).
   A secret member of the create or the patch, such as a PIN, is a field of
   the resource with no flag: give it in the `spec` of a document in a file
-  that only you can read, or on standard input. Apply refuses a file that
-  holds a secret field when the group or other users have access to it,
-  before any request. The service never answers a secret field, so apply
+  that only you can read, or from a pipe on standard input. Apply refuses a
+  file that holds a secret field when the group or other users have access
+  to it, also a file on standard input, before any request. The service never answers a secret field, so apply
   cannot compare it: each apply of a document with a secret field sends the
   patch and reports `configured`. A secret field that only the create takes
   cannot be in a document of a resource that exists (cli-application 1.28.0).
