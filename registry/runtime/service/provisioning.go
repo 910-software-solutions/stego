@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -115,6 +116,9 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 			spec.TenantTypes = append(spec.TenantTypes, definition)
 		}
 	}
+	// A schema that declares the relation service of the type tenant gets the tuple that relates the tenant resource
+	// to the service-level resource of the tenant (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52).
+	spec.ServiceRelation = slices.Contains(svc.parts.Relations, authz.Relation{ResourceType: authz.TenantType, Name: command.TenantServiceRelation})
 	var err error
 	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
 	if p.AdminRelation != "" {
@@ -294,6 +298,7 @@ func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string
 	body += "}"
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, body)

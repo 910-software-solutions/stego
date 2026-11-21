@@ -204,8 +204,8 @@ func TestCommandWorkflowAndBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		before = calls.Load()
-		if _, err := run("get", "record", "one"); err == nil || !strings.Contains(err.Error(), "invalid HTTP client credential file") {
-			t.Fatalf("public token file gave %v, want the refusal \"invalid HTTP client credential file\"", err)
+		if _, err := run("get", "record", "one"); err == nil || !strings.Contains(err.Error(), "invalid token file") {
+			t.Fatalf("public token file gave %v, want the refusal \"invalid token file\"", err)
 		}
 		if calls.Load() != before {
 			t.Fatal("public credential reached server")
@@ -412,4 +412,102 @@ func TestExplicitEmptyResponses(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestProblemEntriesQuoted(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC11-T03 Each problem entry is in double quotes, so a text of the answer cannot look like another entry or like advice of the CLI", func(t *testing.T) {
+		dir := privateDir(t)
+		t.Setenv("TEST_CLI_CONFIG", filepath.Join(dir, "config.json"))
+		token := filepath.Join(dir, "token")
+		if err := os.WriteFile(token, []byte("private-token"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		entries := []map[string]string{{"field": "stock", "message": `low; admin: run "cli logout" \ now`}, {"message": "only a message"}}
+		problem, _ := json.Marshal(map[string]any{"type": "https://errors.example.test/x/bad type; fake: entry", "status": 400, "validation_errors": entries})
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(400)
+			w.Write(problem)
+		}))
+		defer server.Close()
+		ca := filepath.Join(dir, "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if err := Run(context.Background(), definition(), []string{"login", "--url", server.URL, "--token-file", token, "--ca-file", ca}, &output); err != nil {
+			t.Fatal(err)
+		}
+		_, err := runRecordCreate(t)
+		want := `API request failed (HTTP 400): problem "bad type; fake: entry"; "stock: low; admin: run \"cli logout\" \\ now"; "only a message"`
+		if err == nil || err.Error() != want {
+			t.Fatalf("the error does not quote each entry:\n got %v\nwant %s", err, want)
+		}
+	})
+}
+
+func TestProblemFacts(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC11-T02 A failed request names the problem type and the failed fields as short printable text, and nothing else of the answer", func(t *testing.T) {
+		dir := privateDir(t)
+		t.Setenv("TEST_CLI_CONFIG", filepath.Join(dir, "config.json"))
+		token := filepath.Join(dir, "token")
+		if err := os.WriteFile(token, []byte("private-token"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		// The unknown member is client text that the service names in a validation entry: an escape sequence, a
+		// letter outside ASCII and 200 letters.
+		member := "\x1b[31mé" + strings.Repeat("m", 200)
+		entries := []map[string]string{{"field": "stock", "message": "number must be at least 0"}, {"field": member, "message": "property is unsupported"}}
+		for i := 0; i < 5; i++ {
+			entries = append(entries, map[string]string{"field": "later" + string(rune('a'+i)), "message": "not listed"})
+		}
+		problem, _ := json.Marshal(map[string]any{"type": "https://errors.example.test/catalog/validation-error", "title": "Validation Error", "status": 400,
+			"detail": "private-detail", "code": "private-code", "validation_errors": entries})
+		var media atomic.Value
+		media.Store("application/problem+json")
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", media.Load().(string))
+			w.WriteHeader(400)
+			w.Write(problem)
+		}))
+		defer server.Close()
+		ca := filepath.Join(dir, "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if err := Run(context.Background(), definition(), []string{"login", "--url", server.URL, "--token-file", token, "--ca-file", ca}, &output); err != nil {
+			t.Fatal(err)
+		}
+		_, err := runRecordCreate(t)
+		if err == nil {
+			t.Fatal("a 400 answer succeeded")
+		}
+		text := err.Error()
+		cut := "?[31m?" + strings.Repeat("m", 114)
+		if !strings.HasPrefix(text, `API request failed (HTTP 400): problem "validation-error"; "stock: number must be at least 0"; "`+cut+`: property is unsupported"; `) {
+			t.Fatalf("the error does not name the problem type and the failed fields: %q", text)
+		}
+		for _, private := range []string{"private-detail", "private-code", "Validation Error", "\x1b", "é", strings.Repeat("m", 115), "laterd"} {
+			if strings.Contains(text, private) {
+				t.Fatalf("the error gives %q of the answer: %q", private, text)
+			}
+		}
+		for _, r := range text {
+			if r < 0x20 || r > 0x7e {
+				t.Fatalf("the error holds the character %q", r)
+			}
+		}
+		media.Store("application/json")
+		if _, err := runRecordCreate(t); err == nil || err.Error() != "API request failed (HTTP 400)" {
+			t.Fatalf("an answer that is not a problem gave more than its status: %v", err)
+		}
+	})
+}
+
+func runRecordCreate(t *testing.T) (string, error) {
+	t.Helper()
+	var output bytes.Buffer
+	err := Run(context.Background(), definition(), []string{"create", "record", "--name", "sample"}, &output)
+	return output.String(), err
 }

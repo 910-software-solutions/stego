@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -146,6 +147,8 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealContractFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealTogetherFaults(declaration, head)...)
 	return check, nil
 }
 
@@ -212,6 +215,76 @@ func sealRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 			"the base runs a release whose processes do not report themselves (postgres-adapter before %s or runtime library before %s, or no pin), so the seal job and the contract of the seal %s cannot see its writes to the clear column; deploy a release with the runtime library %s or later, with no new schema step, first, and then declare the seal", ReportAdapterVersion, ReportRuntimeVersion, step.Change, ReportRuntimeVersion)}}
 	}
 	return nil
+}
+
+// SealSwitchRuntimeVersion is the first runtime library version whose release of the expand step of a seal goes on
+// after the contract step drops the clear column: it then reads and writes the sealed column alone
+// (ST-SUP-RP10-LC49; walkthrough 14, W14-B6).
+const SealSwitchRuntimeVersion = "v0.150.0"
+
+// sealContractFaults refuses a head with a new contract step of a seal when the record at the base names a runtime
+// library before SealSwitchRuntimeVersion, or none: the processes of that release, the release of the expand step,
+// need the clear column, so each of their writes and reads of the entity fails once the contract drops it
+// (ST-SUP-RC01-OC49). A pin that does not parse counts as such a release.
+func sealContractFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
+	if applied != nil && applied.Archetype != nil && applied.Archetype.Runtime != nil {
+		version := applied.Archetype.Runtime.Version
+		if semver.IsValid(version) && semver.Compare(version, SealSwitchRuntimeVersion) >= 0 {
+			return nil
+		}
+	}
+	kinds := map[string]string{}
+	for _, change := range head.SchemaChanges {
+		kinds[change.ID] = change.Kind
+	}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		if step.Phase != "contract" || kinds[step.Change] != "seal" {
+			continue
+		}
+		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
+			"the base runs a release with the runtime library before %s, or no pin, whose processes need the clear column of the seal %s, so each of their writes and reads of the entity would fail after its contract step drops the column; deploy a release with the runtime library %s or later, with the seal still at expand, first, and then declare the contract step", SealSwitchRuntimeVersion, step.Change, SealSwitchRuntimeVersion)}}
+	}
+	return nil
+}
+
+// sealTogetherFaults refuses a head with a new contract step of a seal of an entity while the base holds another seal
+// of the same entity open, at expand, that the head does not contract too: the release of the base switches the entity
+// to its statements after the contract only when every clear column of its open seals is gone (AfterSeal), so with one
+// clear column dropped and another there each of its writes and reads of the entity would fail (security review of
+// PR #452, L3; ST-SUP-RC01-OC49). The remedy is to contract the open seals of an entity in one release.
+func sealTogetherFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	changes := map[string]types.SchemaChange{}
+	for _, change := range head.SchemaChanges {
+		changes[change.ID] = change
+	}
+	open := map[string][]string{}
+	for _, change := range base.SchemaChanges {
+		if change.Kind == "seal" && phaseOf(base, change.ID) == "expand" {
+			open[change.Entity] = append(open[change.Entity], change.ID)
+		}
+	}
+	var faults []BaseFault
+	named := map[string]bool{}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		change, ok := changes[step.Change]
+		if step.Phase != "contract" || !ok || change.Kind != "seal" || named[change.Entity] {
+			continue
+		}
+		var left []string
+		for _, id := range open[change.Entity] {
+			if phaseOf(head, id) != "contract" {
+				left = append(left, id)
+			}
+		}
+		if len(left) == 0 {
+			continue
+		}
+		named[change.Entity] = true
+		faults = append(faults, BaseFault{Rule: StepLedgerRule, Entity: change.Entity, Message: fmt.Sprintf(
+			"the head contracts the seal %s of %s while the base holds the seal %s of the same entity open; the release of the base reads and writes the sealed columns alone only when the clear column of each open seal of the entity is gone, so after this contract each of its writes and reads of %s would fail; declare the contract step of each open seal of %s in the same release",
+			change.ID, change.Entity, strings.Join(left, ", "), change.Entity, change.Entity)})
+	}
+	return faults
 }
 
 // findStoredField gives the field of the entity of the declaration, live or dropped.
@@ -344,10 +417,20 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 		// collections describe them.
 		faults = append(faults, collectionIndexFaults(base, head)...)
 	}
-	shapeFaults := baselineFaults(shapeAt(base, 0), shapeAt(head, 0))
+	// A drop of a field whose seal is open has a fault that names the seal, in place of the fault of its stored form.
+	sealDrops := openSealDropFaults(base, head)
+	named := map[[2]string]bool{}
+	for _, fault := range sealDrops {
+		named[[2]string{fault.Entity, fault.Field}] = true
+	}
+	shapeFaults := sealDrops
+	for _, fault := range baselineFaults(shapeAt(base, 0), shapeAt(head, 0)) {
+		if !named[[2]string{fault.Entity, fault.Field}] {
+			shapeFaults = append(shapeFaults, fault)
+		}
+	}
 	// The baselines leave out what a step of the base added, required or retyped, so the head with only its new
 	// steps undone must also be the stored shape of the base as it runs now, with every field in full.
-	named := map[[2]string]bool{}
 	for _, fault := range shapeFaults {
 		named[[2]string{fault.Entity, fault.Field}] = true
 	}
@@ -359,6 +442,49 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, shapeFaults...)
 	if ok {
 		faults = append(faults, generated.faults(faults)...)
+	}
+	return faults
+}
+
+// openSealDropFaults refuses a drop that the head declares of a field whose seal the base holds open, or of the
+// entity of such a field: the base has the expand step of the seal and not its contract step, so the release that
+// runs now reads and writes the clear and the sealed column of the field. The fault names the seal and tells to
+// contract it first (ST-SUP-RC01-OC49-T10, ST-SUP-RC01-OC49-T11). A drop of a field that the base stores secret,
+// whose definition gives the field in clear, has a fault that says to add the item secret.
+func openSealDropFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	var faults []BaseFault
+	for _, drop := range head.SchemaChanges {
+		if drop.Kind != "drop" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == drop.ID }) {
+			continue
+		}
+		sealed := false
+		for _, seal := range base.SchemaChanges {
+			if seal.Kind != "seal" || seal.Entity != drop.Entity || (drop.Field != "" && seal.Field != drop.Field) ||
+				!slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "expand"}) ||
+				slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "contract"}) {
+				continue
+			}
+			sealed = true
+			removes := fmt.Sprintf("%s.%s", drop.Entity, drop.Field)
+			if drop.Field == "" {
+				removes = fmt.Sprintf("the entity %s with %s.%s", drop.Entity, drop.Entity, seal.Field)
+			}
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: drop.Entity, Field: drop.Field, Message: fmt.Sprintf(
+				"the drop %s removes %s, whose seal %s is open in the base: the release that runs now reads and writes the clear and the sealed column of %s; "+
+					"contract the seal first, with the step {change: %s, phase: contract} in a release of its own, then drop it in a later release, with the item secret in the definition of a sealed field",
+				drop.ID, removes, seal.ID, seal.Field, seal.ID),
+				Declare: []SuggestedChange{suggestion(base, seal.ID, "contract")}})
+		}
+		// A drop of a field that the base stores secret gives it in its Definition with the item secret, so the
+		// field that the drop brings back has the stored form of the base (security review of PR #468, I2).
+		if entity, found := findStoredEntity(base, drop.Entity); found && drop.Field != "" && !sealed {
+			at := slices.IndexFunc(entity.Fields, func(f types.Field) bool { return f.Name == drop.Field })
+			if dropped, reason := gen.DropDefinition(drop.Definition); at >= 0 && reason == "" && entity.Fields[at].Secret() && !entity.Fields[at].ClearStored && !dropped.Field.Secret() {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: drop.Entity, Field: drop.Field, Message: fmt.Sprintf(
+					"the definition of the drop %s gives %s.%s in clear, but the base stores it as a secret; add the item secret to the definition, before a pattern",
+					drop.ID, drop.Entity, drop.Field)})
+			}
+		}
 	}
 	return faults
 }
@@ -386,6 +512,35 @@ func droppedEntityFaults(base, head *types.ServiceDeclaration) []BaseFault {
 type baselineOutput struct {
 	base, head             []postgresadapter.BaselineTable
 	baseMarker, headMarker string
+	// headChanges are the schema changes of the head, by which a fault of a changed table names its cause.
+	headChanges []types.SchemaChange
+	// built is the baseline of the base as the generator of its release built it, when that is a postgres-adapter
+	// before PublicSearchVersion and the base writes sensitivity: public on a field: that generator gave no search
+	// index on such a field (decision ST-DECL-Q46 (a)).
+	built []postgresadapter.BaselineTable
+}
+
+// PublicSearchVersion and PublicSearchRuntimeVersion are the first postgres-adapter and runtime library versions
+// whose generator reads a field written sensitivity: public as a field with no sensitivity, so a list searches it and
+// 001_initial gives its search index (decision ST-DECL-Q46 (a)).
+const (
+	PublicSearchVersion        = "6.19.0"
+	PublicSearchRuntimeVersion = "v0.158.0"
+)
+
+// writtenPublic gives a copy of the entities with each field written sensitivity: public marked pii, which, as the
+// generator before PublicSearchVersion read it, has no search index; and whether any field was written so.
+func writtenPublic(entities []types.Entity) ([]types.Entity, bool) {
+	out, any := slices.Clone(entities), false
+	for i := range out {
+		out[i].Fields = slices.Clone(out[i].Fields)
+		for j := range out[i].Fields {
+			if out[i].Fields[j].Sensitivity == "public" {
+				out[i].Fields[j].Sensitivity, any = "pii", true
+			}
+		}
+	}
+	return out, any
 }
 
 // generatedBaselines gives what the postgres-adapter generator writes for the baselines of the base and of the head,
@@ -412,22 +567,33 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 			baseComponents = []string{gen.TenancyComponent}
 		}
 	}
-	baseline := func(service *types.ServiceDeclaration, components []string) ([]postgresadapter.BaselineTable, string, error) {
+	baseline := func(service *types.ServiceDeclaration, components []string, older bool) ([]postgresadapter.BaselineTable, string, error) {
 		entities, dropped, err := storedEntities(service, service.SchemaChanges)
 		if err != nil {
 			return nil, "", err
 		}
-		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: service.Collections,
+		if older {
+			var written bool
+			if entities, written = writtenPublic(entities); !written {
+				return nil, "", nil
+			}
+		}
+		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: gen.StoredCollections(service.Collections, service.SchemaChanges),
 			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components),
-			DroppedEntities: dropped, DroppedCollections: service.DroppedCollections, EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
+			DroppedEntities: dropped, DroppedCollections: gen.StoredCollections(service.DroppedCollections, service.SchemaChanges), EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
 	}
-	out := &baselineOutput{}
+	out := &baselineOutput{headChanges: head.SchemaChanges}
 	var err error
-	if out.base, out.baseMarker, err = baseline(base, baseComponents); err != nil {
+	if out.base, out.baseMarker, err = baseline(base, baseComponents, false); err != nil {
 		return nil, false
 	}
-	if out.head, out.headMarker, err = baseline(head, selected(head)); err != nil {
+	if out.head, out.headMarker, err = baseline(head, selected(head), false); err != nil {
 		return nil, false
+	}
+	if before(applied, PublicSearchVersion, PublicSearchRuntimeVersion) {
+		if out.built, _, err = baseline(base, baseComponents, true); err != nil {
+			return nil, false
+		}
 	}
 	return out, true
 }
@@ -450,6 +616,19 @@ func (o *baselineOutput) faults(earlier []BaseFault) []BaseFault {
 		headTables[table.Table] = table
 	}
 	var faults []BaseFault
+	builtTables := map[string]postgresadapter.BaselineTable{}
+	for _, table := range o.built {
+		builtTables[table.Table] = table
+	}
+	for _, now := range o.base {
+		if built, ok := builtTables[now.Table]; ok && !named[now.Entity] && built.Indexes != now.Indexes {
+			// The database holds the indexes that the generator of the base built, and from PublicSearchVersion
+			// 001_initial gives a search index on a field written public (decision ST-DECL-Q46 (a)).
+			named[now.Entity] = true
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: now.Entity, Message: fmt.Sprintf(
+				"the base writes sensitivity: public on a field of %s that a list searches, and its release (postgres-adapter before %s) built no search index on it; from postgres-adapter %s a field written public is searched as one with no sensitivity, so 001_initial gives\n%sand the database holds\n%sNo schema change builds such an index yet, so the next migration job of a database with rows would fail; keep the release of the base until a schema change can build the index (ST-DECL-Q46)", now.Entity, PublicSearchVersion, PublicSearchVersion, now.Indexes, built.Indexes)})
+		}
+	}
 	for _, before := range o.base {
 		after, ok := headTables[before.Table]
 		switch {
@@ -459,7 +638,7 @@ func (o *baselineOutput) faults(earlier []BaseFault) []BaseFault {
 				"the baseline of the head has no table %s, and 001_initial of the base creates it; keep the entity %s of the base, or declare the schema change that removes it", before.Table, before.Entity)})
 		case before.Create != after.Create:
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: before.Entity, Message: fmt.Sprintf(
-				"the head changes the table %s of 001_initial with no schema step: the base creates\n%sand the head creates\n%sA database with rows holds the table of the base, so the head's migration job would fail its ledger check; keep the fields of %s in the order and with the settings of the base, and declare each change as a schema change", before.Table, before.Create, after.Create, before.Entity)})
+				"the head changes the table %s of 001_initial with no schema step: %sA database with rows holds the table of the base, so the head's migration job would fail its ledger check; keep the fields of %s in the order and with the settings of the base, and declare each change as a schema change", before.Table, createDifference(before, after, o.headChanges), before.Entity)})
 		case before.Indexes != after.Indexes:
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: before.Entity, Message: fmt.Sprintf(
 				"the collections or the fields over %s change its indexes in 001_initial: the base gives\n%sand the head gives\n%sNo schema change builds such an index yet, so the next migration job of a database with rows would fail; keep the list, the scope and implicit fields, the upsert keys of the collections over %s and the sensitivity of its searched fields as the base has them", before.Entity, before.Indexes, after.Indexes, before.Entity)})
@@ -537,11 +716,18 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 	// first is the first retype of each field in the order of the schema history: the baseline has the field of its
 	// type From, so the search index of 001_initial follows that field, not the declared one (review of PR #314, L14).
 	first := map[string]types.SchemaChange{}
+	// sealedFrom is the sensitivity before its seal of each field that a seal names: 001_initial creates the clear
+	// column with the index of that sensitivity, so a seal from public keeps the search index of the field, also
+	// when another change of the same release, such as a rename, keeps generation from comparing the baselines
+	// (walkthrough 17, W17-B2).
+	sealedFrom := map[string]string{}
 	for _, change := range service.SchemaChanges {
 		if change.Entity != entity {
 			continue
 		}
 		switch change.Kind {
+		case "seal":
+			sealedFrom[change.Field] = change.From
 		case "rename":
 			renames = append(renames, change)
 		case "add", "require":
@@ -604,6 +790,10 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 				sensitivity := field.Sensitivity
 				field = gen.RetypeField(retype)
 				field.Sensitivity = sensitivity
+			}
+			if from, sealed := sealedFrom[field.Name]; sealed {
+				// No from is the same as from: public (docs/schema-changes.md, Seal steps).
+				field.Sensitivity = from
 			}
 			if !added[field.Name] && postgresadapter.Searchable(field) {
 				filtered[original(field.Name)] = true
@@ -1319,4 +1509,166 @@ func relaxDefinition(before, after fieldShape) (string, bool) {
 		return "", false
 	}
 	return strings.Join(items, ", "), true
+}
+
+// MigrationBodyRule is the rule of a fault of a changed body of a released migration (ST-GEN-INV38).
+const MigrationBodyRule = "ST-GEN-INV38"
+
+// migrationFile is the path of a generated SQL file of a migration, in the output namespace of its component: the
+// group is the name of the file without .sql.
+var migrationFile = regexp.MustCompile(`^(?:[^/]+/)*migrations/([^/]+)\.sql$`)
+
+// tenancyRowSecurity is the name of the file of the row-level security of the tenancy component, whose migration the
+// ledger names 100_tenancy_row_security (ST-SUP-RC27-OC03).
+const tenancyRowSecurity = "row_security"
+
+// ledgeredMigration gives the ledger name of the migration whose generated SQL file is at path, and whether the file
+// is that of a ledgered migration: 001_initial or a schema step of the PostgreSQL adapter, or the row-level security
+// of the tenancy component. Each such file holds exactly the body whose digest the ledger records.
+func ledgeredMigration(path string) (string, bool) {
+	match := migrationFile.FindStringSubmatch(path)
+	if match == nil {
+		return "", false
+	}
+	name := match[1]
+	if name == tenancyRowSecurity {
+		name = "100_tenancy_row_security"
+	}
+	return name, postgresadapter.CheckLedgerName(name) == nil
+}
+
+// MigrationBodyFaults refuses a head whose generated SQL file of a ledgered migration that the record at the base
+// lists has another content digest than that record lists (ST-GEN-INV38): a database of that release applied the
+// body, and the ledger check of its migration job refuses another one (ST-SUP-RC01-OC51). head gives the SHA-256 of
+// each generated file of the head by its path in the output folder: the plan of stego plan and stego apply, or the
+// record of the head for stego compat. A migration whose file the record at the base does not list is new, and a
+// base with no record, or no head, gives no fault. Each fault names the migration, the file and the remedy.
+func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, error) {
+	if base.Record == nil || head == nil {
+		return nil, nil
+	}
+	state, err := decodeState(base.Record, ".stego/state.yaml at "+base.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if state.LastApplied == nil {
+		return nil, nil
+	}
+	var faults []BaseFault
+	for _, path := range slices.Sorted(maps.Keys(state.LastApplied.Files)) {
+		name, ledgered := ledgeredMigration(path)
+		if !ledgered {
+			continue
+		}
+		want := state.LastApplied.Files[path]
+		got, generated := head[path]
+		if !generated || got == want {
+			continue
+		}
+		faults = append(faults, BaseFault{Rule: MigrationBodyRule, Message: fmt.Sprintf(
+			"the migration %s has another body at the head: its generated file %s has the digest %s, and the record at the base ref %s (commit %s) lists %s. "+
+				"A database of that release applied the body, and the body of an applied migration never changes: keep the body, and bring the change in a new schema step",
+			name, path, got, base.Ref, base.Commit, want)})
+	}
+	return faults, nil
+}
+
+// createDifference tells how the CREATE TABLE of a table in the baseline of the head differs from the one of the base:
+// each column or constraint that differs, is missing or is new, with its line in the base and in the head, and the
+// schema change of the head that gives the field of the base, which a rename, a retype or a drop takes from its
+// definition (walkthrough 14, W14-B3). When the two tables have the same columns and constraints in another order, it
+// gives the two texts.
+func createDifference(before, after postgresadapter.BaselineTable, changes []types.SchemaChange) string {
+	type item struct{ key, line string }
+	items := func(create string) []item {
+		var out []item
+		for _, line := range strings.Split(create, "\n") {
+			line = strings.TrimSuffix(strings.TrimSpace(line), ",")
+			key := ""
+			switch {
+			case strings.HasPrefix(line, `"`):
+				name, _, _ := strings.Cut(line[1:], `"`)
+				key = "column " + name
+			case strings.HasPrefix(line, `CONSTRAINT "`):
+				name, _, _ := strings.Cut(strings.TrimPrefix(line, `CONSTRAINT "`), `"`)
+				key = "constraint " + name
+			default:
+				continue
+			}
+			out = append(out, item{key, line})
+		}
+		return out
+	}
+	baseItems, headItems := items(before.Create), items(after.Create)
+	headLine, baseLine := map[string]string{}, map[string]string{}
+	for _, it := range headItems {
+		headLine[it.key] = it.line
+	}
+	for _, it := range baseItems {
+		baseLine[it.key] = it.line
+	}
+	var shared []string
+	for _, it := range baseItems {
+		if _, ok := headLine[it.key]; ok {
+			shared = append(shared, it.key)
+		}
+	}
+	var headOrder []string
+	for _, it := range headItems {
+		if _, ok := baseLine[it.key]; ok {
+			headOrder = append(headOrder, it.key)
+		}
+	}
+	whole := "the base creates\n" + before.Create + "and the head creates\n" + after.Create
+	if !slices.Equal(shared, headOrder) {
+		return whole
+	}
+	var text strings.Builder
+	fields := map[string]bool{}
+	for _, it := range baseItems {
+		switch got, ok := headLine[it.key]; {
+		case !ok:
+			fmt.Fprintf(&text, "the %s\n  %s\nof the base is not in the head.\n", it.key, it.line)
+		case got != it.line:
+			fmt.Fprintf(&text, "the %s is\n  %s\nin the base and\n  %s\nin the head.\n", it.key, it.line, got)
+		default:
+			continue
+		}
+		fields[it.key] = true
+	}
+	for _, it := range headItems {
+		if _, ok := baseLine[it.key]; !ok {
+			fmt.Fprintf(&text, "the %s\n  %s\nof the head is not in the base.\n", it.key, it.line)
+			fields[it.key] = true
+		}
+	}
+	if text.Len() == 0 {
+		return whole
+	}
+	table := strings.TrimPrefix(before.Table, "public.")
+	for _, change := range changes {
+		if change.Entity != before.Entity || (change.Kind != "rename" && change.Kind != "retype" && change.Kind != "drop") {
+			continue
+		}
+		name := change.Field
+		if change.Kind == "rename" {
+			name = change.From
+		}
+		named := false
+		for key := range fields {
+			for _, suffix := range []string{"check", "fkey", "key", "not_null", "complete"} {
+				named = named || key == "constraint "+table+"_"+name+"_"+suffix
+			}
+			named = named || key == "column "+name
+		}
+		if !named {
+			continue
+		}
+		if change.Definition == "" {
+			fmt.Fprintf(&text, "Cause: the %s %s gives no definition, so the head takes the field %s before the change with its type alone. Give in definition the field as the base declares it, with each of its settings, such as its default and its limits.\n", change.Kind, change.ID, name)
+			continue
+		}
+		fmt.Fprintf(&text, "Cause: the head takes the field %s before the change from the definition %q of the %s %s. Give in it each setting of the field as the base declares it, such as its default and its limits.\n", name, change.Definition, change.Kind, change.ID)
+	}
+	return text.String()
 }

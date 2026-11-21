@@ -87,12 +87,30 @@ func userActivityPresented(v ActivityEntry) any {
 	return presentEntity(v, "ActivityEntry", v.ID, "/api/user-mgmt/v1/user-activity"+"/"+v.ID)
 }
 
-// decodeUserActivity gives the ActivityEntry of a create or an update body. A kind member that is not ActivityEntry is refused, and the
-// client values of the server-managed fields are cleared (ST-SUP-RC20-OC17, ST-SUP-RC20-OC19).
+// decodeUserActivity gives the ActivityEntry of a create, an update or an upsert body. Each member that is not kind, id, href or a
+// field of ActivityEntry, in its exact letter case, is refused, and so is a kind member that is not ActivityEntry and an implicit field
+// with another value than that of the collection; the client values of the server-managed fields are cleared
+// (ST-SUP-RC20-OC55, ST-SUP-RC20-OC17, ST-SUP-RC20-OC19, ST-SUP-RC20-OC23).
 func decodeUserActivity(bodyBytes []byte) (ActivityEntry, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return ActivityEntry{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
+	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
+	unknown := ""
+	for member := range rawMap {
+		switch member {
+		case "kind", "id", "href", "source_type", "source_id", "action", "detail":
+		default:
+			if unknown == "" || member < unknown {
+				unknown = member
+			}
+		}
+	}
+	if unknown != "" {
+		return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a field of ActivityEntry; a create, an update or an upsert takes only the fields of ActivityEntry and kind, in the letter case of the OpenAPI document"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
@@ -100,9 +118,24 @@ func decodeUserActivity(bodyBytes []byte) (ActivityEntry, error) {
 			return ActivityEntry{}, &invalidRequest{problem: BadRequest("kind must be ActivityEntry")}
 		}
 	}
+	if raw, ok := rawMap["source_type"]; ok && string(raw) != "null" {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value != "User" {
+			return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: "source_type", Message: "the collection user-activity sets this field itself; leave it out or give the value of the collection"}})}
+		}
+	}
+	for _, member := range []string{"id", "href"} {
+		delete(rawMap, member)
+	}
+	if stripped, err := json.Marshal(rawMap); err == nil {
+		bodyBytes = stripped
+	}
 	var activityentry ActivityEntry
 	if err := json.Unmarshal(bodyBytes, &activityentry); err != nil {
 		return ActivityEntry{}, &invalidRequest{problem: BadRequest("the body does not decode into ActivityEntry")}
+	}
+	if activityentry.SourceType != "" && activityentry.SourceType != "User" {
+		return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: "source_type", Message: "the collection user-activity sets this field itself; leave it out or give the value of the collection"}})}
 	}
 	activityentry.ID = ""
 	return activityentry, nil
@@ -125,6 +158,9 @@ func (h *UserActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		keyMissing(w, r, err)
 		return
+	}
+	if key != "" {
+		w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 	}
 	requestID := command.NewID()
 	if key == "" {

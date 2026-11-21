@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -94,10 +95,38 @@ func TestBaseSeal(t *testing.T) {
 		}
 		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
 			"  - {change: organization-description-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
-		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: adapterRecord(t, []byte(expand), SecretStorageVersion)}, parseHead(t, contract))
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: runtimeRecord(t, []byte(expand), SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, contract))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the contract of the seal is refused against its expand: %v %+v", err, check.Faults)
 		}
+		// A seal from public is the seal of a field with no sensitivity: the list of Organization searches
+		// description in the base, and the head with the seal undone keeps that search index (walkthrough 15, W15-B1).
+		fromPublic := withChanges(strings.Replace(td01, description, secret, 1),
+			"  - {id: organization-description-seal, kind: seal, entity: Organization, field: description, from: public}\n",
+			"  - {change: organization-description-seal, phase: expand}\n")
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, fromPublic))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the seal from public of a searched field is refused against the base in clear: %v %+v", err, check.Faults)
+		}
+		// A seal from public of a listed field of User and the rename of a patchable field of User in one release are
+		// each checked on their own: neither moves the indexes of the collections (walkthrough 17, W17-B2, where a
+		// generator that refused the rename gave the fault ST-GEN-INV33 that named the sealed field).
+		listed := strings.Replace(td01, "      - { name: metadata, type: jsonb, optional: true }\n", "      - { name: metadata, type: jsonb, optional: true }\n      - { name: badge, type: string, max_length: 40 }\n", 1)
+		const displayName = "{ name: display_name, type: string, min_length: 1, max_length: 100 }"
+		both := strings.Replace(strings.Replace(listed, "{ name: badge, type: string, max_length: 40 }", "{ name: badge, type: string, max_length: 40, sensitivity: secret }", 1),
+			displayName, "{ name: full_name, type: string, min_length: 1, max_length: 100 }", 1)
+		both = withChanges(strings.Replace(both, "patchable: [display_name, role, metadata]", "patchable: [full_name, role, metadata]", 1),
+			"  - {id: user-badge-seal, kind: seal, entity: User, field: badge, from: public}\n  - {id: user-display-name-rename, kind: rename, entity: User, field: full_name, from: display_name}\n",
+			"  - {change: user-badge-seal, phase: expand}\n  - {change: user-display-name-rename, phase: expand}\n")
+		if both == listed || !strings.Contains(both, "patchable: [full_name, role, metadata]") {
+			t.Fatal("the head of the seal and the rename is not built")
+		}
+		base = []byte(listed)
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, both))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("a seal from public and the rename of a patchable field of one entity in one release are refused against the base: %v %+v", err, check.Faults)
+		}
+		base = []byte(td01)
 		// A seal that also changes the bounds of the field is refused: the field before the seal is the field of the
 		// head in clear (ST-DECL-INV102).
 		wider := withChanges(strings.Replace(td01, description, "{ name: description, type: string, optional: true, max_length: 2000, sensitivity: secret }", 1), change,
@@ -107,6 +136,12 @@ func TestBaseSeal(t *testing.T) {
 			t.Fatalf("a seal that also changes max_length is accepted: %v", err)
 		}
 	})
+}
+
+// runtimeRecord is adapterRecord with the archetype rest-crud on the runtime library runtime.
+func runtimeRecord(t *testing.T, declaration []byte, adapter, runtime string) []byte {
+	t.Helper()
+	return append(adapterRecord(t, declaration, adapter), []byte("  archetype:\n    name: rest-crud\n    version: 3.0.0\n    runtime:\n      version: "+runtime+"\n")...)
 }
 
 // adapterRecord is the record of a release of the declaration whose postgres-adapter is version, with the tenancy
@@ -193,6 +228,193 @@ func TestBaseSealReports(t *testing.T) {
 		check, err := CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, "dev")}, parseHead(t, declared))
 		if err != nil || !check.HasFaults() {
 			t.Fatalf("the same declaration over a base with a pin that does not parse is accepted: %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC49-T07 The contract of a seal is refused over a base whose release of the expand step needs the clear column", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		change := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
+		expand := withChanges(strings.Replace(td01, description, secret, 1), change, "  - {change: organization-description-seal, phase: expand}\n")
+		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
+			"  - {change: organization-description-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
+		for _, c := range []struct {
+			name, record string
+			refused      bool
+		}{
+			{"runtime v0.149.0", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "v0.149.0")), true},
+			{"no runtime pin", string(adapterRecord(t, []byte(expand), SecretStorageVersion)), true},
+			{"a runtime pin that does not parse", string(runtimeRecord(t, []byte(expand), SecretStorageVersion, "dev")), true},
+			{"runtime " + SealSwitchRuntimeVersion, string(runtimeRecord(t, []byte(expand), SecretStorageVersion, SealSwitchRuntimeVersion)), false},
+		} {
+			check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: []byte(expand), Record: []byte(c.record)}, parseHead(t, contract))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || (strings.Contains(fault.Message, "need the clear column of the seal organization-description-seal") &&
+					strings.Contains(fault.Message, "with the seal still at expand, first"))
+			}
+			if refused != c.refused {
+				t.Errorf("%s: the contract gives %+v, want refused %t", c.name, check.Faults, c.refused)
+			}
+		}
+		// The expand step itself is not refused over an older runtime: only the contract drops the clear column.
+		check, err := CheckBase(BaseSource{Ref: "r2", Commit: "c0ffee", Declaration: []byte(td01), Record: runtimeRecord(t, []byte(td01), SecretStorageVersion, "v0.149.0")}, parseHead(t, expand))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the expand of the seal over runtime v0.149.0 is refused: %v %+v", err, check.Faults)
+		}
+	})
+}
+
+func TestBaseSealTogether(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T09 The contract of one seal of an entity is refused while the base holds another seal of the entity open, and the contract of both is accepted", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		// Organization has two fields in clear in the base, description and motto, and the release of the base
+		// seals both at expand.
+		clear := strings.Replace(td01, description, description+"\n      - { name: motto, type: string, optional: true, max_length: 100 }", 1)
+		sealed := strings.Replace(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+			"max_length: 100 }", "max_length: 100, sensitivity: secret }", 1)
+		changes := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n" +
+			"  - {id: organization-motto-seal, kind: seal, entity: Organization, field: motto}\n"
+		expand := "  - {change: organization-description-seal, phase: expand}\n  - {change: organization-motto-seal, phase: expand}\n"
+		base := []byte(withChanges(sealed, changes, expand))
+		record := runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)
+		together := func(fault BaseFault) bool {
+			return fault.Rule == StepLedgerRule && strings.Contains(fault.Message, "contracts the seal organization-description-seal of Organization") &&
+				strings.Contains(fault.Message, "holds the seal organization-motto-seal of the same entity open") && strings.Contains(fault.Message, "in the same release")
+		}
+		for _, c := range []struct {
+			name, history string
+			refused       bool
+		}{
+			{"the contract of description alone", expand + "  - {change: organization-description-seal, phase: contract}\n", true},
+			{"the contract of both", expand + "  - {change: organization-description-seal, phase: contract}\n  - {change: organization-motto-seal, phase: contract}\n", false},
+		} {
+			check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: record}, parseHead(t, withChanges(sealed, changes, c.history)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || together(fault)
+			}
+			if refused != c.refused || (!c.refused && check.HasFaults()) {
+				t.Errorf("%s: gives %+v, want refused %t", c.name, check.Faults, c.refused)
+			}
+		}
+		// A base with description alone open: the head may open the seal of motto and contract description in one
+		// release, since the release of the base has one open seal of the entity.
+		one := []byte(withChanges(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+			"  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n", "  - {change: organization-description-seal, phase: expand}\n"))
+		head := withChanges(sealed, changes, "  - {change: organization-description-seal, phase: expand}\n  - {change: organization-motto-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
+		check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: one, Record: runtimeRecord(t, one, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fault := range check.Faults {
+			if together(fault) || strings.Contains(fault.Message, "of the same entity open") {
+				t.Errorf("a contract over a base with one open seal of the entity is refused: %+v", fault)
+			}
+		}
+	})
+}
+
+func TestBaseSealDrop(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T10 A drop of a field whose seal is open is refused, and another field of the entity goes through the expand and the contract of its drop while the seal stays open", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		const motto = "\n      - { name: motto, type: string, optional: true, max_length: 100 }"
+		clear := strings.Replace(td01, description, description+motto, 1)
+		sealed := strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1)
+		seal := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
+		open := "  - {change: organization-description-seal, phase: expand}\n"
+		mottoDrop := "  - {id: organization-motto-drop, kind: drop, entity: Organization, field: motto, definition: \"string, optional, max_length 100, after description\"}\n"
+		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, secret, after name\"}\n"
+		noMotto := strings.Replace(sealed, motto, "", 1)
+		noDescription := strings.Replace(clear, description+"\n      - { name: motto", "{ name: motto", 1)
+		check := func(base []byte, head string) BaseCheck {
+			t.Helper()
+			c, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return c
+		}
+		// The base holds the seal of description open: its release reads and writes the clear and the sealed column.
+		base := []byte(withChanges(sealed, seal, open))
+		c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n"))
+		if !c.HasFaults() {
+			t.Error("a drop of description while its seal is open is accepted")
+		}
+		// The fault of the drop names the open seal and the remedy, to contract the seal first, and no other fault
+		// names description.
+		for _, fault := range c.Faults {
+			if fault.Field != "description" {
+				continue
+			}
+			if !strings.Contains(fault.Message, "seal organization-description-seal is open") || !strings.Contains(fault.Message, "contract the seal first") ||
+				len(fault.Declare) != 1 || fault.Declare[0].ID != "organization-description-seal" || fault.Declare[0].Phase != "contract" {
+				t.Errorf("the fault of the drop of description does not name the open seal and its contract: %+v", fault)
+			}
+		}
+		// The remedy of the fault goes through: a release with the contract step of the seal, then a release with the
+		// drop of description, whose definition states its sealed form.
+		contracted := open + "  - {change: organization-description-seal, phase: contract}\n"
+		if c := check(base, withChanges(sealed, seal, contracted)); c.HasFaults() {
+			t.Errorf("the contract of the open seal of description is refused: %+v", c.Faults)
+		}
+		if c := check([]byte(withChanges(sealed, seal, contracted)), withChanges(noDescription, seal+descriptionDrop, contracted+"  - {change: organization-description-drop, phase: expand}\n")); c.HasFaults() {
+			t.Errorf("the drop of description in the release after the contract of its seal is refused: %+v", c.Faults)
+		}
+		// A drop whose definition leaves out the item secret gets a fault that says to add it.
+		clearDrop := strings.Replace(descriptionDrop, ", secret, after name", ", after name", 1)
+		c = check([]byte(withChanges(sealed, seal, contracted)), withChanges(noDescription, seal+clearDrop, contracted+"  - {change: organization-description-drop, phase: expand}\n"))
+		if !slices.ContainsFunc(c.Faults, func(fault BaseFault) bool {
+			return strings.Contains(fault.Message, "add the item secret to the definition")
+		}) {
+			t.Errorf("a drop of the sealed description whose definition leaves out secret does not get a fault that says to add it: %+v", c.Faults)
+		}
+		for _, fault := range c.Faults {
+			if strings.Contains(fault.Message, "changes the secret form") {
+				t.Errorf("a drop of the sealed description whose definition leaves out secret also gets the fault of the secret form: %+v", fault)
+			}
+		}
+		if c := check(base, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n")); c.HasFaults() {
+			t.Errorf("the expand of a drop of motto while the seal of description is open is refused: %+v", c.Faults)
+		}
+		// The release of the expand step of the drop reads and writes no motto, also in its statements after the seal
+		// contract, so the contract of the drop leaves it working while the seal stays open.
+		dropped := []byte(withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n"))
+		if c := check(dropped, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n  - {change: organization-motto-drop, phase: contract}\n")); c.HasFaults() {
+			t.Errorf("the contract of the drop of motto while the seal of description is open is refused: %+v", c.Faults)
+		}
+	})
+}
+
+func TestBaseSealEntityDrop(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T11 A drop of an entity with a field whose seal is open is refused with a fault that names the seal", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const action = "{ name: action, type: string, max_length: 100 }"
+		sealed := strings.Replace(td01, action, "{ name: action, type: string, max_length: 100, sensitivity: secret }", 1)
+		seal := "  - {id: activity-entry-action-seal, kind: seal, entity: ActivityEntry, field: action}\n"
+		open := "  - {change: activity-entry-action-seal, phase: expand}\n"
+		base := []byte(withChanges(sealed, seal, open))
+		dropped := strings.Replace(sealed, "  - name: ActivityEntry\n", "  - name: ActivityEntry\n    dropped_by: activity-entry-drop\n", 1)
+		head := withChanges(dropped, seal+"  - {id: activity-entry-drop, kind: drop, entity: ActivityEntry}\n", open+"  - {change: activity-entry-drop, phase: expand}\n")
+		c, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		named := slices.ContainsFunc(c.Faults, func(fault BaseFault) bool {
+			return fault.Entity == "ActivityEntry" && strings.Contains(fault.Message, "seal activity-entry-action-seal is open") &&
+				strings.Contains(fault.Message, "contract the seal first") && len(fault.Declare) == 1 && fault.Declare[0].Phase == "contract"
+		})
+		if !named {
+			t.Errorf("the drop of ActivityEntry while the seal of action is open is not refused with a fault that names the seal: %+v", c.Faults)
 		}
 	})
 }

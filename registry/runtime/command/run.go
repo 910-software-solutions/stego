@@ -530,10 +530,19 @@ func Run[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Requ
 	if req.RequestID == "" {
 		req.RequestID = uuid.NewString()
 	}
+	// switched is 1 once a statement failed because the contract step of a seal dropped a clear column, or because
+	// its prepared statement was stale: the entity took its statements after the contract, or the pools dropped their
+	// prepared statements, and the call runs again once with no wait, beyond the declared Retry on conflict
+	// (ST-SUP-RP10-LC49, ST-SUP-RP04-LC11).
+	switched := 0
 	for reruns := 0; ; reruns++ {
 		result, err, conflict := runAttempt(ctx, rt, cmd, req, reruns, decode, fill)
 		result.Attempts = reruns + 1
-		if !conflict || reruns >= cmd.spec.RetryOnConflict || !waitRerun(ctx, rt, reruns+1) {
+		if conflict && switched == 0 && rerunsOnce(err) && ctx.Err() == nil {
+			switched = 1
+			continue
+		}
+		if !conflict || reruns >= cmd.spec.RetryOnConflict+switched || !waitRerun(ctx, rt, reruns+1) {
 			return result, err
 		}
 	}
@@ -572,6 +581,8 @@ func waitRerun(ctx context.Context, rt *Runtime, n int) bool {
 type fillFailure struct {
 	err      error
 	conflict bool
+	// logged is true when a log line of ST-SUP-RP10-LC39 already named the cause of the failure.
+	logged bool
 }
 
 func (f *fillFailure) Error() string { return f.err.Error() }
@@ -584,6 +595,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	outcome := otel.OutcomeRolledBack
 	defer func() { finish(outcome, reruns > 0, err != nil && !conflict) }()
 
+	// An entity that took its statements after a seal contract takes those of the spec again when the clear column
+	// and its checkpoint are back (security review of PR #452, L1), before the transaction begins.
+	recheckSeals(ctx, rt, cmd.writes)
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		if isConflict(ctx, err) {
@@ -687,6 +701,10 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	}
 	var failure *fillFailure
 	switch {
+	case errors.As(err, &failure) && !failure.conflict && !failure.logged:
+		// A failure that no log line of ST-SUP-RP10-LC39 names gets its cause class, which OutcomeOf logs when it
+		// answers 500 (ST-SUP-RP10-LC51).
+		return Result{}, &fillFault{err: failure.err, action: cmd.spec.Name}, false
 	case errors.As(err, &failure):
 		return Result{}, failure.err, failure.conflict
 	case err != nil && tenant.Unavailable(err):
@@ -840,7 +858,7 @@ func callFill[R any](ctx context.Context, s *state, call *probe.Call, fill func(
 		// A fill that ignores a conflict cannot commit (ST-SUP-RP10-LC25).
 		return zero, &fillFailure{err: s.conflict, conflict: true}
 	case s.broken != nil:
-		return zero, &fillFailure{err: s.broken}
+		return zero, &fillFailure{err: s.broken, logged: s.logged}
 	case err != nil:
 		return zero, &fillFailure{err: err, conflict: errors.Is(err, ErrConflict)}
 	}
@@ -925,7 +943,8 @@ var errDeadline = &conflictError{text: "the run reached its deadline before the 
 func newState(ctx context.Context, rt *Runtime, tx *sql.Tx, t tenant.Tenant, p authz.Principal, m mode, action string,
 	writes map[Declared]bool, destinations map[string]Destination) *state {
 	s := &state{rt: rt, tx: tx, tenant: t, principal: p, mode: m, action: action, writes: writes,
-		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{}}
+		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{},
+		sealSwitches: sealSwitches.Load()}
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}

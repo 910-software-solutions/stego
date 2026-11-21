@@ -314,9 +314,16 @@ func (s *AuthzSchema) RelationAdmits(typeName, relation, subjectType string) boo
 }
 
 // grants tells whether a relation of the schema admits the subject type.
-func (s *AuthzSchema) grants(subjectType string) bool {
-	for _, definition := range s.definitions {
-		for _, subjects := range definition.relations {
+func (s *AuthzSchema) grants(subjectType string) bool { return s.grantsBut(subjectType, "", "") }
+
+// grantsBut tells whether a relation of the schema, other than the relation relation of the type typeName, admits the
+// subject type.
+func (s *AuthzSchema) grantsBut(subjectType, typeName, relation string) bool {
+	for name, definition := range s.definitions {
+		for own, subjects := range definition.relations {
+			if name == typeName && own == relation {
+				continue
+			}
 			for _, subject := range subjects {
 				if subject == subjectType {
 					return true
@@ -355,6 +362,7 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
 	faults = append(faults, checkProvisioningSchema(service, schema)...)
+	faults = append(faults, checkTenantServiceRelation(service, schema)...)
 	faults = append(faults, checkOutboxDestination(schema)...)
 	faults = append(faults, droppedSchemaNames(service, schema)...)
 	return faults

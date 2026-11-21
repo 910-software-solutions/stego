@@ -56,11 +56,16 @@ func TestRun(t *testing.T) {
 		t.Helper()
 		for _, id := range ids {
 			var n int
-			var actorKind, before, after, operation string
-			if err := e.admin.QueryRowContext(context.Background(), "SELECT count(*), min(actor_kind), min(before->>'card_last4'), min(after->>'card_last4'), min(operation) FROM "+
+			var actorKind, before, after, operation, version, declaration string
+			if err := e.admin.QueryRowContext(context.Background(), "SELECT count(*), min(actor_kind), min(before->>'card_last4'), min(after->>'card_last4'), min(operation), min(service_version), min(declaration_version) FROM "+
 				audit.EventsTable+" WHERE action = 'read' AND outcome = 'ok' AND actor_id = 'user:u-7' AND resource_type = 'charge' AND resource_id = $1 AND tenant_id = 't1' AND hash_version = $2",
-				id, audit.HashVersionCurrent).Scan(&n, &actorKind, &before, &after, &operation); err != nil {
+				id, audit.HashVersionCurrent).Scan(&n, &actorKind, &before, &after, &operation, &version, &declaration); err != nil {
 				t.Fatal(err)
+			}
+			// A read row carries the version of the release and of the declaration, as a row of a command does
+			// (walkthrough 14: 103 pii-read rows had an empty service_version).
+			if version != "1.4.2" || declaration != "7" {
+				t.Errorf("the read row of %s carries the service version %q and the declaration version %q, want 1.4.2 and 7", id, version, declaration)
 			}
 			if n != 1 || actorKind != "user" {
 				t.Errorf("%s has %d read rows with the actor kind %q, want 1 row of the user user:u-7", id, n, actorKind)

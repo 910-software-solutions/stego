@@ -70,6 +70,19 @@ func runCompat(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// compat generates nothing, so it takes the generated files of the head from the record of the head, which
+	// stego apply writes and the drift check holds to the generated files (ST-GEN-INV38).
+	headState, err := compiler.LoadState(".stego/state.yaml")
+	if err != nil {
+		return err
+	}
+	if headState.LastApplied != nil {
+		bodies, err := compiler.MigrationBodyFaults(base, headState.LastApplied.Files)
+		if err != nil {
+			return err
+		}
+		check.Faults = append(check.Faults, bodies...)
+	}
 	if *structured {
 		document, err := json.MarshalIndent(check, "", "  ")
 		if err != nil {
@@ -387,8 +400,11 @@ func gitEntryOnPath(folder string) bool {
 type baseGate struct {
 	ref     string
 	checked bool
-	steps   []types.SchemaChange
-	data    []byte
+	// base is the declaration and the record at the base, which the check of the bodies of the released
+	// migrations reads after the plan (ST-GEN-INV38).
+	base  compiler.BaseSource
+	steps []types.SchemaChange
+	data  []byte
 	// head is the declaration as plan and apply read it, and newSteps the positions, from 1, of the steps of its
 	// schema history that the base does not hold (ST-GEN-UC12-R01).
 	head     *types.ServiceDeclaration
@@ -462,6 +478,7 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 		return gate, err
 	}
 	gate.checked = true
+	gate.base = base
 	if check.HasFaults() {
 		fmt.Fprint(stdout, formatBaseCheck(check))
 		return gate, fmt.Errorf("the check against the base ref %s refuses the declaration, so nothing is written: %s", gate.ref, baseRemedy(check))
@@ -621,4 +638,19 @@ func printSchemaSteps(stdout io.Writer, verb string, steps []types.SchemaChange)
 		}
 		fmt.Fprintf(stdout, "%s schema step %s: add %s at expand\n", verb, step.ID, target)
 	}
+}
+
+// refuseChangedBodies refuses a plan whose generated SQL file of a ledgered migration that the record at the base
+// lists has another digest than that record lists (ST-GEN-INV38), for plan and apply before anything is written. A
+// gate that checked no base refuses nothing.
+func refuseChangedBodies(gate baseGate, plan *compiler.Plan, stdout io.Writer) error {
+	if !gate.checked || plan == nil || plan.NewState == nil || plan.NewState.LastApplied == nil {
+		return nil
+	}
+	faults, err := compiler.MigrationBodyFaults(gate.base, plan.NewState.LastApplied.Files)
+	if err != nil || len(faults) == 0 {
+		return err
+	}
+	fmt.Fprint(stdout, formatBaseCheck(compiler.BaseCheck{BaseRef: gate.ref, BaseCommit: gate.base.Commit, Released: true, Faults: faults}))
+	return fmt.Errorf("the check against the base ref %s refuses the changed body of %d released migration(s), so nothing is written: keep each body, and bring the change in a new schema step", gate.ref, len(faults))
 }

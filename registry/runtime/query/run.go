@@ -40,6 +40,9 @@ type Config struct {
 	Authz *authz.Runtime
 	// Service is the service name that each audit row carries.
 	Service string
+	// ServiceVersion and DeclarationVersion are the version of the release and of the declaration that each audit
+	// row carries, as the command runtime's rows do (walkthrough 14).
+	ServiceVersion, DeclarationVersion string
 	// CursorKey is the key of the MAC of the text form of a list cursor (ST-SUP-RP11-LC15): at least MinCursorKey
 	// random bytes, the same in every replica of the service, and secret. Without it, a cursor has no text form.
 	CursorKey []byte
@@ -64,7 +67,9 @@ type Runtime struct {
 	settings audit.Settings
 	authz    *authz.Runtime
 	service  string
-	dropped  atomic.Uint64
+	// version and declaration are the version of the release and of the declaration that each read audit row carries.
+	version, declaration string
+	dropped              atomic.Uint64
 	// overBound counts the lists over MaxSearchKeys by entity; nil without a Meter.
 	overBound metric.Int64Counter
 
@@ -121,7 +126,7 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, errors.New("query: a cursor key needs the service name")
 	}
 	rt := &Runtime{db: cfg.DB, auditDB: cfg.AuditDB, audit: cfg.Audit, settings: cfg.AuditSettings, authz: cfg.Authz,
-		service: cfg.Service, problemBase: cfg.ProblemBase}
+		service: cfg.Service, version: cfg.ServiceVersion, declaration: cfg.DeclarationVersion, problemBase: cfg.ProblemBase}
 	if cfg.Meter != nil {
 		counter, err := cfg.Meter.Meter(instrumentation).Int64Counter("query.list.over_bound",
 			metric.WithDescription("The ordered lists of an entity of small expected cardinality whose resource search gave more keys than the bound, by entity."))
@@ -316,6 +321,11 @@ func runFill[P any](ctx context.Context, rt *Runtime, q *Query, b Bound[P], body
 		fillErr = h.core.audit.failure()
 	}
 	if fillErr != nil {
+		// A stale prepared statement fails once in the process: the pools drop their prepared statements
+		// (ST-SUP-RP04-LC11).
+		if tenant.StalePlan(fillErr) {
+			tenant.ResetStatements()
+		}
 		return fillErr
 	}
 	if err := tenant.Commit(ctx, tx, b.Tenant); err != nil {
@@ -406,7 +416,8 @@ func (c *core) readEvent(e *entity, id string) audit.Event {
 		resourceType = e.spec.Name
 	}
 	return audit.Event{ActorID: subject.String(), ActorKind: kind, Operation: c.query.name, ResourceType: resourceType,
-		ResourceID: id, Service: c.audit.rt.service, RequestID: c.requestID}
+		ResourceID: id, Service: c.audit.rt.service, ServiceVersion: c.audit.rt.version, DeclarationVersion: c.audit.rt.declaration,
+		RequestID: c.requestID}
 }
 
 // audited writes the read audit row of the resource id of e, whose stored row is row, when e holds a pii field and

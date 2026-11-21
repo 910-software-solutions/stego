@@ -475,7 +475,8 @@ of the database does not hold them.
 
 Do these steps in this order:
 
-1. Stop the service. Pause the automatic sync of its Argo CD Application, if
+1. Stop the service: each process of each release, also of the release of the
+   expand step of a seal. Pause the automatic sync of its Argo CD Application, if
    it has one, so that Argo CD does not start it again. Then:
 
    ```sh
@@ -514,7 +515,67 @@ Do these steps in this order:
 4. Run the migration Job of the release that you start. It checks the roles,
    the grants and the schema again, and it refuses a database that does not
    satisfy the schema manifest. When the dump is of an older release, it also
-   migrates the database to the release.
+   migrates the database to the release. When the dump is from before the
+   contract step of a seal, the Job refuses at that step until the seal job of
+   the release of its expand step completes a pass: see [Restore a database
+   with an open or finished seal](schema-changes.md#restore-a-database-with-an-open-or-finished-seal).
+   A dump from before the seal holds the field in clear. So when the dump is
+   from before the expand step or the contract step of a seal, first run the
+   release of the expand step: its migration Job and its worker Deployment,
+   which runs the controller, for one pass of the seal job. The controller
+   runs the seal job when it gets the controller lease, at its start, and then
+   each 10 minutes. A run starts a pass only when the checkpoint row of the
+   seal is 3 minutes old or older, and no process of a release before the
+   step reported itself in its last three report intervals. Else the run
+   seals nothing, and the next run is 10 minutes later. The age of the row is
+   the time since the migration Job first applied the expand step on the
+   database, or since the first run of the seal job saw the row on this
+   database instance, whichever is later. The database instance is the
+   database, the start of its server, and the table of the seal checkpoints.
+   A restore keeps the row of the dump with its time, but not the database
+   instance where the job saw it (runtime v0.168.0 or later):
+   - When the dump is from after the expand step, the first run after the
+     restore records that it saw the row, and waits. The pass runs at the next
+     run, 10 minutes later, when no process of the release before reported
+     itself in its last three report intervals. Before you start the worker
+     Deployment, stop each process of the release before and make sure that
+     its Deployments have no pods. With a runtime before v0.168.0, the
+     3-minute wait does not apply after a restore, and the stop of the release
+     before is the only guard.
+   - A pass that completed before the dump does not count after the restore
+     (runtime v0.172.0 and postgres-adapter 6.21.0 or later). The first run
+     after the restore ends that pass and waits, and the next run does a new
+     pass. Until the new pass completes, the migration Job of the contract
+     step refuses with `the last pass of the seal job did not run in this
+     database instance`. Thus each restore costs one more pass of the seal
+     job.
+   - A restore in place, with `pg_restore --clean` and no `--create`, keeps
+     the database and the server. It makes the table of the seal checkpoints
+     again, so it is a new database instance too, and gets the same wait and
+     the same new pass (postgres-adapter 6.21.0 or later).
+   - A restore of the data alone, such as `pg_restore --data-only` into the
+     tables that are there, keeps the table of the seal checkpoints and its
+     file node. So the rows of the dump can look as seen in this database
+     instance. Before such a restore, run `TRUNCATE stego_schema.seals`, or
+     restart the database server after it. Either one makes a new database
+     instance, and the seal job does a new pass.
+   - A restart of the database server also makes a new database instance. The
+     first run after the restart waits, and the next run does a new pass, also
+     when a pass completed before the restart. A `VACUUM FULL`, `CLUSTER` or
+     `TRUNCATE` of `stego_schema.seals` has the same effect. When the server
+     restarts more often than each 10 minutes, the seal job never starts a
+     pass, because each run sees a new database instance and waits. A pass
+     completes only when the server stays up for two runs of the seal job, at
+     most 20 minutes, and then for the time of the pass.
+   - When the dump is from before the expand step, the migration Job of that
+     release makes a new row. Wait 3 minutes after the Job before you start
+     the worker Deployment, or the first pass runs only 10 minutes later.
+
+   A pass reads 100 rows at a time, with a pause of 50 ms after each batch,
+   so its time grows with the number of rows. When the job logs `seal of a
+   secret column` with `completed=true`, stop that release and run the
+   migration Job of the release that you start again. Only then does that Job
+   pass.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
 6. List the messages of the destination `authz` that are not done, and review
@@ -673,6 +734,18 @@ functions of the outbox, the audit and the authorization can differ. Then each
 pod of the older release logs the error `the database does not satisfy the
 schema manifest` once for each difference, with its class, such as
 `class=owner`. The pod starts and serves. This is expected during a rollback.
+
+A table or a column that the older release uses can be missing, for example
+after a contract step of a later release dropped it. Then each statement on
+that table fails. In this case the error line says `the service starts not
+ready`, with the table or the column, and each mode of the pod answers
+`/readyz/modes`, the readiness probe of each Deployment, with 503. The answer
+names no table or column, because a caller of the network can read it: read
+the log of the pod. The pod does not restart. A rollout of
+the older release stops at its first pod, and the pods that serve stay. Roll
+forward to the release that changed the database. There is one exception: the
+release of the expand step of a seal goes on after the contract step drops
+the clear column, so its pods are ready.
 
 Do these steps for a rollback:
 

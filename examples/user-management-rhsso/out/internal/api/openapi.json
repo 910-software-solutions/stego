@@ -168,6 +168,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A structured string of 1 to 255 characters, such as a quoted UUID. A second request with the same key and body gets the stored response with Idempotent-Replayed: true; with no key, the request runs once.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -198,6 +207,15 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
               }
             },
             "content": {
@@ -227,7 +245,32 @@
             }
           },
           "400": {
-            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The Idempotency-Key was used with another request",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -851,6 +894,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A structured string of 1 to 255 characters, such as a quoted UUID. A second request with the same key and body gets the stored response with Idempotent-Replayed: true; with no key, the request runs once.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -881,6 +933,15 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
               }
             },
             "content": {
@@ -910,7 +971,32 @@
             }
           },
           "400": {
-            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The Idempotency-Key was used with another request",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -1119,6 +1205,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A structured string of 1 to 255 characters, such as a quoted UUID. A second request with the same key and body gets the stored response with Idempotent-Replayed: true; with no key, the request runs once.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1149,6 +1244,15 @@
                 "schema": {
                   "type": "string"
                 }
+              },
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
               }
             },
             "content": {
@@ -1178,10 +1282,46 @@
             }
           },
           "400": {
-            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
           },
           "404": {
-            "description": "Not found"
+            "description": "Not found",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The Idempotency-Key was used with another request",
+            "headers": {
+              "Idempotency-Kept": {
+                "description": "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "1"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -1548,9 +1688,36 @@
       "OrgSettingCreateRequest": {
         "type": "object",
         "properties": {
+          "generation": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
           "key": {
             "type": "string",
             "maxLength": 255
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "OrgSetting"
+            ]
+          },
+          "org_id": {
+            "type": "string",
+            "description": "The path gives this field: the body may leave it out or give the value of the path.",
+            "x-kept": true
           },
           "value": {
             "description": "Arbitrary JSON value"
@@ -1559,7 +1726,8 @@
         "required": [
           "key",
           "value"
-        ]
+        ],
+        "additionalProperties": false
       },
       "OrgUsersPatchRequest": {
         "type": "object",
@@ -1568,6 +1736,13 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a patch may leave it out.",
+            "enum": [
+              "User"
+            ]
           },
           "metadata": {
             "description": "Arbitrary JSON value"
@@ -1580,7 +1755,8 @@
               "viewer"
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "Organization": {
         "type": "object",
@@ -1606,6 +1782,23 @@
             "type": "string",
             "maxLength": 1000
           },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "Organization"
+            ]
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -1614,7 +1807,8 @@
         },
         "required": [
           "name"
-        ]
+        ],
+        "additionalProperties": false
       },
       "User": {
         "type": "object",
@@ -1661,8 +1855,30 @@
             "type": "string",
             "maxLength": 255
           },
+          "href": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "id": {
+            "description": "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.",
+            "x-output-only": true,
+            "nullable": true
+          },
+          "kind": {
+            "type": "string",
+            "description": "The name of the entity; a body may leave it out.",
+            "enum": [
+              "User"
+            ]
+          },
           "metadata": {
             "description": "Arbitrary JSON value"
+          },
+          "org_id": {
+            "type": "string",
+            "description": "The path gives this field: the body may leave it out or give the value of the path.",
+            "x-kept": true
           },
           "role": {
             "type": "string",
@@ -1677,7 +1893,8 @@
           "email",
           "display_name",
           "role"
-        ]
+        ],
+        "additionalProperties": false
       }
     }
   }

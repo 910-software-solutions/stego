@@ -742,7 +742,83 @@ func (e *env) as(subject, tenantID string) caller {
 }
 
 // newTenant gives a tenant ID that no other check uses.
+// cli gives the apply command of the generated CLI program of STEGO_TEST_CLI, logged in as c. The CLI calls only an
+// HTTPS URL, so the service gets a TLS listener that passes each request to its handler through serve.
+func (e *env) cli(t *testing.T, c caller, serve func(w http.ResponseWriter, r *http.Request, next http.Handler)) func(name string) ([]map[string]string, error) {
+	t.Helper()
+	apply := e.cliWarn(t, c, serve)
+	return func(name string) ([]map[string]string, error) {
+		t.Helper()
+		results, _, err := apply(name)
+		return results, err
+	}
+}
+
+// cliWarn is cli whose apply also gives what the CLI wrote to standard error.
+func (e *env) cliWarn(t *testing.T, c caller, serve func(w http.ResponseWriter, r *http.Request, next http.Handler)) func(name string) ([]map[string]string, string, error) {
+	t.Helper()
+	program := os.Getenv("STEGO_TEST_CLI")
+	if program == "" {
+		t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
+	}
+	listener := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { serve(w, r, e.server.Config.Handler) }))
+	t.Cleanup(listener.Close)
+	dir := t.TempDir()
+	// The CLI keeps its configuration only in a folder that no other user can write.
+	must(t, os.Chmod(dir, 0o700))
+	ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
+	must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw}), 0o600))
+	must(t, os.WriteFile(token, []byte(c.token), 0o600))
+	run := func(args ...string) (string, string, error) {
+		t.Helper()
+		cmd := exec.Command(program, args...)
+		cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		if err != nil {
+			err = fmt.Errorf("%w: %s", err, stderr.String())
+		}
+		return stdout.String(), stderr.String(), err
+	}
+	if out, _, err := run("login", "--url", listener.URL, "--token-file", token, "--ca-file", ca); err != nil {
+		t.Fatalf("the CLI login failed: %v %s", err, out)
+	}
+	return func(name string) ([]map[string]string, string, error) {
+		t.Helper()
+		file := dir + "/" + name + ".yaml"
+		must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
+		out, warned, err := run("apply", "-f", file, "-o", "json")
+		var results []map[string]string
+		if out != "" {
+			must(t, json.Unmarshal([]byte(out), &results))
+		}
+		return results, warned, err
+	}
+}
+
 func newTenant() string { return "t-" + uuid.NewString()[:8] }
+
+// failInsert makes the database fail each insert into table whose column holds value, until the check ends, as a
+// fault of the database does: the service then answers the write with a 5xx.
+func (e *env) failInsert(t *testing.T, table, column, value string) {
+	t.Helper()
+	name := "fail_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	_, err := e.admin.ExecContext(e.ctx, `CREATE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.`+column+` = '`+value+`' THEN
+    RAISE EXCEPTION 'the check fails this insert';
+  END IF;
+  RETURN NEW;
+END $$`)
+	must(t, err)
+	_, err = e.admin.ExecContext(e.ctx, `CREATE TRIGGER `+name+` BEFORE INSERT ON `+table+` FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
+	must(t, err)
+	t.Cleanup(func() {
+		_, _ = e.admin.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS `+name+` ON `+table)
+		_, _ = e.admin.ExecContext(context.Background(), `DROP FUNCTION IF EXISTS `+name+`()`)
+	})
+}
 
 // own writes the owner relation of the caller on a resource of the caller's tenant in SpiceDB.
 func (e *env) own(c caller, resourceType, id string) { e.relate(c, "owner", resourceType, id) }
@@ -1225,20 +1301,134 @@ func TestCrud(t *testing.T) {
 
 	t.Run("ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted", func(t *testing.T) {
 		e := service(t)
-		tenantRoutes(e, e.as("u-1", newTenant()), func(r *http.Request) {
-			if r.Body == nil || r.Method == http.MethodDelete || r.Method == http.MethodGet {
-				return
+		a := e.as("u-1", newTenant())
+		// A body member that names a tenant is not a field: each write refuses it with a 400 that names it and holds
+		// no value, and stores nothing (ST-SUP-RC20-OC35, ST-SUP-RC20-OC55, ST-SUP-RC20-OC15).
+		withTenant := func(body string) string {
+			return strings.TrimSuffix(body, "}") + `,"tenant":"t2","tenant_id":"t2"}`
+		}
+		refused := func(what string, r reply) {
+			t.Helper()
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"tenant"`) || strings.Contains(string(r.body), "t2") {
+				t.Errorf("%s with a tenant in the body answered %d %s, want 400 that names tenant and holds no value", what, r.status, r.body)
 			}
-			data, err := io.ReadAll(r.Body)
-			must(t, err)
-			var body map[string]any
-			must(t, json.Unmarshal(data, &body))
-			body["tenant"], body["tenant_id"] = "t2", "t2"
-			data, err = json.Marshal(body)
-			must(t, err)
-			r.Body = io.NopCloser(strings.NewReader(string(data)))
-			r.ContentLength = int64(len(data))
-		})
+		}
+		for _, collection := range []struct{ name, resourceType, body, change, method string }{
+			{"orders", "order", `{"sku":"t","qty":1}`, `{"qty":2}`, http.MethodPatch},
+			{"customers", "customer", `{"name":"T","api_token":"x","plan":"free"}`, `{"name":"T","api_token":"x","plan":"pro"}`, http.MethodPut},
+			{"todos", "todo", `{"title":"t"}`, `{"title":"u"}`, http.MethodPut},
+			{"todos", "todo", `{"title":"t"}`, `{"title":"u"}`, http.MethodPatch},
+		} {
+			refused("the create of "+collection.name, e.send(a, http.MethodPost, "/api/v1/"+collection.name, "k-"+uuid.NewString(), withTenant(collection.body)))
+			id := e.create(a, collection.name, collection.resourceType, collection.body)
+			refused(collection.method+" of "+collection.name, e.send(a, collection.method, "/api/v1/"+collection.name+"/"+id, "k-"+uuid.NewString(), withTenant(collection.change)))
+		}
+		if n := e.count(`SELECT (SELECT count(*) FROM orders WHERE tenant_id = 't2') + (SELECT count(*) FROM customers WHERE tenant_id = 't2') + (SELECT count(*) FROM todos WHERE tenant_id = 't2')`); n != 0 {
+			t.Errorf("%d rows with tenant t2, want 0", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 't2'`); n != 0 {
+			t.Errorf("%d audit rows with tenant t2, want 0", n)
+		}
+		// Only the four creates without a tenant member wrote a row, and no refused write changed one.
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND outcome = 'ok' AND action IN ('create', 'patch', 'update', 'delete')`, a.tenant.ID()); n != 4 {
+			t.Errorf("%d ok audit rows with the caller's tenant, want 4", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC55-T01 A create, an update and an upsert refuse a member that they do not take, also in another letter case, store nothing, and take a read row sent back", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		ticket := func(code, title, extra string) string {
+			return `{"folder_id":"` + folder + `","code":"` + code + `","title":"` + title + `","sku":"s-` + code + `"` + extra + `}`
+		}
+		id := e.create(a, "tickets", "ticket", ticket("c1", "first", ""))
+		item := "/api/v1/tickets/" + id
+		for member, extra := range map[string]string{
+			"Title":  `,"Title":"value-of-the-member"`,
+			"titel":  `,"titel":"value-of-the-member"`,
+			"tenant": `,"tenant":"value-of-the-member"`,
+			"CODE":   `,"CODE":"value-of-the-member"`,
+		} {
+			for _, w := range []struct{ what, method, path, body string }{
+				{"a create", http.MethodPost, "/api/v1/tickets", ticket("c2", "second", extra)},
+				{"an update", http.MethodPut, item, ticket("c1", "second", extra)},
+				{"an upsert of a new row", http.MethodPut, "/api/v1/tickets", ticket("c3", "second", extra)},
+				{"an upsert of the stored row", http.MethodPut, "/api/v1/tickets", ticket("c1", "second", extra)},
+			} {
+				r := e.send(a, w.method, w.path, "k-"+uuid.NewString(), w.body)
+				if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+member+`"`) || strings.Contains(string(r.body), "value-of-the-member") {
+					t.Errorf("%s with the member %s answered %d %s, want 400 that names the member and holds no value", w.what, member, r.status, r.body)
+				}
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE tenant_id = $1`, a.tenant.ID()); n != 1 {
+			t.Errorf("%d ticket rows, want only the first", n)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first'`, id); n != 1 {
+			t.Errorf("%d ticket rows as the create left them, want 1", n)
+		}
+		// A read row sent back, with kind, id, href and each member that the server sets, is taken.
+		read := e.send(a, http.MethodGet, item, "", "")
+		row := read.object(t)
+		row["title"] = "second"
+		body, err := json.Marshal(row)
+		must(t, err)
+		if r := e.send(a, http.MethodPut, item, "k-"+uuid.NewString(), string(body)); r.status != http.StatusOK || r.member(t, "title") != "second" {
+			t.Errorf("an update with a read row sent back (%s) answered %d %s, want 200 with the new title", body, r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c1", "third", `,"kind":"Ticket"`)); r.status != http.StatusOK || r.member(t, "title") != "third" {
+			t.Errorf("an upsert of the stored row with the right names answered %d %s, want 200 with the new title", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c4", "fourth", `,"kind":"Ticket"`)); r.status != http.StatusCreated {
+			t.Errorf("a create with the right names answered %d %s, want 201", r.status, r.body)
+		}
+		// An implicit field is taken only with the value of its collection (ST-SUP-RC20-OC23).
+		if r := e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"source":"blue","note":"n1"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"source"`) || strings.Contains(string(r.body), "blue") {
+			t.Errorf("a create of a red event with the source blue answered %d %s, want 400 that names source and holds no value", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM events WHERE tenant_id = $1`, a.tenant.ID()); n != 0 {
+			t.Errorf("%d event rows, want 0", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC55-T07 A write refuses a member given twice, cuts a long member name, and ignores a server-set member of another type", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		ticket := func(code, rest string) string {
+			return `{"folder_id":"` + folder + `","code":"` + code + `","sku":"s-` + code + `"` + rest + `}`
+		}
+		id := e.create(a, "tickets", "ticket", ticket("c1", `,"title":"first"`))
+		item := "/api/v1/tickets/" + id
+		twice := func(what string, r reply, member string) {
+			t.Helper()
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+member+`"`) || !strings.Contains(string(r.body), "more than once") || strings.Contains(string(r.body), "value-of-the-member") {
+				t.Errorf("%s answered %d %s, want 400 that names %s as given twice and holds no value", what, r.status, r.body, member)
+			}
+		}
+		twice("a create with title twice", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c2", `,"title":"value-of-the-member","title":"b"`)), "title")
+		twice("an update with title twice, once escaped", e.send(a, http.MethodPut, item, "k-"+uuid.NewString(), ticket("c1", `,"title":"value-of-the-member","\u0074itle":"b"`)), "title")
+		twice("an upsert with title twice", e.send(a, http.MethodPut, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c1", `,"title":"value-of-the-member","title":"b"`)), "title")
+		twice("a patch with title twice", e.send(a, http.MethodPatch, item, "k-"+uuid.NewString(), `{"title":"value-of-the-member","title":"b"}`), "title")
+		// The implicit check cannot be passed by a second member that ends in null (security review of PR #464, LOW).
+		twice("a red event with source twice", e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"source":"value-of-the-member","source":null,"note":"n"}`), "source")
+		if n := e.count(`SELECT count(*) FROM tickets WHERE tenant_id = $1 AND title = 'first'`, a.tenant.ID()); n != 1 || e.count(`SELECT count(*) FROM tickets WHERE tenant_id = $1`, a.tenant.ID()) != 1 || e.count(`SELECT count(*) FROM events WHERE tenant_id = $1`, a.tenant.ID()) != 0 {
+			t.Errorf("the refused writes changed a row: %d tickets with the first title", n)
+		}
+		// A problem repeats at most 128 bytes of a member name.
+		long := strings.Repeat("x", 300)
+		r := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c3", `,"title":"t","`+long+`":1`))
+		if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+long[:128]+`"`) || strings.Contains(string(r.body), long[:129]) {
+			t.Errorf("a member of 300 bytes answered %d %s, want 400 whose field holds its first 128 bytes", r.status, r.body)
+		}
+		// A member that the server sets is ignored, also with a value of another JSON type.
+		if r := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c4", `,"title":"t","id":5,"href":[1]`)); r.status != http.StatusCreated || r.member(t, "id") == "5" {
+			t.Errorf("a create with id 5 and href [1] answered %d %s, want 201 with a new id", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), `{"title":"m","starts_at":"2026-12-01T08:00:00Z","noted_at":7}`); r.status != http.StatusCreated {
+			t.Errorf("a create of a meeting with noted_at 7 answered %d %s, want 201", r.status, r.body)
+		}
 	})
 
 	t.Run("ST-SUP-RC30-OC04-T01 The key row commits with the write", func(t *testing.T) {
@@ -1497,20 +1687,23 @@ func TestCrud(t *testing.T) {
 		if denied.status != http.StatusNotFound || strings.Contains(detail, "''") || !strings.Contains(detail, "Book was not written") {
 			t.Errorf("the denied create answered %d %s, want 404 that names the Book that was not written and no empty ID", denied.status, denied.body)
 		}
-		for _, c := range []struct{ header, want string }{
-			{"", "the Idempotency-Key header is absent"},
-			{"k-unquoted", "put the key in double quotes"},
-		} {
-			headers := map[string]string{}
-			if c.header != "" {
-				headers["Idempotency-Key"] = c.header
+		t.Run("ST-SUP-RC30-OC02-T03 A create with no Idempotency-Key gets idempotency-key-missing, and one with a key that is not a structured string idempotency-key-invalid", func(t *testing.T) {
+			for _, c := range []struct{ header, want, slug string }{
+				{"", "the Idempotency-Key header is absent", "idempotency-key-missing"},
+				{"k-unquoted", "put the key in double quotes", "idempotency-key-invalid"},
+				{`""`, "put the key in double quotes", "idempotency-key-invalid"},
+			} {
+				headers := map[string]string{}
+				if c.header != "" {
+					headers["Idempotency-Key"] = c.header
+				}
+				r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
+				problem := r.object(t)
+				if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "/"+c.slug) {
+					t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the type %s that says %q", c.header, r.status, r.body, c.slug, c.want)
+				}
 			}
-			r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
-			problem := r.object(t)
-			if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "idempotency-key-missing") {
-				t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the missing type that says %q", c.header, r.status, r.body, c.want)
-			}
-		}
+		})
 	})
 
 	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause", func(t *testing.T) {
@@ -1821,9 +2014,9 @@ func TestCrud(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND starts_at = '2026-12-01T08:00:00Z' AND ends_at = '2026-12-01T09:30:00.5Z' AND noted_at > now() - interval '1 hour'`, id); n != 1 {
 			t.Errorf("%d meeting rows with the client's times and the server's noted_at, want 1", n)
 		}
-		// The same key with another time is another request (the fingerprint holds the client-set field): 422. The
-		// decoder matches a member name to a field under case folding, so STARTS_AT with another time is also 422,
-		// and STARTS_AT with the same time is the same request, which replays the first answer (ST-SUP-RP07-LC10).
+		// The same key with another time is another request (the fingerprint holds the client-set field): 422. A
+		// member matches a field only in its exact letter case, so STARTS_AT is refused with a 400 that names it, with
+		// the key of the first request or a new key (ST-SUP-RC20-OC55).
 		reused := func(what, key, body string) {
 			t.Helper()
 			r := e.send(a, http.MethodPost, "/api/v1/meetings", key, body)
@@ -1831,23 +2024,15 @@ func TestCrud(t *testing.T) {
 				t.Errorf("the same key with %s answered %d %s, want 422 idempotency-key-reused", what, r.status, r.body)
 			}
 		}
-		folded := strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)
 		reused("another starts_at", key, strings.Replace(body, "10:00:00", "10:05:00", 1))
-		reused("STARTS_AT holding another time", key, strings.Replace(folded, "10:00:00", "10:05:00", 1))
-		// A first request that names the field as STARTS_AT: the same key with STARTS_AT holding another time is
-		// 422, not the replay of the first answer.
-		other := "k-" + uuid.NewString()
-		first := e.send(a, http.MethodPost, "/api/v1/meetings", other, folded)
-		if first.status != http.StatusCreated || first.member(t, "starts_at") != "2026-12-01T08:00:00Z" {
-			t.Fatalf("the create with STARTS_AT answered %d %s, want 201 with the client's starts_at", first.status, first.body)
+		folded := strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)
+		for _, k := range []string{key, "k-" + uuid.NewString()} {
+			if r := e.send(a, http.MethodPost, "/api/v1/meetings", k, folded); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"STARTS_AT"`) {
+				t.Errorf("a create with STARTS_AT answered %d %s, want 400 that names STARTS_AT", r.status, r.body)
+			}
 		}
-		e.own(a, "meeting", first.member(t, "id"))
-		reused("STARTS_AT holding another time after a first STARTS_AT", other, strings.Replace(folded, "10:00:00", "10:05:00", 1))
-		if r := e.send(a, http.MethodPost, "/api/v1/meetings", key, strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)); r.status != http.StatusCreated || r.member(t, "id") != id {
-			t.Errorf("the same key with STARTS_AT holding the same time answered %d %s, want the replay of the first answer", r.status, r.body)
-		}
-		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
-			t.Errorf("%d meeting rows after the reused keys, want 2", n)
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 1 {
+			t.Errorf("%d meeting rows after the reused keys, want 1", n)
 		}
 		answered("the read", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-01T08:00:00Z"})
 		// A value that is not an RFC 3339 time, the zero time, and a required time left out or null are refused with
@@ -1857,7 +2042,6 @@ func TestCrud(t *testing.T) {
 			{`{"title":"bad","starts_at":"2026-12-01 10:00:00"}`, "starts_at"},
 			{`{"title":"bad","starts_at":"2026-12-01T10:00:00"}`, "starts_at"},
 			{`{"title":"bad","starts_at":1764583200}`, "starts_at"},
-			{`{"title":"bad","Starts_At":"tomorrow"}`, "starts_at"},
 			{`{"title":"bad","starts_at":"0001-01-01T00:00:00Z"}`, "starts_at"},
 			// An offset that moves the UTC year outside 1 to 9999: the answer in UTC cannot encode it.
 			{`{"title":"bad","starts_at":"9999-12-31T23:59:59-14:00"}`, "starts_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
@@ -1873,8 +2057,8 @@ func TestCrud(t *testing.T) {
 				t.Errorf("the create %s answered %d %s, want 400 naming %s and RFC 3339", c.body, r.status, r.body, c.field)
 			}
 		}
-		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
-			t.Errorf("%d meeting rows after the refused creates, want 2", n)
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 1 {
+			t.Errorf("%d meeting rows after the refused creates, want 1", n)
 		}
 		// An update sets the client's time and keeps the server's noted_at; a patch changes one time.
 		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan","starts_at":"2026-12-02T09:00:00-05:00"}`)
@@ -2503,7 +2687,8 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 	t.Run("ST-SUP-RC20-OC23-T04 Implicit fields are forced and filtered on the runtime data path, under their path prefixes", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
-		red := e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"source":"blue","note":"n1"}`)
+		// A body may give an implicit field only with the value of its collection (ST-SUP-RC20-OC23, ST-SUP-RC20-OC55-T01).
+		red := e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"source":"red","note":"n1"}`)
 		blue := e.send(a, http.MethodPost, "/api/v1/blue-events", "k-"+uuid.NewString(), `{"note":"n2"}`)
 		if red.status != http.StatusCreated || blue.status != http.StatusCreated {
 			t.Fatalf("the creates answered %d %s and %d %s, want 201", red.status, red.body, blue.status, blue.body)
@@ -2776,8 +2961,12 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		first := put(one+"/settings", `{"name":"k","value":"v1"}`, http.StatusCreated)
 		// The same key under another folder is another row, and the row of the first folder stays as it is.
 		other := put(two+"/settings", `{"name":"k","value":"v2"}`, http.StatusCreated)
-		// The same key under the same folder with another implicit value is another row.
-		flag := put(one+"/flags", `{"name":"k","value":"v3","source":"setting"}`, http.StatusCreated)
+		// The same key under the same folder with another implicit value is another row. A body that gives the
+		// implicit value of another collection is refused (ST-SUP-RC20-OC23).
+		if r := e.send(a, http.MethodPut, "/api/v1/folders/"+one+"/flags", "", `{"name":"k","value":"v3","source":"setting"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"source"`) {
+			t.Errorf("an upsert of a flag with the source setting answered %d %s, want 400 that names source", r.status, r.body)
+		}
+		flag := put(one+"/flags", `{"name":"k","value":"v3","source":"flag"}`, http.StatusCreated)
 		if other == first || flag == first || flag == other {
 			t.Errorf("the upserts gave the rows %s, %s and %s, want three rows", first, other, flag)
 		}
@@ -2840,7 +3029,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
-	t.Run("ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a patch keeps the implicit value", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a write that gives the implicit field another value is refused", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
 		red := e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"note":"r"}`)
@@ -2863,9 +3052,14 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		if n := e.count(`SELECT count(*) FROM events WHERE id = $1::uuid AND source = 'blue' AND note = 'b'`, blueID); n != 1 {
 			t.Errorf("%d blue event rows as created, want 1", n)
 		}
-		// A patch that names the implicit field is refused by the body's schema or keeps the field: the row stays red.
-		e.send(a, http.MethodPatch, "/api/v1/red-events/"+redID, "k-"+uuid.NewString(), `{"note":"n2","source":"green"}`)
-		if r := e.send(a, http.MethodPut, "/api/v1/red-events/"+redID, "", `{"note":"n3","source":"green"}`); r.status != http.StatusOK {
+		// A patch or an update that gives the implicit field another value is refused, and the row stays red
+		// (ST-SUP-RC20-OC15, ST-SUP-RC20-OC23).
+		for _, method := range []string{http.MethodPatch, http.MethodPut} {
+			if r := e.send(a, method, "/api/v1/red-events/"+redID, "k-"+uuid.NewString(), `{"note":"n2","source":"green"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"source"`) {
+				t.Errorf("%s of a red event with the source green answered %d %s, want 400 that names source", method, r.status, r.body)
+			}
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1/red-events/"+redID, "", `{"note":"n3","source":"red"}`); r.status != http.StatusOK {
 			t.Errorf("the update of a red event answered %d %s, want 200", r.status, r.body)
 		}
 		if n := e.count(`SELECT count(*) FROM events WHERE id = $1::uuid AND source = 'red' AND note = 'n3'`, redID); n != 1 {
@@ -2993,6 +3187,31 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC48-T05 An update that leaves out a required secret, or gives it empty, answers 200 and keeps the stored value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		token := "secret-" + uuid.NewString()
+		id := e.create(a, "customers", "customer", `{"name":"Kai","api_token":"`+token+`","plan":"free"}`)
+		path := "/api/v1/customers/" + id
+		// No response gives the secret back, so a client sends back a row that it read with no secret, or with the
+		// secret empty: each update is written and keeps the stored secret (walkthrough 14, W14-B4).
+		for _, body := range []string{`{"name":"Kai","plan":"pro"}`, `{"name":"Kai","api_token":"","plan":"team"}`} {
+			if r := e.send(a, http.MethodPut, path, "", body); r.status != http.StatusOK {
+				t.Fatalf("the update %s answered %d %s, want 200", body, r.status, r.body)
+			}
+			var stored []byte
+			var plan string
+			must(t, e.admin.QueryRowContext(e.ctx, `SELECT api_token, plan FROM customers WHERE id = $1::uuid`, id).Scan(&stored, &plan))
+			plain, err := e.ring.Open(stored, sealed.Place{Tenant: a.tenant.ID(), Table: "customers", Column: "api_token", Row: id})
+			if err != nil || string(plain) != token {
+				t.Errorf("after the update %s the stored secret does not open to the value of the create (%v)", body, err)
+			}
+			if !strings.Contains(body, plan) {
+				t.Errorf("the update %s stored the plan %q", body, plan)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC28-OC01-T03 A secret field reaches neither before, after nor the stored row", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
@@ -3070,7 +3289,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		must(t, err)
 		kept("an update that sends back the read row", e.send(a, http.MethodPut, path, "", string(body)), "third")
 		kept("an update that repeats each stored value in another form", e.send(a, http.MethodPut, path, "",
-			`{"folder_id":"`+folder+`","code":"c1","title":"fourth","SKU":"s1","state":"closed","rank":3,"meta":{ "a" : 1.0 },"due_at":"2026-12-01T03:00:00-05:00"}`), "fourth")
+			`{"folder_id":"`+folder+`","code":"c1","title":"fourth","sku":"s1","state":"closed","rank":3,"meta":{ "a" : 1.0 },"due_at":"2026-12-01T03:00:00-05:00"}`), "fourth")
 		refused := func(what, body string, fields ...string) {
 			t.Helper()
 			r := e.send(a, http.MethodPut, path, "", body)
@@ -3095,7 +3314,6 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		refused("an update that changes each kept field", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":"s2","state":"open","rank":4,"meta":{"a":"secret"},"due_at":"2026-12-02T08:00:00Z"}`,
 			"sku", "state", "meta", "due_at", "rank")
-		refused("an update that changes sku in another case", `{"folder_id":"`+folder+`","code":"c1","title":"changed","Sku":"s2"}`, "sku")
 		refused("an update that clears rank", `{"folder_id":"`+folder+`","code":"c1","title":"changed","rank":null}`, "rank")
 		refused("an update that gives sku as null", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":null}`, "sku")
 		kept("the row after the refused updates", e.send(a, http.MethodGet, path, "", ""), "fourth")
@@ -3130,7 +3348,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		// A create keeps the client's value of a create field and stores the default of each never field.
 		ticket := `{"folder_id":"` + folder + `","code":"%s","title":"t","sku":"s1"%s}`
 		problemNames("a create with another state than the default", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"state":"closed"`)), "state")
-		problemNames("a create with a rank", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"rank":5,"STATE":"closed"`)), "state", "rank")
+		problemNames("a create with a rank", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"rank":5,"state":"closed"`)), "state", "rank")
 		if n := e.count(`SELECT count(*) FROM tickets WHERE code = 'c1' AND tenant_id = $1`, a.tenant.ID()); n != 0 {
 			t.Errorf("%d ticket rows of the refused creates, want 0", n)
 		}
@@ -3174,7 +3392,9 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		for name, body := range map[string]string{
 			"sku":   `{"title":"third","sku":"s2"}`,
-			"state": `{"title":"third","State":"closed"}`,
+			"state": `{"title":"third","state":"closed"}`,
+			// A member matches a field only in its exact letter case (ST-SUP-RC20-OC15).
+			"State": `{"title":"third","State":"open"}`,
 			"rank":  `{"title":"third","rank":1}`,
 			"meta":  `{"title":"third","meta":{}}`,
 		} {
@@ -3185,6 +3405,31 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND sku = 's1' AND state = 'open' AND rank IS NULL AND meta IS NULL`, id); n != 1 {
 			t.Errorf("%d ticket rows as the first patch left them, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC15-T03 A patch refuses a member that is not kind, a patchable field or a kept field, also in another letter case, and changes nothing", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1"}`)
+		path := "/api/v1/tickets/" + id
+		for member, body := range map[string]string{
+			"Title":     `{"Title":"value-of-the-member"}`,
+			"titel":     `{"titel":"value-of-the-member"}`,
+			"folder_id": `{"title":"second","folder_id":"value-of-the-member"}`,
+			"href":      `{"title":"second","href":"value-of-the-member"}`,
+		} {
+			r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+member+`"`) || strings.Contains(string(r.body), "value-of-the-member") {
+				t.Errorf("a patch %s answered %d %s, want 400 that names %s and holds no value", body, r.status, r.body, member)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first'`, id); n != 1 {
+			t.Errorf("%d ticket rows as the create left them, want 1", n)
+		}
+		if r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), `{"kind":"Ticket","title":"second"}`); r.status != http.StatusOK || r.member(t, "title") != "second" {
+			t.Errorf("a patch with kind and a patchable field answered %d %s, want 200 with the new title", r.status, r.body)
 		}
 	})
 
@@ -3227,7 +3472,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		for _, c := range []struct{ method, path, key, body string }{
 			{http.MethodPut, path, "", full(`"pin":"1234"`)},
 			{http.MethodPut, path, "", full(`"pin":"9999"`)},
-			{http.MethodPut, path, "", full(`"PIN":null`)},
+			{http.MethodPut, path, "", full(`"pin":null`)},
 			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"1234"}`},
 			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"9999"}`},
 			{http.MethodPut, "/api/v1/tickets", "", full(`"pin":"1234"`)},
@@ -3295,7 +3540,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		first := ""
 		for _, c := range []struct{ method, path, key, body string }{
 			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"recovery":"1234"`)},
-			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"Recovery":null`)},
+			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"recovery":null`)},
 			{http.MethodPut, "/api/v1/tickets", "", ticket("c3", "t", `,"recovery":"1234"`)},
 			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":"1234"`)},
 			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":null`)},
@@ -3455,58 +3700,14 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 
 	t.Run("ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service", func(t *testing.T) {
 		e := service(t)
-		program := os.Getenv("STEGO_TEST_CLI")
-		if program == "" {
-			t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
-		}
 		a := e.as("cli-1", newTenant())
-		// The CLI calls only an HTTPS URL, so the service gets a TLS front with the same handler. The test service
-		// requires an Idempotency-Key on a create, and the CLI sends none (its HTTP client refuses the header, because
-		// it does not retry), so the front gives each POST a key of its own. A lookup is a GET, which the front does
-		// not change.
 		var gets atomic.Int32
-		front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodPost && r.Header.Get("Idempotency-Key") == "" {
-				r.Header.Set("Idempotency-Key", `"cli-`+uuid.NewString()+`"`)
-			}
+		apply := e.cli(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 			if r.Method == http.MethodGet {
 				gets.Add(1)
 			}
-			e.server.Config.Handler.ServeHTTP(w, r)
-		}))
-		defer front.Close()
-		dir := t.TempDir()
-		// The CLI keeps its configuration only in a folder that no other user can write.
-		must(t, os.Chmod(dir, 0o700))
-		ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
-		must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: front.Certificate().Raw}), 0o600))
-		must(t, os.WriteFile(token, []byte(a.token), 0o600))
-		cli := func(args ...string) (string, error) {
-			t.Helper()
-			cmd := exec.Command(program, args...)
-			cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
-			var stdout, stderr strings.Builder
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			err := cmd.Run()
-			if err != nil {
-				err = fmt.Errorf("%w: %s", err, stderr.String())
-			}
-			return stdout.String(), err
-		}
-		if out, err := cli("login", "--url", front.URL, "--token-file", token, "--ca-file", ca); err != nil {
-			t.Fatalf("the CLI login failed: %v %s", err, out)
-		}
-		apply := func(name string) ([]map[string]string, error) {
-			t.Helper()
-			file := dir + "/" + name + ".yaml"
-			must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
-			out, err := cli("apply", "-f", file, "-o", "json")
-			var results []map[string]string
-			if out != "" {
-				must(t, json.Unmarshal([]byte(out), &results))
-			}
-			return results, err
-		}
+			next.ServeHTTP(w, r)
+		})
 		folders := func(name string) int {
 			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
 		}
@@ -3535,6 +3736,210 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if n := folders("twin"); n != 2 {
 			t.Errorf("%d folders twin after the ambiguous apply, want 2", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC31-T02 The emitted CLI writes to a generated service that requires a key, and the second request of a write gets the stored answer", func(t *testing.T) {
+		e := service(t)
+		a := e.as("cli-2", newTenant())
+		// The listener of the service passes each request as it is. It keeps the key of each POST, and for the first
+		// POST of the folder lost it lets the service do the write, then closes the connection with no answer, as a
+		// network fault after the commit does.
+		var mu sync.Mutex
+		var keys []string
+		var replayed []string
+		dropped := false
+		apply := e.cli(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(strings.NewReader(string(body)))
+			mu.Lock()
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			drop := !dropped && strings.Contains(string(body), `"lost"`)
+			dropped = dropped || drop
+			mu.Unlock()
+			if drop {
+				next.ServeHTTP(httptest.NewRecorder(), r)
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					conn.Close()
+				}
+				return
+			}
+			next.ServeHTTP(w, r)
+			mu.Lock()
+			replayed = append(replayed, w.Header().Get("Idempotent-Replayed"))
+			mu.Unlock()
+		})
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		// Each apply write has a key of its own, so the service, which requires a key on a create, does the write.
+		for _, name := range []string{"one", "two"} {
+			if results, err := apply(name); err != nil || len(results) != 1 || results[0]["status"] != "created" {
+				t.Fatalf("the apply of %s gave %v %v, want the status created", name, results, err)
+			}
+		}
+		if len(keys) != 2 || keys[0] == "" || keys[0] == keys[1] {
+			t.Errorf("the creates of one and two carried the keys %q, want two keys that differ", keys)
+		}
+		// The first answer of lost does not come back. The CLI sends the create again with the same key, and the
+		// service gives the stored answer of the write that it did, so there is one folder lost.
+		keys, replayed = nil, nil
+		results, err := apply("lost")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || results[0]["id"] == "" {
+			t.Fatalf("the apply of lost gave %v %v, want the status created", results, err)
+		}
+		if n := folders("lost"); n != 1 {
+			t.Errorf("%d folders lost after a create that the CLI sent two times, want 1", n)
+		}
+		if len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+			t.Errorf("the creates of lost carried the keys %q, want one key two times", keys)
+		}
+		if len(replayed) != 1 || replayed[0] != "true" {
+			t.Errorf("the answer of the second create of lost had Idempotent-Replayed %q, want true", replayed)
+		}
+	})
+
+	t.Run("ST-SUP-RC30-OC08-T02 Each answer of the generated service to a create or a patch with a key carries Idempotency-Kept: 1, a problem and a 503 too, and no other answer carries it", func(t *testing.T) {
+		e := service(t)
+		a := e.as("kept-1", newTenant())
+		kept := func(r reply) string { return strings.Join(r.header.Values("Idempotency-Kept"), ",") }
+		key := "k-" + uuid.NewString()
+		created := e.send(a, http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "order", id)
+		patchKey := "k-" + uuid.NewString()
+		for _, c := range []struct {
+			name, method, path, key, body string
+			status                        int
+			kept                          bool
+		}{
+			{"the create", "", "", "", "", 0, true},
+			{"the create given again", http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":1}`, http.StatusCreated, true},
+			{"a create with a used key and another body", http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":2}`, http.StatusUnprocessableEntity, true},
+			{"a create whose body is not valid", http.MethodPost, "/api/v1/orders", "k-" + uuid.NewString(), `{"sku":`, http.StatusBadRequest, true},
+			{"a patch", http.MethodPatch, "/api/v1/orders/" + id, patchKey, `{"qty":2}`, http.StatusOK, true},
+			{"the patch given again", http.MethodPatch, "/api/v1/orders/" + id, patchKey, `{"qty":2}`, http.StatusOK, true},
+			{"a patch of a row that is not there", http.MethodPatch, "/api/v1/orders/" + uuid.NewString(), "k-" + uuid.NewString(), `{"qty":2}`, http.StatusNotFound, true},
+			{"a create with no key", http.MethodPost, "/api/v1/orders", "", `{"sku":"s-kept","qty":1}`, http.StatusBadRequest, false},
+			{"a read with a key", http.MethodGet, "/api/v1/orders/" + id, "k-" + uuid.NewString(), "", http.StatusOK, false},
+			{"a list with a key", http.MethodGet, "/api/v1/orders", "k-" + uuid.NewString(), "", http.StatusOK, false},
+			{"an update with a key", http.MethodPut, "/api/v1/customers/" + uuid.NewString(), "k-" + uuid.NewString(), `{"name":"n"}`, 0, false},
+			{"a delete with a key", http.MethodDelete, "/api/v1/orders/" + id, "k-" + uuid.NewString(), "", http.StatusNoContent, false},
+		} {
+			r := created
+			if c.method != "" {
+				r = e.send(a, c.method, c.path, c.key, c.body)
+			}
+			if c.status != 0 && r.status != c.status {
+				t.Errorf("%s answered %d %s, want %d", c.name, r.status, r.body, c.status)
+			}
+			if want := map[bool]string{true: "1", false: ""}[c.kept]; kept(r) != want {
+				t.Errorf("%s answered %d with Idempotency-Kept %q, want %q", c.name, r.status, kept(r), want)
+			}
+		}
+		// A patch that the provider cannot decide now answers 503, and the answer tells that the key is kept, so a
+		// second request with the key is safe.
+		other := e.create(a, "orders", "order", `{"sku":"s-kept","qty":1}`)
+		e.decision.fail(t, status.Error(codes.Unavailable, "connection refused"))
+		unavailable := e.send(a, http.MethodPatch, "/api/v1/orders/"+other, "k-"+uuid.NewString(), `{"qty":3}`)
+		e.decision.fail(t, nil)
+		if unavailable.status != http.StatusServiceUnavailable || kept(unavailable) != "1" {
+			t.Errorf("a patch that the provider could not decide answered %d with Idempotency-Kept %q, want 503 with 1", unavailable.status, kept(unavailable))
+		}
+		// A create that the database fails answers 500, and the answer tells that the key is kept too.
+		name := "s-fail-" + uuid.NewString()[:8]
+		e.failInsert(t, "orders", "sku", name)
+		failed := e.send(a, http.MethodPost, "/api/v1/orders", "k-"+uuid.NewString(), `{"sku":"`+name+`","qty":1}`)
+		if failed.status < 500 || kept(failed) != "1" {
+			t.Errorf("a create that the database failed answered %d %s with Idempotency-Kept %q, want a 5xx with 1", failed.status, failed.body, kept(failed))
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC34-T02 The emitted CLI sends a write again after a 5xx of the service with Idempotency-Kept, not after a 5xx with none, and warns when a 2xx has none", func(t *testing.T) {
+		e := service(t)
+		a := e.as("cli-kept", newTenant())
+		// The listener passes each request as it is, except a POST, as the mode says: proxy answers 502 itself as a
+		// proxy does, and strip takes Idempotency-Kept out of the answer of the service, as a service of another
+		// release gives it. The database fails each insert of the folder busy, so the service answers its create with
+		// a 5xx.
+		busy := "busy-" + uuid.NewString()[:8]
+		e.failInsert(t, "folders", "name", busy)
+		var mu sync.Mutex
+		mode := ""
+		var posts []string
+		apply := e.cliWarn(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			mu.Lock()
+			current := mode
+			if r.Method == http.MethodPost {
+				posts = append(posts, r.Header.Get("Idempotency-Key"))
+			}
+			mu.Unlock()
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+			switch current {
+			case "proxy":
+				w.WriteHeader(http.StatusBadGateway)
+			case "strip":
+				answer := httptest.NewRecorder()
+				next.ServeHTTP(answer, r)
+				for name, values := range answer.Header() {
+					if name != "Idempotency-Kept" {
+						w.Header()[name] = values
+					}
+				}
+				w.WriteHeader(answer.Code)
+				_, _ = w.Write(answer.Body.Bytes())
+			default:
+				next.ServeHTTP(w, r)
+			}
+		})
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		run := func(m, name string) ([]map[string]string, string, error, []string) {
+			t.Helper()
+			mu.Lock()
+			mode, posts = m, nil
+			mu.Unlock()
+			results, warned, err := apply(name)
+			mu.Lock()
+			defer mu.Unlock()
+			return results, warned, err, append([]string(nil), posts...)
+		}
+		// A service of this release: the create succeeds with the header, and the CLI warns of nothing.
+		if results, warned, err, sent := run("", "plain"); err != nil || len(results) != 1 || results[0]["status"] != "created" || len(sent) != 1 || warned != "" {
+			t.Fatalf("the apply of plain gave %v %v after %d creates and the warning %q, want created after one and no warning", results, err, len(sent), warned)
+		}
+		// A 5xx of the service carries the header: the CLI sends the create again with the same key, the second
+		// answer is a 5xx too, and the outcome is unknown.
+		results, _, err, sent := run("", busy)
+		if err == nil || len(results) != 1 || results[0]["status"] != "unknown" || len(sent) != 2 || sent[0] == "" || sent[0] != sent[1] {
+			t.Errorf("the apply of busy with a 5xx of the service gave %v %v after the creates %q, want unknown after two creates with one key", results, err, sent)
+		}
+		if n := folders(busy); n != 0 {
+			t.Errorf("%d folders busy after two creates that the database failed, want 0", n)
+		}
+		// A 502 of a proxy carries no header: the CLI does not send the create again.
+		results, _, err, sent = run("proxy", "gate")
+		if err == nil || len(results) != 1 || results[0]["status"] != "unknown" || len(sent) != 1 {
+			t.Errorf("the apply of gate with a 502 of a proxy gave %v %v after %d creates, want unknown after one", results, err, len(sent))
+		}
+		// A 2xx with no header: the create is done, and the CLI warns on standard error that the releases can differ.
+		results, warned, err, sent := run("strip", "old")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || len(sent) != 1 || !strings.Contains(warned, "different releases") {
+			t.Errorf("the apply of old with no header gave %v %v after %d creates and the warning %q, want created after one and the warning", results, err, len(sent), warned)
+		}
+		if n := folders("old"); n != 1 {
+			t.Errorf("%d folders old, want 1", n)
 		}
 	})
 

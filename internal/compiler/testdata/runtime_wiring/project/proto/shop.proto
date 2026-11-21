@@ -14,10 +14,12 @@ message AddNoteResponse {
 }
 
 // VerifyOrderRequest is the request of verify-order: a token and a PIN to check against the secrets of the order.
+// Both are secrets: the OpenAPI document marks them, the CLI gives them no flag, and the service keys the fingerprint
+// of the body (ST-SUP-RC20-OC54, ST-SUP-RP14-LC12).
 message VerifyOrderRequest {
   string order_id = 1;
-  string token = 2;
-  string pin = 3;
+  string token = 2 [debug_redact = true];
+  string pin = 3 [debug_redact = true];
 }
 
 // VerifyOrderResponse is the response of verify-order: whether each value is the secret of the order.

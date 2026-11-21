@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
@@ -50,6 +52,14 @@ type Parts struct {
 	// of the release under it in the database until Close, so that the contract step of a schema change refuses
 	// while a release that does not know the change runs (lease.StartBeat, ST-SUP-RP09-LC14). Empty reports nothing.
 	Release string
+	// Migrations are the ledger digests of the migrations of this release by name, the SHA-256 of each body, which
+	// the generated code gives (MigrationDigests of the adapter). New refuses a database whose ledger row of one of
+	// these names holds another digest (ST-SUP-RP14-LC13); nil checks no digest.
+	Migrations map[string]string
+	// EarlierMigrations are the earlier digests of a migration of Migrations by name, which New accepts as well: the
+	// digests of the bodies that earlier versions of the adapter wrote for the migration, before a part of the body
+	// moved out of it and out of its digest (EarlierMigrationDigests of the adapter, ST-SUP-RC01-OC51).
+	EarlierMigrations map[string][]string
 	// SubjectType is the subject type of the schema that a verified identity maps to, and TenantClaim the dotted path
 	// of the claim that names the caller's tenant.
 	SubjectType, TenantClaim string
@@ -79,6 +89,10 @@ type Parts struct {
 	// definition tenant has worker relations: without it, no reconcile of the worker tuples runs and a Retire reads
 	// no undeclared worker relation (ST-SUP-RC35-OC13, security re-review of PR #379, H1).
 	Definitions []string
+	// Relations are the relations of the authorization schema of the service. The relation service of the type tenant
+	// makes Provision relate the tenant resource to the service-level resource of the tenant, and Retire delete it
+	// (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52).
+	Relations []authz.Relation
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
@@ -183,6 +197,9 @@ type Service struct {
 	version     string
 	beat        *lease.Beat
 	tenants     *tenantProvisioning
+	// blocked is the reason that makes each mode not ready from the start: the start check found a table or a
+	// column of the manifest missing (ST-SUP-RP14-LC06), or empty.
+	blocked string
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
@@ -215,7 +232,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	// Job of the release: the process stops, and starts again until the Job is done (ST-SUP-RP14-LC07). The check
 	// runs before the release report, so a process that stops never reports its release.
 	if p.Release != "" {
-		if err := checkRelease(ctx, svc.pool, p.Service, p.Release); err != nil {
+		if err := checkRelease(ctx, svc.pool, p.Service, p.Release, p.Migrations, p.EarlierMigrations); err != nil {
 			return nil, err
 		}
 	}
@@ -226,10 +243,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 			return nil, err
 		}
 	}
-	classes, err := checkSchema(ctx, svc.pool, p)
+	classes, blocking, err := checkSchema(ctx, svc.pool, p)
 	if err != nil {
 		return nil, err
 	}
+	svc.blocked = blockedReason(blocking)
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
 		return nil, &databaseError{err}
 	}
@@ -346,7 +364,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		}
 	}
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
-		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
+		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, ServiceVersion: s.ServiceVersion,
+		DeclarationVersion: p.DeclarationVersion, CursorKey: s.CursorKey,
 		ExtraCursorKeys: extraKeys(s.ExtraCursorKey), ProblemBase: p.ProblemType,
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
 		return nil, err
@@ -383,7 +402,7 @@ var ErrMigrationPending = errors.New("the migration Job of this release has not 
 // release can start first: it stops, and Kubernetes starts it again until the Job is done. The refusal names the
 // ledger, the migration and what to do, on a log line of the level error and in its error, because the failure record
 // of the process names the stage only. Neither holds a value of a setting.
-func checkRelease(ctx context.Context, db *sql.DB, service, release string) error {
+func checkRelease(ctx context.Context, db *sql.DB, service, release string, digests map[string]string, earlier map[string][]string) error {
 	// The catalog alone tells whether the ledger is there and readable, so that no name resolution in a schema
 	// without USAGE fails the read.
 	var present, readable bool
@@ -402,7 +421,7 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 	var state string
 	switch {
 	case applied:
-		return nil
+		return checkDigests(ctx, db, release, digests, earlier)
 	case !present:
 		state = "is not in the database, so no migration Job has run on it"
 	case !readable:
@@ -417,6 +436,62 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
 }
 
+// ErrMigrationChanged is the refusal of a start on a database whose migration ledger holds another body of a
+// migration of the release (ST-SUP-RP14-LC13).
+var ErrMigrationChanged = errors.New("the ledger holds another body of a migration of this release")
+
+// checkDigests reads, as the runtime role, the ledger row of each migration of digests and refuses a row whose
+// digest is not the digest of this release (ST-SUP-RP14-LC13), and a migration of digests that has no row, as the
+// migration Job of this release writes a row for each (ErrMigrationPending; security review of PR 448, I1). A row of
+// a name that digests does not give, such as a step of a later release, passes. The refusal names the migration and
+// the digests, no part of a body, and the remedy, on a log line of the level error and in its error; New writes
+// nothing before it. A row that holds an earlier digest of its migration (earlier) passes.
+func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[string]string, earlier map[string][]string) error {
+	if len(digests) == 0 {
+		return nil
+	}
+	// The ledger holds one row for each applied migration, so the check reads them all.
+	rows, err := db.QueryContext(ctx, "SELECT version, digest FROM "+LedgerTable)
+	if err != nil {
+		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool, len(digests))
+	for rows.Next() {
+		var name, digest string
+		if err := rows.Scan(&name, &digest); err != nil {
+			return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+		}
+		want, ok := digests[name]
+		seen[name] = ok
+		if ok && digest != want && !slices.Contains(earlier[name], digest) {
+			text := fmt.Sprintf("the migration ledger %s holds the digest %q for the migration %s, and this release gives the digest %q for its body. "+
+				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
+				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)
+			slog.ErrorContext(ctx, "service: "+text, "migration", name, "ledger", LedgerTable, "stage", "service.start.migration")
+			return fmt.Errorf("service: %w: %s", ErrMigrationChanged, text)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+	}
+	missing := make([]string, 0)
+	for name := range digests {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	text := fmt.Sprintf("the migration ledger %s holds no row of the migration %s of this release, which the migration Job of this release applies "+
+		"before the release migration %s. Run the migration Job of this release and wait until it completes; this process stops, and it starts again until then",
+		LedgerTable, strings.Join(missing, ", "), release)
+	slog.ErrorContext(ctx, "service: "+text, "migration", missing[0], "ledger", LedgerTable, "stage", "service.start.migration")
+	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
+}
+
 // MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own
 // line.
 const MaxLoggedFaults = 50
@@ -427,15 +502,16 @@ const MaxLoggedFaults = 50
 // finding F10 of the schema-change research, owner, 2026-11-13): checkSchema logs each fault, up to MaxLoggedFaults, on a line of its own at
 // the level error, with its class (manifest.FaultClass), which names only objects of the catalog and no row value,
 // and gives the classes of the faults, each once, so that New emits the probe observation schema.manifest.mismatch
-// for each class and starts; the migration job refuses the same database. Any other failure of the check,
+// for each class and starts, and the faults that block (manifest.Mismatch.Blocking), with which the process starts
+// not ready (ST-SUP-RP14-LC06); the migration job refuses the same database. Any other failure of the check,
 // and parts that give no manifest, it refuses. The audit triggers' functions are those that the audit DDL makes for
 // the declared anchor period (Parts.Workers.AnchorPeriod), and audit_maintain is the one of the declared retention
 // (Parts.Workers.RetentionMonths).
-func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
+func checkSchema(ctx context.Context, db *sql.DB, p Parts) (classes, blocking []string, err error) {
 	// The check runs as the runtime role, which alone may run audit_maintain.
 	var runtimeRole string
 	if err := db.QueryRowContext(ctx, "SELECT current_user").Scan(&runtimeRole); err != nil {
-		return nil, fmt.Errorf("service: read the runtime role: %w", err)
+		return nil, nil, fmt.Errorf("service: read the runtime role: %w", err)
 	}
 	// The runtime role is not the owner role and is no member of it (ST-SUP-RC01-OC21), which New refuses and does not
 	// alert: the owner role owns the tables, so it is not held by their row-level security, and it runs the backfill,
@@ -445,26 +521,29 @@ func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
 	var owner bool
 	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
 WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER'))`, p.OwnerRole).Scan(&owner); err != nil {
-		return nil, fmt.Errorf("service: read the membership of the runtime role: %w", err)
+		return nil, nil, fmt.Errorf("service: read the membership of the runtime role: %w", err)
 	}
 	if owner {
-		return nil, fmt.Errorf("service: the runtime role %s is the owner role %s or a member of it; give DATABASE_URL the login of the runtime role", runtimeRole, p.OwnerRole)
+		return nil, nil, fmt.Errorf("service: the runtime role %s is the owner role %s or a member of it; give DATABASE_URL the login of the runtime role", runtimeRole, p.OwnerRole)
 	}
 	want, err := joinedManifest(p, runtimeRole)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	err = manifest.Check(ctx, db, want)
 	var mismatch *manifest.Mismatch
 	if errors.As(err, &mismatch) {
-		var classes []string
 		for i, fault := range mismatch.Faults {
 			class := manifest.FaultClass(fault)
 			// At most MaxLoggedFaults lines, and one line with the count of the rest, as a role that can make
 			// catalog objects can make thousands of faults (review of PR #305, L2). Each fault still gives its class.
+			// A fault that blocks says that the service starts not ready (ST-SUP-RP14-LC06, ST-SUP-RP15-LC05).
 			if i < MaxLoggedFaults {
-				slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; the service starts, and the migration job refuses it",
-					"class", class, "fault", fault)
+				text := "service: the database does not satisfy the schema manifest; the service starts, and the migration job refuses it"
+				if slices.Contains(mismatch.Blocking, fault) {
+					text = "service: the database does not satisfy the schema manifest; the service starts not ready, and the migration job refuses it"
+				}
+				slog.ErrorContext(ctx, text, "class", class, "fault", fault)
 			}
 			if !slices.Contains(classes, class) {
 				classes = append(classes, class)
@@ -473,12 +552,54 @@ WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r
 		if rest := len(mismatch.Faults) - MaxLoggedFaults; rest > 0 {
 			slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; more faults are not logged", "faults", rest)
 		}
-		return classes, nil
+		return classes, mismatch.Blocking, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("service: %w", err)
+		return nil, nil, fmt.Errorf("service: %w", err)
 	}
-	return nil, nil
+	return nil, nil, nil
+}
+
+// Blocked gives, for each mode of selection, the error of a mode that is not ready because the start check found a
+// table or a column of the manifest missing (ST-SUP-RP14-LC06, ST-SUP-RP09-LC05), or nil. The generated readiness of
+// a process that runs the api mode alone, which starts no worker, reads it too.
+func (svc *Service) Blocked(selection modes.Selection) error {
+	if svc == nil || svc.blocked == "" {
+		return nil
+	}
+	var errs []error
+	for _, m := range selection.Modes() {
+		errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, svc.blocked))
+	}
+	return errors.Join(errs...)
+}
+
+// blockedReason gives the reason of the readiness of a process whose start check found the faults blocking, each a
+// missing table or column of the manifest (ST-SUP-RP14-LC06): a fixed text with the count of the faults and the
+// remedy. It is empty with no fault.
+func blockedReason(blocking []string) string {
+	if len(blocking) == 0 {
+		return ""
+	}
+	// The readiness answers network callers, so the reason names no table or column; the log lines of the start name
+	// each one (security review of PR #457, L3).
+	return fmt.Sprintf("the database does not hold the schema manifest of this release (%d faults, which the log of the start names); a later release changed the database, so roll forward to that release", len(blocking))
+}
+
+// Ping gives, for a process of the api mode alone, which starts no worker, the error of an api mode that is not ready
+// because the database does not answer a ping, with the fixed reason of modes.DatabaseUnreachable, or nil (ST-SUP-RP09-LC05).
+// The error of the ping goes only to the log (security review of PR #457, L3).
+func (svc *Service) Ping(ctx context.Context) error {
+	if svc == nil || svc.pool == nil {
+		return fmt.Errorf("%s: %w: %s", modes.API, modes.ErrNotReady, modes.DatabaseUnreachable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := svc.pool.PingContext(ctx); err != nil {
+		slog.WarnContext(ctx, "service: the database is not reachable", "mode", string(modes.API), "error", err)
+		return fmt.Errorf("%s: %w: %s", modes.API, modes.ErrNotReady, modes.DatabaseUnreachable)
+	}
+	return nil
 }
 
 // joinedManifest is the schema manifest that New checks at the start and the migration job checks at its end: the
@@ -657,7 +778,7 @@ func StartStage(err error) string {
 		return "service.start.database"
 	case errors.Is(err, manifest.ErrNotSatisfied):
 		return "service.start.schema_manifest"
-	case errors.Is(err, ErrMigrationPending):
+	case errors.Is(err, ErrMigrationPending) || errors.Is(err, ErrMigrationChanged):
 		return "service.start.migration"
 	case errors.Is(err, authn.ErrDiscovery):
 		return "service.start.authn.discovery"

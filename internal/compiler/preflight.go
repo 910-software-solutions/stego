@@ -148,13 +148,17 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 	if err != nil {
 		return nil, err
 	}
+	// The patchable fields of a collection name a renamed field by its declared name; the generators read its API
+	// name.
+	collections := gen.StoredCollections(svcDecl.Collections, schemaChanges)
+	droppedCollections := gen.StoredCollections(svcDecl.DroppedCollections, schemaChanges)
 	for _, compName := range componentNames {
 		comp := components[compName]
 		generator := input.Generators[compName]
 		ctx := gen.Context{
 			Conventions:     conventions,
 			Entities:        entities,
-			Collections:     svcDecl.Collections,
+			Collections:     collections,
 			SchemaChanges:   schemaChanges,
 			SchemaHistory:   schemaHistory,
 			SlotBindings:    svcDecl.Slots,
@@ -187,7 +191,7 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			// The entities with dropped_by and their collections only give back the stored shape of the steps
 			// before their drop (ST-GEN-Q47).
 			DroppedEntities:    dropped,
-			DroppedCollections: svcDecl.DroppedCollections,
+			DroppedCollections: droppedCollections,
 			EntityOrder:        svcDecl.EntityOrder,
 			CollectionOrder:    svcDecl.CollectionOrder,
 		}
@@ -205,6 +209,17 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			}
 			inputs = append(inputs, names...)
 		}
+		if compName == restAPIComponent {
+			// The rest-api component describes the request and the response of each command in its OpenAPI document,
+			// so it reads the proto files of the command messages too (ST-SUP-RC20-OC53).
+			if provider, ok := input.Generators[commandComponent].(gen.InputProvider); ok && components[commandComponent] != nil {
+				names, err := provider.InputFiles(peerConfigs[commandComponent])
+				if err != nil {
+					return nil, fmt.Errorf("generator %q inputs: %w", compName, err)
+				}
+				inputs = append(inputs, names...)
+			}
+		}
 		if len(inputs) > 0 {
 			ctx.Inputs, err = captureGeneratorInputs(input.ProjectDir, outDirName, inputs, resolved.InputSnapshots)
 			if err != nil {
@@ -215,6 +230,9 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 		resolved.Contexts[compName] = ctx
 	}
 	if err := resolveGoModelSources(input, resolved); err != nil {
+		return nil, err
+	}
+	if err := serviceOpenAPI(input, resolved); err != nil {
 		return nil, err
 	}
 	for _, name := range componentNames {
@@ -413,4 +431,70 @@ func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaCha
 		}
 	}
 	return live, dropped, nil
+}
+
+// clientComponents are the components whose client is generated from the service's own OpenAPI document when the
+// declaration names no document of their own: the setting that names the document or the definitions, by component
+// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32, ST-SUP-RC24-OC14).
+var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package", "typescript-sdk": "document"}
+
+// serviceOpenAPI gives each active client component whose declaration does not set its setting of clientComponents
+// the OpenAPI document of the service, in ServiceOpenAPI: the document that the rest-api component emits, made from
+// the context of the rest-api component, so it is the document of the same generation. With no rest-api component,
+// it is the document of the command and query routes, made from the context of the command component, which the
+// command component then writes too (ST-SUP-RC32-OC29).
+func serviceOpenAPI(input ReconcilerInput, resolved *resolvedCompilation) error {
+	var document []byte
+	made := false
+	build := func() error {
+		if made {
+			return nil
+		}
+		made = true
+		if rest, ok := resolved.Contexts[restAPIComponent]; ok {
+			provider, built := input.Generators[restAPIComponent].(gen.OpenAPIProvider)
+			if !built {
+				return nil
+			}
+			var err error
+			document, err = provider.OpenAPIDocument(rest)
+			return err
+		}
+		command, ok := resolved.Contexts[commandComponent]
+		provider, built := input.Generators[restAPIComponent].(gen.RouteOpenAPIProvider)
+		if !ok || !built {
+			return nil
+		}
+		var err error
+		if document, err = provider.RouteOpenAPIDocument(command); err != nil || document == nil {
+			return err
+		}
+		command.ServiceOpenAPI = document
+		resolved.Contexts[commandComponent] = command
+		return nil
+	}
+	if _, rest := resolved.Contexts[restAPIComponent]; !rest {
+		// The command component writes the document of its routes also when no client takes it.
+		if err := build(); err != nil {
+			return fmt.Errorf("component %q: the OpenAPI document of the command and query routes: %w", commandComponent, err)
+		}
+	}
+	for _, name := range sortedKeys(clientComponents) {
+		ctx, active := resolved.Contexts[name]
+		if !active {
+			continue
+		}
+		if value, set := ctx.ComponentConfig[clientComponents[name]]; set && value != nil && value != "" {
+			continue
+		}
+		if err := build(); err != nil {
+			return fmt.Errorf("component %q: the OpenAPI document of the service: %w", name, err)
+		}
+		if document == nil {
+			continue
+		}
+		ctx.ServiceOpenAPI = document
+		resolved.Contexts[name] = ctx
+	}
+	return nil
 }

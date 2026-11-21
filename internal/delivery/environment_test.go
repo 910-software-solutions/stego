@@ -312,3 +312,49 @@ func TestNeedValues(t *testing.T) {
 		}
 	})
 }
+
+func TestModePathNotice(t *testing.T) {
+	t.Run("ST-DLV-UC02-R06-T05 A path variable of the api mode that names the file of a secret and has no value gives a notice, not a failure", func(t *testing.T) {
+		requirements := Requirements{Version: RequirementsVersion, Service: "orders", Environment: []AcceptedVariable{
+			{Name: "STEGO_GRPC_TLS_CERT", ReadBy: []string{"grpc-application"}, Type: "path", Description: "The file of the certificate.",
+				SecretSource: &SecretSource{Name: "orders-grpc-tls", Key: "tls-crt"}, ReadByMode: APIMode},
+			{Name: "STEGO_KAFKA_CA_FILE", ReadBy: []string{"kafka-producer"}, Type: "path", Description: "The file of the CA.",
+				SecretSource: &SecretSource{Name: "orders-kafka-client", Key: "ca-crt"}},
+		}}
+		head := "version: 1\nservice: orders\nenvironment: dev\nimage: quay.io/example/orders@sha256:" + strings.Repeat("ab", 32) + "\n" +
+			"destination: {cluster: https://api.example.com:6443, namespace: orders-dev, overlay_path: overlays/dev}\n"
+		for name, c := range map[string]struct {
+			sections string
+			notice   bool
+		}{
+			"no value":   {"configuration: {}\n", true},
+			"a path":     {"configuration: {STEGO_GRPC_TLS_CERT: /etc/stego/tls/tls.crt}\n", false},
+			"empty text": {"configuration: {STEGO_GRPC_TLS_CERT: \"\"}\n", true},
+		} {
+			fit, err := CheckEnvironment(requirements, []byte(head+c.sections))
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if rows := unmetRows(fit); len(rows) != 0 {
+				t.Errorf("%s: the check fails: %+v", name, rows)
+			}
+			var notices []string
+			for _, notice := range fit.Notices {
+				if strings.HasPrefix(notice, "variable ") {
+					notices = append(notices, notice)
+				}
+			}
+			want := 0
+			if c.notice {
+				want = 1
+			}
+			if len(notices) != want {
+				t.Errorf("%s: the notices of a variable are %q, want %d about STEGO_GRPC_TLS_CERT and none about the variable of no mode", name, notices, want)
+				continue
+			}
+			if c.notice && (!strings.Contains(notices[0], "STEGO_GRPC_TLS_CERT") || !strings.Contains(notices[0], SecretFilesFolder) || !strings.Contains(notices[0], "key tls-crt of the secret orders-grpc-tls")) {
+				t.Errorf("%s: the notice does not name the variable, the Component and the key of the secret: %s", name, notices[0])
+			}
+		}
+	})
+}

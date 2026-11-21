@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -1049,6 +1050,8 @@ func TestSealingEmission(t *testing.T) {
 			`\"note\" = $6, \"note_sealed\" = $7`,
 			`"note": "note",`, `"note_sealed": "note",`,
 			"Sealed: true,",
+			// The runtime takes the clear column again only while the checkpoint of its change is there.
+			"Clear: []string{\"note\"},\n\t\tChanges: []string{\"vault-note-seal\"},",
 		} {
 			if !strings.Contains(open, want) {
 				t.Errorf("the entity with an open seal does not hold %s:\n%s", want, open)
@@ -1058,6 +1061,67 @@ func TestSealingEmission(t *testing.T) {
 		if strings.Contains(closed, "SealingAt") || strings.Contains(closed, "ClearOf") || strings.Contains(closed, `\"note\",`) ||
 			!strings.Contains(closed, `command.OpenAt("vaults", "note_sealed", &v.ID, &v.Note)`) {
 			t.Errorf("the entity after the contract of its seal still names the clear column:\n%s", closed)
+		}
+	})
+}
+
+func TestTypedRepository(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC26-T01 A parent where the runtime refuses one does not compile, and a move takes its parents", func(t *testing.T) {
+		const head = "package %s\n\nimport (\n\t\"context\"\n\n\tcommands \"example.com/orders/out/commands\"\n)\n\n" +
+			"func Run(ctx context.Context, h *commands.ReserveAndChargeHandle, id string) error {\n" +
+			"\torders, err := commands.OrderRepository(h)\n\tif err != nil {\n\t\treturn err\n\t}\n" +
+			"\tholds, err := commands.HoldRepository(h)\n\tif err != nil {\n\t\treturn err\n\t}\n" +
+			"\torder, err := orders.Get(ctx, id)\n\tif err != nil {\n\t\treturn err\n\t}\n" +
+			"\tfrom, err := holds.GetForUpdate(ctx, id)\n\tif err != nil {\n\t\treturn err\n\t}\n" +
+			"\t_, _ = order, from\n%s\treturn nil\n}\n"
+		cases := []struct{ pkg, body, refusal string }{
+			// The calls of a fill with no wrong parent, and a move of the reference of a Hold, compile.
+			{"good", "\tif _, err := holds.Update(ctx, from, from.Value()); err != nil {\n\t\treturn err\n\t}\n" +
+				"\tif _, err := holds.Move(ctx, from, from.Value(), order); err != nil {\n\t\treturn err\n\t}\n" +
+				"\tif _, err := orders.GetForDelete(ctx, id); err != nil {\n\t\treturn err\n\t}\n" +
+				"\tif err := holds.Delete(ctx, from); err != nil {\n\t\treturn err\n\t}\n", ""},
+			// Walkthrough 15, W15-B3: the parent of an update that keeps its references.
+			{"update", "\tif _, err := holds.Update(ctx, from, from.Value(), order); err != nil {\n\t\treturn err\n\t}\n", "too many arguments in call to holds.Update"},
+			{"lock", "\tif _, err := holds.GetForUpdate(ctx, id, order); err != nil {\n\t\treturn err\n\t}\n", "too many arguments in call to holds.GetForUpdate"},
+			{"locked", "\tif _, err := orders.GetForDelete(ctx, id, order); err != nil {\n\t\treturn err\n\t}\n", "too many arguments in call to orders.GetForDelete"},
+			{"delete", "\tif err := holds.Delete(ctx, from, order); err != nil {\n\t\treturn err\n\t}\n", "too many arguments in call to holds.Delete"},
+			// An entity with no reference has no move.
+			{"move", "\tif _, err := orders.Move(ctx, from, from.Value()); err != nil {\n\t\treturn err\n\t}\n", "orders.Move undefined"},
+		}
+		extra := map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill}
+		for _, c := range cases {
+			extra["fills/"+c.pkg+"/fill.go"] = []byte(fmt.Sprintf(head, c.pkg, c.body))
+		}
+		p := newProject(t, commandContext(t, declaration(t), commandSlot), extra)
+		for _, c := range cases {
+			output, err := p.goCommand("build", "./fills/"+c.pkg)
+			switch {
+			case c.refusal == "" && err != nil:
+				t.Errorf("%s: go build gave %v:\n%s", c.pkg, err, output)
+			case c.refusal != "" && (err == nil || !strings.Contains(output, c.refusal)):
+				t.Errorf("%s: go build gave %v, want the refusal %q:\n%s", c.pkg, err, c.refusal, output)
+			}
+		}
+	})
+}
+
+func TestRouteDocumentFile(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T02 With no rest-api the command component writes the route document that it gets, also with no command, and with rest-api none", func(t *testing.T) {
+		document := []byte(`{"openapi":"3.0.3","paths":{}}`)
+		ctx := commandContext(t, declaration(t), commandSlot)
+		ctx.ServiceOpenAPI = document
+		if got := generated(t, ctx)["commands/openapi.json"]; !bytes.Equal(got, document) {
+			t.Errorf("with commands, commands/openapi.json is %q, want the route document", got)
+		}
+		// A service whose routes are queries alone, such as the rpc-service scaffold.
+		ctx.Commands, ctx.ComponentConfig = nil, map[string]any{}
+		if got := generated(t, ctx)["commands/openapi.json"]; !bytes.Equal(got, document) {
+			t.Errorf("with no command, commands/openapi.json is %q, want the route document", got)
+		}
+		// With rest-api the compiler gives the command component no document, and it writes none.
+		ctx = commandContext(t, declaration(t), commandSlot)
+		if _, written := generated(t, ctx)["commands/openapi.json"]; written {
+			t.Error("with no route document the command component writes commands/openapi.json")
 		}
 	})
 }

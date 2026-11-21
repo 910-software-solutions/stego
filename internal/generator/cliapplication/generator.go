@@ -58,7 +58,12 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 		return fmt.Errorf("CLI requires a module and output namespace")
 	}
 	factory, ok := ctx.ComponentConfig["factory_package"].(string)
-	if !ok || factory == "" || gen.ValidateGoImportNamespace(factory) != nil || factory == ctx.OutDirName || strings.HasPrefix(factory, ctx.OutDirName+"/") {
+	if _, set := ctx.ComponentConfig["factory_package"]; !set {
+		// With no factory, the definitions come from the service's own OpenAPI document (ST-SUP-RC04-OC32).
+		if ctx.ServiceOpenAPI == nil {
+			return fmt.Errorf("CLI requires the setting factory_package, or the rest-api component or a command or query route of the service, whose OpenAPI document the commands are then made from")
+		}
+	} else if !ok || factory == "" || gen.ValidateGoImportNamespace(factory) != nil || factory == ctx.OutDirName || strings.HasPrefix(factory, ctx.OutDirName+"/") {
 		return fmt.Errorf("CLI requires a factory outside generated output")
 	}
 
@@ -74,8 +79,18 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	if err := g.ValidateContext(ctx); err != nil {
 		return nil, nil, err
 	}
-	factory := ctx.ComponentConfig["factory_package"].(string)
 	root := path.Join(ctx.ModuleName, ctx.OutDirName, ctx.OutputNamespace)
+	factory, given := ctx.ComponentConfig["factory_package"].(string)
+	var files []gen.File
+	if !given {
+		// The definitions of the service's own API, in the package app of the CLI (ST-SUP-RC04-OC32).
+		source, err := factorySource(ctx, root+"/command")
+		if err != nil {
+			return nil, nil, err
+		}
+		factory = path.Join(ctx.OutDirName, ctx.OutputNamespace, factoryNamespace)
+		files = append(files, gen.File{Path: path.Join(ctx.OutputNamespace, factoryNamespace, "commands.go"), Content: source})
+	}
 	record, err := json.Marshal(buildidentity.Current())
 	if err != nil {
 		return nil, nil, err
@@ -112,7 +127,6 @@ func run()error{
 }
 
 `
-	var files []gen.File
 	for _, item := range []struct{ name, source string }{{"command/runtime.go", runtimeSource + gen.UnicodeEscapeValidation}, {"command/apply.go", applySource}, {"command/apply_immutable.go", applyImmutableSource}, {"command/apply_input.go", applyInputSource}, {"command/config.go", configSource}, {"command/output.go", outputSource}, {"command/oauth.go", oauthSource}, {"command/browser.go", browserSource}, {"command/session.go", sessionSource}, {"command/identity.go", identitySource}, {"command/version.go", versionSource}, {"buildidentity/runtime.go", buildidentity.Source}, {"cmd/main.go", main}} {
 		t, err := template.New(item.name).Parse(item.source)
 		if err != nil {
@@ -128,9 +142,9 @@ func run()error{
 		}
 		files = append(files, gen.File{Path: path.Join(ctx.OutputNamespace, item.name), Content: code})
 	}
-	// The CLI reads a credential and a CA file from a caller-supplied path, so
-	// its client refuses a leaf symbolic link.
-	client, err := httpclient.Render(path.Join(ctx.OutputNamespace, "client"), data.Tracing, httpclient.RefuseLinks)
+	// The CLI client refuses a leaf symbolic link and sends the Idempotency-Key of
+	// a write (ST-SUP-RC04-OC31).
+	client, err := httpclient.RenderCLI(path.Join(ctx.OutputNamespace, "client"), data.Tracing)
 	if err != nil {
 		return nil, nil, err
 	}

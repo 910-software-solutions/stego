@@ -9,6 +9,8 @@ import (
  "io"
  "net/http"
  "net/url"
+ "slices"
+ "strconv"
  "strings"
  "time"
  "unicode/utf8"
@@ -21,10 +23,17 @@ import (
 // immutable resources whose lookup uses required string fields from spec.
 // Such resources have no PATCH fields; metadata.name is an optional output label.
 // An absent apiVersion is accepted for existing files. A supplied version must match.
-type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field}
-type applyPlan struct {resource ApplyResource;name,id,method,path string;body map[string]json.RawMessage;payload []byte}
+// IdempotentWrites states that the service keeps the Idempotency-Key of the create and the patch of the resource,
+// as for a Command. ConditionalPatch states that the patch takes If-Match with the generation of the resource, which
+// apply then sends as it read it (ST-SUP-RC04-OC38).
+type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field;IdempotentWrites,ConditionalPatch bool}
+type applyPlan struct {resource ApplyResource;name,id,method,path,generation string;body map[string]json.RawMessage;payload []byte}
 type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`}
 
+// applyNameWarning is the warning of apply --help: a service that does not hold the name of a kind unique cannot refuse
+// a second create of one name, so two clients that apply one new name at the same time can make two resources
+// (ST-SUP-RC04-OC36).
+const applyNameWarning="Two clients that apply one new name at the same time can make two resources, unless the service holds the name unique (unique: true on the field name)."
 func validateApply(resources []ApplyResource)error{
  if len(resources)>64{return errors.New("too many apply resource definitions")}
  seen:=map[string]bool{}
@@ -38,13 +47,68 @@ func validateApply(resources []ApplyResource)error{
    if !hasName&&len(r.ImmutableIdentity)==0{return errors.New("apply resources require a name field")}
   }
   if err:=validateImmutableApply(r);err!=nil{return err}
+  if r.ConditionalPatch&&len(r.ImmutableIdentity)>0{return errors.New("invalid apply resource definition")}
  }
  return nil
 }
 func applyFields(fields []Field,body map[string]json.RawMessage,required bool)error{
- allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required apply field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return fmt.Errorf("the required apply field %s is missing",f.Key)}}}
  for key,value:=range body{f,ok:=allowed[key];if !ok||!fieldValue(f,value){return errors.New("invalid apply field")}}
  return nil
+}
+// keepCreateOnly leaves out of the patch of a found resource each field that only its create takes, such as a field
+// with writable create: a document that gives the stored value is applied again, as kubectl apply leaves out an
+// immutable field that did not change. A value that is not the stored one, or a field that the answer does not give,
+// is refused before any write, with the name of the field (ST-SUP-RC04-OC35).
+func keepCreateOnly(p *applyPlan,row map[string]json.RawMessage)error{
+ patch:=map[string]bool{};for _,f:=range p.resource.PatchFields{patch[f.Key]=true}
+ for _,f:=range p.resource.CreateFields{
+  value,given:=p.body[f.Key];if !given||patch[f.Key]{continue}
+  stored,ok:=row[f.Key]
+  if !ok{return fmt.Errorf("apply cannot change the field %s of %s %q: only a create sets it, and the service does not return it, so apply cannot compare it; leave it out of the document",f.Key,p.resource.Kind,p.name)}
+  if !sameApplyValue(f,value,stored){return fmt.Errorf("apply cannot change the field %s of %s %q: only a create sets it, and the resource has another value; give the stored value or leave the field out",f.Key,p.resource.Kind,p.name)}
+  delete(p.body,f.Key)
+ }
+ return nil
+}
+// storedPatch tells whether each field of the patch of a found resource has the value that the service returned for
+// it. Then apply sends no patch and reports unchanged, as kubectl apply does; a field that the answer does not give,
+// or whose type apply cannot compare, sends the patch (ST-SUP-RC04-OC35; walkthrough 18). It compares with the resource
+// as the lookup read it: a change of another writer after the read is not seen (ST-SUP-RC04-OC38).
+func storedPatch(p *applyPlan,row map[string]json.RawMessage)bool{
+ fields:=map[string]Field{};for _,f:=range p.resource.PatchFields{fields[f.Key]=f}
+ for key,value:=range p.body{f,ok:=fields[key];stored,given:=row[key];if !ok||!given||!sameApplyValue(f,value,stored){return false}}
+ return true
+}
+// sameApplyValue tells whether a value of a document is the value that the service returned for the field: the same
+// text, number, truth value or list, or both null.
+func sameApplyValue(f Field,given,stored json.RawMessage)bool{
+ null:=func(raw json.RawMessage)bool{return bytes.Equal(bytes.TrimSpace(raw),[]byte("null"))}
+ if null(given)||null(stored){return null(given)&&null(stored)}
+ switch f.Type{
+ case "integer":
+  number:=func(raw json.RawMessage)(string,bool){var n json.Number;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if d.Decode(&n)!=nil{var text string;if json.Unmarshal(raw,&text)!=nil{return "",false};n=json.Number(text)};i,err:=n.Int64();return strconv.FormatInt(i,10),err==nil}
+  a,okA:=number(given);b,okB:=number(stored);return okA&&okB&&a==b
+ case "string":var a,b string;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&a==b
+ case "boolean":var a,b bool;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&a==b
+ case "string-list":var a,b []string;return json.Unmarshal(given,&a)==nil&&json.Unmarshal(stored,&b)==nil&&slices.Equal(a,b)
+ }
+ return false
+}
+// sameDocument tells whether a resource that a lookup found after a create was answered 409 has the value of each
+// field of the document (ST-SUP-RC04-OC36).
+func sameDocument(p *applyPlan,row map[string]json.RawMessage)bool{
+ fields:=map[string]Field{};for _,f:=range p.resource.CreateFields{fields[f.Key]=f}
+ for key,value:=range p.body{f,ok:=fields[key];stored,given:=row[key];if !ok||!given||!sameApplyValue(f,value,stored){return false}}
+ return true
+}
+// readGeneration gives the generation of a found resource as the text of a strong entity tag, such as "3", for the
+// If-Match of its patch (ST-SUP-RC04-OC38).
+func readGeneration(p *applyPlan,row map[string]json.RawMessage)error{
+ var n json.Number;d:=json.NewDecoder(bytes.NewReader(row["generation"]));d.UseNumber()
+ if d.Decode(&n)!=nil{return fmt.Errorf("%s %q: the service does not return the generation of the resource, which its patch needs in If-Match",p.resource.Kind,p.name)}
+ value,err:=n.Int64();if err!=nil||value<0{return fmt.Errorf("%s %q: the service does not return the generation of the resource, which its patch needs in If-Match",p.resource.Kind,p.name)}
+ p.generation=`"`+strconv.FormatInt(value,10)+`"`;return nil
 }
 func prepareApply(app Application,documents []map[string]json.RawMessage)([]applyPlan,error){
  definitions:=map[string]ApplyResource{};for _,r:=range app.Resources{definitions[r.Kind]=r}
@@ -95,7 +159,7 @@ func writeApply(destination *reservedOutput,format string,results []ApplyResult)
 func runApply(ctx context.Context,app Application,args []string,output io.Writer)error{
  ctx,cancel:=context.WithTimeout(ctx,5*time.Minute);defer cancel()
  if len(app.Resources)==0{return errors.New("apply is not configured")}
- if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]");return err}
+ if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]\n"+applyNameWarning);return err}
  filename,format,outputFile,dry,err:=applyOptions(args);if err!=nil{return err}
  documents,err:=loadApply(ctx,filename);if err!=nil{return err}
  plans,err:=prepareApply(app,documents);if err!=nil{return err}
@@ -105,34 +169,49 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  cfg,token,err:=requestCredentials(ctx,app);if err!=nil{return err}
  transport,err:=client.New(client.Options{BaseURL:cfg.URL,CAFile:cfg.CAFile,Timeout:15*time.Second});if err!=nil{return err};defer transport.Close()
  headers:=http.Header{"Authorization":{"Bearer "+token},"Accept":{"application/json"}}
+ // Each lookup waits for the revocation of the last write of this configuration, so the list shows a row that the
+ // write made (ST-SUP-RC04-OC37).
+ revocation:=newLookupRevocation(app,cfg)
  targets:=map[string]bool{}
  for i:=range plans{
   p:=&plans[i]
-  row,err:=applyLookup(ctx,transport,headers,p);if err!=nil{return err}
+  row,err:=applyLookup(ctx,transport,headers,p,revocation);if err!=nil{return err}
   if row!=nil{if json.Unmarshal(row["id"],&p.id)!=nil{return errors.New("invalid apply resource identity")}}
   p.path=p.resource.Path;p.method="POST";fields:=p.resource.CreateFields
   if p.id!=""{
    p.path+="/"+url.PathEscape(p.id)
    if targets[p.path]{return errors.New("multiple apply documents select the same resource")};targets[p.path]=true
    p.method="PATCH";fields=p.resource.PatchFields
-   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}
+   if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}else if err:=keepCreateOnly(p,row);err!=nil{return err}else if storedPatch(p,row){p.method="UNCHANGED"}else if p.resource.ConditionalPatch{if err:=readGeneration(p,row);err!=nil{return err}}
   }
-  if err:=applyFields(fields,p.body,true);err!=nil{return err}
+  if err:=applyFields(fields,p.body,true);err!=nil{return fmt.Errorf("%s %q: %w",p.resource.Kind,p.name,err)}
   p.payload,err=json.Marshal(p.body);if err!=nil||len(p.payload)>65536{return errApplyInput};results[i].ID=p.id
  }
  headers.Set("Content-Type","application/json")
  for i,p:=range plans{
   if err:=ctx.Err();err!=nil{if outErr:=writeApply(destination,format,results);outErr!=nil{return outErr};return err}
   if p.method=="UNCHANGED"{results[i].Status="unchanged";continue}
-  response,requestErr:=transport.Do(ctx,p.method,p.path,headers,p.payload)
+  request:=headers;if p.generation!=""{request=headers.Clone();request.Set("If-Match",p.generation)}
+  response,retried,requestErr:=send(ctx,p.resource.IdempotentWrites,transport,p.method,p.path,request,p.payload)
   outcomeErr:=requestErr;results[i].Status="unknown"
   if requestErr==nil{
-   if p.method=="POST"&&len(p.resource.ImmutableIdentity)>0&&response.StatusCode==409{
-    row,lookupErr:=applyLookup(ctx,transport,headers,&p)
-    if lookupErr==nil&&row!=nil{var id string;if json.Unmarshal(row["id"],&id)==nil{results[i].ID=id;results[i].Status="unchanged";continue}}
+   // After a second request, the first one can still be in its transaction (409 in progress), so an answer that is
+   // not a success leaves the outcome unknown (ST-SUP-RC04-OC25).
+   if !retried&&p.method=="POST"&&response.StatusCode==409{
+    // The unique key of the identity refused the create: look the resource up again, and send no other write for
+    // it (ST-SUP-RC04-OC27, ST-SUP-RC04-OC36).
+    row,lookupErr:=applyLookup(ctx,transport,headers,&p,revocation)
+    if lookupErr==nil&&row!=nil&&(len(p.resource.ImmutableIdentity)>0||sameDocument(&p,row)){var id string;if json.Unmarshal(row["id"],&id)==nil{results[i].ID=id;results[i].Status="unchanged";continue}}
+    if len(p.resource.ImmutableIdentity)==0&&lookupErr==nil{
+     results[i].Status="failed";reason:="the lookup does not find it by its name, as for a resource that you may not read or of another unique value"
+     if row!=nil{reason="the resource of this name has other values; apply again to patch it"}
+     outcomeErr=fmt.Errorf("%s %q: a resource with a unique value of this document exists, and %s (HTTP 409)",p.resource.Kind,p.name,reason)
+     if err:=writeApply(destination,format,results);err!=nil{return err};return fmt.Errorf("apply stopped at document %d; earlier writes remain: %w",i+1,outcomeErr)
+    }
    }
    success:=response.StatusCode==200||(p.method=="POST"&&response.StatusCode==201)
-   if !success{if response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)",response.StatusCode)}else{
+   if success{revocation.keep(ctx,response)}
+   if !success&&!retried&&p.method=="PATCH"&&p.generation!=""&&response.StatusCode==412{results[i].Status="failed";outcomeErr=fmt.Errorf("%s %q: the resource changed after apply read it; apply again (HTTP 412)",p.resource.Kind,p.name)}else if !success{if !retried&&response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)%s",response.StatusCode,problemFacts(response))}else{
     row,decodeErr:=object(response.Body);var id,name string
     valid:=decodeErr==nil&&json.Unmarshal(row["id"],&id)==nil&&identifier.MatchString(id)&&(p.id==""||p.id==id)
     if len(p.resource.ImmutableIdentity)>0{valid=valid&&immutableMatches(&p,row)==nil}else{valid=valid&&json.Unmarshal(row["name"],&name)==nil&&name==p.name}

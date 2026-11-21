@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -55,7 +58,7 @@ func NewValidationMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			if route.Operation == nil || route.Operation.RequestBody == nil {
+			if route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions["x-stego-command"] == true {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -187,6 +190,9 @@ func addSchemaErrors(result *[]ValidationError, more *int, err error) {
 	var schemaErr *openapi3.SchemaError
 	if errors.As(err, &schemaErr) {
 		pointer := schemaErr.JSONPointer()
+		if member, ok := unsupportedMember(schemaErr); ok {
+			pointer = append(slices.Clone(pointer), member)
+		}
 		field := strings.Join(pointer, ".")
 		// The reason names the rule; the error text would also quote the value.
 		msg := schemaErr.Reason
@@ -206,4 +212,22 @@ func addSchemaErrors(result *[]ValidationError, more *int, err error) {
 		return
 	}
 	*result = append(*result, ValidationError{Message: "the request body is not valid"})
+}
+
+// unsupportedMember gives the member that a closed schema does not take, which the check names only in the
+// reason of its failure: property "<member>" is unsupported.
+func unsupportedMember(err *openapi3.SchemaError) (string, bool) {
+	quoted, found := strings.CutPrefix(err.Reason, "property ")
+	quoted, unsupported := strings.CutSuffix(quoted, " is unsupported")
+	if err.SchemaField != "properties" || !found || !unsupported {
+		return "", false
+	}
+	member, unquoteErr := strconv.Unquote(quoted)
+	if cut := 128; len(member) > cut {
+		for cut > 0 && !utf8.RuneStart(member[cut]) {
+			cut--
+		}
+		member = member[:cut]
+	}
+	return member, unquoteErr == nil
 }

@@ -38,7 +38,8 @@ type documentOperation struct {
 		Required bool   `json:"required"`
 	} `json:"parameters"`
 	Responses map[string]struct {
-		Description string `json:"description"`
+		Description string                     `json:"description"`
+		Headers     map[string]json.RawMessage `json:"headers"`
 	} `json:"responses"`
 }
 
@@ -85,10 +86,12 @@ func keyHeader(operation documentOperation) (required, found bool) {
 	return false, false
 }
 
-// checkProblems expects the 400, 409 and 422 responses of an operation to name the idempotency problem types.
+// checkProblems expects the 400, 409 and 422 responses of an operation to name the idempotency problem types: the
+// 400 names an absent key and a key that is not valid (ST-SUP-Q202 (a)).
 func checkProblems(t *testing.T, label string, operation documentOperation) {
 	t.Helper()
-	for code, slug := range map[string]string{"400": "idempotency-key-missing", "409": "idempotency-key-in-progress", "422": "idempotency-key-reused"} {
+	for _, c := range [][2]string{{"400", "idempotency-key-missing"}, {"400", "idempotency-key-invalid"}, {"409", "idempotency-key-in-progress"}, {"422", "idempotency-key-reused"}} {
+		code, slug := c[0], c[1]
 		if !strings.Contains(operation.Responses[code].Description, todoProblemBase+slug) {
 			t.Errorf("%s: response %s is %q, want the problem type %s", label, code, operation.Responses[code].Description, todoProblemBase+slug)
 		}
@@ -123,13 +126,72 @@ func TestIdempotencyKeyHeader(t *testing.T) {
 				t.Errorf("%s carries the Idempotency-Key header", name)
 			}
 		}
-		// Without the idempotency component in the service, no operation carries the header.
+	})
+
+	t.Run("ST-SUP-RC20-OC56-T01 With no idempotency component, a create and a patch take the key, not required, and no other operation does", func(t *testing.T) {
 		ctx := todoIdempotencyContext(types.OpCreate, types.OpPatch)
 		ctx.PeerNamespaces = nil
 		for name, operation := range todoOperations(t, ctx) {
-			if _, found := keyHeader(operation); found {
-				t.Errorf("without the idempotency component, %s carries the Idempotency-Key header", name)
+			required, found := keyHeader(operation)
+			takes := name == "POST /api/todo/v1/todos" || name == "PATCH /api/todo/v1/todos/{id}"
+			if found != takes || required {
+				t.Errorf("without the idempotency component, %s: Idempotency-Key found %t, required %t; want found %t, not required", name, found, required, takes)
+			}
+			if _, refused := operation.Responses["422"]; takes && !refused {
+				t.Errorf("without the idempotency component, %s has no 422 response for a key used with another request", name)
+			}
+			// The handler keeps the key, so each response of the create and the patch, and no other, describes
+			// Idempotency-Kept.
+			for code, response := range operation.Responses {
+				if _, kept := response.Headers["Idempotency-Kept"]; kept != takes {
+					t.Errorf("without the idempotency component, the response %s of %s describes Idempotency-Kept %t, want %t", code, name, kept, takes)
+				}
 			}
 		}
+	})
+}
+
+func TestKeptKeyWithNoComponent(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC56-T02 With no idempotency component, the create and patch handlers mark each answer to a request with a key Idempotency-Kept", func(t *testing.T) {
+		ctx := todoIdempotencyContext(types.OpCreate, types.OpPatch)
+		ctx.PeerNamespaces = nil
+		files, _, err := new(Generator).Generate(onRuntime(ctx))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const mark = "if key != \"\" {\n\t\tw.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)\n\t}\n"
+		marks := 0
+		for _, file := range files {
+			marks += strings.Count(string(file.Bytes()), mark)
+		}
+		// One mark for the create and one for the patch, each right after the read of the key.
+		if marks != 2 {
+			t.Errorf("the handlers write Idempotency-Kept %d times, want 2: the create and the patch", marks)
+		}
+	})
+}
+
+func TestIdempotencyKeptHeaderDocument(t *testing.T) {
+	t.Run("ST-SUP-RC30-OC08-T01 The OpenAPI document describes Idempotency-Kept on each response of a create and a patch, and on no other operation", func(t *testing.T) {
+		operations := todoOperations(t, todoIdempotencyContext(types.OpCreate))
+		for _, name := range []string{"POST /api/todo/v1/todos", "PATCH /api/todo/v1/todos/{id}"} {
+			operation := operations[name]
+			if len(operation.Responses) < 4 {
+				t.Fatalf("%s has the responses %v, want a success and the idempotency problems", name, operation.Responses)
+			}
+			for code, response := range operation.Responses {
+				if _, ok := response.Headers["Idempotency-Kept"]; !ok {
+					t.Errorf("the response %s of %s does not describe Idempotency-Kept", code, name)
+				}
+			}
+		}
+		for _, name := range []string{"GET /api/todo/v1/todos", "GET /api/todo/v1/todos/{id}", "PUT /api/todo/v1/todos/{id}", "DELETE /api/todo/v1/todos/{id}"} {
+			for code, response := range operations[name].Responses {
+				if _, ok := response.Headers["Idempotency-Kept"]; ok {
+					t.Errorf("the response %s of %s describes Idempotency-Kept", code, name)
+				}
+			}
+		}
+		// Without the idempotency component, ST-SUP-RC20-OC56-T01 proves the header on the create and the patch.
 	})
 }

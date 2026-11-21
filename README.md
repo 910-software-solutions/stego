@@ -237,8 +237,14 @@ collections:
 ```
 
 The service needs pooled tenancy, SpiceDB authorization and the audit log. Each entity names
-its resource type and the permission of each operation. A create of a
-top-level entity is public, with a reason. A pooled service also names its tenant
+its resource type and the permission of each operation. The example gives
+the create of a top-level entity `public`, with a reason. Note: `public`
+decides no permission. Each signed-in caller of the tenant can then create
+rows. To limit the create, give it a permission instead. A create of an entity
+with no parent is then decided on the service-level resource of the tenant
+(see [A command with no resource member](docs/commands-queries-workers.md#a-command-with-no-resource-member)).
+A create under a parent is decided on the parent through its reference, so it
+stays `public`. A pooled service also names its tenant
 provisioning: the resource type, with a definition of its own, on which an operator
 is allowed to provision and retire tenants.
 
@@ -275,6 +281,66 @@ listing, gets 404 for `/listings/{listing_id}/variants`, and 200 for
 `/listings/{listing_id}/variants/{id}`. To let such a user list the rows that
 are shared with the user, also declare a collection of the entity with no
 scope: its list gives each row that the caller may view, from all parents.
+
+The body of a create, an update, an upsert and a patch of a collection is a
+JSON object. Send it with the header `Content-Type: application/json`. A body
+with no `Content-Type`, or with another media type, such as
+`application/merge-patch+json`, gets a 400 validation problem with the
+message `the request body is not valid`, and the request changes nothing.
+The answer of a row holds the members `kind` (the name of the entity) and
+`href` (the path of the row), which the API sets. Thus a field of an entity
+that a collection serves must not have the name `kind` or `href`: checking
+refuses such a field and names the remedy.
+
+The operations of a collection are `create`, `read`, `update`, `delete`,
+`list`, `upsert` and `patch`. An update (`PUT <path>/{id}`) takes the whole
+row. A patch (`PATCH <path>/{id}`) changes only the fields that
+its body gives, and only the fields that the collection names in
+`patchable`:
+
+```yaml
+entities:
+  - name: Cart
+    resource_type: cart
+    permissions: {create: public, read: view, list: view, update: edit, patch: edit, delete: manage}
+    ...
+collections:
+  carts:
+    entity: Cart
+    operations: [create, read, update, list, patch]
+    patchable: [name, seller_ref]
+```
+
+A collection with `patch` must give `patchable`, and `patchable` needs
+`patch`. The entity names the permission of the patch in `permissions`, as
+for each operation. A patchable field must be a field of the entity, and must
+not be computed, a `ref`, an implicit field or the scope field of the
+collection, or have `writable: create` or `writable: never`. A patch body
+may hold only the patchable fields, `kind` (the name of the entity), and a
+field that a collection write cannot change with its stored value. The
+names must match in letter case. A patch refuses each other member with a
+400 validation problem that names the member (rest-api 4.24.0), such as a
+field that is not patchable or the new name of a renamed field, and changes
+nothing. The OpenAPI document gives the body of the patch as the schema
+`<Collection>PatchRequest`, with `additionalProperties: false`. The `apply` command of the
+generated CLI changes a resource that it finds with this patch, so a
+collection is an apply resource only when it has `create`, `list` and
+`patch`, has no scope, and both the create and `patchable` hold a text field
+`name` (see the [cli-application
+README](registry/components/cli-application/README.md#the-apply-command)).
+
+A create, an update and an upsert take in the body only the fields of the
+entity, by their API names, and `kind`. The names must match in letter case.
+The body may also give `id`, `href` and each field that the server sets, as a
+read gives them, so a client can send back a row that it read: the server
+ignores these values. Each other member, such as a typo, the declared name of
+a renamed field or `tenant_id`, gets a 400 validation problem that names the
+member (rest-api 4.27.0), and the request changes nothing. An implicit field
+of the collection may only be left out or given with the value of the
+collection. The OpenAPI document gives the body as the schema
+`<Entity>CreateRequest` or `<Entity>UpdateRequest`, with
+`additionalProperties: false`; it marks a member that the server sets
+`x-output-only`, and a member that the body may only repeat `x-kept`.
 
 The path of a scoped collection names the parent of a create, an update or an
 upsert. A body may leave the scope field out, or give the value of the path. A

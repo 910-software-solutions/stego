@@ -1,8 +1,21 @@
 # TypeScript browser SDK
 
 This component generates a browser client from captured OpenAPI 3.0 contracts.
-Select `typescript-sdk` in an archetype or mixin. Set `document` to the root
-contract. List its other files in `references`.
+
+To get the client of the service's own API, bind the mixin `typescript-sdk` in
+the service declaration, such as `mixins: [typescript-sdk]`. The rest-crud
+archetype lists it, and an rpc-service can bind it too. With no `document`
+setting, the client is made from the OpenAPI document of the service in the
+same run: the document that the rest-api component writes, or, with no
+rest-api component, the document of the command and query routes that the
+command component writes. The output is `out/tssdk`. To make a client of
+another API, set `document` under `overrides.typescript-sdk` to the root
+contract, and list its other files in `references`.
+
+The client sends each request to the current browser origin, so a browser
+service whose API proxy forwards the API prefix of the service serves it, as
+the staff portal of a browser-service does. Give that prefix to the browser
+backend (its `apis` setting) with the origin of the service.
 
 The output contains an ES module, TypeScript declarations, and package metadata.
 It has no npm runtime dependency. Import `createBrowserClient` from the output.
@@ -10,7 +23,15 @@ The client uses the current HTTPS origin and the separate STEGO browser backend.
 The browser supplies cookies. Application code does not supply OAuth tokens.
 
 Methods use the contract's `operationId`. Each method accepts an input object
-with path and query fields and, where declared, `body`. The optional second
+with path and query fields and, where declared, `body`. A header parameter
+of the operation is a field too, in lower camel case: `idempotencyKey`,
+`ifMatch`, `ifNoneMatch`, `authzRevocationAfter` and `prefer`. These are the
+headers that the API proxy of the browser backend forwards; a document with
+another header parameter is refused. Each value is at most 1024 visible ASCII
+characters. A command requires `idempotencyKey`, such as
+`{idempotencyKey: JSON.stringify(crypto.randomUUID())}`. The client never makes
+a key and never sends a request again: to send a write again after an unknown
+outcome, send it with the same key. The optional second
 argument supplies an abort signal and trace context. Results contain `status`,
 `body`, and `etag`.
 `RequestSchemas` contains request models. `Schemas` contains response models.

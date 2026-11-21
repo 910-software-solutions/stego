@@ -59,6 +59,27 @@ setting of the binary. The binary with the one argument `migrate` is the
 migration job: it writes the tables and the SpiceDB schema before the
 service starts.
 
+## Generated clients
+
+Each command and each get or list query with a `route` is served over HTTP
+too. The command component writes the OpenAPI document of these routes in
+`out/commands/openapi.json`. A stream query is served over gRPC only, so it is
+not in the document.
+
+To get a Go client or a CLI of these routes, bind their mixins:
+
+```yaml
+mixins: [go-sdk, cli-application]
+```
+
+The Go SDK (`out/sdk`) and the CLI (`out/cli/cmd`) are made from that
+document, as for a rest-crud service, so you give no `document` and no
+`factory_package`. Give the base URL of the service with no base path, such as
+`https://underwriting.example.com`: the document holds the base path in each
+route. See the READMEs of
+[go-sdk](../../components/go-sdk/README.md) and
+[cli-application](../../components/cli-application/README.md).
+
 ## Tenants and the first grant
 
 The service holds no data until an operator provisions a tenant. Each

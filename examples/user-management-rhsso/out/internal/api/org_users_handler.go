@@ -149,18 +149,42 @@ func orgUsersPresented(v User) any {
 	return presentEntity(v, "User", v.ID, "/api/user-mgmt/v1/organizations/"+v.OrgID+"/users"+"/"+v.ID)
 }
 
-// decodeOrgUsers gives the User of a create or an update body. A kind member that is not User is refused, and the
-// client values of the server-managed fields are cleared (ST-SUP-RC20-OC17, ST-SUP-RC20-OC19).
+// decodeOrgUsers gives the User of a create, an update or an upsert body. Each member that is not kind, id, href or a
+// field of User, in its exact letter case, is refused, and so is a kind member that is not User and an implicit field
+// with another value than that of the collection; the client values of the server-managed fields are cleared
+// (ST-SUP-RC20-OC55, ST-SUP-RC20-OC17, ST-SUP-RC20-OC19, ST-SUP-RC20-OC23).
 func decodeOrgUsers(bodyBytes []byte) (User, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return User{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
+	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return User{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
+	unknown := ""
+	for member := range rawMap {
+		switch member {
+		case "kind", "id", "href", "email", "display_name", "role", "org_id", "metadata":
+		default:
+			if unknown == "" || member < unknown {
+				unknown = member
+			}
+		}
+	}
+	if unknown != "" {
+		return User{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a field of User; a create, an update or an upsert takes only the fields of User and kind, in the letter case of the OpenAPI document"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
 		if err := json.Unmarshal(kindRaw, &kind); err != nil || kind != "User" {
 			return User{}, &invalidRequest{problem: BadRequest("kind must be User")}
 		}
+	}
+	for _, member := range []string{"id", "href"} {
+		delete(rawMap, member)
+	}
+	if stripped, err := json.Marshal(rawMap); err == nil {
+		bodyBytes = stripped
 	}
 	var user User
 	if err := json.Unmarshal(bodyBytes, &user); err != nil {
@@ -178,11 +202,28 @@ type OrgUsersPatchRequest struct {
 	Metadata    *json.RawMessage `json:"metadata"`
 }
 
-// decodeOrgUsersPatch gives the patch of a patch body. A kind member that is not User is refused.
+// decodeOrgUsersPatch gives the patch of a patch body. A kind member that is not User is refused, and so is each
+// member that is not kind or the API name of a patchable field, in its exact letter case (ST-SUP-RC20-OC15).
 func decodeOrgUsersPatch(bodyBytes []byte) (OrgUsersPatchRequest, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return OrgUsersPatchRequest{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
+	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
+	unknown := ""
+	for member := range rawMap {
+		switch member {
+		case "kind", "display_name", "role", "metadata":
+		default:
+			if unknown == "" || member < unknown {
+				unknown = member
+			}
+		}
+	}
+	if unknown != "" {
+		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a patchable field of org-users; a patch takes only display_name, role, metadata and kind"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
@@ -220,6 +261,9 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		keyMissing(w, r, err)
 		return
+	}
+	if key != "" {
+		w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 	}
 	requestID := command.NewID()
 	if key == "" {
@@ -515,7 +559,7 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}
@@ -802,6 +846,9 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		keyMissing(w, r, err)
 		return
 	}
+	if key != "" {
+		w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
+	}
 	requestID := command.NewID()
 	if key == "" {
 		key = requestKey(requestID)
@@ -891,7 +938,7 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}

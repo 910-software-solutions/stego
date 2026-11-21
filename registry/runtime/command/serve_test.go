@@ -20,12 +20,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
@@ -232,6 +237,35 @@ func TestServe(t *testing.T) {
 		if !strings.Contains(w.Body.String(), `"type":"https://errors.example.com/orders/idempotency-key-missing"`) {
 			t.Fatalf("a request with no key gave the problem %s, want the type under the problem base", w.Body.String())
 		}
+		t.Run("ST-SUP-RC30-OC02-T02 A command whose Idempotency-Key is not a structured string gets idempotency-key-invalid over HTTP and gRPC", func(t *testing.T) {
+			for _, value := range []string{`abc`, `""`, `"` + strings.Repeat("k", 256) + `"`} {
+				r := httptest.NewRequest(http.MethodPost, "/commands/reserve", strings.NewReader(`{"order_id":"o5"}`))
+				r.Header.Set("Authorization", "Bearer "+token)
+				r.Header.Set(idempotency.KeyHeader, value)
+				w := httptest.NewRecorder()
+				verifier.Middleware(h).ServeHTTP(w, r)
+				if w.Code != http.StatusBadRequest || calls != 0 || !strings.Contains(w.Body.String(), `"type":"https://errors.example.com/orders/idempotency-key-invalid"`) {
+					t.Fatalf("the key %.20s gave %d %s, want 400 idempotency-key-invalid with no fill call", value, w.Code, w.Body.String())
+				}
+				ctx, err := verifier.Authenticate(context.Background(), "Bearer "+token)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(RPCKeyMetadata, value))
+				request, _ := structpb.NewStruct(map[string]any{"order_id": "o5"})
+				if _, err := rpc(ctx, request); status.Code(err) != codes.InvalidArgument || status.Convert(err).Message() != idempotency.ProblemInvalid || calls != 0 {
+					t.Fatalf("the key %.20s over gRPC gave %v, want INVALID_ARGUMENT %s with no fill call", value, err, idempotency.ProblemInvalid)
+				}
+			}
+			ctx, err := verifier.Authenticate(context.Background(), "Bearer "+token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, _ := structpb.NewStruct(map[string]any{"order_id": "o5"})
+			if _, err := rpc(ctx, request); status.Convert(err).Message() != idempotency.ProblemMissing {
+				t.Fatalf("a call with no key over gRPC gave %v, want %s", err, idempotency.ProblemMissing)
+			}
+		})
 		e.rt.cfg.ProblemBase = ""
 		broken := spec
 		broken.Fill = nil
@@ -405,6 +439,9 @@ func TestOutcomeTransient(t *testing.T) {
 		}
 		undecided := Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 		internal := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+		unavailable := Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
+		notFound := Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
+		denied := Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 		for _, c := range []struct {
 			name string
 			err  error
@@ -416,6 +453,19 @@ func TestOutcomeTransient(t *testing.T) {
 			{"a SpiceDB call that ran out of time", decide(status.Error(codes.DeadlineExceeded, "deadline")), undecided},
 			{"a refusal of SpiceDB", decide(status.Error(codes.FailedPrecondition, "the relation is not in the schema")), internal},
 			{"a key that SpiceDB does not take", decide(status.Error(codes.PermissionDenied, "bad key")), internal},
+			// A not-found error that also holds a cause of a 503 answer is 503, so that the caller tries again
+			// (security review of PR 448, I2).
+			{"a not-found error with a decision that could not be made now", errors.Join(fmt.Errorf("fill: %w", ErrNotFound), ErrUndecided), undecided},
+			{"a not-found error with a SpiceDB that does not answer", errors.Join(ErrNotFound, decide(status.Error(codes.Unavailable, "connection refused"))), undecided},
+			{"a not-found error of a database that cannot serve now", errors.Join(fmt.Errorf("fill: %w", ErrNotFound), ErrUnavailable), unavailable},
+			{"a not-found error alone", fmt.Errorf("fill: %w", ErrNotFound), notFound},
+			// A denial with the same causes gets the same answer as a not-found error (security review of PR 449,
+			// INFO-1).
+			{"a denial with a decision that could not be made now", errors.Join(fmt.Errorf("fill: %w", ErrDenied), ErrUndecided), undecided},
+			{"a denial with a SpiceDB that does not answer", errors.Join(ErrDenied, decide(status.Error(codes.Unavailable, "connection refused"))), undecided},
+			{"a denial of a database that cannot serve now", errors.Join(fmt.Errorf("fill: %w", ErrDenied), ErrUnavailable), unavailable},
+			{"a denial with a refusal of SpiceDB", errors.Join(ErrDenied, decide(status.Error(codes.FailedPrecondition, "no relation"))), denied},
+			{"a denial alone", fmt.Errorf("fill: %w", ErrDenied), denied},
 		} {
 			if got := OutcomeOf(c.err); got != c.want {
 				t.Errorf("%s: OutcomeOf gave %+v, want %+v", c.name, got, c.want)
@@ -427,6 +477,10 @@ func TestOutcomeTransient(t *testing.T) {
 			(*Runtime)(nil).writeProblem(w, status, "", "code")
 			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
 				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
+			}
+			// A browser does not sniff the problem as another type (security review of PR 445, I-2).
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("the answer %d has X-Content-Type-Options %q, want nosniff", status, got)
 			}
 		}
 	})
@@ -539,6 +593,80 @@ func TestProblemForm(t *testing.T) {
 		bare.writeProblem(w, http.StatusBadRequest, bare.problemType("idempotency-key-missing"), "")
 		if p := read(t, w); p["type"] != "about:blank" {
 			t.Errorf("with no base the idempotency problem has the type %v, want about:blank, never a bare word", p["type"])
+		}
+	})
+}
+
+// secretMessages gives a request message whose nested member pin the proto marks debug_redact when marked is true,
+// and a plain response message.
+func secretMessages(t *testing.T, marked bool) (func() *dynamicpb.Message, func() *dynamicpb.Message) {
+	t.Helper()
+	str, msg, opt := descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	file := &descriptorpb.FileDescriptorProto{Name: proto.String("secret.proto"), Package: proto.String("secret.v1"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Pin"), Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("pin"), JsonName: proto.String("pin"), Number: proto.Int32(1), Type: &str, Label: &opt,
+				Options: &descriptorpb.FieldOptions{DebugRedact: proto.Bool(marked)}}}},
+			{Name: proto.String("ResetRequest"), Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("pin"), JsonName: proto.String("pin"), Number: proto.Int32(1), Type: &msg, Label: &opt, TypeName: proto.String(".secret.v1.Pin")}}},
+			{Name: proto.String("ResetResponse")},
+		}}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, response := fd.Messages().ByName("ResetRequest"), fd.Messages().ByName("ResetResponse")
+	return func() *dynamicpb.Message { return dynamicpb.NewMessage(request) }, func() *dynamicpb.Message { return dynamicpb.NewMessage(response) }
+}
+
+func TestServeSecretNeedsRing(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC12-T04 Serve and ServeRPC refuse a command whose message holds a debug_redact member when the runtime has no key ring", func(t *testing.T) {
+		cmd := &Command[testProbe]{spec: CommandSpec[testProbe]{Name: "reset-pin"}}
+		spec := func(marked bool) ServeSpec[*dynamicpb.Message, *dynamicpb.Message, testProbe] {
+			newRequest, newResponse := secretMessages(t, marked)
+			return ServeSpec[*dynamicpb.Message, *dynamicpb.Message, testProbe]{Command: cmd, ResourceType: "pin", SubjectType: "user", Status: http.StatusOK,
+				NewRequest: newRequest, NewResponse: newResponse, Resource: func(*dynamicpb.Message) string { return "p1" },
+				Fill: func(context.Context, *dynamicpb.Message, *Handle[testProbe]) (*dynamicpb.Message, error) {
+					return nil, nil
+				}}
+		}
+		bare, ringed := &Runtime{}, &Runtime{cfg: Config{Ring: vaultRing(t, "1 "+throwawayKey(t))}}
+		for _, c := range []struct {
+			name    string
+			rt      *Runtime
+			marked  bool
+			refused bool
+		}{{"a marked member and no ring", bare, true, true}, {"a marked member and a ring", ringed, true, false}, {"no marked member and no ring", bare, false, false}} {
+			_, serveErr := Serve(c.rt, spec(c.marked))
+			_, rpcErr := ServeRPC(c.rt, spec(c.marked))
+			for name, err := range map[string]error{"Serve": serveErr, "ServeRPC": rpcErr} {
+				if refused := err != nil && strings.Contains(err.Error(), "debug_redact"); refused != c.refused {
+					t.Errorf("%s of %s gave %v, want refused %t", name, c.name, err, c.refused)
+				}
+			}
+		}
+	})
+}
+
+func TestNewToken(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC56-T01 NewToken gives new random bytes of each size from 16 to 64, and refuses each other size", func(t *testing.T) {
+		seen := map[string]bool{}
+		for size := MinTokenSize; size <= MaxTokenSize; size++ {
+			a, err := NewToken(size)
+			if err != nil || len(a) != size {
+				t.Fatalf("NewToken(%d) gives %d bytes and %v", size, len(a), err)
+			}
+			b, _ := NewToken(size)
+			if string(a) == string(b) || seen[string(a)] {
+				t.Fatalf("NewToken(%d) gives the same bytes twice", size)
+			}
+			seen[string(a)] = true
+			if string(a) == string(make([]byte, size)) {
+				t.Fatalf("NewToken(%d) gives only zero bytes", size)
+			}
+		}
+		for _, size := range []int{-1, 0, 1, MinTokenSize - 1, MaxTokenSize + 1, 1 << 20} {
+			if b, err := NewToken(size); err == nil || b != nil {
+				t.Errorf("NewToken(%d) gives %d bytes and %v, want a refusal and no bytes", size, len(b), err)
+			}
 		}
 	})
 }

@@ -253,6 +253,32 @@ func TestBaseCompat(t *testing.T) {
 				t.Errorf("%s: want refused, got no fault", c.name)
 			}
 		}
+		// Walkthrough 14, W14-B3: a retype with no definition is refused with a fault that names the column, its two
+		// forms and the cause, and not with the two whole CREATE TABLE texts.
+		data := []byte(base)
+		noDefinition := strings.Replace(head("x"), `definition: "x", `, "", 1)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: data, Record: recordFor(data)}, parseHead(t, noDefinition))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, fault := range check.Faults {
+			if fault.Rule != BaseCompatRule || !strings.Contains(fault.Message, "the column points is") {
+				continue
+			}
+			found = true
+			for _, want := range []string{`"points" integer NOT NULL DEFAULT 0`, "the retype user-points-retype gives no definition", "such as its default"} {
+				if !strings.Contains(fault.Message, want) {
+					t.Errorf("the fault of a retype with no definition does not say %q: %s", want, fault.Message)
+				}
+			}
+			if strings.Contains(fault.Message, "CREATE TABLE") {
+				t.Errorf("the fault of a retype with no definition gives the whole tables: %s", fault.Message)
+			}
+		}
+		if !found {
+			t.Errorf("a retype with no definition gives no fault that names the column points: %+v", check.Faults)
+		}
 	})
 
 	t.Run("ST-GEN-INV33-T A change of the indexes that a collection gives a base entity is refused, and a change that gives no index is accepted", func(t *testing.T) {
@@ -290,6 +316,8 @@ func TestBaseCompat(t *testing.T) {
 			{"a field that is not searched marked pii", td01, strings.Replace(td01, "{ name: metadata, type: jsonb, optional: true }", "{ name: metadata, type: jsonb, optional: true, sensitivity: pii }", 1)},
 			{"a collection with no list and no upsert key", td01, strings.Replace(td01, "\nslots:", "\n  one-org:\n    entity: Organization\n    path_prefix: /one-org\n    operations: [read]\n\nslots:", 1)},
 			{"a rename of an implicit field of a list", td01, renamed},
+			// A field written public is a field with no sensitivity: its search index stays (decision ST-DECL-Q46 (a)).
+			{"a searched field written public", td01, strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: public }", 1)},
 		} {
 			base := []byte(c.base)
 			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
@@ -304,12 +332,45 @@ func TestBaseCompat(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-INV33-T A base that writes sensitivity: public on a searched field is refused when the generator of its release built no search index on it", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		written := strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: public }", 1)
+		base := []byte(written)
+		for _, c := range []struct {
+			adapter string
+			refused bool
+		}{{"6.17.0", true}, {PublicSearchVersion, false}} {
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, c.adapter)}, parseHead(t, written))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || (fault.Rule == BaseCompatRule && fault.Entity == "User" && strings.Contains(fault.Message, "writes sensitivity: public") &&
+					strings.Contains(fault.Message, `"users_display_name_search"`) && strings.Contains(fault.Message, "ST-DECL-Q46"))
+			}
+			if refused != c.refused {
+				t.Errorf("postgres-adapter %s: gives %+v, want refused %t", c.adapter, check.Faults, c.refused)
+			}
+		}
+		// A base that writes no sensitivity: public is not refused for it over an older generator.
+		plain := []byte(td01)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: plain, Record: adapterRecord(t, plain, "6.17.0")}, parseHead(t, td01))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the same declaration with no field written public is refused: %v %+v", err, check.Faults)
+		}
+	})
+
 	t.Run("ST-GEN-INV33-T The index check of the collections, where generation cannot compare the indexes, traces renames in history order and counts the fields that a list indexes anyway", func(t *testing.T) {
 		t.Parallel()
 		// Review of PR #263, L11: two renames of one field whose schema changes are listed in the other order than
 		// their steps, and a new implicit field that the search of the list indexes already, were refused.
 		td01 := string(userManagementBase(t))
 		base := parseHead(t, td01)
+		sealed := strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: secret }", 1)
+		const displayNameSeal = "  - {id: user-display-name-seal, kind: seal, entity: User, field: display_name, from: public}\n"
+		const displayNameSealExpand = "  - {change: user-display-name-seal, phase: expand}\n"
 		chained := withChanges(strings.ReplaceAll(strings.Replace(td01, "{ name: source_type, type: string, max_length: 50 }", "{ name: kind_type, type: string, max_length: 50 }", 1), "implicit: { source_type:", "implicit: { kind_type:"),
 			"  - {id: activityentry-origin-type-rename, kind: rename, entity: ActivityEntry, field: kind_type, from: origin_type}\n"+
 				"  - {id: activityentry-source-type-rename, kind: rename, entity: ActivityEntry, field: origin_type, from: source_type}\n",
@@ -323,6 +384,11 @@ func TestBaseCompat(t *testing.T) {
 			{"a new implicit field of a list that the search of the list indexes already", strings.Replace(td01, "    implicit: { source_type: \"User\" }\n", "    implicit: { source_type: \"User\", action: \"login\" }\n", 1), false},
 			{"a searched field of a listed entity marked pii", strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: pii }", 1), true},
 			{"list taken from the only collection that lists an entity", strings.Replace(td01, "    operations: [create, read, delete, list]\n", "    operations: [create, read, delete]\n", 1), true},
+			// Walkthrough 17, W17-B2: a seal from public keeps the search index of the clear column, also beside a
+			// rename in the same release; the seal and the rename are each checked on their own.
+			{"a seal from public of a searched field, with a rename in the same release", withChanges(renameEmail(sealed), displayNameSeal+emailRename, displayNameSealExpand+emailRenameExpand), false},
+			{"a seal with no from of a searched field, with a rename in the same release", withChanges(renameEmail(sealed), strings.Replace(displayNameSeal, ", from: public", "", 1)+emailRename, displayNameSealExpand+emailRenameExpand), false},
+			{"a seal from pii of a field that the base searched", withChanges(sealed, strings.Replace(displayNameSeal, "from: public", "from: pii", 1), displayNameSealExpand), true},
 		} {
 			faults := collectionIndexFaults(base, parseHead(t, c.head))
 			if (len(faults) > 0) != c.fault {

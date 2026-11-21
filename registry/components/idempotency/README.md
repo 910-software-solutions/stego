@@ -21,12 +21,28 @@ When this component is in the service, the rest-api component puts the
 Idempotency-Key header and its 400, 409 and 422 problem responses on each
 create and patch operation of its OpenAPI document.
 
+Each answer to a create or a patch whose request carries an Idempotency-Key
+carries the header `Idempotency-Kept: 1`: a success, a stored answer given
+again, a problem and a 5xx answer. An answer to a request with no key, or to a
+get, a put or a delete, does not carry it. The OpenAPI document describes the
+header on each response of the create and the patch. Thus a client of another
+release than the service knows from the answer that a second request with the
+same key is safe (ST-SUP-RC30-OC08). A proxy in front of the service must not
+add `Idempotency-Kept`, because a client then sends a write again that the
+service may do two times.
+
 The stage is alpha. A collection create or patch is a generated command
 (ST-SUP-RC20-OC37), so the wrapper is the one that command.Run calls. On the
 runtime data path the rest-api handlers give command.Run the client's key on
 a create and a patch, and the runtime's field fingerprint over the fields of
 the operation. A PUT, a DELETE, and a create or a patch with no header that
 does not need one, run with a key of the request's own (ST-SUP-Q86). The
-generated commands do not use the settings and the fingerprint functions
-yet, and the conformance tests are not generated yet. Until the commands
-use them, the compiler does not select this component.
+generated commands do not use the fingerprint functions of this component
+yet, and the conformance tests are not generated yet.
+
+A stated `idempotency` setting selects this component. With it, the key is
+required on each operation that Required on names. With no setting, a
+create and a patch still keep the key that a request gives: a second request
+with the same key and body gets the stored answer, and another body with the
+key gets 422. The OpenAPI document then gives the header, not required, on
+each create and patch (ST-SUP-RC20-OC56).

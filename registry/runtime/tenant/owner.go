@@ -9,9 +9,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"weak"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -134,10 +136,18 @@ func open(ctx context.Context, cfg Config) (*sql.DB, error) {
 		return nil, err
 	}
 	db := stdlib.OpenDB(*conn,
-		stdlib.OptionAfterConnect(checkConn),
+		stdlib.OptionAfterConnect(func(ctx context.Context, conn *pgx.Conn) error {
+			conn.PgConn().CustomData()[planGeneration] = planResets.Load()
+			return checkConn(ctx, conn)
+		}),
 		stdlib.OptionResetSession(func(ctx context.Context, conn *pgx.Conn) error {
 			if err := checkConn(ctx, conn); err != nil {
 				// The pool discards the connection, and the next request gets a new one.
+				return driver.ErrBadConn
+			}
+			// The guard passed first, so the drop of the prepared statements runs only on a connection that the
+			// pool keeps (security review of PR #466, L1).
+			if err := resetPlans(ctx, conn); err != nil {
 				return driver.ErrBadConn
 			}
 			return nil
@@ -158,6 +168,43 @@ func open(ctx context.Context, cfg Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("tenant: open the database: %w", err)
 	}
 	return db, nil
+}
+
+// planResets counts the calls of ResetStatements, and planGeneration is the key of the custom data of a connection
+// that holds the count when the connection last dropped its prepared statements, or opened.
+var planResets atomic.Int64
+
+const planGeneration = "stego.tenant.plan_generation"
+
+// StalePlan tells whether err is the refusal of the server to run a prepared statement whose result columns changed
+// since the connection prepared it, SQLSTATE 0A000 "cached plan must not change result type", as after a column of
+// its table was dropped and added again (ST-SUP-RP04-LC11). The statement wrote nothing, so the call may run again.
+// The server function that gives the error, RevalidateCachedQuery, names it in every language of lc_messages; the
+// English text names it when the server sends no function (security review of PR #466, L2).
+func StalePlan(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "0A000" &&
+		(pg.Routine == "RevalidateCachedQuery" || strings.Contains(pg.Message, "cached plan must not change result type"))
+}
+
+// ResetStatements makes each connection of each pool that Open or OpenOwner gave drop the statements that it
+// prepared, at its next use from the pool, so a statement that a change of a table made stale fails once in the
+// process and not once on each connection (ST-SUP-RP04-LC11). A caller calls it when StalePlan(err) holds.
+func ResetStatements() { planResets.Add(1) }
+
+// resetPlans drops the prepared statements of conn when ResetStatements was called since conn last dropped them or
+// opened. An error leaves the connection to the pool to discard.
+func resetPlans(ctx context.Context, conn *pgx.Conn) error {
+	now := planResets.Load()
+	data := conn.PgConn().CustomData()
+	if at, ok := data[planGeneration].(int64); ok && at >= now {
+		return nil
+	}
+	if err := conn.DeallocateAll(ctx); err != nil {
+		return fmt.Errorf("tenant: drop the prepared statements of the connection: %w", err)
+	}
+	data[planGeneration] = now
+	return nil
 }
 
 // checkRuntimeRole fails when the role of db, or a role it is a member of, is a superuser, holds BYPASSRLS or owns

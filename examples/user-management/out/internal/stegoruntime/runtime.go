@@ -176,6 +176,10 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 		Service: Service, DeclarationVersion: DeclarationVersion, SubjectType: subjectType, TenantClaim: tenantClaim,
 		// The open changes with a sync trigger, which the writer marker of each write names (ST-SUP-RC01-OC23).
 		SchemaSteps: svcstorage.SchemaSteps, Release: svcstorage.SchemaRelease,
+		// The start refuses a database whose ledger holds another body of a migration of the release
+		// (ST-SUP-RP14-LC13), and accepts the earlier digest of a migration whose body lost the seal checkpoints
+		// (ST-SUP-RC01-OC51).
+		Migrations: svcstorage.MigrationDigests(), EarlierMigrations: svcstorage.EarlierMigrationDigests(),
 		ProblemType: problemType, ProblemCode: problemCode, TenantConfig: svcstorage.TenantConfig,
 		NewQueue:   func(db *sql.DB) (*outbox.Queue, error) { return svcoutbox.NewQueue(db, nil) },
 		AuditQueue: func(q *outbox.Queue) (audit.Enqueuer, error) { return svcoutbox.AuditQueue(q) },
@@ -189,6 +193,9 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 		// The definitions of the authorization schema: only one with the definition tenant has worker relations
 		// (ST-SUP-RC35-OC13).
 		Definitions: svcauthz.Definitions,
+		// The relations of the authorization schema: a relation service of the type tenant makes Provision relate the
+		// tenant resource to the service-level resource of the tenant (ST-SUP-RC27-OC18).
+		Relations: svcauthz.Relations,
 		// The grants of the runtime role that the migration job gives, which the manifest checks on the entity
 		// tables (ST-SUP-RP14-LC06).
 		Grants: grants,
@@ -421,19 +428,27 @@ func (rt *Runtime) Run(ctx context.Context) error {
 
 // Readiness answers the readiness of the worker and controller modes that the process runs, and names each worker
 // that stopped and each job that is not healthy (ST-SUP-RP09-LC05); before Run started the workers they are not
-// ready. A process that runs neither mode is ready here.
+// ready. Each mode of the process, the api mode too, is not ready from the start when the database lacks a table or
+// a column of the schema manifest (ST-SUP-RP14-LC06). A process that runs neither the worker nor the controller mode
+// is ready here while its database answers a ping. Each reason is fixed text that names no table, column, host or
+// user (security review of PR #457, L3).
 func (rt *Runtime) Readiness() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt.mu.Lock()
 		workers := rt.workers
 		rt.mu.Unlock()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		var err error
+		err := rt.svc.Blocked(rt.selection)
 		switch {
+		case err != nil:
 		case workers != nil:
 			err = workers.Ready(r.Context())
 		case rt.selection.Has(modes.Worker) || rt.selection.Has(modes.Controller):
 			err = errors.New("the workers have not started")
+		default:
+			// A process of the api mode alone starts no worker, so its readiness pings the database itself, with a
+			// fixed reason (ST-SUP-RP09-LC05; security review of PR #457, L3).
+			err = rt.svc.Ping(r.Context())
 		}
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)

@@ -992,3 +992,77 @@ func TestCauseLog(t *testing.T) {
 		}
 	})
 }
+
+func TestCauseKinds(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC20-T03 SpiceDB's maximum depth exceeded is a refusal, and a ResourceExhausted with no such reason stays transient", func(t *testing.T) {
+		withReason := func(code codes.Code, reason v1.ErrorReason) error {
+			st, err := status.New(code, "the check of user:bob went too deep").WithDetails(
+				&errdetails.ErrorInfo{Reason: reason.String(), Domain: "authzed.com"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return st.Err()
+		}
+		deep := spiceError("check a permission", withReason(codes.ResourceExhausted, v1.ErrorReason_ERROR_REASON_MAXIMUM_DEPTH_EXCEEDED))
+		if !IsRefused(deep) || Transient(deep) || Cause(deep) != CauseRefused || !errors.Is(deep, ErrProvider) {
+			t.Errorf("maximum depth exceeded gives %v with the cause %q, refused %v and transient %v, want refused and not transient",
+				deep, Cause(deep), IsRefused(deep), Transient(deep))
+		}
+		if strings.Contains(deep.Error(), "user:bob") {
+			t.Errorf("the error %q holds the provider message", deep)
+		}
+		for _, err := range []error{status.Error(codes.ResourceExhausted, "no capacity"),
+			withReason(codes.ResourceExhausted, v1.ErrorReason_ERROR_REASON_TOO_MANY_UPDATES_IN_REQUEST)} {
+			busy := spiceError("check a permission", err)
+			if IsRefused(busy) || !Transient(busy) || Cause(busy) != CauseUnavailable {
+				t.Errorf("%v gives the cause %q, refused %v and transient %v, want %q and transient", err, Cause(busy),
+					IsRefused(busy), Transient(busy), CauseUnavailable)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP06-LC20-T04 A cause run of a key lasts from the first failure of its cause until a success or another cause", func(t *testing.T) {
+		now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		runs := NewCauseRuns(func() time.Time { return now })
+		notServed := spiceError("check a permission", unknownDefinition(t))
+		down := spiceError("check a permission", status.Error(codes.Unavailable, "down"))
+		check := func(key string, err error, want time.Duration) {
+			t.Helper()
+			if got := runs.Observe(key, err); got != want {
+				t.Errorf("Observe(%s, %v) at %v gives %v, want %v", key, err, now, got, want)
+			}
+		}
+		check("provision", notServed, 0)
+		now = now.Add(time.Minute)
+		check("provision", notServed, time.Minute)
+		check("retire", notServed, 0)
+		now = now.Add(time.Minute)
+		check("provision", notServed, 2*time.Minute)
+		check("retire", notServed, time.Minute)
+		// Another cause begins a new run, and a success ends it.
+		check("provision", down, 0)
+		now = now.Add(time.Second)
+		check("provision", down, time.Second)
+		check("provision", nil, 0)
+		check("provision", down, 0)
+		check("retire", nil, 0)
+		now = now.Add(time.Minute)
+		check("retire", notServed, 0)
+		// The runs keep at most MaxCauses keys: a new key evicts the key whose run began first.
+		bounded := NewCauseRuns(func() time.Time { return now })
+		for i := range MaxCauses + 10 {
+			now = now.Add(time.Millisecond)
+			bounded.Observe(fmt.Sprintf("key-%d", i), down)
+		}
+		if len(bounded.runs) != MaxCauses {
+			t.Errorf("the runs keep %d keys, want %d", len(bounded.runs), MaxCauses)
+		}
+		if _, kept := bounded.runs["key-0"]; kept {
+			t.Error("the key whose run began first was not evicted")
+		}
+		var zero CauseRuns
+		if got := zero.Observe("k", down); got != 0 {
+			t.Errorf("the zero CauseRuns gives %v for a first failure", got)
+		}
+	})
+}

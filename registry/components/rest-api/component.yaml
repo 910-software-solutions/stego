@@ -27,9 +27,51 @@
 # Version 4.15.0 parses the query string of a list once and refuses with 400 one that does not parse, such as one with
 # a ';', a bad escape or more than 10000 parameters; cuts a refused name on a character boundary and names it once; and
 # sets X-Content-Type-Options: nosniff on each problem answer (security review of PR #442, L1 and I3).
+# Version 4.15.1 cuts a refused parameter name at 64 bytes when it has no character boundary in its first 64 bytes,
+# where it gave an empty name (security review of PR #445, I-4).
+# Version 4.17.0 describes each command and each get or list query in the OpenAPI document, at its route, and the
+# request validation does not check the body of a command (ST-SUP-RC20-OC53).
+# Version 4.18.0 skips the check of a body only for an operation whose x-stego-command marker is true (security review
+# of PR #454, INFO).
+# Version 4.19.0 lets an update leave out a secret field, or give it empty, and keep the stored value: the update
+# request requires no secret and holds no min_length or pattern of one (ST-SUP-RC20-OC48; walkthrough 14, W14-B4).
+# It refuses at checking a field named kind or href of an entity that a collection serves (ST-SUP-RC20-OC52).
+# Version 4.20.0 calls the update of the runtime in the generated writes of an entity with its own resource type,
+# whose repository type takes no parent on Update (ST-SUP-RC32-OC26).
+# Version 4.21.0 lets a list search and order a field written sensitivity: public, as one with no sensitivity
+# (decision ST-DECL-Q46 (a)).
+# Version 4.22.0 marks a member of a command message that the proto marks debug_redact as a secret in the OpenAPI
+# document: x-sensitive, the format password for a string, and writeOnly in a request body (ST-SUP-RC20-OC54,
+# ST-SUP-Q192).
+# Version 4.23.0 marks the root of a command response x-sensitive when the message holds such a member at any depth,
+# also deeper than the schema follows, and refuses a path parameter that is such a member (security review of
+# PR #460, L1 and L2).
+# Version 4.24.0 refuses each member of a patch body that is not kind, a patchable field or a field that a collection
+# write cannot change, in its exact letter case, with a 400 validation problem that names the member, and closes the
+# patch request of the OpenAPI document with additionalProperties: false (ST-SUP-RC20-OC15, security review of PR
+# #461, M1).
+# Version 4.25.0 puts Idempotency-Kept: 1 on each answer to a create or a patch with a key when the service has the
+# idempotency component, and describes the header on each response of such a create and patch and of each command
+# (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
+# Version 4.26.0 marks the root of a command response x-stego-opaque when the message holds a google.protobuf.Any,
+# Struct, Value or ListValue member at any depth; the mark asks no key ring (ST-SUP-RC20-OC54, ST-SUP-Q194 (a)).
+# Version 4.27.0 refuses each member of a create, an update or an upsert body that is not kind, id, href or a field of
+# the entity, in its exact letter case, with a 400 validation problem that names the member; refuses an implicit field
+# with another value than that of the collection; and closes the create-request and update-request schemas of the
+# OpenAPI document with additionalProperties: false, with the members that the server sets marked x-output-only and the
+# members that a body may only repeat marked x-kept (ST-SUP-RC20-OC55, ST-SUP-RC20-OC20, ST-SUP-RC20-OC23,
+# ST-SUP-RC20-OC35, ST-SUP-RC20-OC47, decision ST-SUP-Q195).
+# Version 4.28.0 gives the Idempotency-Key header parameter, not required, and the 422 response on each create and
+# patch of the OpenAPI document when the idempotency component is not active, since the handler keeps the key that a
+# request gives (ST-SUP-RC20-OC56).
+# Version 4.31.0 does not require, in the create-request schema, a field with a declared default, which a create that
+# leaves it out stores (ST-SUP-RC20-OC47; walkthrough 18, step 38), and answers a create or a patch whose
+# Idempotency-Key header is not one structured string of 1 to 255 characters with the problem type
+# idempotency-key-invalid, which the OpenAPI document gives on the 400 answer with idempotency-key-missing
+# (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
 kind: component
 name: rest-api
-version: 4.15.0
+version: 4.31.0
 stage: ga
 output_namespace: internal/api
 

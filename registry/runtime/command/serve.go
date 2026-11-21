@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -26,6 +28,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
@@ -113,7 +117,34 @@ func (s ServeSpec[Req, Res, P]) check(rt *Runtime) error {
 		s.Resource == nil || s.SubjectType == "" || s.Status < 200 || s.Status > 299 {
 		return errors.New("command: Serve needs the runtime, the command, the subject type, a 2xx status, the messages, the resource and the fill")
 	}
+	// A message member that the proto marks debug_redact is a secret: without the key ring, keyed would store its
+	// fingerprint and its answer in clear (ST-SUP-RP14-LC12, security review of PR #460, L4).
+	if rt.cfg.Ring == nil && (holdsSecret(s.NewRequest().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{}) ||
+		holdsSecret(s.NewResponse().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{})) {
+		return fmt.Errorf("command: the command %s has a message member marked debug_redact, and the runtime has no key ring", s.Command.spec.Name)
+	}
 	return nil
+}
+
+// holdsSecret tells whether the message m, or a message of one of its members at any depth, has a member that its
+// proto file marks with the standard field option debug_redact = true (ST-SUP-RP14-LC12).
+func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if options, ok := f.Options().(*descriptorpb.FieldOptions); ok && options.GetDebugRedact() {
+			return true
+		}
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f.Message() != nil && holdsSecret(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // Outcome is how a command handler answers an error of Run (ST-SUP-RP10-LC34): the HTTP status, the fixed code and
@@ -142,15 +173,73 @@ const ErrorCodeInvalid = "invalid"
 // ErrorCodeUnavailable is the fixed code of a command that ErrUnavailable ended: the database could not serve now.
 const ErrorCodeUnavailable = "unavailable"
 
+// ErrorCodeNotFound is the fixed code of a command whose fill returned ErrNotFound, the error of its handle for a row
+// that is not there or that the caller may not read (ST-SUP-RP10-LC51).
+const ErrorCodeNotFound = "not_found"
+
+// fillFault is the error of a fill that failed with no log line of ST-SUP-RP10-LC39 that names its cause: the
+// command's name and the error, which OutcomeOf logs with its fixed cause class when it answers 500
+// (ST-SUP-RP10-LC51). It unwraps to the error, so each match of OutcomeOf sees the error of the fill.
+type fillFault struct {
+	err    error
+	action string
+}
+
+func (f *fillFault) Error() string { return f.err.Error() }
+func (f *fillFault) Unwrap() error { return f.err }
+
+// The fixed cause classes of the log line command.fill.failed (ST-SUP-RP10-LC51).
+const (
+	fillCauseError    = "fill_error"
+	fillCauseClosed   = "closed"
+	fillCauseInternal = "internal"
+	fillCauseSealed   = "sealed"
+	fillCausePanic    = "panic"
+	fillCauseDeadline = "deadline"
+)
+
+// fillCause gives the fixed cause class of the error of a fill that ends with 500, and never its text.
+func fillCause(err error) string {
+	switch {
+	case errors.Is(err, errPanic):
+		return fillCausePanic
+	case errors.Is(err, errDeadline) || errors.Is(err, context.DeadlineExceeded):
+		return fillCauseDeadline
+	case sealedFault(err):
+		return fillCauseSealed
+	case errors.Is(err, ErrClosed):
+		return fillCauseClosed
+	case errors.Is(err, ErrInternal):
+		return fillCauseInternal
+	}
+	return fillCauseError
+}
+
+// fillLog holds back the line command.fill.failed to one line for each command and cause class in each
+// authz.LogEvery, with the number of lines that it held back.
+var fillLog = authz.NewCauseLog(nil)
+
+// log writes the one error line command.fill.failed of a fill that ends with 500: the command's name and the fixed
+// cause class, and no error text and no value of a row or of the request (ST-SUP-RP10-LC51).
+func (f *fillFault) log() {
+	cause := fillCause(f.err)
+	if ok, held := fillLog.Allow(f.action + "/" + cause); ok {
+		slog.Error("command.fill.failed", "action", f.action, "cause", cause, "held_back", held)
+	}
+}
+
 // OutcomeOf maps an error of Run to its answer (ST-SUP-RP10-LC33, ST-SUP-RP10-LC34): a declared refusal among
 // refusals is its status and code; ErrDenied is 404 denied, the same answer as a missing row of a read
-// (ST-SUP-RP11-LC06); ErrInvalid is 400 invalid with the field it names (ST-SUP-Q118); a conflict after the last
-// attempt is 409 conflict; a decision that the provider could not make now (authz.Transient) is 503 undecided, which
-// the handler answers with Retry-After (ST-SUP-Q140); ErrUnavailable, a database that cannot serve now, is 503
-// unavailable with Retry-After; a COMMIT whose outcome is not known and
-// every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal that is not
-// one of refusals is an other error. No error text reaches the answer, the audit row or the log. Serve uses it, and
-// so does a handler that decodes its own body, such as the handlers of generated CRUD.
+// (ST-SUP-RP11-LC06); ErrNotFound that a fill returns is 404 not_found with the audit outcome failed, the same for a
+// row that is not there and one that the caller may not read (ST-SUP-RP10-LC51); ErrInvalid is 400 invalid with the
+// field it names (ST-SUP-Q118); a conflict after the last attempt is 409 conflict; a decision that the provider could
+// not make now (authz.Transient) is 503 undecided, which the handler answers with Retry-After (ST-SUP-Q140);
+// ErrUnavailable, a database that cannot serve now, is 503 unavailable with Retry-After. ErrDenied or ErrNotFound
+// that also holds one of these two causes is that 503, so that the caller tries again. A COMMIT whose outcome is
+// not known and every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal
+// that is not one of refusals is an other error. A 500 of a fill whose cause no log line names writes the line
+// command.fill.failed with its cause class (ST-SUP-RP10-LC51). No error text reaches the answer, the audit row or the
+// log. Serve uses it, and so does a handler that decodes its own body, such as the handlers of generated CRUD.
 func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	var refused *Refusal
 	if errors.As(err, &refused) {
@@ -160,8 +249,15 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 			}
 		}
 	}
-	if errors.Is(err, ErrDenied) {
+	if errors.Is(err, ErrDenied) && !unavailableNow(err) {
+		// A denial that also holds a cause of a 503 answer is 503, the same answer as ErrNotFound with that cause
+		// (security review of PR 449, INFO-1).
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
+	}
+	if errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInternal) && !errors.Is(err, ErrConflict) && !unavailableNow(err) {
+		// A fill that returns the not-found error of its handle: a row that is not there and a row that the caller
+		// may not read give the same answer (ST-SUP-RP10-LC13, ST-SUP-RP10-LC51).
+		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
 	}
 	var invalid *invalidError
 	if errors.As(err, &invalid) {
@@ -187,7 +283,19 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 		// (walkthrough 10, B7).
 		return Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
 	}
+	var fault *fillFault
+	if code == ErrorCodeInternal && errors.As(err, &fault) {
+		fault.log()
+	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
+}
+
+// unavailableNow tells whether the error holds a cause of a 503 answer of OutcomeOf: a decision that the provider could
+// not make now, or a database that cannot serve now. An error that holds such a cause and ErrNotFound or ErrDenied
+// too is answered 503, so that the caller tries again, and not 404 (security review of PR 448, I2; of PR 449,
+// INFO-1).
+func unavailableNow(err error) bool {
+	return ErrorCode(err) == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err) || errors.Is(err, ErrUnavailable))
 }
 
 // RPCStatus is the gRPC status of the outcome: the code of its HTTP status, and its fixed code as the message. An
@@ -289,8 +397,8 @@ func serveRun[Req, Res proto.Message, P any](ctx context.Context, rt *Runtime, s
 
 // Serve gives the HTTP handler of one command (ST-SUP-RP10-LC33). It binds the verified tenant and principal before
 // any transaction (401 when it cannot), reads the Idempotency-Key header (400 when it is required and missing or
-// malformed), decodes the body with protojson and the path parameters into the request message (400), and runs the
-// one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
+// malformed) and marks each later answer to a request with a key Idempotency-Kept: 1 (ST-SUP-RC32-OC27), decodes the
+// body with protojson and the path parameters into the request message (400), and runs the one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
 // refusal with its status and code, ErrConflict with 409 conflict, and ErrCommitUnknown and any other error with 500
 // internal; it writes the outcome audit row of a denied or failed command, and a problem response with a fixed
 // title, the status and the fixed code only.
@@ -312,8 +420,14 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		}
 		key, err := idempotency.KeyFrom(r.Header, s.KeyRequired)
 		if err != nil {
-			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.Problem(err)), "")
 			return
+		}
+		if key != "" {
+			// The command keeps the key (ST-SUP-RP10-LC11): each answer from here on tells it, also a problem and a
+			// 5xx answer, so a client of another release knows that a second request with the key is safe
+			// (ST-SUP-RC32-OC27).
+			w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 		if err != nil {
@@ -388,7 +502,7 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 		md, _ := metadata.FromIncomingContext(ctx)
 		key, err := idempotency.KeyFrom(http.Header{idempotency.KeyHeader: md.Get(RPCKeyMetadata)}, s.KeyRequired)
 		if err != nil {
-			return none, status.Error(codes.InvalidArgument, idempotency.ProblemMissing)
+			return none, status.Error(codes.InvalidArgument, idempotency.Problem(err))
 		}
 		// The body that Run decodes is the deterministic binary form of the message, and the fingerprint is over the
 		// canonical JSON form of protojson, which Fingerprint makes, so one message gives one fingerprint.
@@ -588,6 +702,7 @@ func (rt *Runtime) writeFieldProblem(w http.ResponseWriter, httpStatus int, prob
 	}
 	b.WriteString("}")
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, b.String())
@@ -612,6 +727,28 @@ func NewID() string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// The sizes of a token that NewToken gives, in bytes: at least 128 bits, so that no one can guess it, and at most 512.
+const (
+	MinTokenSize = 16
+	MaxTokenSize = 64
+)
+
+// NewToken gives size new random bytes from crypto/rand, for a secret that a command or a worker fill issues, such
+// as an API key or a one-time code (ST-SUP-RP10-LC56). The fill allow list keeps crypto/rand out, so NewToken and
+// NewID are the only sources of randomness of a fill. It refuses a size under MinTokenSize or over MaxTokenSize with
+// an error and no bytes. The fill encodes the bytes, such as with encoding/base64, and gives the secret only in a
+// member of the response message that the proto file marks debug_redact (ST-SUP-Q192).
+func NewToken(size int) ([]byte, error) {
+	if size < MinTokenSize || size > MaxTokenSize {
+		return nil, fmt.Errorf("a token has %d to %d bytes, not %d", MinTokenSize, MaxTokenSize, size)
+	}
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return b, nil
 }
 
 // ValidUUID tells whether id is a UUID in its text form, the key type of every entity.

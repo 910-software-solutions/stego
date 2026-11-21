@@ -42,9 +42,16 @@ type MigrationFunc func(ctx context.Context, tx *sql.Tx) error
 // checks and runs, each statement in its own short transaction outside the
 // transaction of the ledger row (applyContract, ST-SUP-RC01-OC24,
 // ST-SUP-RC01-OC39).
+//
+// Earlier are the digests of bodies that earlier versions of the adapter
+// wrote for the same migration, with the text of the seal checkpoints in
+// them, which now runs outside each body (RegisterSealCheckpoints): the
+// ledger accepts a row with one of them as well as Digest
+// (ST-SUP-RC01-OC51).
 type Migration struct {
 	Name             string
 	Digest           string
+	Earlier          []string
 	Func             MigrationFunc
 	Step             bool
 	CompatibleWith   []string
@@ -156,6 +163,82 @@ func RegisterStep(name, body string, compatibleWith ...string) {
 		_, err := tx.ExecContext(ctx, body)
 		return err
 	}})
+}
+
+// RegisterSealStep adds the SQL migration of the expand step of the seal change
+// change, as RegisterStep does. In the same transaction, after the body and
+// outside its digest, it runs the seal checkpoints (applySealCheckpoints),
+// records the row of the change as seen in this database instance, as the
+// default of the column did when the body held the functions, and makes the
+// row of the lease stego.backfill.<change> of the seal job when the lease
+// table is there, so a database that the job of a later release takes past
+// the step, such as a restore of a backup from before it, has the lease that
+// the seal job holds (ST-SUP-RC01-OC49; walkthrough 14, W14-B7). The
+// migration job of a release with the seal open makes it too.
+func RegisterSealStep(name, body, change string) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, StatementTimeout: stepStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, body); err != nil {
+			return err
+		}
+		if err := applySealCheckpoints(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE stego_schema.seals SET armed_in = stego_schema.seal_instance() WHERE change_id = $1 AND armed_in IS NULL AND pass_started IS NULL", change); err != nil {
+			return err
+		}
+		var leases bool
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('public.leases') IS NOT NULL").Scan(&leases); err != nil || !leases {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO public.leases (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", "stego.backfill."+change)
+		return err
+	}})
+}
+
+// sealCheckpoints is the text of the functions of the seal checkpoints, their
+// grants and release_stop, which RegisterSealCheckpoints sets, or empty.
+var sealCheckpoints string
+
+// RegisterSealCheckpoints sets the text of the functions of the seal
+// checkpoints of a service whose schema history holds a seal
+// (ST-SUP-RC01-OC49). The text is in no migration body and no digest: each
+// statement runs again with no error, and the migration job runs it after
+// each migration that it applies, in the transaction of that migration, once
+// at its start before the first pending migration (refreshSealCheckpoints)
+// and once at its end (applySealCheckpoints), as a repeatable migration of Flyway
+// or a change set with runOnChange of Liquibase. So a new version of the
+// functions takes effect on a database whose expand migration ran with an
+// older one, and a step whose body makes release_stop again cannot leave the
+// release_stop that deletes the report of a release before an open seal.
+func RegisterSealCheckpoints(text string) {
+	sealCheckpoints = text
+}
+
+// applySealCheckpoints runs sealCheckpoints in tx when the table of the seal
+// checkpoints and the table of the release reports are there, and does
+// nothing else.
+func applySealCheckpoints(ctx context.Context, tx *sql.Tx) error {
+	if sealCheckpoints == "" {
+		return nil
+	}
+	var there bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.seals') IS NOT NULL AND pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&there); err != nil || !there {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, sealCheckpoints)
+	return err
+}
+
+// RegisterEarlierDigests adds digests to the earlier digests of the registered
+// migration name, which the ledger accepts as well as the digest of its body:
+// the digests of the bodies that earlier versions of the adapter wrote for it,
+// with the text of the seal checkpoints in them (ST-SUP-RC01-OC51).
+func RegisterEarlierDigests(name string, digests ...string) {
+	for i := range migrations {
+		if migrations[i].Name == name {
+			migrations[i].Earlier = append(migrations[i].Earlier, digests...)
+		}
+	}
 }
 
 // ValidateConstraint is one constraint that a validate migration validates:
@@ -317,6 +400,9 @@ func Migrate(ctx context.Context, db Database) error {
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
 			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("migration %s: the seal checkpoints: %w", m.Name, err)
+			}
 			if err := recordMigration(ctx, tx, m); err != nil {
 				return err
 			}
@@ -384,6 +470,30 @@ func orderedMigrations() []Migration {
 	copy(ordered, migrations)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
 	return ordered
+}
+
+// MigrationDigests gives the ledger digest of each migration of this release
+// by name, which the service runtime compares with the ledger at each start
+// (ST-SUP-RP14-LC13).
+func MigrationDigests() map[string]string {
+	digests := map[string]string{}
+	for _, m := range orderedMigrations() {
+		digests[m.Name] = m.Digest
+	}
+	return digests
+}
+
+// EarlierMigrationDigests gives the earlier digests of each migration that
+// has them by name (Migration.Earlier), which the service runtime accepts at
+// each start as well as MigrationDigests (ST-SUP-RP14-LC13).
+func EarlierMigrationDigests() map[string][]string {
+	digests := map[string][]string{}
+	for _, m := range orderedMigrations() {
+		if len(m.Earlier) > 0 {
+			digests[m.Name] = append([]string{}, m.Earlier...)
+		}
+	}
+	return digests
 }
 
 // recordMigration writes the ledger row of one migration in its transaction,
@@ -493,12 +603,38 @@ func checkLedger(applied, registered []Migration) error {
 			}
 			continue
 		}
-		if row.Name != registered[i].Name || row.Digest != registered[i].Digest {
+		if row.Name != registered[i].Name {
 			return ErrMigrationLedger
+		}
+		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
+			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
+				"the body of an applied migration never changes, so a change comes as a new schema step. Deploy the release that applied it, "+
+				"or a release that keeps its body and brings the change in a new schema step; the job changed nothing, and nothing repairs the digest (ST-SUP-RC01-OC51)",
+				row.Name, row.Digest, registered[i].Digest)}
 		}
 	}
 	return nil
 }
+
+// earlierDigest tells whether digest is one of the earlier digests of m.
+func earlierDigest(m Migration, digest string) bool {
+	for _, d := range m.Earlier {
+		if d == digest {
+			return true
+		}
+	}
+	return false
+}
+
+// digestRefusal is the refusal of a ledger row whose digest is not the body
+// digest of the registered migration of the same name: its text names the
+// migration, the two digests and the remedy, and no part of a body, so the
+// migration job may log it (Refusal). It matches ErrMigrationLedger.
+type digestRefusal struct{ text string }
+
+func (r *digestRefusal) Error() string        { return r.text }
+func (r *digestRefusal) Refusal() string      { return r.text }
+func (r *digestRefusal) Is(target error) bool { return target == ErrMigrationLedger }
 
 // applyPending applies the migrations after the recorded history, one
 // transaction each, at read committed whatever the default isolation of the
@@ -512,6 +648,9 @@ func checkLedger(applied, registered []Migration) error {
 // (ST-SUP-RC01-OC22). The build of an index of a step runs outside a
 // transaction (applyIndex).
 func applyPending(ctx context.Context, db Database, ordered []Migration) error {
+	if err := refreshSealCheckpoints(ctx, db, ordered); err != nil {
+		return err
+	}
 	tries := 0
 	for {
 		done := false
@@ -532,6 +671,18 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			}
 			if len(applied) >= len(ordered) {
 				done = true
+				// The seal checkpoints run once more at the end of each job, so a
+				// database whose migrations an earlier release applied gets the
+				// functions of this release (RegisterSealCheckpoints).
+				if sealCheckpoints == "" {
+					return nil
+				}
+				if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, stepStatementTimeout); err != nil {
+					return err
+				}
+				if err := applySealCheckpoints(ctx, tx); err != nil {
+					return fmt.Errorf("the seal checkpoints: %w", err)
+				}
 				return nil
 			}
 			m := ordered[len(applied)]
@@ -546,6 +697,9 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			}
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
+			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("migration %s: the seal checkpoints: %w", m.Name, err)
 			}
 			return recordMigration(ctx, tx, m)
 		})
@@ -567,6 +721,49 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 		tries = 0
 		if done {
 			return nil
+		}
+	}
+}
+
+// refreshSealCheckpoints runs the seal checkpoints once at the start of the
+// job, in a transaction of its own under the ledger lock, after the ledger
+// check and the marker, and before the first pending migration: so the check
+// of a seal contract step, which runs before any migration of this job, reads
+// the functions of this release also on a database where an earlier release
+// applied the expand step (security review of PR #472, L1). On a lock timeout
+// it tries again as applyPending does.
+func refreshSealCheckpoints(ctx context.Context, db Database, ordered []Migration) error {
+	if sealCheckpoints == "" {
+		return nil
+	}
+	for tries := 1; ; tries++ {
+		err := inTransaction(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+			if err := lockLedger(ctx, tx); err != nil {
+				return err
+			}
+			applied, err := appliedMigrations(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if err := checkLedger(applied, ordered); err != nil {
+				return err
+			}
+			if err := refreshMarker(ctx, tx); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, stepStatementTimeout); err != nil {
+				return err
+			}
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("the seal checkpoints: %w", err)
+			}
+			return nil
+		})
+		if err == nil || !lockTimedOut(err) || tries >= stepAttempts {
+			return err
+		}
+		if err := pause(ctx, tries); err != nil {
+			return err
 		}
 	}
 }
@@ -990,8 +1187,13 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 // reported itself within its window after the start of that pass, since such a
 // release writes the clear column alone and its write would be lost with the
 // column (ST-SUP-RP09-LC15), no row of a listed tenant may have a clear value
-// and no sealed value, and no release before may run (runningReleases). When
-// the clear column is gone, a run before dropped it and the check passes.
+// and no sealed value, and no release before may run (runningReleases). The
+// pass must also have started in this database instance (seal_instance: the
+// database, the start of its server and the table of the checkpoints), so a
+// completed pass that a restore brings, or that ran before a restart of the
+// server, does not count until the seal job completes a new pass (security
+// review of PR #471, L3). When the clear column is gone, a run before dropped
+// it and the check passes.
 func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) error {
 	var there bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)", table, c.From).Scan(&there); err != nil {
@@ -1006,8 +1208,17 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 	}
 	state := "the seal checkpoint of the change is not there"
 	if seals {
-		var complete, stale bool
-		err := tx.QueryRowContext(ctx, "SELECT s.completed_at IS NOT NULL, EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < s.expand COLLATE \"C\" AND r.seen_at + r.every_ms * $2::integer * interval '1 millisecond' > s.pass_started) FROM stego_schema.seals s WHERE s.change_id = $1", c.Change, releaseWindow).Scan(&complete, &stale)
+		// A checkpoint with no record of the database instance where the seal job saw it counts as not seen here.
+		var instance bool
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regprocedure('stego_schema.seal_instance()') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in' AND a.attnum > 0 AND NOT a.attisdropped)").Scan(&instance); err != nil {
+			return err
+		}
+		seen := "false"
+		if instance {
+			seen = "s.armed_in IS NOT DISTINCT FROM stego_schema.seal_instance()"
+		}
+		var complete, stale, here bool
+		err := tx.QueryRowContext(ctx, "SELECT s.completed_at IS NOT NULL, EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < s.expand COLLATE \"C\" AND r.seen_at + r.every_ms * $2::integer * interval '1 millisecond' > s.pass_started), "+seen+" FROM stego_schema.seals s WHERE s.change_id = $1", c.Change, releaseWindow).Scan(&complete, &stale, &here)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -1016,19 +1227,21 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 			state = "the seal job of the controller has not completed a pass over the rows"
 		case stale:
 			state = "a release before the step ran after the start of the last pass of the seal job, so a sealed value can be older than its clear value"
+		case !here:
+			state = "the last pass of the seal job did not run in this database instance, as after a restore or a restart of the database server, so a release before can have written a clear value after it"
 		default:
 			state = ""
 		}
 	}
 	if state != "" {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, state, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, state, c.Expand)}
 	}
 	left, err := rowsLeft(ctx, tx, c)
 	if err != nil {
 		return err
 	}
 	if left > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, left, c.Expand)}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the migration job of the release of the expand step %s and then that release, with its controller, until the seal job completes a pass. When that release was built with a postgres-adapter before 6.21.0, build it again with postgres-adapter 6.21.0 and the runtime v0.172.0 or later and deploy it first, because the first release built with 6.21.0 must not hold the contract step of a seal", c.Change, left, c.Expand)}
 	}
 	return runningReleases(ctx, tx, c)
 }

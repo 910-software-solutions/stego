@@ -1,9 +1,50 @@
+# Version 1.12.0 makes the definitions of the commands and the apply resources from the OpenAPI document of the
+# service when the declaration gives no factory_package (ST-SUP-RC04-OC32).
+# Version 1.13.0 makes a command Sensitive, so it writes its answer only to --output-file, when a success answer of
+# its operation holds a member marked x-sensitive (ST-SUP-RC04-OC33, ST-SUP-Q192).
+# It gives each secret request member, which has no flag, as a body field that --body FILE gives (ST-SUP-RC04-OC32).
+# Version 1.15.0 refuses --output-file - for a Sensitive command, and refuses a --body FILE that holds a secret body
+# field when the group or other users have access to it (security review of PR #460, I1 and L3).
+# Version 1.16.0 leaves out of the patch of apply each create-only field whose value is the stored one, and refuses
+# another value before any write, so an apply of the same documents again succeeds (ST-SUP-RC04-OC35). It gives no
+# flag for the member kind of a patch request or for a member marked x-kept, which a patch cannot change.
+# Version 1.17.0 sends a write again after a 5xx answer only when the answer carries Idempotency-Kept: 1, ends with
+# an error that the write can have been done after a 5xx answer with no header, warns on standard error when a 2xx
+# answer of a write whose key the definition states kept has no header (ST-SUP-RC04-OC34, ST-SUP-Q193 (a)), and
+# refuses a token file, a configuration file and a --body FILE that holds a secret body field when another user owns
+# it (security review of PR #462, L3).
+# Version 1.18.0 makes a command Sensitive when its answer is marked x-stego-opaque (ST-SUP-RC04-OC33, ST-SUP-Q194 (a)).
+# Version 1.20.0 states APPLY_CONFIG as read by the client alone (read_by_client): the CLI reads it, and no process
+# of the service does, so the platform requirements and the Kubernetes base no longer list it (walkthrough 17, W17-D2).
+# Version 1.21.0 gives no flag for a member of a create or an update request marked x-output-only, which the server
+# sets (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
+# Version 1.22.0 makes the definitions of a service with no rest-api component, such as an rpc-service, from the
+# document of its command and query routes that the command component writes (ST-SUP-RC04-OC32, ST-SUP-Q198 (a)).
+# Version 1.24.0 names the field, the kind and the name of a document when apply refuses a missing required field
+# (ST-SUP-RC04-OC23); gives the last segment of the problem type and at most five failed fields of a problem answer
+# as printable text of at most 120 characters (ST-SUP-RC04-OC11); and reports unchanged, with no patch, when each field
+# of the patch of a found resource has the stored value (ST-SUP-RC04-OC35). Walkthrough 18.
+# Version 1.25.0 looks a resource up again after a create that 409 refuses, and warns in apply --help that two
+# clients can make two resources of one new name when the service does not hold the name unique (ST-SUP-RC04-OC36); keeps the Authz-Revocation-Location of the last write in the configuration and sends it in
+# Authz-Revocation-After on each apply lookup (ST-SUP-RC04-OC37); sends If-Match with the read generation when the
+# patch takes it (ConditionalPatch, ST-SUP-RC04-OC38); and quotes each problem entry (ST-SUP-RC04-OC11). Security
+# review of PR #473, L1, L2 and I2.
 kind: component
 name: cli-application
+# Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
+# (IdempotentWrites of Command and of ApplyResource, which IdempotentWritesFrom sets from the OpenAPI document of the
+# service), not with one flag of the application; it sends a write again only after a transport failure, an expired
+# request or a 5xx answer, not after a local refusal, a redirect or an answer body over the limit; and its client
+# refuses the key on a method other than POST and PATCH (security review of PR #447, L-2, I-2 and I-3). The field
+# IdempotentWrites of Application, from 1.10.0, which no release had, is removed.
+# Version 1.10.0 sends a new Idempotency-Key with each POST and PATCH, and sends an uncertain write again one time
+# with the same key when the application states that its service keeps the key (ST-SUP-RC04-OC31, ST-SUP-Q187).
+# It also gives one apply lookup a time limit of 60 s for all its pages, and refuses a list whose total at its end
+# is larger than the values found (security review of PR #445, L-1 and I-1).
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.9.0
+version: 1.25.0
 stage: ga
 output_namespace: cli
 config:
@@ -26,6 +67,7 @@ environment:
   - name: APPLY_CONFIG
     type: path
     required: false
-    description: "The file of the configuration of the apply command. When it has no value, the CLI uses apply/config.json in the configuration folder of the user."
+    description: "The file of the configuration of the generated CLI. When it has no value, the CLI uses <service>/config.json in the configuration folder of the user."
     secret: false
+    read_by_client: true
     example: "/home/user/.config/apply/config.json"

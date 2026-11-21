@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"github.com/jsell-rh/stego/internal/gen"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,9 @@ var optionTests []byte
 
 //go:embed testdata/key_test.go
 var keyTests []byte
+
+//go:embed testdata/trust_test.go
+var trustTests []byte
 
 func TestStreamRequestIsolation(t *testing.T) { testStreams(t, false) }
 func TestStreamLimitOptions(t *testing.T)     { testStreams(t, true) }
@@ -54,18 +58,26 @@ func testStreams(t *testing.T, options bool) {
 }
 
 func TestIdempotencyKeyClients(t *testing.T) {
-	t.Run("ST-SUP-RC02-OC07-T02 Only the client of the API proxy sends Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
-		for _, proxy := range []bool{false, true} {
-			file, err := Render("client", "", FollowLinks)
-			if proxy {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy, of the CLI and of the Go SDK send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
+		for _, kind := range []string{"other", "proxy", "cli", "sdk"} {
+			var file gen.File
+			var err error
+			switch kind {
+			case "other":
+				file, err = Render("client", "", FollowLinks)
+			case "proxy":
 				file, err = RenderProxy("client", "", 0, FollowLinks)
+			case "cli":
+				file, err = RenderCLI("client", "")
+			case "sdk":
+				file, err = RenderSDK("client", "")
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			dir := t.TempDir()
 			files := map[string][]byte{"go.mod": []byte("module example.com/key-test\ngo 1.26.11\n"), "client.go": file.Bytes(), "isolation_test.go": isolationTests,
-				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst proxyClient = %t\n", proxy))}
+				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\nconst keyWritesOnly = %t\n", kind != "other", kind == "cli" || kind == "sdk"))}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
 					t.Fatal(err)
@@ -75,10 +87,51 @@ func TestIdempotencyKeyClients(t *testing.T) {
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(), "GOWORK=off")
 			if output, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("proxy client %t: %v\n%s", proxy, err, output)
+				t.Fatalf("the %s client: %v\n%s", kind, err, output)
 			}
 		}
 	})
+}
+
+func TestUntrustedServiceCertificate(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T03 A refused service certificate is ErrUntrusted and not a transport failure, so the CLI does not send a write again", func(t *testing.T) {
+		runTrustTest(t, "TestUntrustedServiceCertificate")
+	})
+}
+
+func TestServiceTLSAlert(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T04 A TLS alert from the service is ErrUntrusted and not a transport failure, so the CLI does not send a write again", func(t *testing.T) {
+		runTrustTest(t, "TestServiceTLSAlert")
+	})
+}
+
+func TestServiceTLSAlertReused(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T05 A TLS alert on a reused connection, or one that is not a handshake or certificate alert, is ErrTransport, so the CLI does not tell a write not done", func(t *testing.T) {
+		runTrustTest(t, "TestServiceTLSAlertReused")
+	})
+}
+
+// runTrustTest runs the test name of testdata/trust_test.go in a module that holds the client of RenderCLI.
+func runTrustTest(t *testing.T, name string) {
+	t.Helper()
+	file, err := RenderCLI("client", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	files := map[string][]byte{"go.mod": []byte("module example.com/trust-test\ngo 1.26.11\n"), "client.go": file.Bytes(),
+		"isolation_test.go": isolationTests, "trust_test.go": trustTests}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^"+name+"$", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the CLI client: %v\n%s", err, output)
+	}
 }
 
 func TestCredentialLinkPolicy(t *testing.T) {

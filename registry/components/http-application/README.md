@@ -72,6 +72,19 @@ A pin cannot replace CA trust. `New` copies the pin; a caller cannot change it
 after the client starts. Recreate the client when the expected certificate
 changes. The client refuses an all-zero pin.
 
+The client gives `ErrUntrusted` when the TLS handshake refuses the
+certificate of the service: a CA that does not sign the chain, another host
+name, an expired certificate, or a leaf that differs from the pin. The request
+was not sent. The client also gives `ErrUntrusted` for a handshake or
+certificate alert from the service on a new connection, such as when the
+service requires a client certificate that the client does not give: the
+service refuses the TLS session before it reads the request. In these cases
+the service did not do the request. Each other TLS alert, and each alert on a
+connection that the client used before, gives `ErrTransport`, because it can
+come after the service read the request. `ErrUntrusted` does not match
+`ErrTransport`, so a caller that sends a write again after a transport failure
+does not send it again.
+
 Version 2.0.0 passes the application factory the verifier alone:
 `New(verifier *auth.Verifier) (http.Handler, error)`. The factory gets no
 repository, no transactor, no resource locker and no database handle, so

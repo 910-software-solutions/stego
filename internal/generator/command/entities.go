@@ -284,7 +284,8 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 			p.deep = true
 		}
 		switch f.Sensitivity {
-		case "", "none":
+		// A field written public is a field with no sensitivity (decision ST-DECL-Q46 (a)).
+		case "", "none", "public":
 		case "pii":
 			p.pii = true
 		case "secret":
@@ -415,6 +416,105 @@ func (f *entityField) columns() []string {
 // sealing tells whether the field is a readable secret whose seal step is open: a write sets its clear and its
 // sealed column, and a read resolves the two (ST-SUP-RP10-LC49).
 func (f *entityField) sealing() bool { return f.sealed && f.decl.SealedFrom != "" }
+
+// afterSeal gives the entity as the contract step of each of its open seals leaves it: each readable secret whose
+// seal step is open has its sealed column alone. It gives nil for an entity with no open seal. The runtime takes its
+// statements, its scan and its values when the contract has dropped the clear columns (ST-SUP-RP10-LC49,
+// ST-SUP-RC01-OC49).
+func (e *entity) afterSeal() *entity {
+	if !slices.ContainsFunc(e.fields, (*entityField).sealing) {
+		return nil
+	}
+	out := *e
+	out.fields = make([]*entityField, len(e.fields))
+	for i, f := range e.fields {
+		copied := *f
+		copied.decl.SealedFrom = ""
+		out.fields[i] = &copied
+	}
+	return &out
+}
+
+// clearColumns gives the clear column of each readable secret of the entity whose seal step is open, in field order.
+func (e *entity) clearColumns() []string {
+	var out []string
+	for _, f := range e.fields {
+		if f.sealing() {
+			out = append(out, f.decl.SealedFrom)
+		}
+	}
+	return out
+}
+
+// renderScanValues writes Scan, which reads the columns of the statements of e, and Values, which gives the values
+// of an insert and an update of e, each indented by indent.
+func renderScanValues(w *writer, e *entity, indent string) {
+	w.f("%sScan: func(row command.Scanner) (%s, command.Meta, error) {\n%s\tvar v %s\n%s\tvar m command.Meta\n", indent, e.goName, indent, e.goName, indent)
+	targets := []string{"&v.ID"}
+	for _, f := range e.fields {
+		switch {
+		case f.sealing():
+			// The runtime reads the clear value of an open seal when the two columns differ (ST-SUP-RP10-LC49).
+			w.f("%s\tsealing%s := command.SealingAt(%q, %q, &v.ID, &v.%s)\n", indent, f.goName, e.table, f.decl.ColumnName(), f.goName)
+			targets = append(targets, "sealing"+f.goName+".Clear()", "sealing"+f.goName+".Sealed()")
+		case f.sealed:
+			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
+			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
+		default:
+			targets = append(targets, "&v."+f.goName)
+		}
+	}
+	targets = append(targets, "&m.Version", "&m.Token")
+	w.f("%s\terr := row.Scan(%s)\n%s\tm.ID = v.ID\n%s\treturn v, m, err\n%s},\n", indent, strings.Join(targets, ", "), indent, indent, indent)
+	// Values gives the ID and the field values; a new row with no ID gets a new one.
+	values := []string{"id"}
+	for _, f := range e.fields {
+		switch {
+		case f.sealing():
+			// An open seal writes the clear column too, which a release before reads (ST-SUP-RP10-LC49).
+			values = append(values, fmt.Sprintf("command.ClearOf(v.%s)", f.goName), fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.sealed:
+			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
+			// compare-only secret as its hash (ST-SUP-RP10-LC44).
+			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
+		default:
+			values = append(values, "v."+f.goName)
+		}
+	}
+	w.f("%sValues: func(v %s) []any {\n%s\tid := v.ID\n%s\tif id == \"\" {\n%s\t\tid = command.NewID()\n%s\t}\n%s\treturn []any{%s}\n%s},\n", indent, e.goName, indent, indent, indent, indent, indent, strings.Join(values, ", "), indent)
+}
+
+// renderAfterSeal writes AfterSeal of an entity with an open seal: the clear columns, the statements, the scan and the
+// values of the entity after the contract step of each open seal, which the runtime takes once the contract has
+// dropped the clear columns (ST-SUP-RP10-LC49, ST-SUP-RC01-OC49).
+func renderAfterSeal(w *writer, e *entity, tenantKey string) {
+	after := e.afterSeal()
+	if after == nil {
+		return
+	}
+	selectRow, forUpdate, forDelete, insert, update, _ := after.statements(tenantKey)
+	clearColumns := make([]string, 0, len(e.fields))
+	for _, column := range e.clearColumns() {
+		clearColumns = append(clearColumns, fmt.Sprintf("%q", column))
+	}
+	// The seal change of each clear column, in the same order: the runtime takes a clear column again only while the
+	// checkpoint row of its change is there (ST-SUP-RP10-LC49; security review of PR #459, L1).
+	var changes []string
+	for _, f := range e.fields {
+		if f.sealing() {
+			changes = append(changes, fmt.Sprintf("%q", f.decl.SealChange))
+		}
+	}
+	w.f("\t// The statements after the contract step of each open seal, which the runtime takes once the contract has\n\t// dropped the clear columns (ST-SUP-RP10-LC49).\n")
+	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n\t\tChanges: []string{%s},\n", e.goName, "public."+quote(e.table), strings.Join(clearColumns, ", "), strings.Join(changes, ", "))
+	w.f("\t\tSelect: %q,\n\t\tSelectForUpdate: %q,\n\t\tSelectForDelete: %q,\n\t\tInsert: %q,\n\t\tUpdate: %q,\n", selectRow, forUpdate, forDelete, insert, update)
+	renderScanValues(w, after, "\t\t")
+	w.f("\t},\n")
+}
 
 // patternVar is the name of the package-level variable of the compiled pattern of field f of entity e.
 func patternVar(e *entity, f *entityField) string {
@@ -628,44 +728,8 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	}
 	w.f("\tSelect: %q,\n\tSelectForUpdate: %q,\n\tSelectForDelete: %q,\n", selectRow, forUpdate, forDelete)
 	w.f("\tInsert: %q,\n\tUpdate: %q,\n\tDelete: %q,\n", insert, update, remove)
-	// Scan reads the columns of the statements.
-	w.f("\tScan: func(row command.Scanner) (%s, command.Meta, error) {\n\t\tvar v %s\n\t\tvar m command.Meta\n", e.goName, e.goName)
-	targets := []string{"&v.ID"}
-	for _, f := range e.fields {
-		switch {
-		case f.sealing():
-			// The runtime reads the clear value of an open seal when the two columns differ (ST-SUP-RP10-LC49).
-			w.f("\t\tsealing%s := command.SealingAt(%q, %q, &v.ID, &v.%s)\n", f.goName, e.table, f.decl.ColumnName(), f.goName)
-			targets = append(targets, "sealing"+f.goName+".Clear()", "sealing"+f.goName+".Sealed()")
-		case f.sealed:
-			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
-			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.compared:
-			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
-		default:
-			targets = append(targets, "&v."+f.goName)
-		}
-	}
-	targets = append(targets, "&m.Version", "&m.Token")
-	w.f("\t\terr := row.Scan(%s)\n\t\tm.ID = v.ID\n\t\treturn v, m, err\n\t},\n", strings.Join(targets, ", "))
-	// Values gives the ID and the field values; a new row with no ID gets a new one.
-	values := []string{"id"}
-	for _, f := range e.fields {
-		switch {
-		case f.sealing():
-			// An open seal writes the clear column too, which a release before reads (ST-SUP-RP10-LC49).
-			values = append(values, fmt.Sprintf("command.ClearOf(v.%s)", f.goName), fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.sealed:
-			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
-			// compare-only secret as its hash (ST-SUP-RP10-LC44).
-			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
-		case f.compared:
-			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
-		default:
-			values = append(values, "v."+f.goName)
-		}
-	}
-	w.f("\tValues: func(v %s) []any {\n\t\tid := v.ID\n\t\tif id == \"\" {\n\t\t\tid = command.NewID()\n\t\t}\n\t\treturn []any{%s}\n\t},\n", e.goName, strings.Join(values, ", "))
+	// Scan reads the columns of the statements, and Values gives the values of an insert and an update.
+	renderScanValues(w, e, "\t")
 	state := []string{`"id": v.ID`}
 	for _, f := range e.fields {
 		// No audit row holds a secret field (ST-SUP-RP10-LC44).
@@ -717,6 +781,7 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	if e.sealed {
 		w.f("\tSealed: true,\n")
 	}
+	renderAfterSeal(w, e, tenantKey)
 	renderCheck(w, e)
 	if len(e.references) > 0 {
 		w.f("\tParent: []command.Reference[%s]{\n", e.goName)
@@ -792,5 +857,40 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	}
 	w.f("}))\n\n")
 	w.f("// %sRepository gives the repository of %s of a command handle; the handle refuses an entity that its command does\n// not declare it writes.\n", e.goName, e.decl.Name)
-	w.f("func %sRepository[P any](h *command.Handle[P]) (*command.Repository[%s], error) {\n\treturn command.Repo(h, %sEntity)\n}\n\n", e.goName, e.goName, e.goName)
+	if e.resourceType == "" {
+		// A child entity has no resource type of its own: each locked read, update and delete takes the loaded value
+		// of its parent, so it keeps the repository of the runtime (ST-SUP-RC32-OC26).
+		w.f("func %sRepository[P any](h *command.Handle[P]) (*command.Repository[%s], error) {\n\treturn command.Repo(h, %sEntity)\n}\n\n", e.goName, e.goName, e.goName)
+		return
+	}
+	renderTypedRepository(w, e)
+}
+
+// renderTypedRepository writes the repository of an entity with a resource type of its own, which is not a child
+// entity (ST-SUP-RC32-OC26): the type <Entity>Repo embeds the repository of the runtime, and its GetForUpdate,
+// GetForDelete, Update and Delete take no parent, as the runtime refuses each parent of them, so a wrong parent does
+// not compile. An entity with a reference to an entity with a resource type also gets Move, the update that changes a
+// reference and takes the loaded value of each new referenced row (ST-SUP-RP10-LC05, ST-SUP-RP10-LC17).
+func renderTypedRepository(w *writer, e *entity) {
+	name, loaded := e.goName+"Repo", "command.Loaded["+e.goName+"]"
+	w.f("// %s is the repository of %s, an entity with the resource type %s of its own, which is no child entity: its\n", name, e.decl.Name, e.resourceType)
+	w.f("// locked reads, its update and its delete take no parent (ST-SUP-RC32-OC26). The methods of the runtime that it\n// does not hold are those of Repository.\n")
+	w.f("type %s struct{ *command.Repository[%s] }\n\n", name, e.goName)
+	w.f("func %sRepository[P any](h *command.Handle[P]) (*%s, error) {\n\trepo, err := command.Repo(h, %sEntity)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &%s{repo}, nil\n}\n\n", e.goName, name, e.goName, name)
+	w.f("// GetForUpdate reads the row id and locks it until the transaction ends. It takes no parent.\n")
+	w.f("func (r *%s) GetForUpdate(ctx context.Context, id string) (%s, error) {\n\treturn r.Repository.GetForUpdate(ctx, id)\n}\n\n", name, loaded)
+	w.f("// GetForDelete reads the row id and locks it for a delete or a change of a key. It takes no parent.\n")
+	w.f("func (r *%s) GetForDelete(ctx context.Context, id string) (%s, error) {\n\treturn r.Repository.GetForDelete(ctx, id)\n}\n\n", name, loaded)
+	if len(e.references) > 0 {
+		w.f("// Update writes value over the loaded row from and keeps each reference of the row. It takes no parent: an update\n// that changes a reference is Move.\n")
+	} else {
+		w.f("// Update writes value over the loaded row from. It takes no parent.\n")
+	}
+	w.f("func (r *%s) Update(ctx context.Context, from %s, value %s) (%s, error) {\n\treturn r.Repository.Update(ctx, from, value)\n}\n\n", name, loaded, e.goName, loaded)
+	w.f("// Delete deletes the loaded row from. It takes no parent.\n")
+	w.f("func (r *%s) Delete(ctx context.Context, from %s) error {\n\treturn r.Repository.Delete(ctx, from)\n}\n\n", name, loaded)
+	if len(e.references) > 0 {
+		w.f("// Move writes value over the loaded row from, where value changes a reference: parents are the loaded values of\n// the rows that the changed references name, each decided with the permission of its reference.\n")
+		w.f("func (r *%s) Move(ctx context.Context, from %s, value %s, parents ...command.Ref) (%s, error) {\n\treturn r.Repository.Update(ctx, from, value, parents...)\n}\n\n", name, loaded, e.goName, loaded)
+	}
 }

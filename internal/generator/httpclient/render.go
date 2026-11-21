@@ -30,18 +30,36 @@ const FollowLinks LinkPolicy = false
 const RefuseLinks LinkPolicy = true
 
 func Render(namespace, tracing string, links LinkPolicy) (gen.File, error) {
-	return render(namespace, tracing, 0, links, false)
+	return render(namespace, tracing, 0, links, false, false)
 }
 
 // RenderProxy renders the client of an API proxy, which sends the Idempotency-Key header that the browser gives for
-// a command. The other clients refuse that header: they do not retry, so they cannot keep its promise. A proxy does
-// not retry either; the browser that gave the key retries with it. A port that is not 0 adds the client of an
-// application in the same network namespace, as RenderLocalApplication does.
+// a command. The other clients refuse that header, except the clients of RenderCLI and RenderSDK: they do not retry,
+// so they cannot keep its promise. A proxy does not retry either; the browser that gave the key retries with it. A port that is not
+// 0 adds the client of an application in the same network namespace, as RenderLocalApplication does.
 func RenderProxy(namespace, tracing string, port int, links LinkPolicy) (gen.File, error) {
 	if port != 0 && (port < 1024 || port > 65535) {
 		return gen.File{}, fmt.Errorf("local application port must be 1024 through 65535")
 	}
-	return render(namespace, tracing, port, links, true)
+	return render(namespace, tracing, port, links, true, false)
+}
+
+// RenderCLI renders the client of the generated CLI, which sends the Idempotency-Key header that the CLI makes for
+// each write. The CLI sends a write again only with the same key (ST-SUP-RC04-OC31), so it keeps the promise of the
+// key. The client refuses the key on a request that is not a POST or a PATCH, as the service ignores it there
+// (security review of PR 447, I-3). The CLI reads its credential and CA files from paths that its user gives, so the
+// client refuses a leaf symbolic link.
+func RenderCLI(namespace, tracing string) (gen.File, error) {
+	return render(namespace, tracing, 0, RefuseLinks, true, true)
+}
+
+// RenderSDK renders the client of the generated Go SDK, which sends the Idempotency-Key header that the caller gives
+// as a parameter of a command or of a create: the route requires it (ST-SUP-RC20-OC53, ST-SUP-RC30-OC01), and the
+// caller, not the SDK, sends a write again with the same key, as the browser does through a proxy. The SDK itself
+// sends no request again (ST-SUP-RC06-OC02). As the client of the CLI, it refuses the key on a request that is not a
+// POST or a PATCH. It keeps the link behavior of Render.
+func RenderSDK(namespace, tracing string) (gen.File, error) {
+	return render(namespace, tracing, 0, FollowLinks, true, true)
 }
 
 // RenderLocalApplication adds a client for an application in the same network
@@ -51,10 +69,12 @@ func RenderLocalApplication(namespace, tracing string, port int, links LinkPolic
 	if port < 1024 || port > 65535 {
 		return gen.File{}, fmt.Errorf("local application port must be 1024 through 65535")
 	}
-	return render(namespace, tracing, port, links, false)
+	return render(namespace, tracing, port, links, false, false)
 }
 
-func render(namespace, tracing string, port int, links LinkPolicy, proxy bool) (gen.File, error) {
+// keyHeader lets the client send the Idempotency-Key header, and keyWritesOnly lets it send the header only on a POST
+// and a PATCH.
+func render(namespace, tracing string, port int, links LinkPolicy, keyHeader, keyWritesOnly bool) (gen.File, error) {
 	if err := gen.ValidatePath(namespace); err != nil {
 		return gen.File{}, err
 	}
@@ -73,9 +93,9 @@ func render(namespace, tracing string, port int, links LinkPolicy, proxy bool) (
 	}
 	var output bytes.Buffer
 	data := struct {
-		Package, Tracing, LocalAddress string
-		RefuseLinks, Proxy             bool
-	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), proxy}
+		Package, Tracing, LocalAddress        string
+		RefuseLinks, KeyHeader, KeyWritesOnly bool
+	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), keyHeader, keyWritesOnly}
 	if err = t.Execute(&output, data); err != nil {
 		return gen.File{}, err
 	}

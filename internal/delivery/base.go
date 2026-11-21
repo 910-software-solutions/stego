@@ -102,8 +102,10 @@ const APIMode = "api"
 // modes with the option --mode in its args, so it wires no entry of this variable.
 const ModeVariable = "STEGO_MODE"
 
-// WorkerReadiness is the readiness probe of the Deployment that runs only the worker and controller modes: the
-// readiness of the modes of the service runtime (ST-DLV-UC07-R03, ST-SUP-RP09-LC05).
+// WorkerReadiness is the readiness probe of each Deployment of a service on the runtime data path, which has modes:
+// the readiness of the modes of the service runtime (ST-DLV-UC07-R03, ST-SUP-RP09-LC05). The api Deployment takes
+// it too, so it is not ready while its api mode is not, such as after a start on a database that lacks a table or a
+// column of its manifest (ST-SUP-RP14-LC06; walkthrough 15, W15-B4).
 const WorkerReadiness = "/readyz/modes"
 
 // The sides of the modes of a Deployment, which give its environment entries: every mode, the api mode alone, or
@@ -416,8 +418,10 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 	}
 
 	split, backgroundOnly := modeSides(modes)
+	// A service with modes runs the service runtime, whose readiness covers each mode of the Deployment; a service
+	// with no modes keeps the readiness that health-check derives (ST-DLV-UC07-R03).
 	readiness := probes.Readiness
-	if backgroundOnly {
+	if len(modes) > 0 {
 		readiness = WorkerReadiness
 	}
 	// workload gives the container and the pod of one Deployment: its readiness, its args, its ports and its

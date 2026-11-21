@@ -39,6 +39,7 @@ const subjectType = "user"
 // The problem types of the idempotency key (ST-SUP-RC30-OC02).
 const (
 	keyMissingType = "about:blank"
+	keyInvalidType = "about:blank"
 	keyBusyType    = "about:blank"
 	keyReusedType  = "about:blank"
 )
@@ -341,15 +342,16 @@ func answerKey(w http.ResponseWriter, r *http.Request, result command.Result) {
 	handleError(w, r, problem)
 }
 
-// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one; the
-// detail of a malformed key tells that the key is an RFC 9651 string in double quotes.
+// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, with the type
+// idempotency-key-missing, or that has a malformed one, with the type idempotency-key-invalid and a detail that tells
+// that the key is an RFC 9651 string in double quotes (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
 func keyMissing(w http.ResponseWriter, r *http.Request, err error) {
-	detail := "the Idempotency-Key header is absent"
-	if errors.Is(err, idempotency.ErrKeyMalformed) {
-		detail = "the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\""
-	}
-	problem := BadRequest(detail)
+	problem := BadRequest("the Idempotency-Key header is absent")
 	problem.Type = keyMissingType
+	if errors.Is(err, idempotency.ErrKeyMalformed) {
+		problem = BadRequest("the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\"")
+		problem.Type = keyInvalidType
+	}
 	handleError(w, r, problem)
 }
 
@@ -424,6 +426,49 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// maxMemberName is the most bytes of a member name of the body that a problem repeats (security review of PR #464).
+const maxMemberName = 128
+
+// memberName gives a member name of the body as a problem repeats it: at most maxMemberName bytes, cut on a
+// character boundary.
+func memberName(name string) string {
+	if len(name) <= maxMemberName {
+		return name
+	}
+	cut := maxMemberName
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut]
+}
+
+// duplicateMember gives the first member name, after its escapes, that the top-level object of body gives more than
+// once. The JSON decoder keeps the last value of such a member, so a check of one value and a decode of another
+// could disagree: a write refuses the body (ST-SUP-RC20-OC15, ST-SUP-RC20-OC55, security review of PR #464).
+func duplicateMember(body []byte) (string, bool) {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return "", false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		name, _ := token.(string)
+		if seen[name] {
+			return name, true
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // float32Of gives the API value of an optional float field of a view: nil for NULL.
 func float32Of(v *float64) *float32 {
 	if v == nil {
@@ -460,7 +505,9 @@ func listQuery(r *http.Request) (url.Values, string) {
 // unreadParameters gives the detail of the 400 of a list request whose query string holds a parameter that the list
 // does not read, or "" when the list reads each one (ST-SUP-RC20-OC51). It names each such parameter once, in byte
 // order, at most 10 of them, each cut to at most its first 64 bytes on a character boundary, and quotes no value.
-// Two names that are the same after the cut are named once. For limit it says that pageSize sets the page size.
+// A name with no character boundary in those bytes, which is not valid UTF-8, is cut at 64 bytes, and strconv.Quote
+// escapes its bytes. Two names that are the same after the cut are named once. For limit it says that pageSize sets
+// the page size.
 func unreadParameters(parameters map[string][]string) string {
 	var names []string
 	limit := false
@@ -473,6 +520,9 @@ func unreadParameters(parameters map[string][]string) string {
 			cut := 64
 			for cut > 0 && !utf8.RuneStart(name[cut]) {
 				cut--
+			}
+			if cut == 0 {
+				cut = 64
 			}
 			name = name[:cut]
 		}

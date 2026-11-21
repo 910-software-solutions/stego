@@ -54,6 +54,8 @@ func protoSources(config map[string]any) ([]protoSource, error) {
 type messages struct {
 	plugin *protogen.Plugin
 	byName map[string]*message
+	// descriptors are the descriptors of the top-level messages, by Go name.
+	descriptors map[string]protoreflect.MessageDescriptor
 }
 
 // message is one top-level message of the command proto files.
@@ -71,6 +73,8 @@ type messageField struct {
 	// presence is true for a proto3 optional field or a member of a oneof, whose zero value is not the same as
 	// not set.
 	presence bool
+	// secret is true for a field that the proto file marks debug_redact (ST-SUP-RC20-OC54).
+	secret bool
 }
 
 // isString tells whether the field is a plain string field, which a path parameter or the resource member can be:
@@ -170,7 +174,7 @@ func compileMessages(ctx gen.Context) (*messages, error) {
 	if err != nil {
 		return nil, fmt.Errorf("command: the command messages cannot be prepared: %w", err)
 	}
-	ms := &messages{plugin: plugin, byName: map[string]*message{}}
+	ms := &messages{plugin: plugin, byName: map[string]*message{}, descriptors: map[string]protoreflect.MessageDescriptor{}}
 	for _, file := range plugin.Files {
 		if !file.Generate {
 			continue
@@ -183,13 +187,92 @@ func compileMessages(ctx gen.Context) (*messages, error) {
 			for _, f := range msg.Fields {
 				m.fields = append(m.fields, &messageField{goName: f.GoName, protoName: string(f.Desc.Name()),
 					jsonName: f.Desc.JSONName(), kind: f.Desc.Kind(), list: f.Desc.IsList() || f.Desc.IsMap(),
-					presence: f.Desc.HasOptionalKeyword() || f.Desc.ContainingOneof() != nil})
+					presence: f.Desc.HasOptionalKeyword() || f.Desc.ContainingOneof() != nil, secret: SecretMember(f.Desc)})
 			}
 			ms.byName[m.name] = m
+			ms.descriptors[m.name] = msg.Desc
 		}
 	}
 	return ms, nil
 }
+
+// MessageDescriptors compiles the proto files of the setting proto_files of the command component, which ctx gives
+// in its ComponentConfig and Inputs, and gives the descriptor of each top-level message by its Go name, such as
+// DischargePatientRequest. The rest-api component reads them to describe the request and the response of each
+// command in its OpenAPI document (ST-SUP-RC20-OC53).
+func MessageDescriptors(ctx gen.Context) (map[string]protoreflect.MessageDescriptor, error) {
+	ms, err := compileMessages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ms.descriptors, nil
+}
+
+// SecretMember tells whether the proto file marks the member f with the standard field option debug_redact = true,
+// which makes it a secret of the command message (ST-SUP-RC20-OC54, decision ST-SUP-Q192 (a)).
+func SecretMember(f protoreflect.FieldDescriptor) bool {
+	options, ok := f.Options().(*descriptorpb.FieldOptions)
+	return ok && options.GetDebugRedact()
+}
+
+// HoldsSecret tells whether the message m, or a message of one of its members at any depth, has a member that
+// SecretMember marks. A service with such a command message reads the key ring, which keys its idempotency
+// fingerprints and seals its stored answers (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12).
+func HoldsSecret(m protoreflect.MessageDescriptor) bool {
+	return holdsSecret(m, map[protoreflect.FullName]bool{})
+}
+
+func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if SecretMember(f) {
+			return true
+		}
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f.Message() != nil && holdsSecret(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// opaqueTypes are the well-known protobuf types whose JSON form has no fixed members: the fill can put any value in
+// them at run time, a secret too, and no debug_redact mark reaches it (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+var opaqueTypes = map[protoreflect.FullName]bool{"google.protobuf.Any": true, "google.protobuf.Struct": true,
+	"google.protobuf.Value": true, "google.protobuf.ListValue": true}
+
+// HoldsOpaque tells whether the message m is, or holds at any depth, a member of a type of opaqueTypes. It is a mark
+// for the clients only: it asks no key ring of the service.
+func HoldsOpaque(m protoreflect.MessageDescriptor) bool {
+	return holdsOpaque(m, map[protoreflect.FullName]bool{})
+}
+
+func holdsOpaque(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if opaqueTypes[m.FullName()] {
+		return true
+	}
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f := fields.Get(i); f.Message() != nil && holdsOpaque(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// GoName gives the Go name of a declared command or query name, as the command and query contracts name it, such
+// as DischargePatient for discharge-patient.
+func GoName(name string) string { return mixedCase(name) }
 
 // messageFiles writes the Go code of the command messages with protoc-gen-go into the contract package.
 func (m *model) messageFiles() ([]gen.File, error) {

@@ -485,3 +485,40 @@ func TestOwnRoutes(t *testing.T) {
 // passes over the schema once for each node it sets, goes far over it on the long and wide schemas of these cases.
 // The test counts the work and does not time it, so it does not fail on a slow or loaded runner.
 func reachWorkBound(text string) int { return len(text) }
+
+func TestTenantServiceRelation(t *testing.T) {
+	const inv103 = "ST-DECL-INV103-T Checking refuses a relation service of the type tenant with no provisioning or with another subject type"
+	const line = "  provisioning: {resource_type: service, provision: provision, retire: retire}\n"
+	service, schema := td03Files(t)
+	tenantOf := func(relation string) string { return schema + "\ndefinition tenant {\n\t" + relation + "\n}\n" }
+	t.Run(inv103+": the relation service of the provisioning resource type is accepted, and no relation is accepted as before", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, service, tenantOf("relation service: service")))
+		expectAccepted(t, checkTD03(t, service, tenantOf("relation auditor: user")))
+	})
+	for _, c := range []struct {
+		name, service, schema, path string
+		texts                       []string
+	}{
+		{"no tenant provisioning", change(t, service, line, "  provisioning: \n"), tenantOf("relation service: service"), "tenancy.provisioning", []string{"tenant provisioning", "service"}},
+		{"another subject type", service, tenantOf("relation service: user"), "tenancy.provisioning.resource_type", []string{"admits user", "relation service: service"}},
+		{"a second subject type", service, tenantOf("relation service: service | user"), "tenancy.provisioning.resource_type", []string{"service | user", "no other subject type"}},
+		{"a wildcard subject", service, tenantOf("relation service: service:*"), "tenancy.provisioning.resource_type", []string{"admits service:*", "no wildcard"}},
+		{"a userset subject", service, tenantOf("relation service: service#operator"), "tenancy.provisioning.resource_type", []string{"admits service#operator", "relation service: service"}},
+		{"a caveat subject", service, tenantOf("relation service: service with ip_allowed"), "tenancy.provisioning.resource_type", []string{"admits service with ip_allowed", "caveat"}},
+		{"an expiration subject", service, "use expiration\n" + tenantOf("relation service: service with expiration"), "tenancy.provisioning.resource_type", []string{"admits service with expiration", "expiration"}},
+		{"the plain subject and its wildcard", service, tenantOf("relation service: service | service:*"), "tenancy.provisioning.resource_type", []string{"service | service:*", "no wildcard"}},
+	} {
+		t.Run(inv103+": "+c.name, func(t *testing.T) {
+			var kept []ValidationError
+			for _, fault := range checkTD03(t, c.service, c.schema) {
+				if fault.Found == "tenant#service" {
+					kept = append(kept, fault)
+				}
+			}
+			fault := expectOneFault(t, kept, "tenant-provisioning", c.texts...)
+			if fault.Path != c.path {
+				t.Errorf("want the fault at %s, got %+v", c.path, fault)
+			}
+		})
+	}
+}

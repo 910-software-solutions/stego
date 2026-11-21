@@ -3,9 +3,11 @@ package command
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,10 +18,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
+	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -140,6 +144,85 @@ func TestProvisioning(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-a' AND outcome = 'denied' AND action = $1`, ProvisionCommand); n != 1 || rt.UnlistedOutcomes() != 2 {
 			t.Fatalf("the denied call of bob left %d denied rows in org-a and the counter at %d, want one row and 2", n, rt.UnlistedOutcomes())
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC09-T06 A Provision, a Retire and a tenant list that the provider cannot decide now are 503 undecided with Retry-After", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		e.exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('ops'), ('org-a')`)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		cursors, err := query.New(query.Config{DB: rt.cfg.DB, Service: "orders", CursorKey: bytes.Repeat([]byte{'k'}, query.MinCursorKey)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := func(context.Context, tenant.Tenant) (bool, error) { return true, nil }
+		mux := http.NewServeMux()
+		for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+			"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+			h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
+				SubjectType: "user", Active: active})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux.Handle(route, h)
+		}
+		list, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: cursors})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle("GET /stego/tenants", list)
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+		claims["tenant"] = "ops"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		send := func(method, path, body string) *httptest.ResponseRecorder {
+			r := httptest.NewRequest(method, path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			if method == http.MethodPost {
+				r.Header.Set("Idempotency-Key", `"k-`+NewID()+`"`)
+			}
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			return w
+		}
+		// The provider runs out of time on each decision, as for some seconds after a schema write.
+		e.decision.setFail(func(string) error { return fmt.Errorf("the provider call: %w", context.DeadlineExceeded) })
+		defer e.decision.setFail(nil)
+		for _, c := range []struct{ method, path, body string }{{http.MethodPost, "/stego/tenants", `{"tenant_id":"org-x"}`},
+			{http.MethodPost, "/stego/tenants/org-a/retire", ""}, {http.MethodGet, "/stego/tenants", ""}} {
+			w := send(c.method, c.path, c.body)
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			if w.Code != http.StatusServiceUnavailable || body["code"] != audit.ErrorCodeUndecided || w.Header().Get("Retry-After") == "" {
+				t.Fatalf("%s %s answered %d %v %v, want 503 undecided with Retry-After", c.method, c.path, w.Code, w.Header(), body)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM public.stego_tenants WHERE tenant_id = 'org-x' OR retired_at IS NOT NULL`); n != 0 {
+			t.Fatalf("the undecided calls changed %d rows of the tenant list, want none", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND outcome = 'failed'`); n != 3 {
+			t.Fatalf("%d failed rows in the chain of ops, want 3", n)
+		}
+		// A provider that refuses the call stays 500 internal.
+		e.decision.setFail(func(string) error { return errors.New("the provider refused the call") })
+		if w := send(http.MethodPost, "/stego/tenants", `{"tenant_id":"org-y"}`); w.Code != http.StatusInternalServerError || w.Header().Get("Retry-After") != "" {
+			t.Fatalf("a refused provider call answered %d %v, want 500 with no Retry-After", w.Code, w.Header())
 		}
 	})
 
@@ -716,4 +799,242 @@ type sealFails struct{ TenantCursors }
 
 func (sealFails) CursorText(*query.Query, tenant.Tenant, authz.Principal, query.Cursor) (string, error) {
 	return "", errors.New("query: the cursor was not sealed")
+}
+
+// provisioningFixture is a tenant runtime that serves Provision and Retire for an operator op-1 of the tenant ops,
+// whom the decision fake allows on the unqualified service-level resource service:orders only.
+type provisioningFixture struct {
+	e      *env
+	rt     *Runtime
+	mux    *http.ServeMux
+	verify *authn.Verifier
+	token  string
+}
+
+func newProvisioningFixture(t *testing.T, change func(*Config), spec TenantSpec) *provisioningFixture {
+	t.Helper()
+	e := newEnv(t)
+	migration, err := tenant.Migration("public", e.roles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(migration)
+	rt := e.runtime(func(c *Config) {
+		c.Entities = nil
+		if change != nil {
+			change(c)
+		}
+	})
+	mux := http.NewServeMux()
+	for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+		"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+		s := spec
+		s.Action, s.ResourceType, s.Permission, s.Schema, s.SubjectType = action, "service", string(action), "public", "user"
+		h, err := ServeTenant(rt, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle(route, h)
+	}
+	signing := authntest.NewKey(t, "k1")
+	keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+		Keys: keys, TenantClaim: "tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(verifier.Stop)
+	claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+	claims["tenant"] = "ops"
+	e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+	t.Cleanup(func() { e.decision.setAllow(nil) })
+	return &provisioningFixture{e: e, rt: rt, mux: mux, verify: verifier, token: authntest.Mint(t, authntest.Header("k1"), claims, signing)}
+}
+
+// send posts body to path with the idempotency key key, and gives the status and the body of the answer.
+func (f *provisioningFixture) send(path, key, body string) (int, string) {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+f.token)
+	r.Header.Set("Idempotency-Key", `"`+key+`"`)
+	w := httptest.NewRecorder()
+	f.verify.Middleware(f.mux).ServeHTTP(w, r)
+	return w.Code, w.Body.String()
+}
+
+// tuples gives each tuple that the transactions of the tenant staged for the relay, as op type:id#relation@type:id.
+func (f *provisioningFixture) tuples(t *testing.T, tenantID string) []string {
+	t.Helper()
+	rows, err := f.e.admin.QueryContext(f.e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+ (p->'tuple'->>'relation') || '@' || (p->'tuple'->>'subject_type') || ':' || (p->'tuple'->>'subject_id')
+ FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, created_at, id FROM stego_outbox.messages
+ WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func TestProvisioningRelations(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC52-T01 A Provision with the service relation relates the tenant resource to the service-level resource of the tenant, and a Retire deletes it", func(t *testing.T) {
+		f := newProvisioningFixture(t, nil, TenantSpec{ServiceRelation: true})
+		org := mustTenant(t, "org-s")
+		tenantResource, err := authz.TenantResource(org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceResource, err := authz.NewResource(org, "service", "orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tenantResource.String() + "#service@" + serviceResource.String()
+		if status, body := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "touch "+want) {
+			t.Fatalf("the Provision staged %v, want the touch of %s", got, want)
+		}
+		if strings.Contains(want, "@service:orders") {
+			t.Fatalf("the tuple %s names the unqualified service-level resource", want)
+		}
+		// A replay of the key stages nothing again.
+		before := len(f.tuples(t, "org-s"))
+		if status, _ := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated || len(f.tuples(t, "org-s")) != before {
+			t.Fatalf("the replay answered %d and staged %d tuples more", status, len(f.tuples(t, "org-s"))-before)
+		}
+		if status, body := f.send("/stego/tenants/org-s/retire", "k-s2", `{}`); status != http.StatusOK {
+			t.Fatalf("the Retire answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "delete "+want) {
+			t.Fatalf("the Retire staged %v, want the delete of %s", got, want)
+		}
+
+		// A schema with no relation service of the type tenant gets no such tuple.
+		plain := newProvisioningFixture(t, nil, TenantSpec{})
+		if status, body := plain.send("/stego/tenants", "k-p1", `{"tenant_id":"org-p"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		for _, tuple := range plain.tuples(t, "org-p") {
+			if strings.Contains(tuple, "#service@") {
+				t.Fatalf("a Provision with no service relation staged %s", tuple)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP16-LC05-T02 A Provision and a Retire of a runtime with a key ring store a keyed fingerprint and a sealed answer, and replay it", func(t *testing.T) {
+		ring := vaultRing(t, "1 "+throwawayKey(t))
+		f := newProvisioningFixture(t, func(c *Config) { c.Ring = ring }, TenantSpec{})
+		status, first := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k"}`)
+		if status != http.StatusCreated || !strings.Contains(first, "org-k") {
+			t.Fatalf("the Provision answered %d %s", status, first)
+		}
+		if status, body := f.send("/stego/tenants/org-k/retire", "k-r2", `{}`); status != http.StatusOK {
+			t.Fatalf("the Retire answered %d %s", status, body)
+		}
+		rows, err := f.e.admin.QueryContext(f.e.ctx, `SELECT fingerprint, response_body FROM idempotency_keys WHERE tenant_id = 'org-k'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for rows.Next() {
+			var fingerprint string
+			var body []byte
+			if err := rows.Scan(&fingerprint, &body); err != nil {
+				t.Fatal(err)
+			}
+			n++
+			if !strings.HasPrefix(fingerprint, "s1:k1:") || !bytes.HasPrefix(body, sealed.Prefix(1)) || bytes.Contains(body, []byte("org-k")) {
+				t.Fatalf("a key row of the tenant holds the fingerprint %q and the body % x, want a keyed fingerprint and a sealed body", fingerprint, body)
+			}
+		}
+		if err := rows.Close(); err != nil || n != 2 {
+			t.Fatalf("the tenant has %d key rows (%v), want 2", n, err)
+		}
+		// A replay of the Provision gives the same answer; another body under the same key is refused.
+		if status, again := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k"}`); status != http.StatusCreated || again != first {
+			t.Fatalf("the replay answered %d %s, want %s", status, again, first)
+		}
+		if status, body := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k","admins":[]}`); status != http.StatusUnprocessableEntity && status != http.StatusConflict && status != http.StatusBadRequest {
+			t.Fatalf("another body under the key answered %d %s, want a refusal", status, body)
+		}
+	})
+}
+
+func TestProvisioningUnavailable(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T07 A Provision whose decision cannot begin on a database that cannot serve now is 503 undecided, a long run of one cause logs an error, and the begin and the provider have runs of their own", func(t *testing.T) {
+		// No server listens on port 1, so each connection is refused, as for a database that is down.
+		db, err := sql.Open("pgx", "postgres://stego:none@127.0.0.1:1/stego?sslmode=disable&connect_timeout=5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		var logs bytes.Buffer
+		previous, heldLog, heldRuns := slog.Default(), decisionLog, tenantRuns
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		decisionLog, tenantRuns = authz.NewCauseLog(func() time.Time { return now }), authz.NewCauseRuns(func() time.Time { return now })
+		t.Cleanup(func() { slog.SetDefault(previous); decisionLog, tenantRuns = heldLog, heldRuns })
+		rt := &Runtime{cfg: Config{DB: db, Service: "orders"}}
+		spec := TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision", Schema: "public", SubjectType: "user"}
+		decide := func(rt *Runtime, want ...string) {
+			t.Helper()
+			logs.Reset()
+			_, err := decideTenant(context.Background(), rt, spec, Request{Tenant: mustTenant(t, "ops"), Resource: "org-x"})
+			if o := tenantOutcome(err); !errors.Is(err, ErrUndecided) || o.Status != http.StatusServiceUnavailable || o.Code != audit.ErrorCodeUndecided {
+				t.Fatalf("decideTenant gives %v and the answer %d %s, want ErrUndecided and 503 undecided", err, o.Status, o.Code)
+			}
+			for _, part := range append(want, "step=decide_tenant", "permission=provision", "cause="+authz.CauseStoreUnavailable, "transient=true", `msg="command: the transaction of the tenant decision`) {
+				if !strings.Contains(logs.String(), part) {
+					t.Errorf("the log %q does not hold %s", logs.String(), part)
+				}
+			}
+			if strings.Contains(logs.String(), "127.0.0.1") {
+				t.Errorf("the log %q holds the text of the database error", logs.String())
+			}
+		}
+		decide(rt, "level=WARN", "run_seconds=0")
+		now = now.Add(LongUndecided)
+		decide(rt, "level=ERROR", "run_seconds=120")
+		// The runtime of another service in the same process has its own run and its own log limit (security
+		// review of PR #456, I2).
+		decide(&Runtime{cfg: Config{DB: db, Service: "billing"}}, "level=WARN", "run_seconds=0")
+		// So has the tenant list, also for a TenantSpec permission named list_tenants.
+		_, down := tenant.Begin(context.Background(), db, mustTenant(t, "ops"), nil)
+		logs.Reset()
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "list_tenants", permission: "provision"}, down)
+		if line := logs.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "step=list_tenants") || !strings.Contains(line, "run_seconds=0") {
+			t.Errorf("the log of the tenant list is %q, want a warning of its own run", line)
+		}
+		// A failure of the provider of the same cause has a run and a log limit of its own, apart from the begin
+		// (security review of PR #458, I2).
+		logs.Reset()
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "decide_tenant", permission: "provision"}, down)
+		if line := logs.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, `msg="command: the authorization provider could not decide"`) || !strings.Contains(line, "run_seconds=0") {
+			t.Errorf("the log of a provider failure after a long run of begin failures is %q, want a warning of its own run", line)
+		}
+		// A begin that succeeds ends the run of the begin, so the next failure to begin starts a new run.
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "decide_tenant", permission: "provision", begin: true}, nil)
+		now = now.Add(authz.LogEvery)
+		decide(rt, "level=WARN", "run_seconds=0")
+		// A failure that a retry does not change, such as the zero tenant, stays 500 internal, and its line names
+		// the transaction, not the provider (security review of PR #456, I3).
+		logs.Reset()
+		if _, err := decideTenant(context.Background(), rt, spec, Request{Resource: "org-x"}); errors.Is(err, ErrUndecided) || !errors.Is(err, ErrInternal) {
+			t.Errorf("decideTenant with the zero tenant gives %v, want an internal error", err)
+		}
+		if line := logs.String(); !strings.Contains(line, `msg="command: the transaction of the tenant decision did not begin"`) || strings.Contains(line, "provider") {
+			t.Errorf("the log of the zero tenant is %q, want the line of a transaction that did not begin", line)
+		}
+	})
 }

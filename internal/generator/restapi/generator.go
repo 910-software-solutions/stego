@@ -65,6 +65,11 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 		return err
 	}
 
+	// A field of a served entity has no name of a member that the handler sets itself (ST-SUP-RC20-OC52).
+	if err := validateEnvelopeMembers(ctx.Collections, ctx.Entities); err != nil {
+		return err
+	}
+
 	// Check for collection-derived identifier collisions with generator-internal
 	// identifiers, entity struct names, and cross-collection derived names.
 	if err := checkCollectionNameCollisions(ctx.Collections, ctx.Entities); err != nil {
@@ -229,7 +234,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	files = append(files, errorsFile)
 
 	// Generate OpenAPI spec.
-	openapiFile, err := generateOpenAPI(ctx.OutputNamespace, ctx.Entities, ctx.Collections, collectionMap, ctx.BasePath, ctx.Conventions.ResponseFormat, idempotencyKeys(ctx))
+	openapiFile, err := serviceOpenAPIFile(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating openapi spec: %w", err)
 	}
@@ -859,7 +864,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"fmt\"\n")
 	fmt.Fprintf(&buf, "\t\"io\"\n")
 	fmt.Fprintf(&buf, "\t\"net/http\"\n")
+	fmt.Fprintf(&buf, "\t\"slices\"\n")
+	fmt.Fprintf(&buf, "\t\"strconv\"\n")
 	fmt.Fprintf(&buf, "\t\"strings\"\n")
+	fmt.Fprintf(&buf, "\t\"unicode/utf8\"\n")
 	fmt.Fprintf(&buf, "\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3\"\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
@@ -904,7 +912,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
-	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil {\n")
+	// The command runtime decodes the body of a command, so the document does not check it (ST-SUP-RC20-OC53). Only
+	// the marker true skips the check: a marker false, or one of another type, leaves it on (security review of PR
+	// #454, INFO).
+	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] == true {\n", commandMarker)
 	fmt.Fprintf(&buf, "\t\t\t\tnext.ServeHTTP(w, r)\n")
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
@@ -1042,6 +1053,11 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\tvar schemaErr *openapi3.SchemaError\n")
 	fmt.Fprintf(&buf, "\tif errors.As(err, &schemaErr) {\n")
 	fmt.Fprintf(&buf, "\t\tpointer := schemaErr.JSONPointer()\n")
+	// The check of a closed schema names an unknown member only in its reason, so the entry takes the member from
+	// there, and names it as the decode of the handler does (ST-SUP-RC20-OC05, ST-SUP-RC20-OC55).
+	fmt.Fprintf(&buf, "\t\tif member, ok := unsupportedMember(schemaErr); ok {\n")
+	fmt.Fprintf(&buf, "\t\t\tpointer = append(slices.Clone(pointer), member)\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
 	fmt.Fprintf(&buf, "\t\tfield := strings.Join(pointer, \".\")\n")
 	fmt.Fprintf(&buf, "\t\t// The reason names the rule; the error text would also quote the value.\n")
 	fmt.Fprintf(&buf, "\t\tmsg := schemaErr.Reason\n")
@@ -1061,6 +1077,21 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\treturn\n")
 	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\t*result = append(*result, ValidationError{Message: \"the request body is not valid\"})\n")
+	fmt.Fprintf(&buf, "}\n\n")
+	fmt.Fprintf(&buf, "// unsupportedMember gives the member that a closed schema does not take, which the check names only in the\n")
+	fmt.Fprintf(&buf, "// reason of its failure: property \"<member>\" is unsupported.\n")
+	fmt.Fprintf(&buf, "func unsupportedMember(err *openapi3.SchemaError) (string, bool) {\n")
+	fmt.Fprintf(&buf, "\tquoted, found := strings.CutPrefix(err.Reason, \"property \")\n")
+	fmt.Fprintf(&buf, "\tquoted, unsupported := strings.CutSuffix(quoted, \" is unsupported\")\n")
+	fmt.Fprintf(&buf, "\tif err.SchemaField != \"properties\" || !found || !unsupported {\n")
+	fmt.Fprintf(&buf, "\t\treturn \"\", false\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\tmember, unquoteErr := strconv.Unquote(quoted)\n")
+	// The entry repeats at most 128 bytes of the name, cut on a character boundary (security review of PR #464).
+	fmt.Fprintf(&buf, "\tif cut := 128; len(member) > cut {\n")
+	fmt.Fprintf(&buf, "\t\tfor cut > 0 && !utf8.RuneStart(member[cut]) {\n\t\t\tcut--\n\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tmember = member[:cut]\n\t}\n")
+	fmt.Fprintf(&buf, "\treturn member, unquoteErr == nil\n")
 	fmt.Fprintf(&buf, "}\n")
 
 	formatted, err := format.Source(buf.Bytes())
@@ -1075,7 +1106,7 @@ func generateValidation(ns string) (gen.File, error) {
 }
 
 // generateOpenAPI produces an OpenAPI 3.0 spec as JSON.
-func generateOpenAPI(ns string, entities []types.Entity, collections []types.Collection, collectionMap map[string]types.Collection, basePath string, responseFormat string, keys *idempotencyHeader) (gen.File, error) {
+func generateOpenAPI(ns string, entities []types.Entity, collections []types.Collection, collectionMap map[string]types.Collection, basePath string, responseFormat string, keys *idempotencyHeader, routes ...map[string]map[string]openAPIOperation) (gen.File, error) {
 	entityMap := make(map[string]types.Entity, len(entities))
 	for _, e := range entities {
 		entityMap[e.Name] = e
@@ -1159,8 +1190,8 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		}
 		spec.Components.Schemas[e.Name] = schema
 
-		// CreateRequest schema: excludes server-managed fields, scope fields,
-		// implicit fields, and id. Used by POST and PUT(upsert) request bodies.
+		// CreateRequest schema: used by POST and PUT(upsert) request bodies. Server-managed fields, scope fields,
+		// implicit fields and id are optional members that a client never writes (ST-SUP-RC20-OC20).
 		createSchema := openAPISchema{
 			Type:       "object",
 			Properties: make(map[string]openAPISchema),
@@ -1177,6 +1208,17 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		var updateRequired []string
 		for _, f := range e.Fields {
 			if isServerManaged(f) || scopeFields[f.Name] || implicitFields[f.Name] {
+				// A member that the server sets, the path gives or the collection sets is an optional member that a
+				// client never writes, so a body that sends back a read row passes the closed schema
+				// (ST-SUP-RC20-OC20, ST-SUP-RC20-OC55).
+				property := outputOnlyProperty()
+				if !isServerManaged(f) {
+					property = fieldToOpenAPISchema(f)
+					property.Description = joinDescription(property.Description, setByPathDescription(scopeFields[f.Name]))
+					property.Default, property.Kept = nil, true
+				}
+				createSchema.Properties[f.Name] = property
+				updateSchema.Properties[f.Name] = property
 				continue
 			}
 			updateSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
@@ -1185,25 +1227,56 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				// would then give a value other than the stored one: the member has no default here.
 				property := updateSchema.Properties[f.Name]
 				property.Description = keptUpdateDescription(f, property.Description)
-				property.Default = nil
+				property.Default, property.Kept = nil, true
+				updateSchema.Properties[f.Name] = property
+			} else if f.Secret() {
+				// No response gives a secret back, so an update that leaves it out, or gives it empty, keeps the stored
+				// value (ST-SUP-RC20-OC48): the member is optional, and the request check holds no min_length and no
+				// pattern of it, which an empty value would break; the check of the entity holds them on a value
+				// that the body gives (walkthrough 14, W14-B4).
+				property := updateSchema.Properties[f.Name]
+				property.MinLength, property.Pattern = nil, ""
 				updateSchema.Properties[f.Name] = property
 			} else if !f.Optional {
 				updateRequired = append(updateRequired, f.Name)
 			}
-			// The create-request schema leaves out a field with writable never: a create stores its default.
+			// A create stores the default of a field with writable never: the create-request schema holds it as an
+			// optional x-kept member with no default, which the body may leave out or give with its default
+			// (ST-SUP-RC20-OC45, ST-SUP-RC20-OC47).
 			if f.Writable == types.WritableNever {
+				property := fieldToOpenAPISchema(f)
+				property.Description = keptCreateDescription(f, property.Description)
+				property.Default, property.Kept = nil, true
+				createSchema.Properties[f.Name] = property
 				continue
 			}
 			createSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
-			if !f.Optional {
+			// A create that leaves out a field with a declared default stores the default, which the decode writes
+			// first (presetsDefault, ST-DECL-EN03), so the create-request schema does not require the field
+			// (ST-SUP-RC20-OC47; walkthrough 18, step 38).
+			if !f.Optional && !presetsDefault(f) {
 				createRequired = append(createRequired, f.Name)
 			}
+		}
+		// A create, an update and an upsert take only these members, kind, id and, in the envelope format, href, and
+		// refuse each other member (ST-SUP-RC20-OC55).
+		for _, request := range []*openAPISchema{&createSchema, &updateSchema} {
+			if _, field := request.Properties["kind"]; !field {
+				request.Properties["kind"] = openAPISchema{Type: "string", Enum: []string{e.Name}, Description: "The name of the entity; a body may leave it out."}
+			}
+			request.Properties["id"] = outputOnlyProperty()
+			if responseFormat == "envelope" {
+				if _, field := request.Properties["href"]; !field {
+					request.Properties["href"] = outputOnlyProperty()
+				}
+			}
+			request.Closed = true
 		}
 		if len(createRequired) > 0 {
 			createSchema.Required = createRequired
 		}
 		spec.Components.Schemas[e.Name+"CreateRequest"] = createSchema
-		if hasKeptField(e) {
+		if hasUpdateRequest(e) {
 			if len(updateRequired) > 0 {
 				updateSchema.Required = updateRequired
 			}
@@ -1230,7 +1303,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		collPascal := collectionToPascalCase(eb.Name)
 		createRef := "#/components/schemas/" + eb.Entity + "CreateRequest"
 		updateRef := createRef
-		if hasKeptField(entityMap[eb.Entity]) {
+		if hasUpdateRequest(entityMap[eb.Entity]) {
 			updateRef = "#/components/schemas/" + eb.Entity + "UpdateRequest"
 		}
 		for _, op := range eb.Operations {
@@ -1443,6 +1516,25 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 						patchSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
 					}
 				}
+				// A patch also takes each field that a collection write cannot change, with its stored value, so a
+				// client can send back a row that it read (ST-SUP-RC20-OC46); x-kept marks it.
+				for _, f := range entity.Fields {
+					_, scoped := eb.Scope[f.Name]
+					_, implicit := eb.Implicit[f.Name]
+					if patchableSet[f.Name] || !keptField(f) || scoped || implicit {
+						continue
+					}
+					property := fieldToOpenAPISchema(f)
+					property.Description = keptPatchDescription(f, property.Description)
+					property.Default, property.Kept = nil, true
+					patchSchema.Properties[f.Name] = property
+				}
+				// A patch takes only these members and kind, the name of the entity, and refuses each other member
+				// (ST-SUP-RC20-OC15, security review of PR #461, M1).
+				if _, field := patchSchema.Properties["kind"]; !field {
+					patchSchema.Properties["kind"] = openAPISchema{Type: "string", Enum: []string{eb.Entity}, Description: "The name of the entity; a patch may leave it out."}
+				}
+				patchSchema.Closed = true
 				patchSchemaName := collPascal + "PatchRequest"
 				spec.Components.Schemas[patchSchemaName] = patchSchema
 
@@ -1492,6 +1584,12 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		}
 	}
 
+	// The command and query routes of the service (ST-SUP-RC20-OC53).
+	for _, r := range routes {
+		if err := mergeRoutes(&spec, r); err != nil {
+			return gen.File{}, err
+		}
+	}
 	if len(spec.Paths) > 0 {
 		spec.Paths[revocationRoute] = openAPIPathItem{Operations: map[string]openAPIOperation{"get": revocationStatusOperation()}}
 	}
@@ -1609,8 +1707,59 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 // setting changes nothing.
 func keptField(f types.Field) bool { return f.Kept() && !isServerManaged(f) }
 
+// envelopeMembers are the members that the handler of a collection sets itself beside the fields of an entity: kind,
+// which a request body may give only as the name of the entity, and href. The postgres adapter refuses a field named
+// id.
+var envelopeMembers = []string{"kind", "href"}
+
+// validateEnvelopeMembers refuses each field of an entity that a collection serves whose name is a member of
+// envelopeMembers: each create, update, upsert and patch of such an entity would answer 400, and each answer would
+// hold the member of the handler and not the field (ST-SUP-RC20-OC52; walkthrough 14, W14-B5). The fault names the
+// path of the field, the member and the remedy.
+func validateEnvelopeMembers(collections []types.Collection, entities []types.Entity) error {
+	served := map[string]string{}
+	for _, c := range collections {
+		if _, ok := served[c.Entity]; !ok {
+			served[c.Entity] = c.Name
+		}
+	}
+	var faults []string
+	for ei, e := range entities {
+		collection, ok := served[e.Name]
+		if !ok {
+			continue
+		}
+		for fi, f := range e.Fields {
+			if slices.Contains(envelopeMembers, f.Name) {
+				faults = append(faults, fmt.Sprintf("entities[%d].fields[%d].name: the entity %s, which the collection %s serves, has the field %q, and the API sets the member %s of each answer itself%s; give the field another name, and when the base stores it, add a field of another name and drop this one, because a rename keeps the API name",
+					ei, fi, e.Name, collection, f.Name, f.Name, envelopeEffect(f.Name, e.Name)))
+			}
+		}
+	}
+	if len(faults) > 0 {
+		return fmt.Errorf("field names that are members of the API (ST-SUP-RC20-OC52):\n  %s", strings.Join(faults, "\n  "))
+	}
+	return nil
+}
+
+// envelopeEffect tells what the member does to a field of its name: a body may give kind only as the entity name, so
+// each write with the field fails, and an answer holds the href of the handler and never the field.
+func envelopeEffect(member, entity string) string {
+	if member == "kind" {
+		return ", and refuses each create, update, upsert and patch whose kind is not " + entity
+	}
+	return ", so no answer holds the field"
+}
+
 // hasKeptField tells whether an entity has a field of keptField.
 func hasKeptField(e types.Entity) bool { return slices.ContainsFunc(e.Fields, keptField) }
+
+// hasUpdateRequest tells whether the update of an entity takes its own request schema, EntityUpdateRequest, and not
+// the create-request schema: an entity with a field of keptField, or with a secret field, which an update may leave
+// out (ST-SUP-RC20-OC47, ST-SUP-RC20-OC48).
+func hasUpdateRequest(e types.Entity) bool {
+	return hasKeptField(e) || slices.ContainsFunc(e.Fields, func(f types.Field) bool { return f.Secret() && !isServerManaged(f) })
+}
 
 // keptDescription gives the description of a field of keptField in the entity schema: when the field may be set,
 // after the description of its type (ST-SUP-RC20-OC47).
@@ -1642,6 +1791,39 @@ func keptUpdateDescription(f types.Field, typeDescription string) string {
 		return "A secret: a create sets it, and no response gives it back. An update cannot take this secret field: the body must leave it out."
 	}
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
+}
+
+// keptCreateDescription gives the description of a field with writable never in the create-request schema
+// (ST-SUP-RC20-OC45, ST-SUP-RC20-OC47).
+func keptCreateDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		return "A secret: only a command or a worker sets it. A create cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "Only a command or a worker sets this field, and a create stores its default: the body may leave it out or give its default.")
+}
+
+// setByPathDescription gives the sentence of a scope field, which the path gives, or of an implicit field, which the
+// collection sets, in a request schema (ST-SUP-RC20-OC23, ST-SUP-RC20-OC55).
+func setByPathDescription(scope bool) string {
+	if scope {
+		return "The path gives this field: the body may leave it out or give the value of the path."
+	}
+	return "The collection sets this field: the body may leave it out or give the value of the collection."
+}
+
+// outputOnlyProperty gives the request member of id, href or a server-managed field: the server sets it and clears
+// the value of a body, so the member has no type and no constraint, is nullable, and takes each value that a read
+// gives, null too (ST-SUP-RC20-OC17, ST-SUP-RC20-OC55).
+func outputOnlyProperty() openAPISchema {
+	return openAPISchema{Description: "The server sets this member: a body may give it, as a read gives it, and the server ignores the value.", OutputOnly: true, Nullable: true}
+}
+
+// keptPatchDescription gives the description of a field of keptField in a patch-request schema (ST-SUP-RC20-OC46).
+func keptPatchDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		return "A secret: a create sets it, and no response gives it back. A patch cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "A patch cannot change this field: the body may leave it out or give its stored value.")
 }
 
 // isServerManaged returns true when a field's value is assigned by the server,
@@ -2019,6 +2201,8 @@ type openAPIOperation struct {
 	Parameters  []openAPIParam             `json:"parameters,omitempty"`
 	RequestBody *openAPIRequestBody        `json:"requestBody,omitempty"`
 	Responses   map[string]openAPIResponse `json:"responses"`
+	// Command marks the operation of a command, whose body the request validation does not check (commandMarker).
+	Command bool `json:"x-stego-command,omitempty"`
 }
 
 type openAPIParam struct {
@@ -2072,6 +2256,39 @@ type openAPISchema struct {
 	Maximum     *float64                 `json:"maximum,omitempty"`
 	Default     any                      `json:"default,omitempty"`
 	AllOf       []openAPISchema          `json:"allOf,omitempty"`
+	// AdditionalProperties is the schema of each member of a map, as the protobuf JSON form of a map field writes it.
+	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
+	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
+	Sensitive bool `json:"x-sensitive,omitempty"`
+	// Opaque marks the root of a command response that holds a google.protobuf.Any, Struct, Value or ListValue member
+	// at any depth, whose content the document cannot describe (ST-SUP-RC20-OC54, decision ST-SUP-Q194 (a)).
+	Opaque bool `json:"x-stego-opaque,omitempty"`
+	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
+	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
+	Kept bool `json:"x-kept,omitempty"`
+	// OutputOnly marks a member of a create, update or upsert request that the server sets: the body may give it, as
+	// a read gives it, and the server ignores the value (ST-SUP-RC20-OC55).
+	OutputOnly bool `json:"x-output-only,omitempty"`
+	// Nullable takes null as a value, as an x-output-only member of a request does: a read gives null for an optional
+	// field (OpenAPI 3.0).
+	Nullable bool `json:"nullable,omitempty"`
+	// Closed writes additionalProperties: false, so the object takes no member that Properties does not name (the
+	// patch request, ST-SUP-RC20-OC15). It is not written with AdditionalProperties.
+	Closed bool `json:"-"`
+}
+
+// MarshalJSON writes the schema, with additionalProperties: false when it is Closed and gives no AdditionalProperties.
+func (s openAPISchema) MarshalJSON() ([]byte, error) {
+	type plain openAPISchema
+	data, err := json.Marshal(plain(s))
+	if err != nil || !s.Closed || s.AdditionalProperties != nil || len(data) < 2 || data[len(data)-1] != '}' {
+		return data, err
+	}
+	closed := []byte(`"additionalProperties":false}`)
+	if len(data) > 2 {
+		closed = append([]byte(","), closed...)
+	}
+	return append(data[:len(data)-1:len(data)-1], closed...), nil
 }
 
 // validateCollectionOperations checks that every collection has at least one
@@ -3005,8 +3222,8 @@ func generateDiscovery(ns string, serviceName string, basePath string, collectio
 // idempotencyHeader is what the OpenAPI document states of the Idempotency-Key header (ST-SUP-RC30-OC01): the
 // operations that require it, and the problem type URIs of its 400, 409 and 422 responses. Nil states nothing.
 type idempotencyHeader struct {
-	required             map[types.Operation]bool
-	missing, busy, reuse string
+	required                      map[types.Operation]bool
+	missing, invalid, busy, reuse string
 }
 
 // idempotencyKeys reads the declaration's idempotency setting when the idempotency component is in the service,
@@ -3017,6 +3234,7 @@ func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 	}
 	keys := &idempotencyHeader{required: map[types.Operation]bool{},
 		missing: ctx.ErrorTypeBase + "idempotency-key-missing",
+		invalid: ctx.ErrorTypeBase + "idempotency-key-invalid",
 		busy:    ctx.ErrorTypeBase + "idempotency-key-in-progress",
 		reuse:   ctx.ErrorTypeBase + "idempotency-key-reused"}
 	for _, op := range ctx.Idempotency.RequiredOn {
@@ -3027,10 +3245,11 @@ func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 
 // apply adds the Idempotency-Key header parameter to a create or patch operation, required when Required on names
 // the operation and accepted otherwise, with its 400, 409 and 422 problem responses. A GET, PUT or DELETE
-// operation never gets it, because the service ignores the key there.
+// operation never gets it, because the service ignores the key there. With no idempotency component (k nil), the
+// handler still keeps the key that a request gives, so the parameter is there, not required (ST-SUP-RC20-OC56).
 func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation) openAPIOperation {
 	if k == nil {
-		return op
+		return optionalKey(op)
 	}
 	op.Parameters = append(append([]openAPIParam{}, op.Parameters...), openAPIParam{
 		Name:        "Idempotency-Key",
@@ -3043,11 +3262,60 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	for code, response := range op.Responses {
 		responses[code] = response
 	}
-	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent or malformed"}
+	responses["400"] = openAPIResponse{Description: "Problem " + k.missing + ": the Idempotency-Key header is absent; problem " + k.invalid +
+		": the header is not one structured string of 1 to 255 characters"}
 	responses["409"] = openAPIResponse{Description: "Problem " + k.busy + ": a request with this key is not complete"}
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
 	op.Responses = responses
+	return withKeptHeader(op)
+}
+
+// keptHeader is the response header that tells that the service keeps the Idempotency-Key of the request
+// (ST-SUP-RC30-OC08, ST-SUP-RC32-OC27).
+const keptHeader = "Idempotency-Kept"
+
+// withKeptHeader describes the header Idempotency-Kept on each response of an operation that keeps the key of its
+// request: a create and a patch with the idempotency component, and a command. The service writes it on each answer
+// to a request with a key, a problem and a 5xx answer too, so a client of another release than the service knows
+// from the answer that a second request with the same key is safe (ST-SUP-RC04-OC34).
+func withKeptHeader(op openAPIOperation) openAPIOperation {
+	responses := make(map[string]openAPIResponse, len(op.Responses))
+	for code, response := range op.Responses {
+		headers := make(map[string]openAPIHeader, len(response.Headers)+1)
+		for name, header := range response.Headers {
+			headers[name] = header
+		}
+		headers[keptHeader] = openAPIHeader{Description: "1 when the request carries an Idempotency-Key that the service keeps, so a second request with the same key and body is safe; absent when the request has no key",
+			Schema: openAPISchema{Type: "string", Enum: []string{"1"}}}
+		response.Headers = headers
+		responses[code] = response
+	}
+	op.Responses = responses
 	return op
+}
+
+// optionalKey adds the Idempotency-Key header parameter, not required, to a create or a patch operation of a service
+// with no idempotency component, with the 400 and 422 responses of the key and the header Idempotency-Kept on each
+// response: the handler keeps the key that the request gives, gives the stored answer to a second request with the
+// key and the same body, and refuses another body with the key (ST-SUP-RC20-OC56). A generated client then takes the key as a parameter of the operation
+// (ST-SUP-RC06-OC10).
+func optionalKey(op openAPIOperation) openAPIOperation {
+	op.Parameters = append(append([]openAPIParam{}, op.Parameters...), openAPIParam{
+		Name:        "Idempotency-Key",
+		In:          "header",
+		Description: "A structured string of 1 to 255 characters, such as a quoted UUID. A second request with the same key and body gets the stored response with Idempotent-Replayed: true; with no key, the request runs once.",
+		Schema:      openAPISchema{Type: "string"},
+	})
+	responses := make(map[string]openAPIResponse, len(op.Responses)+2)
+	for code, response := range op.Responses {
+		responses[code] = response
+	}
+	if _, set := responses["400"]; !set {
+		responses["400"] = openAPIResponse{Description: "Bad request: the body or the Idempotency-Key header is not valid"}
+	}
+	responses["422"] = openAPIResponse{Description: "The Idempotency-Key was used with another request"}
+	op.Responses = responses
+	return withKeptHeader(op)
 }
 
 // revocationRoute is the path of the revocation status route that the runtime wiring registers beside the collection

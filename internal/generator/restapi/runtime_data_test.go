@@ -369,7 +369,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.138.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.172.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -571,18 +571,30 @@ func TestCrudService(t *testing.T) {
 }
 
 // crudCLIFactory is the factory of the generated CLI of the test service: one immutable apply resource, Folder, whose
-// identity is its name, on the folders collection.
+// identity is its name, on the folders collection. It reads from the OpenAPI document of the service that the service
+// keeps the Idempotency-Key of a create, and refuses to start when the document does not state it.
 const crudCLIFactory = `package cliapp
 
-import command "example.com/crud/out/cli/command"
+import (
+	_ "embed"
 
-// Commands gives the CLI of the test service.
+	command "example.com/crud/out/cli/command"
+)
+
+//go:embed openapi.json
+var document []byte
+
+// Commands gives the CLI of the test service, which keeps the Idempotency-Key of a write.
 func Commands() command.Application {
-	return command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", Resources: []command.ApplyResource{{
+	app, err := command.IdempotentWritesFrom(command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", Resources: []command.ApplyResource{{
 		Kind: "Folder", APIVersion: "crud/v1", Path: "/api/v1/folders",
 		CreateFields:      []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}},
 		ImmutableIdentity: []string{"name"},
-	}}}
+	}}}, document)
+	if err != nil || !app.Resources[0].IdempotentWrites {
+		panic("the OpenAPI document of the service does not state the Idempotency-Key of a create of a folder")
+	}
+	return app
 }
 `
 
@@ -598,6 +610,11 @@ func (p *crudProject) addCLI() string {
 	for _, f := range files {
 		p.write("out/"+f.Path, f.Bytes())
 	}
+	document, err := os.ReadFile(filepath.Join(p.dir, "out", "api", "openapi.json"))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.write("cliapp/openapi.json", document)
 	p.write("cliapp/app.go", []byte(crudCLIFactory))
 	p.mustGo("mod", "tidy")
 	program := filepath.Join(p.dir, "bin", "crud-cli")
@@ -767,11 +784,16 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC44-T01 An update refuses a changed create or never field, names each, changes nothing, and keeps a field that the body leaves out or repeats",
 	"ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field",
 	"ST-SUP-RC20-OC46-T01 A patch refuses a create or never field that the body names with another value, and changes nothing",
+	"ST-SUP-RC20-OC15-T03 A patch refuses a member that is not kind, a patchable field or a kept field, also in another letter case, and changes nothing",
 	"ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value",
 	"ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it",
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",
+	"ST-SUP-RC20-OC48-T05 An update that leaves out a required secret, or gives it empty, answers 200 and keeps the stored value",
 	"ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value",
 	"ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service",
+	"ST-SUP-RC04-OC31-T02 The emitted CLI writes to a generated service that requires a key, and the second request of a write gets the stored answer",
+	"ST-SUP-RC30-OC08-T02 Each answer of the generated service to a create or a patch with a key carries Idempotency-Kept: 1, a problem and a 503 too, and no other answer carries it",
+	"ST-SUP-RC04-OC34-T02 The emitted CLI sends a write again after a 5xx of the service with Idempotency-Kept, not after a 5xx with none, and warns when a 2xx has none",
 	"ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not",
 	"ST-SUP-RC20-OC37-T01 A collection create runs as a command",
 	"ST-SUP-RC20-OC37-T02 A refusing before slot stops the command before any write",
@@ -783,6 +805,8 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC35-T02 A tenant in a header is not accepted",
 	"ST-SUP-RC20-OC35-T03 A tenant in a query parameter is not accepted",
 	"ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted",
+	"ST-SUP-RC20-OC55-T01 A create, an update and an upsert refuse a member that they do not take, also in another letter case, store nothing, and take a read row sent back",
+	"ST-SUP-RC20-OC55-T07 A write refuses a member given twice, cuts a long member name, and ignores a server-set member of another type",
 	"ST-SUP-RC30-OC04-T01 The key row commits with the write",
 	"ST-SUP-RC30-OC04-T03 The same key from another tenant or principal is a new key",
 	"ST-SUP-RC28-OC02-T02 A committed mutation leaves exactly one audit row",
@@ -807,7 +831,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC14-T01 An upsert with optimistic concurrency updates only under the If-Match of the stored generation",
 	"ST-SUP-RC20-OC13-T04 An upsert finds its row only under its own parent and implicit value",
 	"ST-SUP-RC20-OC13-T05 An upsert calls its validate gate before both branches and on_entity_changed after both",
-	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a patch keeps the implicit value",
+	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a write that gives the implicit field another value is refused",
 	"ST-SUP-RC20-OC23-T07 A read of a row whose optional implicit field is NULL is not found",
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
@@ -953,12 +977,55 @@ func TestRequiredMember(t *testing.T) {
 }
 `
 
+// unknownMemberCheck is a test of the generated validation.go: a create, an update, an upsert and a patch whose body
+// holds a member that the closed schema does not take get a 400 validation problem whose entry names the member in its
+// field, before any decode of the handler, and the problem holds no value of the body.
+const unknownMemberCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestUnknownMember(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a body with an unknown member reached the handler")
+	}))
+	const todo = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	const ticket = "{\"folder_id\":\"0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69\",\"code\":\"c1\",\"title\":\"t\",\"sku\":\"s1\","
+	for _, c := range []struct{ method, path, body, member string }{
+		{http.MethodPost, "/api/v1/todos", "{\"title\":\"t\",\"Title\":\"value-x\"}", "Title"},
+		{http.MethodPut, todo, "{\"title\":\"t\",\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPatch, todo, "{\"titel\":\"value-x\"}", "titel"},
+		{http.MethodPut, "/api/v1/tickets", ticket + "\"tenant_id\":\"value-x\"}", "tenant_id"},
+	} {
+		r := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		var problem struct {
+			Errors []struct {
+				Field string \x60json:"field"\x60
+			} \x60json:"validation_errors"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil || len(problem.Errors) != 1 ||
+			problem.Errors[0].Field != c.member || strings.Contains(answer.Body.String(), "value-x") {
+			t.Fatalf("%s %s %s got %d (%v): %s, want one entry whose field is %s and no value", c.method, c.path, c.body, answer.Code, err, answer.Body, c.member)
+		}
+	}
+}
+`
+
 func TestValidationEveryField(t *testing.T) {
 	ctx := crudContext()
 	ctx.Conventions.RequestValidation = "openapi-schema"
 	p := newCrudProject(t, ctx, crudFiles(t, ctx))
 	p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
 	p.write("out/api/required_member_test.go", []byte(strings.ReplaceAll(requiredMemberCheck, "\\x60", "`")))
+	p.write("out/api/unknown_member_test.go", []byte(strings.ReplaceAll(unknownMemberCheck, "\\x60", "`")))
 	t.Run("ST-SUP-RC20-OC05-T04 A body with two bad members gets a validation problem with one entry for each", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestEveryField$", "./out/api"); err != nil {
 			t.Fatalf("the check of every field failed: %v\n%s", err, output)
@@ -967,6 +1034,11 @@ func TestValidationEveryField(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC05-T07 A create or a PUT that leaves out a required member gets a validation problem that names it", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestRequiredMember$", "./out/api"); err != nil {
 			t.Fatalf("the check of a missing required member failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC55-T06 The request check names an unknown member of a create, an update, an upsert and a patch in the field of its entry", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestUnknownMember$", "./out/api"); err != nil {
+			t.Fatalf("the check of an unknown member failed: %v\n%s", err, output)
 		}
 	})
 }

@@ -3,12 +3,14 @@ package command
 import (
  "bytes"
  "context"
+ "crypto/rand"
  "encoding/json"
  "errors"
  "fmt"
  "io"
  "net/http"
  "net/url"
+ "os"
  "regexp"
  "sort"
  "strconv"
@@ -24,7 +26,11 @@ import (
 // absolute UTC RFC 3339 timestamp. It is exclusive with Flag and body files.
 type Field struct {Flag,Key,Type,RelativeFlag string;Required,Nullable bool}
 type PathParameter struct {Flag,Key string}
-type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
+// IdempotentWrites states that the service keeps the Idempotency-Key of this POST or PATCH command: its OpenAPI
+// operation carries the Idempotency-Key header parameter (the idempotency component). Then the CLI sends the write
+// again one time, with the same key, after a transport failure, an expired request or a 5xx answer that carries
+// Idempotency-Kept: 1. The CLI sends a new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
+type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;BodyFields []Field;Success,EmptyResponses []int}
 type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
@@ -58,6 +64,7 @@ func validate(app Application)error{
   for _,part:=range strings.Split(strings.TrimPrefix(c.Path,"/"),"/"){if part=="{id}"&&c.ID {continue};if strings.HasPrefix(part,"{")&&strings.HasSuffix(part,"}")&&parameters[part[1:len(part)-1]]{continue};if part=="."||part==".."||!pathPart.MatchString(part){return errors.New("invalid CLI route segment")}}
   if c.ID!=(strings.Count(c.Path,"{id}")==1){return errors.New("invalid CLI route parameter")}
   switch c.Method{case "GET","POST","PATCH","PUT","DELETE":default:return errors.New("invalid CLI method")}
+  if c.IdempotentWrites&&c.Method!="POST"&&c.Method!="PATCH"{return errors.New("invalid CLI idempotent write")}
   if len(c.Success)==0||len(c.Success)>4||len(c.Fields)>64{return errors.New("invalid CLI command limits")}
   for _,code:=range c.Success{if code<200||code>299{return errors.New("invalid CLI success code")}}
   if len(c.EmptyResponses)>len(c.Success){return errors.New("invalid empty response codes")}
@@ -74,6 +81,12 @@ func validate(app Application)error{
     if f.Type!="string"||c.Query||(c.Method!="POST"&&c.Method!="PUT"&&c.Method!="PATCH")||!word.MatchString(f.RelativeFlag)||reservedFlag(f.RelativeFlag)||flags[f.RelativeFlag]||pathFlags[f.RelativeFlag]{return errors.New("invalid relative timestamp flag")}
     flags[f.RelativeFlag]=true
    }
+   switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
+  }
+  // A body field, a secret, has no flag: only --body FILE gives it (ST-SUP-RC04-OC32).
+  for _,f:=range c.BodyFields{
+   if f.Flag!=""||f.RelativeFlag!=""||!property.MatchString(f.Key)||keys[f.Key]||c.Query||(c.Method!="POST"&&c.Method!="PUT"&&c.Method!="PATCH"){return errors.New("invalid CLI body field")}
+   keys[f.Key]=true
    switch f.Type{case "string","string-list","integer","boolean":default:return errors.New("invalid CLI field type")}
   }
   if !c.Query&&len(c.Fields)>0&&(c.Method=="GET"||c.Method=="DELETE"){return errors.New("CLI read and delete fields require query mode")}
@@ -108,7 +121,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  for _,f:=range c.Fields{fields[f.Flag]=f;if f.RelativeFlag!=""{fields[f.RelativeFlag]=f}}
  if len(arguments)==1&&arguments[0]=="--help"{
   var names []string;for _,f:=range c.Fields{names=append(names,"--"+f.Flag+" ("+f.Type+")");if f.RelativeFlag!=""{names=append(names,"--"+f.RelativeFlag+" DURATION (exclusive with --"+f.Flag+")")}}
-  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};names=append(names,"--output-file FILE (- selects stdout)")
+  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};if c.Sensitive{names=append(names,"--output-file FILE (required)")}else{names=append(names,"--output-file FILE (- selects stdout)")}
   if c.Method=="POST"||c.Method=="PUT"||c.Method=="PATCH"{names=append(names,"--body FILE")};if c.Confirm{names=append(names,"--yes")};sort.Strings(names)
   _,err:=fmt.Fprintln(output,strings.Join(names,"\n"));return err
  }
@@ -118,13 +131,18 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  if c.ID{if !identifier.MatchString(positions[0]){return errArguments};route=strings.Replace(route,"{id}",url.PathEscape(positions[0]),1)}
  for _,p:=range c.PathParameters{value,ok:=values[p.Flag];if !ok||!identifier.MatchString(value){return errArguments};route=strings.Replace(route,"{"+p.Key+"}",url.PathEscape(value),1);delete(values,p.Flag)}
  outputFile,outputSet:=values["output-file"];delete(values,"output-file")
- if (outputSet&&outputFile=="")||(c.Sensitive&&!outputSet){return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ if outputSet&&outputFile==""{return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ // The answer of a Sensitive command holds a secret: it goes only to a private file, never to stdout (security review of PR #460, I1).
+ if c.Sensitive&&(!outputSet||outputFile=="-"){return errors.New("this command answer holds a secret and requires --output-file FILE; stdout is not permitted")}
  if c.Confirm{if values["yes"]!="true"{return errors.New("confirmation required: pass --yes")};delete(values,"yes")}
  body:=map[string]json.RawMessage{}
  if name,ok:=values["body"];ok{
   if c.Query||(c.Method!="POST"&&c.Method!="PATCH"&&c.Method!="PUT")||len(values)!=1{return errArguments}
-  data,err:=readBody(name);if err!=nil{return err}
+  data,private,err:=readBody(name);if err!=nil{return err}
   if body,err=object(data);err!=nil{return err};delete(values,"body")
+  // A file that holds a secret body field is private, as the token file is (security review of PR #460, L3, and of PR
+  // #462, L3).
+  for _,f:=range c.BodyFields{if _,ok:=body[f.Key];ok&&!private{return errors.New("a request body file that holds a secret field must be your own file and must not permit access by other users")}}
  }
  now:=time.Now()
  for flag,value:=range values{
@@ -136,7 +154,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   raw:=[]byte(value);if field.Type=="string"{raw,_=json.Marshal(value)}
   body[field.Key]=raw
  }
- allowed:=map[string]Field{};for _,f:=range c.Fields{allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
  for key,raw:=range body{field,ok:=allowed[key];if !ok||!fieldValue(field,raw){return errors.New("invalid request field")}}
  var payload []byte
  if c.Query{
@@ -150,9 +168,14 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  transport,err:=client.New(client.Options{BaseURL:cfg.URL,CAFile:cfg.CAFile,Timeout:15*time.Second});if err!=nil{return err};defer transport.Close()
  headers:=http.Header{"Authorization":{"Bearer "+token},"Accept":{"application/json"}}
  if payload!=nil{headers.Set("Content-Type","application/json")}
- response,err:=transport.Do(ctx,c.Method,route,headers,payload);if err!=nil{return err}
+ response,retried,err:=send(ctx,c.IdempotentWrites,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
- if !success{return fmt.Errorf("API request failed (HTTP %d)",response.StatusCode)}
+ if success&&c.Method!="GET"{keepRevocation(ctx,app,cfg,response)}
+ if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
+ // A 5xx answer to a write that was not sent again, such as one with no Idempotency-Kept header, can follow a write
+ // that the service did (ST-SUP-RC04-OC34).
+ if !success&&response.StatusCode>=500&&(c.Method=="POST"||c.Method=="PATCH"){return fmt.Errorf("API request failed (HTTP %d); the write was not sent again and can have been done; retrieve the resource before a new write",response.StatusCode)}
+ if !success{return fmt.Errorf("API request failed (HTTP %d)%s",response.StatusCode,problemFacts(response))}
  emptyResponse:=response.StatusCode==204||response.StatusCode==205
  for _,code:=range c.EmptyResponses{if code==response.StatusCode{emptyResponse=true}}
  if emptyResponse{if len(response.Body)!=0{return errors.New("unexpected response body")};return destination.write(nil)}
@@ -160,6 +183,131 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  var formatted bytes.Buffer
  if err:=json.Indent(&formatted,response.Body,"","  ");err!=nil{return errors.New("invalid API JSON response")};formatted.WriteByte('\n')
  return destination.write(formatted.Bytes())
+}
+
+// problemFacts gives, for an answer of type application/problem+json, the last segment of its problem type and the
+// field and the message of at most five of its validation_errors, each one as printable ASCII text of at most 120
+// characters. It never gives the detail or another member of the answer, and it gives "" for any other answer
+// (ST-SUP-RC04-OC11; walkthrough 18: the CLI said API request failed (HTTP 400) and did not name the field). It gives
+// the type and each entry in double quotes, so a text of the answer cannot look like another entry (security review
+// of PR #473, I2).
+func problemFacts(response client.Response)string{
+ media,_,_:=strings.Cut(response.Header.Get("Content-Type"),";")
+ if !strings.EqualFold(strings.TrimSpace(media),"application/problem+json"){return ""}
+ var problem struct{Type string `json:"type"`;Entries []struct{Field string `json:"field"`;Message string `json:"message"`} `json:"validation_errors"`}
+ if json.Unmarshal(response.Body,&problem)!=nil{return ""}
+ var parts []string
+ if slug:=printableText(problem.Type[strings.LastIndex(problem.Type,"/")+1:]);slug!=""{parts=append(parts,"problem "+strconv.Quote(slug))}
+ for i,entry:=range problem.Entries{
+  if i==5{break}
+  field,message:=printableText(entry.Field),printableText(entry.Message)
+  switch{case field!=""&&message!="":parts=append(parts,strconv.Quote(field+": "+message));case field!="":parts=append(parts,strconv.Quote(field));case message!="":parts=append(parts,strconv.Quote(message))}
+ }
+ if len(parts)==0{return ""}
+ return ": "+strings.Join(parts,"; ")
+}
+// printableText gives text as printable ASCII of at most 120 characters: each other character becomes ?, so a
+// control character or an escape sequence of the answer cannot change the terminal.
+func printableText(text string)string{
+ var b strings.Builder
+ for _,r:=range text{if b.Len()==120{break};if r<0x20||r>0x7e{r='?'};b.WriteRune(r)}
+ return strings.TrimSpace(b.String())
+}
+// idempotencyKey gives a new Idempotency-Key: a structured string that holds a random UUID (ST-SUP-RC04-OC31). It
+// fails rather than give a key that is not random.
+func idempotencyKey()(string,error){
+ var b [16]byte;if _,err:=rand.Read(b[:]);err!=nil{return "",errors.New("cannot make an idempotency key")}
+ b[6]=b[6]&0x0f|0x40;b[8]=b[8]&0x3f|0x80
+ return fmt.Sprintf("\"%x-%x-%x-%x-%x\"",b[0:4],b[4:6],b[6:8],b[8:10],b[10:]),nil
+}
+// writeRetryWait is the wait before the second request of a write when the answer gives no Retry-After; a Retry-After
+// of 1 to 5 seconds is followed. Only the tests of this package change it.
+var writeRetryWait=time.Second
+// warnings is where the CLI writes a warning that changes no answer and no exit code. Only the tests of this package
+// change it.
+var warnings io.Writer=os.Stderr
+// keptHeader is the answer header with which the service tells that it keeps the Idempotency-Key of the request
+// (ST-SUP-RC04-OC34).
+const keptHeader="Idempotency-Kept"
+// send sends one request. A POST or a PATCH gets a new Idempotency-Key. When keeps states that the service keeps the
+// key of this write, a write that fails in transport or expires, or whose 5xx answer carries Idempotency-Kept: 1, is
+// sent again one time, after a short wait, with the same key and body, so the service gives the stored answer of a
+// write that it did (ST-SUP-RC04-OC31, ST-SUP-RC04-OC34). retried tells that the second request was sent: its answer,
+// when it is not a success, leaves the outcome of the write unknown, as the first request can still be in its
+// transaction. No other request is sent again (ST-SUP-RC04-OC05).
+func send(ctx context.Context,keeps bool,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
+ if method!="POST"&&method!="PATCH"{response,err=transport.Do(ctx,method,route,headers,payload);return}
+ key,err:=idempotencyKey();if err!=nil{return}
+ headers=headers.Clone();headers.Set("Idempotency-Key",key)
+ response,err=transport.Do(ctx,method,route,headers,payload)
+ if !keeps||!uncertain(response,err)||ctx.Err()!=nil{warnRelease(keeps,response,err);return}
+ wait:=writeRetryWait
+ if err==nil{if seconds,parseErr:=strconv.Atoi(response.Header.Get("Retry-After"));parseErr==nil&&seconds>=1&&seconds<=5{wait=time.Duration(seconds)*time.Second}}
+ timer:=time.NewTimer(wait);defer timer.Stop()
+ select{case <-ctx.Done():return response,false,err;case <-timer.C:}
+ response,err=transport.Do(ctx,method,route,headers,payload)
+ warnRelease(keeps,response,err)
+ return response,true,err
+}
+
+// uncertain tells whether a write can have occurred with its answer lost and a second request with the same key is
+// safe: a transport failure or a request that expired, which give no answer, or a 5xx answer that carries
+// Idempotency-Kept: 1, the word of the service that it keeps the key. A 5xx answer with no such header, such as of a
+// proxy or of a service of another release, is not sent again (ST-SUP-RC04-OC34). A local refusal of the client (such
+// as a header or a body over its limit), a redirect and an answer body over the limit are not sent again (security
+// review of PR 447, I-2).
+func uncertain(response client.Response,err error)bool{
+ if err!=nil{return errors.Is(err,client.ErrTransport)||errors.Is(err,client.ErrDeadline)}
+ return response.StatusCode>=500&&kept(response)
+}
+
+// kept tells whether an answer carries Idempotency-Kept: 1, one time.
+func kept(response client.Response)bool{
+ values:=response.Header.Values(keptHeader);return len(values)==1&&values[0]=="1"
+}
+
+// warnRelease writes a warning when the application states that the service keeps the key of a write and a 2xx
+// answer has no Idempotency-Kept header: the CLI and the service can then be of different releases. It changes no
+// answer (ST-SUP-RC04-OC34).
+func warnRelease(keeps bool,response client.Response,err error){
+ if !keeps||err!=nil||response.StatusCode<200||response.StatusCode>299||kept(response){return}
+ _,_ = fmt.Fprintln(warnings,"warning: the CLI states that the service keeps the Idempotency-Key of this write, but the answer has no Idempotency-Kept header; the CLI and the service can be of different releases, so build the CLI from the release of the service")
+}
+
+// IdempotentWritesFrom gives the application with IdempotentWrites set from the OpenAPI document of its service: true
+// on each command whose operation, the method on the path, carries the Idempotency-Key header parameter, and on each
+// apply resource whose create (POST on its path) carries it and, when the resource has patch fields, whose patch
+// (PATCH on its path and /{id}) carries it too; false on each other command and resource. Paths match with any name in
+// each {} segment. The rest-api component states the parameter on each create and patch when the service has the
+// idempotency component (ST-SUP-RC30-OC01). A parameter given by $ref is not followed, so its write is not sent again.
+func IdempotentWritesFrom(app Application,document []byte)(Application,error){
+ invalid:=errors.New("invalid OpenAPI document")
+ if len(document)>client.MaxResponseBytes{return app,invalid}
+ var spec struct{Paths map[string]map[string]json.RawMessage `json:"paths"`}
+ if json.Unmarshal(document,&spec)!=nil||spec.Paths==nil{return app,invalid}
+ type parameter struct{Name string `json:"name"`;In string `json:"in"`}
+ keyed:=map[string]bool{}
+ for route,item:=range spec.Paths{
+  var shared []parameter
+  if raw,ok:=item["parameters"];ok&&json.Unmarshal(raw,&shared)!=nil{return app,invalid}
+  for method,raw:=range item{
+   if method!="post"&&method!="patch"{continue}
+   var operation struct{Parameters []parameter `json:"parameters"`}
+   if json.Unmarshal(raw,&operation)!=nil{return app,invalid}
+   for _,p:=range append(append([]parameter(nil),shared...),operation.Parameters...){if p.In=="header"&&strings.EqualFold(p.Name,"Idempotency-Key"){keyed[strings.ToUpper(method)+" "+routeShape(route)]=true}}
+  }
+ }
+ result:=app
+ result.Commands=append([]Command(nil),app.Commands...)
+ for i:=range result.Commands{c:=&result.Commands[i];c.IdempotentWrites=keyed[c.Method+" "+routeShape(c.Path)]}
+ result.Resources=append([]ApplyResource(nil),app.Resources...)
+ for i:=range result.Resources{r:=&result.Resources[i];r.IdempotentWrites=keyed["POST "+routeShape(r.Path)]&&(len(r.PatchFields)==0||keyed["PATCH "+routeShape(r.Path+"/{id}")])}
+ return result,nil
+}
+// routeShape gives a path with each {} segment as {}, so that two names of one parameter match.
+func routeShape(route string)string{
+ parts:=strings.Split(route,"/");for i,part:=range parts{if strings.HasPrefix(part,"{")&&strings.HasSuffix(part,"}"){parts[i]="{}"}}
+ return strings.Join(parts,"/")
 }
 
 func parse(args []string,confirm bool)(map[string]string,[]string,error){

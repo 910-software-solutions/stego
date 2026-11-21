@@ -199,6 +199,10 @@ func TestTenantGate(t *testing.T) {
 			if p["type"] != c.want || p["code"] != c.code || w.Code != c.status {
 				t.Errorf("the tenant problem %d %s is %v, want the type %s, never the bare base", c.status, c.code, p, c.want)
 			}
+			// A browser does not sniff the problem as another type (security review of PR 445, I-2).
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("the tenant problem %d has X-Content-Type-Options %q, want nosniff", c.status, got)
+			}
 		}
 		w := httptest.NewRecorder()
 		writeTenantProblem(w, http.StatusForbidden, "", tenant.ErrNotProvisionedCode)
