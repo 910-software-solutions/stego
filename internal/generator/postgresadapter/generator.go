@@ -874,26 +874,26 @@ func checkLedger(applied, registered []Migration) error {
 	for i, row := range applied {
 		if i >= len(registered) {
 			if !row.Step {
-				return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, which is after the last migration %s of this release and is not a schema step: "+
+				return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the migration %q, which is after the last migration %q of this release and is not a schema step: "+
 					"a later release applied it. Deploy that release or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, lastName(registered))}
 			}
 			for _, name := range row.CompatibleWith {
 				if !known[name] {
-					return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the schema step %s of a later release, which needs the migration %s, and this release does not hold it: "+
+					return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the schema step %q of a later release, which needs the migration %q, and this release does not hold it: "+
 						"deploy the release of the step or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, name)}
 				}
 			}
 			continue
 		}
 		if row.Name != registered[i].Name {
-			return &ledgerRefusal{remedy: historyRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, and this release has the migration %s at that place: "+
+			return &ledgerRefusal{remedy: historyRemedy, text: fmt.Sprintf("the ledger row %d names the migration %q, and this release has the migration %q at that place: "+
 				"the database ran the migrations of another history, such as the build of a branch whose schema steps took other numbers before the merge. "+
 				"The body of an applied migration never changes, and nothing removes a ledger row. Run this release on a database that ran only releases of its own history: "+
 				"restore a backup made before the other build, or make the database again, such as a new preview database; the job changed nothing (ST-SUP-RC01-OC51)",
 				i+1, row.Name, registered[i].Name)}
 		}
 		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
-			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
+			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %q holds the digest %q, and this release registers the digest %q for its body: "+
 				"the body of an applied migration never changes, so a change comes as a new schema step. Deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; the job changed nothing, and nothing repairs the digest (ST-SUP-RC01-OC51)",
 				row.Name, row.Digest, registered[i].Digest)}

@@ -552,7 +552,9 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 				t.Errorf("%s gave %v, whose failure record names no fault class, ledger and remedy", name, err)
 			}
 		}
-		row := fmt.Sprintf("the ledger row %d names the migration %s", len(applied), branch)
+		// Each name of a ledger row, which the database holds, is quoted, so a name cannot forge a line of the job
+		// log (security review of PR #476, I1).
+		row := fmt.Sprintf("the ledger row %d names the migration %q", len(applied), branch)
 		for name, check := range map[string]struct {
 			run  func() error
 			want error
@@ -560,16 +562,21 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 			"the ledger check of the job": {func() error { return storage.CheckLedger(bg, db) }, storage.ErrForeignTables},
 			"the ledger":                  {func() error { return storage.Migrate(bg, db) }, storage.ErrMigrationLedger},
 		} {
-			refusal(name, check.run(), check.want, row, "has the migration "+last+" at that place", "another history", "restore a backup", "new preview database", "changed nothing")
+			refusal(name, check.run(), check.want, row, fmt.Sprintf("has the migration %q at that place", last), "another history", "restore a backup", "new preview database", "changed nothing")
 		}
 		if got := ledgerApplied(t, db); !slices.Contains(got, branch) || slices.Contains(got, last) {
 			t.Fatalf("a refused run changed the ledger: %v", got)
 		}
 		// A row after this release that is not a schema step names the row and the release to deploy.
 		exec(t, db, "UPDATE stego_schema.migrations SET version=$1 WHERE version=$2", last, branch)
-		exec(t, db, "INSERT INTO stego_schema.migrations(version,digest) VALUES('zzz_later','x')")
+		const later = "zzz_later\nmigrate: forged line"
+		exec(t, db, "INSERT INTO stego_schema.migrations(version,digest) VALUES($1,'x')", later)
 		refusal("a later row", storage.CheckLedger(bg, db), storage.ErrForeignTables,
-			fmt.Sprintf("the ledger row %d names the migration zzz_later", len(applied)+1), "after the last migration "+last, "Deploy that release or a later one")
+			fmt.Sprintf("the ledger row %d names the migration %q", len(applied)+1, later), fmt.Sprintf("after the last migration %q", last), "Deploy that release or a later one")
+		var refused interface{ Refusal() string }
+		if err := storage.CheckLedger(bg, db); !errors.As(err, &refused) || strings.Contains(refused.Refusal(), "\n") {
+			t.Fatalf("the refusal of a ledger row name with a line break holds the break: %v", err)
+		}
 	})
 }
 
