@@ -23,6 +23,7 @@ import (
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -3136,6 +3137,40 @@ func TestMigrateCauseClass(t *testing.T) {
 		var classed interface{ CauseClass() string }
 		if !errors.As(err, &classed) || classed.CauseClass() != "unavailable" {
 			t.Fatalf("the fault %v gives no class unavailable", err)
+		}
+	})
+}
+
+// TestMigrateRefusalReason proves the fixed class of the reason of a refusal of SpiceDB, such as of a schema write that
+// would remove a definition that has relationships (walkthrough 22, small items).
+func TestMigrateRefusalReason(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T32 A refusal of SpiceDB gives the class of its code and the fixed class of its reason, never its text", func(t *testing.T) {
+		withReason := func(code codes.Code, message, reason string) error {
+			s, err := status.New(code, message).WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "authzed.com"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s.Err()
+		}
+		for _, c := range []struct {
+			err  error
+			want string
+		}{
+			{fmt.Errorf("authz: SpiceDB refuses the schema of the release: %w", status.Error(codes.InvalidArgument,
+				"cannot delete object definition `job` in schema, as a relationship exists under it")), "invalid_argument.relationships_exist"},
+			{status.Error(codes.FailedPrecondition, "Cannot delete relation `viewer` in object definition `job`, as relationships exist under it"), "precondition_failed.relationships_exist"},
+			{withReason(codes.InvalidArgument, "parse error at buyer@example.com", "ERROR_REASON_SCHEMA_PARSE_ERROR"), "invalid_argument.schema_parse_error"},
+			// A reason that is not a value of the enum, and a refusal with no reason, give only the class of the code.
+			{withReason(codes.InvalidArgument, "bad", "ERROR_REASON_SECRET_10.1.2.3"), "invalid_argument"},
+			{withReason(codes.InvalidArgument, "bad", "ERROR_REASON_UNSPECIFIED"), "invalid_argument"},
+			{status.Error(codes.InvalidArgument, "definition `job` has the key k-secret"), "invalid_argument"},
+			// Only a refusal has a reason class.
+			{withReason(codes.Unavailable, "cannot delete, relationships exist", "ERROR_REASON_SERVICE_READ_ONLY"), "unavailable"},
+		} {
+			step := &StepError{Step: StepAuthorizationSchema, Err: c.err}
+			if got := step.CauseClass(); got != c.want {
+				t.Errorf("the cause %v gave the class %q, want %q", c.err, got, c.want)
+			}
 		}
 	})
 }
