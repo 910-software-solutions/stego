@@ -18,7 +18,7 @@ type SchemaChange struct {
 	// Entity is the entity whose table the change changes.
 	Entity string `yaml:"entity"`
 	// Field is the field the change is about, by its name after the change; for unique, the name of the declared
-	// invariant of kind unique.
+	// invariant of kind unique, or of a field of the entity that is unique or in a unique_composite (UniqueOfField).
 	Field string `yaml:"field,omitempty"`
 	// From is, for rename, the field's name before the change, for retype, the field's type before it, and for seal,
 	// the sensitivity of the field before it, public or pii, or empty when it had none.
@@ -34,6 +34,44 @@ type SchemaChange struct {
 	// the removed entity's fields; for relax, what the field was before the change, item by item (RelaxedFrom), such
 	// as max_length 64, required.
 	Definition string `yaml:"definition,omitempty"`
+}
+
+// UniqueOfField tells whether the change is a unique of a field: a change of kind unique whose Field names a field
+// of its entity in entities, which is unique or in a unique_composite after it. Its expand step builds the unique index
+// of the field on the table with rows and finishes it; it has no backfill and no contract step (ST-DECL-INV58,
+// ST-GEN-Q48). A unique change that names a declared invariant of kind unique is not one.
+func (c SchemaChange) UniqueOfField(entities []Entity) bool {
+	if c.Kind != "unique" {
+		return false
+	}
+	for _, entity := range entities {
+		if entity.Name == c.Entity {
+			return slices.ContainsFunc(entity.Fields, func(f Field) bool { return f.Name == c.Field })
+		}
+	}
+	return false
+}
+
+// WithoutUnique gives the fields of an entity before a unique of the field name: the field with no unique, no
+// unique_when_live and no unique_composite, and each other field that declares the same unique_composite group
+// with no unique_composite and no unique_when_live (ST-GEN-INV33, ST-GEN-Q48). It gives the fields unchanged when
+// none of them is name. The slice it gives is a new one.
+func WithoutUnique(fields []Field, name string) []Field {
+	out := slices.Clone(fields)
+	at := slices.IndexFunc(out, func(f Field) bool { return f.Name == name })
+	if at < 0 {
+		return out
+	}
+	group := out[at].UniqueComposite
+	for i := range out {
+		if i == at || (len(group) > 0 && slices.Equal(out[i].UniqueComposite, group)) {
+			if i == at {
+				out[i].Unique = false
+			}
+			out[i].UniqueComposite, out[i].UniqueWhenLive = nil, false
+		}
+	}
+	return out
 }
 
 // SchemaStep is one entry of the declaration's ordered schema history (ST-DECL-EN22): a schema change and the phase

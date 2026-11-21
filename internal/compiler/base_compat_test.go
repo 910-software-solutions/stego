@@ -829,3 +829,88 @@ func TestBaseEventFields(t *testing.T) {
 		})
 	}
 }
+
+func TestBaseUniqueOfField(t *testing.T) {
+	const unique = "{id: user-display-name-unique, kind: unique, entity: User, field: display_name}"
+	t.Run("ST-GEN-INV33-T A field of the base made unique needs a unique of the field, which makes it unique in place", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		cases := []struct {
+			name, head string
+			refused    bool
+			says       string
+		}{
+			{"unique: true with its unique step", relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique: true }", unique), false, ""},
+			{"a unique_composite with its unique step", relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique_composite: [display_name, role] }", unique), false, ""},
+			{"unique_when_live with its unique step", relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique: true, unique_when_live: true }", unique), false, ""},
+			{"unique: true with no step", relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique: true }", ""), true, "the head makes User.display_name unique, which no schema step declares"},
+			{"unique: true and a longer max_length with a unique step", relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 200, unique: true }", unique), true, "User.display_name"},
+		}
+		for _, c := range cases {
+			base := []byte(td01)
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			var messages []string
+			for _, fault := range check.Faults {
+				messages = append(messages, fault.Rule+": "+fault.Message)
+			}
+			switch {
+			case !c.refused && check.HasFaults():
+				t.Errorf("%s: refused: %v", c.name, messages)
+			case c.refused && !strings.Contains(strings.Join(messages, "\n"), c.says):
+				t.Errorf("%s: the faults %v do not say %q", c.name, messages, c.says)
+			}
+			if c.name == "unique: true with no step" {
+				if len(check.Faults) != 1 || len(check.Faults[0].Declare) != 1 || check.Faults[0].Declare[0].Kind != "unique" || check.Faults[0].Declare[0].Field != "display_name" ||
+					check.Faults[0].Declare[0].ID != "user-display-name-unique" || check.Faults[0].Declare[0].Phase != "expand" {
+					t.Errorf("%s: the faults are %+v, want one that declares the unique of User.display_name at expand", c.name, check.Faults)
+					continue
+				}
+				// The suggested step makes the head pass.
+				declared := relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique: true }", unique)
+				if again, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, declared)); err != nil || again.HasFaults() {
+					t.Errorf("the suggested unique step is refused: %v %+v", err, again.Faults)
+				}
+			}
+		}
+	})
+
+	t.Run("ST-GEN-INV33-T A new unique step of a field on a base whose runtime library refuses its index is refused, naming the version to deploy first", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		base := parseHead(t, td01)
+		head := parseHead(t, relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 100, unique: true }", unique))
+		applied := func(runtime string) *AppliedState {
+			state := &AppliedState{Components: map[string]ComponentState{"postgres-adapter": {Version: "6.4.0"}}, Archetype: &ArchetypeState{Version: "3.0.0"}}
+			if runtime != "" {
+				state.Archetype.Runtime = &registry.RuntimePin{Version: runtime}
+			}
+			return state
+		}
+		for _, runtime := range []string{"", "v0.182.0", "v0.108.0"} {
+			faults := uniqueRuntimeFaults(applied(runtime), base, head)
+			if len(faults) != 1 || faults[0].Rule != StepLedgerRule || !strings.Contains(faults[0].Message, UniqueRuntimeVersion) || !strings.Contains(faults[0].Message, "user-display-name-unique") {
+				t.Errorf("runtime %q: the faults are %+v, want one of %s that names %s and the change", runtime, faults, StepLedgerRule, UniqueRuntimeVersion)
+			}
+		}
+		for _, runtime := range []string{UniqueRuntimeVersion, "v0.190.0"} {
+			if faults := uniqueRuntimeFaults(applied(runtime), base, head); len(faults) != 0 {
+				t.Errorf("runtime %s: refused: %+v", runtime, faults)
+			}
+		}
+		if faults := uniqueRuntimeFaults(&AppliedState{Components: map[string]ComponentState{}}, base, head); len(faults) != 0 {
+			t.Errorf("a base with no postgres-adapter: refused: %+v", faults)
+		}
+		// A unique step of the base is no new step, and a relax is no unique step.
+		if faults := uniqueRuntimeFaults(applied("v0.95.0"), head, head); len(faults) != 0 {
+			t.Errorf("a unique step that the base has: refused: %+v", faults)
+		}
+		relaxed := parseHead(t, relaxUser(t, td01, displayName, "{ name: display_name, type: string, min_length: 1, max_length: 200 }",
+			"{id: user-display-name-relax, kind: relax, entity: User, field: display_name, definition: max_length 100}"))
+		if faults := uniqueRuntimeFaults(applied("v0.108.0"), base, relaxed); len(faults) != 0 {
+			t.Errorf("a relax: refused as a unique step: %+v", faults)
+		}
+	})
+}

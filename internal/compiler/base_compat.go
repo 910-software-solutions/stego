@@ -147,6 +147,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, ledgerVersionFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, uniqueRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealContractFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealTogetherFaults(declaration, head)...)
@@ -996,7 +997,8 @@ func (e *storedEntity) field(name string) int {
 // shapeAt gives the stored shape of a declaration with each schema change undone whose expand step is at the
 // position from of the schema history or after it, last step first: from 0 gives the baseline, with every step
 // undone. An add removes its field or entity, a rename gives the field its From name, a retype gives it its From
-// type, a require removes its field, a drop brings back its field or entity, a unique removes its invariant, and a
+// type, a require removes its field, a drop brings back its field or entity, a unique removes its invariant or takes
+// the unique off its field (types.WithoutUnique), and a
 // relax gives its field what it was before the change (types.SchemaChange.RelaxedFrom). A relax that does not relax
 // its field is not undone, so the shape before it differs from the base, and relaxFaults names the reason.
 func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
@@ -1085,6 +1087,22 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 				entity.Fields[field].Shape.Secret, entity.Fields[field].Shape.CompareOnly = false, false
 			}
 		case "unique":
+			if change.UniqueOfField(service.Entities) {
+				// A unique of a field is undone by taking its unique off the field and its group (ST-GEN-INV33,
+				// ST-GEN-Q48).
+				if field >= 0 && !entity.Fields[field].Loose {
+					group := entity.Fields[field].Shape.UniqueComposite
+					for i := range entity.Fields {
+						if i == field || (len(group) > 0 && slices.Equal(entity.Fields[i].Shape.UniqueComposite, group)) {
+							if i == field {
+								entity.Fields[i].Shape.Unique = false
+							}
+							entity.Fields[i].Shape.UniqueComposite, entity.Fields[i].Shape.UniqueWhenLive = nil, false
+						}
+					}
+				}
+				break
+			}
 			entity.Uniques = slices.DeleteFunc(entity.Uniques, func(unique storedUnique) bool { return unique.Name == change.Field })
 		case "relax":
 			if field >= 0 && !entity.Fields[field].Loose {
@@ -1260,6 +1278,16 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 				Declare: []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-relax", Kind: "relax", Entity: head.Name, Field: field.Name, Needs: "the definition " + definition, Phase: "expand"}}})
 			continue
 		}
+		if made := field.Shape; !field.Loose && !now.Loose && !madeUnique(field.Shape) && madeUnique(now.Shape) {
+			// A field of the base that the head makes unique, or puts in a unique_composite, with no other change, is
+			// a unique of a field (ST-GEN-Q48).
+			made.Unique, made.UniqueComposite, made.UniqueWhenLive = now.Shape.Unique, now.Shape.UniqueComposite, now.Shape.UniqueWhenLive
+			if reflect.DeepEqual(made, now.Shape) {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head makes %s.%s unique, which no schema step declares; the rows of the base can hold one value twice, so declare a unique of the field, whose index migration builds the unique index and stops the migration job while two rows hold one value", head.Name, field.Name),
+					Declare: []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-unique", Kind: "unique", Entity: head.Name, Field: field.Name, Phase: "expand"}}})
+				continue
+			}
+		}
 		if field.Shape.Type == now.Shape.Type {
 			// Only a relax changes the constraints of a field that keeps its type: a longer max_length, more enum
 			// values, a new default or an optional field. A narrowing is no schema change.
@@ -1314,6 +1342,9 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 	}
 	return faults
 }
+
+// madeUnique tells whether a stored field is unique or in a unique_composite.
+func madeUnique(shape fieldShape) bool { return shape.Unique || len(shape.UniqueComposite) > 0 }
 
 // definitionOf gives a field's shape as the Definition of a drop takes it, such as string, max_length 255.
 func definitionOf(shape fieldShape) string {
@@ -1390,6 +1421,40 @@ func relaxRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarat
 		// RelaxRuntimeVersion accepts.
 		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
 			"the base runs %s, whose schema check refuses the column that the %s %s changes in place, so its migration job refuses the database after the step; deploy a release with the runtime library %s or later, with no new schema step, first", pinned, kind, step.Change, RelaxRuntimeVersion)}}
+	}
+	return nil
+}
+
+// UniqueRuntimeVersion is the first runtime library version whose schema check accepts the unique index of a unique
+// of a field on columns that its manifest lists (ST-SUP-RP15-LC01, ST-GEN-Q48).
+const UniqueRuntimeVersion = "v0.183.0"
+
+// uniqueRuntimeFaults refuses a head with a new unique step of a field when the record at the base pins a runtime
+// library before UniqueRuntimeVersion, or none: the schema check of that release refuses the unique index of the
+// step, so its pods cannot restart after the step's index migration. The fault names the runtime version to deploy
+// first (ST-GEN-INV36, ST-GEN-Q48). A base with no postgres-adapter has no schema check of its tables.
+func uniqueRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
+	if _, pinned := applied.Components["postgres-adapter"]; !pinned {
+		return nil
+	}
+	version := ""
+	if applied.Archetype != nil && applied.Archetype.Runtime != nil {
+		version = applied.Archetype.Runtime.Version
+	}
+	if semver.IsValid(version) && semver.Compare(version, UniqueRuntimeVersion) >= 0 {
+		return nil
+	}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		at := slices.IndexFunc(head.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == step.Change })
+		if at < 0 || !head.SchemaChanges[at].UniqueOfField(head.Entities) {
+			continue
+		}
+		pinned := version
+		if pinned == "" {
+			pinned = "no runtime library"
+		}
+		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
+			"the base runs %s, whose schema check refuses the unique index that the unique %s builds on columns that it has, so its pods cannot restart after the step's index migration; deploy a release with the runtime library %s or later, with no new schema step, first", pinned, step.Change, UniqueRuntimeVersion)}}
 	}
 	return nil
 }
