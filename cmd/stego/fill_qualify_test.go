@@ -838,6 +838,12 @@ func TestFillQualification(t *testing.T) {
 		if stdout, stderr, err = p.stego(t, "no-key", "validate", "--base", "feature/carol"); err != nil || strings.Contains(stdout, "counts only because") {
 			t.Errorf("validate --base feature/carol gave %v, want no warning:\n%s\n%s", err, stdout, stderr)
 		}
+		// A repository with no default branch, such as the checkout of one commit in CI, has no base: validate passes
+		// with no warning.
+		git("branch", "-m", "main", "trunk")
+		if stdout, stderr, err = p.stego(t, "no-key", "validate", "--strict"); err != nil || strings.Contains(stdout, "counts only because") {
+			t.Errorf("validate --strict with no default branch gave %v, want exit 0 and no warning:\n%s\n%s", err, stdout, stderr)
+		}
 	})
 
 	t.Run("ST-EXT-UC02-R02-T04 Plan accepts a fill signed by a key that SIGNERS lists", func(t *testing.T) {

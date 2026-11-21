@@ -450,7 +450,9 @@ func TestStartStages(t *testing.T) {
 		_, err = New(context.Background(), settings, roles())
 		check("a server that closes the connection", err, DatabaseConnectionFault, "connection_closed")
 		refused := roles()
-		refused.TenantConfig = func(string) (tenant.Config, error) { return tenant.Config{}, errors.New("no configuration " + secretValue) }
+		refused.TenantConfig = func(string) (tenant.Config, error) {
+			return tenant.Config{}, errors.New("no configuration " + secretValue)
+		}
 		_, err = New(context.Background(), settings, refused)
 		check("a refused connection configuration", err, DatabaseSettingsFault, "invalid_setting")
 		check("a runtime role that fails a check", &databaseError{err: fmt.Errorf("open: %w", tenant.ErrRuntimeRole)}, DatabaseRuntimeRoleFault, "refused")

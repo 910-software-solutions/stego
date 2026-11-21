@@ -315,7 +315,8 @@ type baseSigners struct {
 
 // readBaseSigners reads the SIGNERS file of the service folder at the base: at the ref that named gives, else at the
 // merge base of HEAD and the default branch of the repository (defaultBaseRef). A base that holds no SIGNERS file
-// lists no key. With no Git repository, no commit or no default branch, there is no base, and changed is false.
+// lists no key. With no Git repository, no commit or no default branch that git can read, there is no base, and
+// changed is false.
 func readBaseSigners(named string) (baseSigners, error) {
 	var base baseSigners
 	if strings.HasPrefix(named, "-") {
@@ -323,12 +324,11 @@ func readBaseSigners(named string) (baseSigners, error) {
 	}
 	base.ref = named
 	if named == "" {
+		// With no default branch, such as in a checkout of one commit, there is no base, and no check; plan
+		// refuses such a checkout at its base check, which names --base.
 		ref, found, err := defaultBaseRef()
-		if errors.Is(err, errNoCommit) || (err == nil && !found) {
+		if err != nil || !found {
 			return base, nil
-		}
-		if err != nil {
-			return base, err
 		}
 		base.ref = ref
 		// The merge base is the version of the default branch that the change starts from: a key that the
