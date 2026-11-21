@@ -26,21 +26,31 @@ Do these steps for each upgrade. Do them in this order.
    backup](operations.md#restore-from-a-backup) for what the backup must hold.
 3. Make the new release of the service. Use the new `stego` binary on the
    declaration of the release that runs now, and give `--base` the commit or
-   tag of that release:
+   tag of that release. Run the commands in this order:
 
    ```sh
+   stego test
+   stego fill sign <fill>
    stego validate
    stego compat --base <tag of the running release>
-   stego test
    stego plan --base <tag of the running release>
    stego apply --base <tag of the running release>
    stego deps
    ```
 
-   `stego test` runs the tests of each fill. Sign each fill whose evidence is
-   new with `stego fill sign <fill>`. When `stego plan` says that the
-   declaration needs add steps and saved no plan, run `stego apply --base`
-   without `--saved-plan`. See [Schema changes](schema-changes.md). When a
+   Run `stego test` first. A new STEGO release can change the contract of a
+   fill, such as the command contract, also when you do not change the fill.
+   Then the evidence of the fill is stale, and `stego validate`, `stego plan`
+   and `stego apply` refuse it: `fill "<fill>" is stale ... the contract
+   command.command changed after its evidence; run stego test, then stego
+   fill sign <fill>`. `stego test` runs the tests of each fill on the new
+   contracts and records new evidence. Review each fill, its diff and the
+   change of its contract, then run `stego fill sign <fill>` for each fill
+   whose evidence `stego test` recorded. When a test does not
+   compile, such as with `too many arguments in call to`, do the action of
+   its release note (step 1) and run `stego test` again. When `stego plan`
+   says that the declaration needs add steps and saved no plan, run `stego
+   apply --base` without `--saved-plan`. See [Schema changes](schema-changes.md). When a
    Go build fails with `could not import log/slog`, see [A Go build fails
    with "could not import log/slog"](#a-go-build-fails-with-could-not-import-logslog).
 4. Make each new Secret, grant and role that the release notes name, before
@@ -66,6 +76,65 @@ Do not skip a release that holds a contract step of a schema change. `stego
 compat` compares your change with the base that you give it. It cannot see a
 release that you did not deploy.
 
+## The clients of the release before
+
+During the rollout, the release before and the new release serve the same
+routes. After the rollout, the clients that you built for the release before
+still call the service until you build them again. This section tells what
+such a client gets from the new release. In walkthrough 18, the HTTP and the
+gRPC clients of a release with runtime v0.138.0 worked against a release with
+runtime v0.165.0, except for the cases below.
+
+- **An idempotency key that the release before stored.** A request again
+  with the same key, method, path and body gets the stored answer while the
+  service keeps the key, 24 hours by default. A request with the same key and
+  another path or body gets 422 with the problem type
+  `idempotency-key-reused`. A request with the same key and the same body
+  also gets 422 when the new release makes the fingerprint of the request in
+  another way: when the release before had no key ring and the new release
+  has one, such as from 3.189.0 for a service with a `pii` field or from
+  3.211.0 for a service with a `debug_redact` member, or when the key ring no
+  longer holds the key that made the fingerprint. The answer carries
+  `Idempotency-Kept: 1` from 3.216.0. After a 422, do not send the key again.
+  Read the state of the resource, and send a new write with a new key only
+  when the first write was not done.
+- **A field that a retype changes.** The new release reads and writes the
+  field in its new JSON type, such as `"7"` in place of `7`. It refuses a
+  write of the old type with 400 and the problem type `validation-error`,
+  which names the field. A client must read both types while the two
+  releases run, and write the new type only to the new release. A require
+  also refuses a create that does not send the new field. See [Retype and
+  require](schema-changes.md#retype-and-require).
+- **A member that the entity does not take.** A create and an update ignore
+  such a member, such as a field that a drop removed, and answer as for a
+  body without it: a create gives 201, and the value is lost. See [A client
+  that still sends the dropped field](schema-changes.md#a-client-that-still-sends-the-dropped-field).
+  From 3.215.0, a patch refuses such a member with 400 and names it.
+- **An entity that a drop removes.** From the expand step of the drop, the
+  new release serves no route of the entity and its collections, so a
+  request to such a route gets 404. The release before still serves them
+  until it stops. See [Remove an entity](schema-changes.md#remove-an-entity).
+- **A generated client of the release before.** The CLI and the SDKs hold the
+  OpenAPI document of the release that you built them from. Thus they do not
+  know a later change of the document:
+  - A CLI before cli-application 1.17.0 does not read `Idempotency-Kept`. It
+    sends a write again after a 5xx answer by the flag of its own document.
+  - A CLI that you built before a member had the mark `debug_redact` gives
+    that member a flag, which puts the secret in the shell history and the
+    process list. A CLI that you built before a command was Sensitive writes
+    its answer to standard output.
+  - A client that you built before a retype sends and reads the old JSON
+    type of the field.
+
+  Build the CLI and the SDKs again from the OpenAPI document of each new
+  release, and give the new clients to their users before you stop the
+  release before. A CLI of the new release that calls the release before
+  writes a warning to standard error when an answer has no
+  `Idempotency-Kept` header. The warning changes no answer and no exit code.
+- **A gRPC client.** A gRPC answer has no `Idempotency-Kept` metadata. After
+  a failure, send the command again only with the same key: the service then
+  gives the stored answer, or runs the command once.
+
 ## Release notes
 
 Each row is a change that needs an action from you. The versions are the
@@ -87,7 +156,13 @@ archetype does not have the change.
 | 3.199.0 | 1.199.0 | 1.199.0 | Runtime v0.150.0, postgres-adapter 6.17.0, command 1.13.0 and rest-api 4.19.0. A process of the release of the expand step of a seal goes on after the contract step drops the clear column. `stego compat` and `stego plan` refuse the contract step of a seal over a base with a runtime before v0.150.0. The update request of an entity with a secret field requires no secret: an update that leaves it out keeps it. Checking refuses a field named `kind` or `href` of an entity that a collection serves. | Before the contract step of an open seal, deploy a release with runtime v0.150.0 or later and the seal still at expand (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)). Give a field named `kind` or `href` another name: when the base stores it, add a field of another name and drop the old one, because a rename keeps the API name. |
 | 3.206.0 | 1.206.0 | 1.206.0 | command 1.14.0: the repository of an entity with its own resource type is the type `<Entity>Repo`. Its `GetForUpdate`, `GetForDelete`, `Update` and `Delete` take no parent, and an update that changes a reference is `Move`. A fill that gives a parent to one of them does not compile: `too many arguments in call to`. Runtime v0.154.0: a process whose database lacks a table or a column of its manifest, such as after a roll back past a contract step, starts not ready; the api Deployment of a service with modes has the readiness `/readyz/modes`. After an offset reset, a record that comes again takes its place before the later messages of its row, and a message parked as poison goes back to pending when an earlier message of its row is done. | [Give no parent where the repository takes none](#give-no-parent-where-the-repository-takes-none). Remove an overlay patch of the readiness probe of `<service>`. See [Which older releases can run on a newer database](operations.md#which-older-releases-can-run-on-a-newer-database) and [Repair a wrong order with an offset reset](subscriptions.md#repair-a-wrong-order-with-an-offset-reset). |
 | 3.209.0 | 1.209.0 | 1.209.0 | Runtime v0.157.0, postgres-adapter 6.19.0, command 1.15.0 and rest-api 4.21.0. A field written `sensitivity: public` is a field with no sensitivity: a list searches and orders it, and its table has its search index. A seal `from: public` keeps the search index of the field, as a seal with no `from`. `stego compat` and `stego plan` refuse the contract step of one seal of an entity while the base holds another seal of the same entity open. A process of the release of the expand step writes the clear column again when a restore brings it back, and the seal job completes no pass with no checkpoint while the clear column is there. | Declare the contract steps of the open seals of one entity in the same release (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)). |
+| 3.211.0 | 1.211.0 | 1.211.0 | rest-api 4.22.0, cli-application 1.13.0, command 1.16.0 and runtime v0.158.0: a member of a command message that the proto file marks `[debug_redact = true]` is a secret. The OpenAPI document gives it `x-sensitive: true`. The generated CLI gives it no flag: give it in `--body FILE`. A command whose answer holds such a member writes its answer only to `--output-file FILE`. A service with such a member reads the key ring, which keys the fingerprints of its idempotency keys and seals their stored answers. `stego validate` gives the warning `unmarked-secret-member` for a member of a command request that has the name of a secret field of an entity that the command writes and has no mark. The warning does not stop validate, plan or apply. | Mark each secret member of a command request and response, such as a PIN, with `[debug_redact = true]` (see [A secret member](commands-queries-workers.md#a-secret-member)). A service with no `secret` and no `pii` field then needs the key ring: make it as for a `pii` field (see [Make the key ring of a service with a pii field](#make-the-key-ring-of-a-service-with-a-pii-field)). Build the CLI again, and give each secret member in a body file. |
+| 3.214.0 | 1.214.0 | 1.214.0 | rest-api 4.23.0, command 1.17.0, cli-application 1.15.0 and runtime v0.160.0. The runtime refuses to serve a command with a secret member when the service has no key ring. Generation refuses a route whose path parameter is a secret member. A command whose answer holds a secret member at any depth is Sensitive. A Sensitive command refuses `--output-file -`. The CLI refuses a `--body FILE` that holds a secret member when the group or other users have access to the file. | Make the key ring before you deploy a release with a secret member. Give a secret member in the body, not in the path. Use `chmod 600` on each body file that holds a secret. |
 | 3.215.0 | 1.215.0 | 1.215.0 | rest-api 4.24.0: a patch refuses each body member that is not a patchable field, `kind`, or a field that a collection write cannot change. The names must match in letter case: a member such as `Title` for the field `title` is refused. The answer is a 400 validation problem that names the member, and the patch changes nothing. Before, a patch ignored such a member and answered 200. The OpenAPI document gives each `<Collection>PatchRequest` with `additionalProperties: false`. cli-application 1.16.0: an apply of the same documents again leaves out each create-only field whose value is the stored one. | Send in a patch only the fields that `patchable` names, in the letter case of the OpenAPI document, and after a rename the API name of the field. Build the clients again from the new OpenAPI document (see the operations of a collection in [Quick start](../README.md#quick-start)). |
+| 3.216.0 | 1.216.0 | 1.216.0 | idempotency 0.2.0, command 1.18.0, rest-api 4.25.0 and 4.26.0, cli-application 1.17.0 and 1.18.0, go-sdk 2.2.1, typescript-sdk 1.2.3, http-application 2.3.1 and runtime v0.161.0. Each answer to a create, a patch or a command whose request carries an `Idempotency-Key` that the service keeps carries the header `Idempotency-Kept: 1`, also a problem and a 5xx answer. The header is for HTTP only: a gRPC answer has no such metadata. The generated CLI sends a write again after a 5xx answer only when the answer carries the header. A 2xx answer with no header to a write whose key the CLI expects kept gives a warning on standard error, because the CLI and the service can be of different releases. The OpenAPI document marks the root of a command answer `x-stego-opaque` when the message holds a `google.protobuf.Any`, `Struct`, `Value` or `ListValue` member at any depth. The CLI makes such a command Sensitive: its answer goes only to `--output-file FILE`. A query answer gets no such mark. The CLI refuses a token file, a configuration file and a secret body file that another user owns. | Build the CLI and the SDKs again from the new OpenAPI document. Make sure that no proxy in front of the service adds `Idempotency-Kept`: the CLI trusts the header to send a write again. Give a command with an opaque answer `--output-file FILE`. Never put a secret in a query answer: a call that makes a secret, such as an API key, is a command with a `debug_redact` member. Make the CLI user the owner of its token, configuration and body files. |
+| 3.220.0 | 1.220.0 | 1.220.0 | grpc-application 2.4.0, cli-application 1.20.0 and runtime v0.163.0. Only the api Deployment gets `STEGO_GRPC_TLS_CERT` and `STEGO_GRPC_TLS_KEY` and mounts the Secret `<service>-grpc-tls`, which holds the private key of the gRPC server. The worker Deployment and the migration Job no longer get them. The two variables are not required on their own in the platform requirements: they are required when the process serves gRPC, so `stego env check` does not name a missing path of them. `APPLY_CONFIG`, the configuration file of the generated CLI, is in no pod, and the platform requirements do not list it. `command.NewToken(size)` gives a fill 16 to 64 random bytes from `crypto/rand` for a secret that the command issues. The contract of each command fill and worker fill now imports the `command` package, so a fill can call it also in a service with no secret field. `crypto/rand` stays out of the imports of a fill. | Remove each overlay patch that gives the gRPC TLS Secret, or `STEGO_GRPC_TLS_*`, to the worker Deployment or the migration Job. Keep the Secret `<service>-grpc-tls`, and give the api pods the paths of its files, or list the Component `secret-files` in the overlay. Remove `APPLY_CONFIG` from the environment file and the overlays, and set it only in the shell of the CLI user. Make each secret that a fill issues with `command.NewToken`, never from an ID, the time or a hash of the input (see [The imports of a fill](fills.md#the-imports-of-a-fill)). When `stego validate` names a fill as stale, run `stego test` and `stego fill sign <fill>` (step 3 of [The procedure](#the-procedure)). |
+| 3.226.0 | 1.226.0 | 1.226.0 | Runtime v0.165.0. When the database refuses a prepared statement with SQLSTATE 0A000 `cached plan must not change result type`, such as after a person drops a column and adds it again while the service runs, the runtime makes each connection of the pool prepare its statements again. It runs a command once more in a new transaction, with no wait. A query answers 500 one time, and the next call passes. Thus a fill can run two times in one request. | Make each fill do no effect outside its transaction, such as a call to another system, or make that effect idempotent: send each change to another system as an effect through the outbox (see [Effects](commands-queries-workers.md#effects)). |
+| STEGO commit 40f7f991f | STEGO commit 40f7f991f | STEGO commit 40f7f991f | The archetype versions stay 3.226.0 and 1.226.0; grpc-processes 1.8.0. `stego compat` and `stego plan` refuse a drop of a field whose seal is open in the base, and a drop of an entity that has such a field. The fault names the seal and gives its contract step as the change to declare. A drop of a field that the base stores secret, whose `definition` gives the field in clear, gets a fault that tells you to add the item `secret` to the definition. Another field of the entity can drop while the seal stays open. `stego env check` prints a notice for a path variable of the api mode that names the file of a secret, such as `STEGO_GRPC_TLS_CERT`, when the environment file gives it no value. The notice is not a failure. | Contract the seal first, with the step `{change: <seal>, phase: contract}` in a release of its own, then declare the drop in a later release (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)). In the definition of the drop of a sealed field, add the item `secret` before a pattern. For each notice of `stego env check`, give the path of the file in the environment file, or list the Component `secret-files` in the overlay. |
 | 3.227.0 | 1.227.0 | 1.227.0 | rest-api 4.27.0: a create, an update and an upsert refuse each body member that is not a field of the entity by its API name, `kind`, `id` or `href`. The names must match in letter case: a member such as `Title` for the field `title`, a typo, the declared name of a renamed field or `tenant_id` is refused. The answer is a 400 validation problem that names the member, and the write changes nothing. Before, the write ignored such a member and answered 2xx, and the field was not set. A body may still give `id`, `href` and each field that the server sets, as a read gives them: the server ignores these values. A body that gives an implicit field of the collection another value than the value of the collection is refused too; before, the value of the collection replaced it. The OpenAPI document gives each `<Entity>CreateRequest` and `<Entity>UpdateRequest` with `additionalProperties: false`, marks each member that the server sets `x-output-only`, and each member that the body may only repeat `x-kept`. cli-application 1.21.0, go-sdk 2.2.2 and typescript-sdk 1.2.4 take the new document. | Send in a create, an update or an upsert only the fields of the entity, in the letter case of the OpenAPI document, and after a rename the API name of the field. Leave an implicit field out, or give the value of the collection. Build the CLI and the SDKs again from the new OpenAPI document (see the operations of a collection in [Quick start](../README.md#quick-start)). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 

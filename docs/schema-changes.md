@@ -472,15 +472,20 @@ an open seal: give `--base` with the release that runs now. The first pass also 
 after the expand step, so that each running process of the release before
 reports itself first.
 
-So a seal takes 10 to 13 minutes or more before you can deploy its contract
-step.
-The controller runs the seal job at its start and then each 10 minutes. A run
-waits, and seals nothing, while the expand step is younger than 3 minutes or a
-process of a release before reported itself in its last three report
-intervals, such as in the last 30 seconds. Thus the first run after a
-rollout usually waits, and the first pass runs 10 minutes later. Look for the
-log line `seal of a secret column` with `completed=true` before you declare the
-contract step.
+The controller runs the seal job when it gets the controller lease, at its
+start, and then each 10 minutes. A run waits, and seals nothing, while the
+checkpoint row of the seal is younger than 3 minutes or a process of a
+release before reported itself in its last three report intervals, such as in
+the last 30 seconds. The migration Job that first applies the expand step on
+the database makes the row, and a restore keeps the row of the dump with its
+time. Thus the first run after a rollout usually waits, and the first pass
+runs 10 minutes later: a seal then takes 10 to 13 minutes before you can
+deploy its contract step. When the row is 3 minutes old and no process of
+the release before reported itself in its last three report intervals, a
+controller that starts runs the pass at once. A pass reads
+100 rows at a time, with a pause of 50 ms after each batch, so its time grows
+with the number of rows. Look for the log line `seal of a secret column` with
+`completed=true` before you declare the contract step.
 
 The migration Job of the release with the expand step makes the row of the
 lease `stego.backfill.<change ID>` in the lease table. A later migration Job
@@ -628,8 +633,10 @@ take it through the steps again:
    seal`. This is the expected result.
 3. Run the release of the expand step of the seal, with its controller, until
    the seal job logs `seal of a secret column` with `completed=true`. The first
-   pass waits 3 minutes after the expand step, so that each process of a
-   release before reports itself. When the release of the expand step logs
+   pass waits until the checkpoint row of the seal is 3 minutes old, so that
+   each process of a release before reports itself. A backup from after the
+   expand step holds an older row, so the pass runs when the controller
+   starts (see [Restore from a backup](operations.md#restore-from-a-backup)). When the release of the expand step logs
    that the lease of the seal job is not in the lease table, run its migration
    Job first.
 4. Run the migration Job of the release that runs now again. It applies the
