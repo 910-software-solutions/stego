@@ -266,12 +266,13 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 	db := rt.chargeDB()
 	rt.warnSmallChargePool()
 	perTenant, shared := chargeLimits(db)
-	release, err := rt.chargeSlots.take(ctx, t.ID(), perTenant, shared)
+	release, err := rt.chargeSlots.take(ctx, t.ID(), perTenant, shared, func(inUse, waiting int) {
+		rt.saturated(db, key, inUse, waiting)
+	})
 	if err != nil {
 		return false, err
 	}
 	defer release()
-	rt.saturated(db, key)
 	tx, err := tenant.Begin(ctx, db, t, nil)
 	if err != nil {
 		return false, err
@@ -377,14 +378,14 @@ func (s *state) boundTo(c sealed.Compared, key attemptKey) bool {
 	return ok && k.s == s && k.key == key
 }
 
-// saturated logs, at most once in saturationLogEvery, that each connection of the pool of the charges is in use, so
-// the charge of key waits for one: through the log provider of the runtime, or with log/slog when it has none. The
-// log names the entity of the counter and the counts of the pool, never a value.
-func (rt *Runtime) saturated(db *sql.DB, key attemptKey) {
-	st := db.Stats()
-	if st.MaxOpenConnections <= 0 || st.InUse < st.MaxOpenConnections {
-		return
-	}
+// saturated logs, at most once in saturationLogEvery, that the charge of key waits for a slot while the charges hold
+// each shared slot of the pool of the charges, which is all but one of its connections (walkthrough 22, P1-PS): the
+// slots never let the charges hold more connections than the pool has, so a full pool shows at the wait for a slot,
+// not at the wait for a connection. It logs through the log provider of the runtime, or with log/slog when it has
+// none. inUse is the count of the slots in use and waiting the count of the charges that wait for a slot, with this
+// one. The log names the entity of the counter and the counts of the pool, never a value or a tenant.
+func (rt *Runtime) saturated(db *sql.DB, key attemptKey, inUse, waiting int) {
+	maxOpen := db.Stats().MaxOpenConnections
 	now := time.Now().UnixNano()
 	last := rt.saturationLogged.Load()
 	if last != 0 && now-last < int64(saturationLogEvery) {
@@ -395,17 +396,16 @@ func (rt *Runtime) saturated(db *sql.DB, key attemptKey) {
 	}
 	entity := key.counter.spec.Entity
 	if rt.logger == nil {
-		slog.Warn(PoolSaturatedEvent, "entity", entity, "in_use", st.InUse, "max_open", st.MaxOpenConnections,
-			"wait_count", st.WaitCount)
+		slog.Warn(PoolSaturatedEvent, "entity", entity, "in_use", inUse, "max_open", maxOpen, "waiting", waiting)
 		return
 	}
 	var record otellog.Record
 	record.SetEventName(PoolSaturatedEvent)
 	record.SetSeverity(otellog.SeverityWarn)
 	record.SetSeverityText("WARN")
-	record.SetBody(attribute.StringValue("each connection of the pool of the charges is in use, so a charge of a counted check waits"))
-	record.AddAttributes(attribute.String("stego.entity", entity), attribute.Int("stego.pool.in_use", st.InUse),
-		attribute.Int("stego.pool.max_open", st.MaxOpenConnections), attribute.Int64("stego.pool.wait_count", st.WaitCount))
+	record.SetBody(attribute.StringValue("the charges of counted checks hold each shared connection of their pool, so a charge waits for a slot"))
+	record.AddAttributes(attribute.String("stego.entity", entity), attribute.Int("stego.pool.in_use", inUse),
+		attribute.Int("stego.pool.max_open", maxOpen), attribute.Int("stego.pool.waiting", waiting))
 	rt.logger.Emit(context.Background(), record)
 }
 
@@ -483,8 +483,10 @@ type tenantSlot struct {
 // take takes a slot for a charge of the tenant id under the limits perTenant and shared (no limit of all the slots,
 // and no reserved slot, when shared is negative, as for a pool with no bound), and gives the function that
 // gives it back. It waits at most until ctx ends, and then gives the error of ctx, so the check fails and the call
-// answers 503.
-func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int) (func(), error) {
+// answers 503. When the charge must wait while each shared slot is in use, it calls full once, outside the lock,
+// with the count of the slots in use and the count of the charges that wait (walkthrough 22, P1-PS); a charge that
+// waits only for the limit of its own tenant, while a shared slot is free, does not call it.
+func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int, full func(inUse, waiting int)) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tenants == nil {
@@ -497,6 +499,7 @@ func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int
 	}
 	slot.users++
 	bounded := shared >= 0
+	reported := false
 	for {
 		switch {
 		case slot.held < perTenant && (!bounded || s.shared < shared):
@@ -513,7 +516,16 @@ func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int
 		}
 		changed := s.changed
 		slot.blocked++
+		report := !reported && full != nil && bounded && s.shared >= shared
+		inUse, waiting := s.shared, s.blockedAll()
+		if s.reserved {
+			inUse++
+		}
 		s.mu.Unlock()
+		if report {
+			reported = true
+			full(inUse, waiting)
+		}
 		select {
 		case <-changed:
 			s.mu.Lock()
@@ -550,6 +562,15 @@ func (s *tenantSlots) leave(id string, slot *tenantSlot) {
 	if slot.users--; slot.users == 0 {
 		delete(s.tenants, id)
 	}
+}
+
+// blockedAll gives the count of the charges of all the tenants that wait for a slot. The caller holds s.mu.
+func (s *tenantSlots) blockedAll() int {
+	n := 0
+	for _, slot := range s.tenants {
+		n += slot.blocked
+	}
+	return n
 }
 
 // waiting gives the count of the charges of the tenant id that run or wait for a slot.

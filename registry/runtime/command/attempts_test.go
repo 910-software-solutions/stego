@@ -764,41 +764,40 @@ func TestAttemptPools(t *testing.T) {
 		if !errors.Is(err, ErrUnavailable) || len(got) != 1 || !errors.As(got[0], &state) || state.SQLState() != "55P03" || chargeCause(got[0]) != "lock_timeout" {
 			t.Fatalf("the charge behind the reset gave %v with the charge errors %v, want 503 after the lock timeout (55P03)", err, got)
 		}
-		// Each connection of the pool of the charges is in use: the charge waits for one, and the wait is logged.
-		// full holds the one connection of the pool until seen tells that the log came, and gives the result of the
-		// check, or fails when the check ends with no log.
-		full := func(key string, seen func() bool) error {
+		// A charge holds the one slot of the pool of the charges, so a second charge waits for a slot, and the wait is
+		// logged before the charge waits (walkthrough 22, P1-PS: the slots never let the charges hold more
+		// connections than the pool has, so only the wait for a slot shows a full pool). full holds the first charge
+		// at its connection until the second waits for a slot, then lets both end and gives the result of the second.
+		full := func(key string) error {
 			t.Helper()
-			held, err := chargeDB.Conn(e.ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			done := make(chan error, 1)
+			hold, begun := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			rt.chargeBegun = func(string) { once.Do(func() { close(begun); <-hold }) }
+			defer func() { rt.chargeBegun = nil }()
+			first, done := make(chan error, 1), make(chan error, 1)
+			go func() { first <- check(key+"-first", "0000") }()
+			<-begun
 			go func() { done <- check(key, "0000") }()
-			for {
-				select {
-				case result := <-done:
-					_ = held.Close()
-					t.Fatalf("the charge ended with %v and logged no full pool of the charges", result)
-				default:
-				}
-				if seen() {
-					_ = held.Close()
-					return <-done
-				}
+			for rt.chargeSlots.blocked("t1") == 0 {
 				runtime.Gosched()
 			}
+			close(hold)
+			if err := <-first; err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("the charge that held the pool gave %v, want the refusal of the wrong PIN", err)
+			}
+			return <-done
 		}
 		var logs lockedBuffer
 		previous := slog.Default()
 		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 		t.Cleanup(func() { slog.SetDefault(previous) })
-		result := full("full-1", func() bool { return strings.Contains(logs.String(), PoolSaturatedEvent) })
+		result := full("full-1")
 		if result == nil || errors.Is(result, ErrUnavailable) {
 			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
 		}
 		text := logs.String()
-		if !strings.Contains(text, "entity=PinWallet") || !strings.Contains(text, "max_open=1") || strings.Contains(text, "0000") || strings.Contains(text, "argon2") {
+		if !strings.Contains(text, PoolSaturatedEvent) || !strings.Contains(text, "entity=PinWallet") || !strings.Contains(text, "max_open=1") || !strings.Contains(text, "in_use=1") || !strings.Contains(text, "waiting=1") ||
+			strings.Contains(text, "0000") || strings.Contains(text, "argon2") || strings.Contains(text, "t1") {
 			t.Fatalf("the log of the full pool is %q, want the entity and the counts of the pool and no value", text)
 		}
 		// With a log provider, the line goes through it, as each other log line of the runtime.
@@ -814,18 +813,131 @@ func TestAttemptPools(t *testing.T) {
 			}
 			return lines
 		}
-		result = full("full-2", func() bool { return len(saturated()) > 0 })
+		result = full("full-2")
 		if result == nil || errors.Is(result, ErrUnavailable) {
 			t.Fatalf("the charge after the wait for the pool gave %v, want the refusal of the wrong PIN", result)
 		}
 		lines := saturated()
+		if len(lines) != 1 {
+			t.Fatalf("the provider got %d lines of %s, want one", len(lines), PoolSaturatedEvent)
+		}
 		attrs := map[string]string{}
 		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
 			attrs[string(kv.Key)] = kv.Value.Emit()
 			return true
 		})
-		if len(lines) != 1 || lines[0].SeverityText() != "WARN" || attrs["stego.entity"] != "PinWallet" || attrs["stego.pool.max_open"] != "1" || strings.Contains(lines[0].Body().Emit(), "0000") {
+		if len(lines) != 1 || lines[0].SeverityText() != "WARN" || attrs["stego.entity"] != "PinWallet" || attrs["stego.pool.max_open"] != "1" ||
+			attrs["stego.pool.in_use"] != "1" || attrs["stego.pool.waiting"] != "1" || strings.Contains(lines[0].Body().Emit(), "0000") {
 			t.Fatalf("the provider got %d lines of %s with the attributes %v, want one WARN line with the entity and the pool and no value", len(lines), PoolSaturatedEvent, attrs)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T11 A charge that waits for a slot while the charges hold each shared slot logs a full pool, and a wait for the limit of its own tenant does not", func(t *testing.T) {
+		const walletID = "0198a1b2-0000-7000-8000-000000000005"
+		e := newEnv(t)
+		pinWallets(t, e, walletID, "4711")
+		hash, err := sealed.Hash("4711")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) VALUES ('t2', $1, 100, $2)`, walletID, hash); err != nil {
+			t.Fatal(err)
+		}
+		wallets := pinWalletEntity(t)
+		// A pool of 4: 3 shared slots, at most 2 for one tenant, and the reserved slot.
+		chargeDB := e.openPool(e.dsn(e.roles[0]))
+		chargeDB.SetMaxOpenConns(4)
+		rt := e.runtime(func(c *Config) { c.Entities, c.ChargeDB = []Declared{wallets}, chargeDB })
+		records := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(records))).Logger("test")
+		saturated := func() []sdklog.Record {
+			var lines []sdklog.Record
+			for _, r := range records.all() {
+				if r.EventName() == PoolSaturatedEvent {
+					lines = append(lines, r)
+				}
+			}
+			return lines
+		}
+		// Each charge keeps its connection until release closes; begun counts the charges of each tenant that have one.
+		release := make(chan struct{})
+		var mu sync.Mutex
+		begun := map[string]int{}
+		rt.chargeBegun = func(id string) {
+			mu.Lock()
+			begun[id]++
+			mu.Unlock()
+			<-release
+		}
+		began := func(id string) int {
+			mu.Lock()
+			defer mu.Unlock()
+			return begun[id]
+		}
+		cmd := e.command("withdraw", nil, wallets)
+		results := make(chan error, 6)
+		check := func(tenantID, key string) {
+			go func() {
+				_, err := e.runOn(rt, cmd, e.request(tenantID, u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+					r, err := Repo(h, wallets)
+					if err != nil {
+						return idempotency.Response{}, err
+					}
+					w, err := r.Get(ctx, walletID)
+					if err != nil {
+						return idempotency.Response{}, err
+					}
+					if !w.Value().PIN.Matches("0000") {
+						return idempotency.Response{}, errors.New("pin.wrong")
+					}
+					return ok, nil
+				})
+				results <- err
+			}()
+		}
+		// t1 holds its 2 slots, and its third charge waits for the limit of t1 while a shared slot is free: that is
+		// no full pool.
+		check("t1", "t1-1")
+		check("t1", "t1-2")
+		for began("t1") < 2 {
+			runtime.Gosched()
+		}
+		check("t1", "t1-3")
+		for rt.chargeSlots.blocked("t1") < 1 {
+			runtime.Gosched()
+		}
+		if lines := saturated(); len(lines) != 0 {
+			close(release)
+			t.Fatalf("a charge that waits for the limit of its tenant logged %d lines of %s, want none", len(lines), PoolSaturatedEvent)
+		}
+		// t2 takes the last shared slot, and its second charge waits: each shared slot is in use, and t2 cannot take
+		// the reserved slot while it holds a slot. The connections in use stay under the pool of 4.
+		check("t2", "t2-1")
+		for began("t2") < 1 {
+			runtime.Gosched()
+		}
+		check("t2", "t2-2")
+		for rt.chargeSlots.blocked("t2") == 0 {
+			runtime.Gosched()
+		}
+		inUse := chargeDB.Stats().InUse
+		close(release)
+		for range 5 {
+			if err := <-results; err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("a check gave %v, want the refusal of the wrong PIN", err)
+			}
+		}
+		lines := saturated()
+		if len(lines) != 1 {
+			t.Fatalf("the provider got %d lines of %s, want one", len(lines), PoolSaturatedEvent)
+		}
+		attrs := map[string]string{}
+		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		if len(lines) != 1 || attrs["stego.entity"] != "PinWallet" || attrs["stego.pool.max_open"] != "4" || attrs["stego.pool.in_use"] != "3" ||
+			attrs["stego.pool.waiting"] != "2" || attrs["stego.tenant"] != "" || inUse >= 4 {
+			t.Fatalf("the provider got %d lines of %s with the attributes %v and %d connections in use, want one line with 3 slots in use and 2 charges waiting of a pool of 4, under 4 connections in use and no tenant", len(lines), PoolSaturatedEvent, attrs, inUse)
 		}
 	})
 }

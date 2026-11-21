@@ -1730,7 +1730,8 @@ worker mode, which runs the relay, runs.
   connection of the pool of the charges is in use, the runtime writes the warn
   line `command.attempts.pool_saturated` through its log provider, with the
   entity and the counts of the pool and no value, at most once in 10 s
-  (security review of PR #479, L3).
+  (security review of PR #479, L3). From runtime v0.187.0 it writes the line
+  when a charge waits for a slot (see the release notes of v0.187.0).
 
 ### Release notes for runtime v0.178.0
 
