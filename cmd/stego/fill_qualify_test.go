@@ -701,6 +701,38 @@ func TestFillQualification(t *testing.T) {
 		if err := sshVerify(t, p.keys.unlistedPublic, f.SignOff, f.SignOff.EvidenceDigest); err != nil {
 			t.Fatalf("ssh-keygen -Y verify refuses the sign-off of the unlisted key: %v", err)
 		}
+		// A gpg.program whose SIG_CREATED line gives no fingerprint of 40 or 64 hexadecimal digits is refused, and
+		// fill.yaml stays as it is (security review of PR #480, I1).
+		for _, fpr := range []string{"../../etc/passwd", p.keys.keyringGPG[:39], p.keys.keyringGPG + "0"} {
+			dir := t.TempDir()
+			program := filepath.Join(dir, "fake-gpg")
+			script := "#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nAAAA\\n-----END PGP SIGNATURE-----\\n'\n" +
+				"printf '[GNUPG:] SIG_CREATED D 22 8 00 1795255948 " + fpr + "\\n' >&2\n"
+			if err := os.WriteFile(program, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(dir, "home")
+			if err := os.Mkdir(home, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for _, pair := range [][2]string{{"gpg.format", "openpgp"}, {"user.signingkey", p.keys.keyringGPG}, {"gpg.program", program}} {
+				cmd := exec.Command("git", "config", "--global", pair[0], pair[1])
+				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git config: %v\n%s", err, out)
+				}
+			}
+			p.keys.homes["fake-gpg"] = home
+			before := p.read(t, "fills/unsigned-fill/fill.yaml")
+			stdout, stderr, err := p.stego(t, "fake-gpg", "fill", "sign", "unsigned-fill", "--force")
+			if err == nil || !strings.Contains(stderr, "40 or 64 hexadecimal digits") {
+				t.Errorf("the fingerprint %q of SIG_CREATED gave %v, want a refusal that names its form:\n%s%s", fpr, err, stdout, stderr)
+			}
+			if !bytes.Equal(before, p.read(t, "fills/unsigned-fill/fill.yaml")) {
+				t.Errorf("the fingerprint %q of SIG_CREATED changed fill.yaml", fpr)
+			}
+			delete(p.keys.homes, "fake-gpg")
+		}
 	})
 
 	t.Run("ST-EXT-UC02-R02-T04 Plan accepts a fill signed by a key that SIGNERS lists", func(t *testing.T) {

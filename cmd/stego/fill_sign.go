@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -108,8 +109,8 @@ func runFillSign(args []string) error {
 			}
 			addLine = fmt.Sprintf("the line %q", gitEmail(input.ProjectDir)+" "+public)
 		} else {
-			if fingerprint == "" {
-				return fmt.Errorf("%s gave no SIG_CREATED status line, so the fingerprint of the key is not known", key.program)
+			if !gpgFingerprint.MatchString(fingerprint) {
+				return fmt.Errorf("%s gave no SIG_CREATED status line with a fingerprint of 40 or 64 hexadecimal digits, so the fingerprint of the key is not known, and fill.yaml stays as it is", key.program)
 			}
 			addLine = fmt.Sprintf("the line %q, and below it the output of gpg --armor --export %s", gitEmail(input.ProjectDir)+" gpg", fingerprint)
 		}
@@ -134,6 +135,13 @@ func runFillSign(args []string) error {
 	}
 	return nil
 }
+
+// gpgFingerprint is the form of the fingerprint of the status line SIG_CREATED: 40 hexadecimal digits (a version 4
+// key) or 64 (a version 5 or 6 key), in upper case. fill sign refuses another value, so the program that
+// gpg.program names cannot put any other text into fill.yaml (security review of PR #480, I1). It is the fingerprint
+// of the key that signed, which can be a signing subkey; the signer is a label only, and stego validate decides the
+// trust from the signature and SIGNERS.
+var gpgFingerprint = regexp.MustCompile(`^[0-9A-F]{40}([0-9A-F]{24})?$`)
 
 // gitEmail gives user.email of the git configuration, or <your email> when
 // none is set, for the SIGNERS line that the warning of an unlisted key shows.
