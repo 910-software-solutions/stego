@@ -490,6 +490,14 @@ func TestCursorKeyRing(t *testing.T) {
 		// key; B alone.
 		onlyA, step1, step2, onlyB := runtime(keyA), runtime(keyA, keyB), runtime(keyB, keyA), runtime(keyB)
 		fromA, fromStep1, fromStep2 := seal(onlyA), seal(step1), seal(step2)
+		// changed is the cursor of A with its last but one character changed. That character carries six bits of
+		// the bytes, while the last one can carry bits that the decoding drops, so the bytes always change.
+		changed := []byte(fromA)
+		if changed[len(changed)-2] == 'A' {
+			changed[len(changed)-2] = 'B'
+		} else {
+			changed[len(changed)-2] = 'A'
+		}
 		for name, c := range map[string]struct {
 			rt   *Runtime
 			text string
@@ -504,7 +512,7 @@ func TestCursorKeyRing(t *testing.T) {
 			"A opens no cursor of step 2":       {onlyA, fromStep2, false},
 			"B opens no cursor of A":            {onlyB, fromA, false},
 			"step 2 opens no cursor of a key C": {step2, seal(runtime(keyC)), false},
-			"the ring opens no changed cursor":  {step2, fromA[:len(fromA)-2] + "AA", false},
+			"the ring opens no changed cursor":  {step2, string(changed), false},
 		} {
 			if got := opens(c.rt, c.text); got != c.want {
 				t.Errorf("%s: opened %v, want %v", name, got, c.want)
