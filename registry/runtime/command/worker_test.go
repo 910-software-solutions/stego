@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1997,7 +1998,8 @@ func TestWorkerFillCauses(t *testing.T) {
 		}
 		var typed struct{ N int }
 		typeErr := json.Unmarshal([]byte(`{"N":"buyer@example.com"}`), &typed)
-		invalidErr := json.Unmarshal([]byte("{}"), nil)
+		// The error that json.Unmarshal gives for a target that is not a pointer.
+		invalidErr := error(&json.InvalidUnmarshalError{Type: reflect.TypeOf(0)})
 		_, numberErr := strconv.Atoi("buyer@example.com")
 		_, parseErr := time.Parse(time.RFC3339, "buyer@example.com")
 		ctx, cancel := context.WithCancel(context.Background())
