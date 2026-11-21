@@ -26,6 +26,8 @@ starts with `worker_` is reserved for the declared workers.
 The migration job writes one release identity row last: the release (the name
 of the last migration) and the workers digest. The workers digest is the
 SHA-256 of the sorted worker names. `stego plan` shows it in a `note:` line.
+`stego validate` and `stego plan` also warn when the sign-off of a fill counts only
+because of a key that the change adds to `SIGNERS`; with `--strict` this is a fault.
 
 The job `worker-tuples` changes tuples only when this row is the identity of
 its own binary. Retire deletes the tuples of undeclared workers only under the
