@@ -420,7 +420,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		}
 		key, err := idempotency.KeyFrom(r.Header, s.KeyRequired)
 		if err != nil {
-			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.Problem(err)), "")
 			return
 		}
 		if key != "" {
@@ -502,7 +502,7 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 		md, _ := metadata.FromIncomingContext(ctx)
 		key, err := idempotency.KeyFrom(http.Header{idempotency.KeyHeader: md.Get(RPCKeyMetadata)}, s.KeyRequired)
 		if err != nil {
-			return none, status.Error(codes.InvalidArgument, idempotency.ProblemMissing)
+			return none, status.Error(codes.InvalidArgument, idempotency.Problem(err))
 		}
 		// The body that Run decodes is the deterministic binary form of the message, and the fingerprint is over the
 		// canonical JSON form of protojson, which Fingerprint makes, so one message gives one fingerprint.

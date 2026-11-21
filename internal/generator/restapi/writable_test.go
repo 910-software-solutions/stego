@@ -167,6 +167,69 @@ func TestKeptDocument(t *testing.T) {
 	})
 }
 
+func TestDefaultedCreateField(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC47-T02 The create-request schema does not require a field with a declared default, and a create that leaves it out passes the request check", func(t *testing.T) {
+		ctx := crudContext()
+		for i, e := range ctx.Entities {
+			if e.Name == "Order" {
+				// Walkthrough 18, step 38: Listing.stock, an int32 with min 0 and default 0.
+				ctx.Entities[i].Fields = append(ctx.Entities[i].Fields, types.Field{Name: "stock", Type: types.FieldTypeInt32, Default: 0},
+					types.Field{Name: "region", Type: types.FieldTypeString, Default: "eu"})
+			}
+		}
+		data := crudFiles(t, ctx)["api/openapi.json"]
+		var document struct {
+			Components struct {
+				Schemas map[string]keptSchema `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		order, create := document.Components.Schemas["Order"], document.Components.Schemas["OrderCreateRequest"]
+		for name, want := range map[string]any{"stock": float64(0), "region": "eu"} {
+			p, ok := create.Properties[name]
+			if !ok || slices.Contains(create.Required, name) || p.Default != want || p.Kept || p.ReadOnly {
+				t.Errorf("the create-request schema gives %s %+v (present %v, required %v), want an optional member with the default %v", name, p, ok, create.Required, want)
+			}
+			// Each row has the field, so the entity schema of the answers requires it.
+			if !slices.Contains(order.Required, name) {
+				t.Errorf("the entity schema does not require %s: %v", name, order.Required)
+			}
+		}
+		for _, name := range []string{"sku", "qty"} {
+			if !slices.Contains(create.Required, name) {
+				t.Errorf("the create-request schema does not require %s, which has no default: %v", name, create.Required)
+			}
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc.Servers = nil
+		router, err := legacyrouter.NewRouter(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check := func(body string) error {
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/orders", strings.NewReader(body))
+			r.Header.Set("Content-Type", "application/json")
+			route, params, err := router.FindRoute(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return openapi3filter.ValidateRequestBody(context.Background(), &openapi3filter.RequestValidationInput{Request: r, PathParams: params, Route: route,
+				Options: &openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc, MultiError: true}}, route.Operation.RequestBody.Value)
+		}
+		if err := check(`{"sku":"s1","qty":1}`); err != nil {
+			t.Errorf("the create-request check refuses a create that leaves out the defaulted fields: %v", err)
+		}
+		if err := check(`{"sku":"s1"}`); err == nil {
+			t.Error("the create-request check passes a create that leaves out qty, which has no default")
+		}
+	})
+}
+
 func TestStrictBodies(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC55-T02 The OpenAPI document closes the create and update requests, and the request check and the decode refuse a member that they do not take", func(t *testing.T) {
 		files := crudFiles(t, crudContext())

@@ -468,8 +468,11 @@ grants.
 
 Each request of a command must have the header `Idempotency-Key`.
 
-- With no key, or a key that is not valid, the answer is 400 with the problem
-  type `idempotency-key-missing`.
+- With no key, the answer is 400 with the problem type
+  `idempotency-key-missing`.
+- With a key that is not one structured string of 1 to 255 characters, such
+  as `abc` with no double quotes, the answer is 400 with the problem type
+  `idempotency-key-invalid`. Put the key in double quotes, such as `"k-1"`.
 - A request again with the same key, method, path and body gets the stored
   response again. The fill does not run again.
 - A request with the same key and another body gets 422 with the problem type

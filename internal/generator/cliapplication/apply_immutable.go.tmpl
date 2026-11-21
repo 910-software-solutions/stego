@@ -28,7 +28,7 @@ func validateImmutableApply(r ApplyResource) error {
  return nil
 }
 func immutableIdentity(r ApplyResource,body map[string]json.RawMessage)(map[string]string,error){
- if err:=applyFields(r.CreateFields,body,true);err!=nil{return nil,err}
+ if err:=applyFields(r.CreateFields,body,true);err!=nil{return nil,fmt.Errorf("%s: %w",r.Kind,err)}
  values:=map[string]string{}
  for _,key:=range r.ImmutableIdentity{
   var value string

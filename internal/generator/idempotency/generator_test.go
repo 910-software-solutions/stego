@@ -136,13 +136,14 @@ func TestSettings(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC30-OC02-T01 The three problem types sit under the declared problem base", func(t *testing.T) {
+	t.Run("ST-SUP-RC30-OC02-T01 The four problem types sit under the declared problem base", func(t *testing.T) {
 		for _, base := range []string{todoBase, "https://problems.example.org/other/"} {
 			e := readSettings(t, generated(t, todoContext([]types.Operation{types.OpCreate}, "", base))["internal/idempotency/settings.go"])
 			want := map[string]string{
 				"ProblemMissing":    base + "idempotency-key-missing",
 				"ProblemInProgress": base + "idempotency-key-in-progress",
 				"ProblemReused":     base + "idempotency-key-reused",
+				"ProblemInvalid":    base + "idempotency-key-invalid",
 			}
 			for name, uri := range want {
 				if e.constants[name] != uri {
@@ -150,7 +151,7 @@ func TestSettings(t *testing.T) {
 				}
 			}
 		}
-		for i, name := range []string{"ProblemMissing", "ProblemInProgress", "ProblemReused"} {
+		for i, name := range []string{"ProblemMissing", "ProblemInProgress", "ProblemReused", "ProblemInvalid"} {
 			if want := runtimeConstant(t, "wrap.go", name); ProblemSlugs[i] != want {
 				t.Errorf("problem slug %q is not the runtime's %s %q", ProblemSlugs[i], name, want)
 			}

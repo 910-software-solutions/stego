@@ -1,8 +1,11 @@
 # Version 0.2.0 makes the rest-api handlers put Idempotency-Kept: 1 on each answer to a create or a patch with a key,
 # and the OpenAPI document describe the header (ST-SUP-RC30-OC08, ST-SUP-Q193 (a)).
+# Version 0.3.0 emits the fourth problem type idempotency-key-invalid, for a key header that is not one structured
+# string of 1 to 255 characters; idempotency-key-missing is only for an absent header (ST-SUP-RC30-OC02,
+# ST-SUP-RP07-LC04, decision ST-SUP-Q202 (a)).
 kind: component
 name: idempotency
-version: 0.2.0
+version: 0.3.0
 stage: alpha
 sunset: 2027-04-30
 output_namespace: internal/idempotency
