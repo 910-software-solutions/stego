@@ -359,7 +359,10 @@ ledger check, with the same fault. `stego plan`, `stego apply` and `stego compat
 made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. One other body passes the Job, the start
 check and these commands: the body of the expand step of a seal, or of a step after it, that postgres-adapter 6.14.0 to
 6.20.0 wrote with the functions of the seal checkpoints in it. The release registers the digest of that body as an earlier
-digest of the same migration, so a database of such a release upgrades with no change. To wait in a script, after the two commands:
+digest of the same migration, so a database of such a release upgrades with no change. When the ledger is not the history
+of the release, such as a shared preview database that ran the build of a branch whose schema steps took other numbers
+before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
+migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
