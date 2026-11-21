@@ -472,6 +472,9 @@ type tenantSlots struct {
 	reserved bool
 	// changed is closed and made new when a slot is given back, so each waiting charge looks again.
 	changed chan struct{}
+	// scans counts the reads of blockedAll, which only the report of a full pool needs (security review of PR #488,
+	// L2).
+	scans int
 }
 
 // tenantSlot is the slots that one tenant holds, the count of its charges that run or wait, and the count of those
@@ -517,9 +520,14 @@ func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int
 		changed := s.changed
 		slot.blocked++
 		report := !reported && full != nil && bounded && s.shared >= shared
-		inUse, waiting := s.shared, s.blockedAll()
-		if s.reserved {
-			inUse++
+		// The counts of the report are read only for a report: blockedAll reads each tenant under s.mu, so each wake
+		// with no report holds the lock only for the checks above (security review of PR #488, L2).
+		var inUse, waiting int
+		if report {
+			inUse, waiting = s.shared, s.blockedAll()
+			if s.reserved {
+				inUse++
+			}
 		}
 		s.mu.Unlock()
 		if report {
@@ -566,6 +574,7 @@ func (s *tenantSlots) leave(id string, slot *tenantSlot) {
 
 // blockedAll gives the count of the charges of all the tenants that wait for a slot. The caller holds s.mu.
 func (s *tenantSlots) blockedAll() int {
+	s.scans++
 	n := 0
 	for _, slot := range s.tenants {
 		n += slot.blocked

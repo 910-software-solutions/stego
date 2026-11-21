@@ -959,3 +959,49 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// TestTenantSlotScans proves that a charge that waits for the limit of its own tenant reads the counts of the
+// waiting charges of all the tenants only for the log of a full pool (security review of PR #488, L2).
+func TestTenantSlotScans(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T14 A charge that waits with no report of a full pool does not count the waiting charges of all the tenants", func(t *testing.T) {
+		var s tenantSlots
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		reports := 0
+		full := func(int, int) { reports++ }
+		release, err := s.take(ctx, "t1", 1, 3, full)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			second, err := s.take(ctx, "t1", 1, 3, full)
+			if err == nil {
+				second()
+			}
+			done <- err
+		}()
+		for s.blocked("t1") == 0 {
+			runtime.Gosched()
+		}
+		// A slot of t2 comes and goes, which wakes the waiting charge of t1 again.
+		other, err := s.take(ctx, "t2", 1, 3, full)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other()
+		for s.blocked("t1") == 0 {
+			runtime.Gosched()
+		}
+		s.mu.Lock()
+		scans := s.scans
+		s.mu.Unlock()
+		if scans != 0 || reports != 0 {
+			t.Fatalf("the waits for the limit of t1 counted the waiting charges %d times and reported %d full pools, want 0 and 0", scans, reports)
+		}
+		release()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}

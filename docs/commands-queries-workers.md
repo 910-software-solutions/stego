@@ -1622,7 +1622,10 @@ revocation that the reader did not make, also after the wait, and the status
 route `/authz/revocations/<id>` answers 404 to each user but the maker. A
 revocation of another tenant is not found, and the request does not wait.
 Thus the location never reads data of another tenant and never tells that a
-row exists. Give it only to users who may know when the create completed.
+row exists. The length of the wait still tells the holder of the location
+when the revocation of the create completed, because the wait ends then. This
+is true in the same tenant only. Give the location only to users who may know
+when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
 ### Release notes for runtime v0.187.0
