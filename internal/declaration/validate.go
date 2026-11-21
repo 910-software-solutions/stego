@@ -914,18 +914,31 @@ func validateCollectionReferences(collections []types.Collection, entities []typ
 					Message:  fmt.Sprintf("collection %q has scope field %q which is not a field on entity %q", c.Name, fieldName, c.Entity),
 				})
 			}
-			// The parent of a row of a scoped collection comes from the path, so a default of the scope field could
-			// only differ from it (ST-DECL-INV106; security review of PR #473, I1).
+			// The parent of a row of a scoped collection comes from the path, so a default, a computed value or a
+			// value that a component fills could only differ from it (ST-DECL-INV106; security review of PR #473,
+			// I1; decision on ST-DECL-Q47 (a)).
 			for _, e := range entities {
 				for _, f := range e.Fields {
-					if e.Name == c.Entity && f.Name == fieldName && f.Default != nil {
+					if e.Name != c.Entity || f.Name != fieldName {
+						continue
+					}
+					refuse := func(found, declares, remove string) {
 						errs = append(errs, ValidationError{
 							Category: "collection",
 							Rule:     "collection-scope",
 							Path:     collectionPath(c.Name) + ".scope." + fieldName,
-							Found:    fmt.Sprint(f.Default),
-							Message:  fmt.Sprintf("collection %q has scope field %q, which declares the default %v; the parent of a row comes from the path, so remove the default of %s.%s", c.Name, fieldName, f.Default, c.Entity, fieldName),
+							Found:    found,
+							Message:  fmt.Sprintf("collection %q has scope field %q, which declares %s; the parent of a row comes from the path, so remove %s of %s.%s", c.Name, fieldName, declares, remove, c.Entity, fieldName),
 						})
+					}
+					if f.Default != nil {
+						refuse(fmt.Sprint(f.Default), fmt.Sprintf("the default %v", f.Default), "the default")
+					}
+					if f.Computed {
+						refuse("computed", "computed: true", "computed")
+					}
+					if f.FilledBy != "" {
+						refuse(f.FilledBy, fmt.Sprintf("filled_by: %s", f.FilledBy), "filled_by")
 					}
 				}
 			}
