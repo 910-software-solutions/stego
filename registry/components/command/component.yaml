@@ -31,12 +31,15 @@
 # Version 1.20.0 writes <out>/commands/openapi.json, the OpenAPI document of the command and query routes, in a
 # service with no rest-api component, such as an rpc-service; the generated clients are made from it
 # (ST-SUP-RC32-OC29, decision ST-SUP-Q198 (a)).
-# Version 1.21.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
+# Version 1.23.0 answers a command whose Idempotency-Key is not one structured string of 1 to 255 characters with
+# the problem type idempotency-key-invalid, over HTTP and gRPC, through the runtime's Serve, and its OpenAPI document
+# gives both key problem types on the 400 answer (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
+# Version 1.24.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
 # its entity (ST-SUP-RC32-OC24, decision ST-SUP-Q185 (a)), and gives an entity with event fields its EventData and
 # EventVersion, so its change events carry the declared fields (ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: command
-version: 1.21.0
+version: 1.24.0
 stage: ga
 output_namespace: commands
 

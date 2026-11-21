@@ -492,7 +492,8 @@ func inTx(ctx context.Context, held *lease.Held, fn func(tx *sql.Tx) error) erro
 }
 
 // pass goes on with the pass of the change c from its checkpoint under held, and starts a new pass when there is
-// none or a release before the step ran during it.
+// none, a release before the step ran during it, or it started in another database instance, as before a restore or
+// a restart of the database server: such a pass, also a completed one, reads as stale.
 func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (SealResult, error) {
 	result := SealResult{Change: c.Change}
 	var state lease.SealState
@@ -513,7 +514,8 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 			return result, nil
 		}
 		// A start that waits commits too: its first start in this database sets the guard time of the row, which a
-		// dump does not carry (security review of PR #470, sec-470).
+		// dump does not carry, and makes a pass of another instance, also a completed one, not started (security
+		// review of PR #470, sec-470, and of PR #471, L3).
 		err := inTx(ctx, held, func(tx *sql.Tx) error {
 			err := lease.SealCheckpoint(ctx, tx, held, c.Change, "", "", 0, 0, true)
 			if errors.Is(err, lease.ErrSealWaiting) {

@@ -86,10 +86,12 @@ func keyHeader(operation documentOperation) (required, found bool) {
 	return false, false
 }
 
-// checkProblems expects the 400, 409 and 422 responses of an operation to name the idempotency problem types.
+// checkProblems expects the 400, 409 and 422 responses of an operation to name the idempotency problem types: the
+// 400 names an absent key and a key that is not valid (ST-SUP-Q202 (a)).
 func checkProblems(t *testing.T, label string, operation documentOperation) {
 	t.Helper()
-	for code, slug := range map[string]string{"400": "idempotency-key-missing", "409": "idempotency-key-in-progress", "422": "idempotency-key-reused"} {
+	for _, c := range [][2]string{{"400", "idempotency-key-missing"}, {"400", "idempotency-key-invalid"}, {"409", "idempotency-key-in-progress"}, {"422", "idempotency-key-reused"}} {
+		code, slug := c[0], c[1]
 		if !strings.Contains(operation.Responses[code].Description, todoProblemBase+slug) {
 			t.Errorf("%s: response %s is %q, want the problem type %s", label, code, operation.Responses[code].Description, todoProblemBase+slug)
 		}

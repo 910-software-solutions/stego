@@ -1687,20 +1687,23 @@ func TestCrud(t *testing.T) {
 		if denied.status != http.StatusNotFound || strings.Contains(detail, "''") || !strings.Contains(detail, "Book was not written") {
 			t.Errorf("the denied create answered %d %s, want 404 that names the Book that was not written and no empty ID", denied.status, denied.body)
 		}
-		for _, c := range []struct{ header, want string }{
-			{"", "the Idempotency-Key header is absent"},
-			{"k-unquoted", "put the key in double quotes"},
-		} {
-			headers := map[string]string{}
-			if c.header != "" {
-				headers["Idempotency-Key"] = c.header
+		t.Run("ST-SUP-RC30-OC02-T03 A create with no Idempotency-Key gets idempotency-key-missing, and one with a key that is not a structured string idempotency-key-invalid", func(t *testing.T) {
+			for _, c := range []struct{ header, want, slug string }{
+				{"", "the Idempotency-Key header is absent", "idempotency-key-missing"},
+				{"k-unquoted", "put the key in double quotes", "idempotency-key-invalid"},
+				{`""`, "put the key in double quotes", "idempotency-key-invalid"},
+			} {
+				headers := map[string]string{}
+				if c.header != "" {
+					headers["Idempotency-Key"] = c.header
+				}
+				r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
+				problem := r.object(t)
+				if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "/"+c.slug) {
+					t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the type %s that says %q", c.header, r.status, r.body, c.slug, c.want)
+				}
 			}
-			r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
-			problem := r.object(t)
-			if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "idempotency-key-missing") {
-				t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the missing type that says %q", c.header, r.status, r.body, c.want)
-			}
-		}
+		})
 	})
 
 	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause", func(t *testing.T) {

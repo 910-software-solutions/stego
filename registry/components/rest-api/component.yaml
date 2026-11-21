@@ -64,11 +64,16 @@
 # Version 4.28.0 gives the Idempotency-Key header parameter, not required, and the 422 response on each create and
 # patch of the OpenAPI document when the idempotency component is not active, since the handler keeps the key that a
 # request gives (ST-SUP-RC20-OC56).
-# Version 4.29.0 stages the declared event fields of an entity in the change event of each collection write, as a
+# Version 4.31.0 does not require, in the create-request schema, a field with a declared default, which a create that
+# leaves it out stores (ST-SUP-RC20-OC47; walkthrough 18, step 38), and answers a create or a patch whose
+# Idempotency-Key header is not one structured string of 1 to 255 characters with the problem type
+# idempotency-key-invalid, which the OpenAPI document gives on the 400 answer with idempotency-key-missing
+# (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
+# Version 4.32.0 stages the declared event fields of an entity in the change event of each collection write, as a
 # command does (ST-SUP-RC20-OC40, ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: rest-api
-version: 4.29.0
+version: 4.32.0
 stage: ga
 output_namespace: internal/api
 

@@ -152,7 +152,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 			RequestBody: &openAPIRequestBody{Required: true, Content: jsonContent(body)},
 			Responses: map[string]openAPIResponse{
 				status: {Description: "The response of the command", Content: jsonContent(responseSchema(response))},
-				"400":  {Description: "Bad request: the body, a path parameter or the Idempotency-Key header is not valid"},
+				"400":  {Description: keyRefusals(ctx.ErrorTypeBase)},
 				"401":  {Description: "Unauthorized"},
 				"404":  {Description: "Not found: the resource is not there, or the caller may not run the command on it"},
 				"409":  {Description: "Conflict"},
@@ -427,4 +427,15 @@ func mergeRoutes(spec *openAPISpec, routes map[string]map[string]openAPIOperatio
 		spec.Paths[p] = item
 	}
 	return nil
+}
+
+// keyRefusals describes the 400 answer of a command: a body or a path parameter that is not valid, and the problem
+// types of an absent Idempotency-Key header and of one that is not one structured string of 1 to 255 characters,
+// under the problem base of the service (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a)).
+func keyRefusals(base string) string {
+	if base == "" {
+		return "Bad request: the body, a path parameter or the Idempotency-Key header is not valid"
+	}
+	return "Bad request: the body or a path parameter is not valid; problem " + base + "idempotency-key-missing: the Idempotency-Key header is absent; problem " +
+		base + "idempotency-key-invalid: the header is not one structured string of 1 to 255 characters"
 }

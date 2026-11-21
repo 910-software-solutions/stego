@@ -174,7 +174,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  // A 5xx answer to a write that was not sent again, such as one with no Idempotency-Kept header, can follow a write
  // that the service did (ST-SUP-RC04-OC34).
  if !success&&response.StatusCode>=500&&(c.Method=="POST"||c.Method=="PATCH"){return fmt.Errorf("API request failed (HTTP %d); the write was not sent again and can have been done; retrieve the resource before a new write",response.StatusCode)}
- if !success{return fmt.Errorf("API request failed (HTTP %d)",response.StatusCode)}
+ if !success{return fmt.Errorf("API request failed (HTTP %d)%s",response.StatusCode,problemFacts(response))}
  emptyResponse:=response.StatusCode==204||response.StatusCode==205
  for _,code:=range c.EmptyResponses{if code==response.StatusCode{emptyResponse=true}}
  if emptyResponse{if len(response.Body)!=0{return errors.New("unexpected response body")};return destination.write(nil)}
@@ -184,6 +184,32 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  return destination.write(formatted.Bytes())
 }
 
+// problemFacts gives, for an answer of type application/problem+json, the last segment of its problem type and the
+// field and the message of at most five of its validation_errors, each one as printable ASCII text of at most 120
+// characters. It never gives the detail or another member of the answer, and it gives "" for any other answer
+// (ST-SUP-RC04-OC11; walkthrough 18: the CLI said API request failed (HTTP 400) and did not name the field).
+func problemFacts(response client.Response)string{
+ media,_,_:=strings.Cut(response.Header.Get("Content-Type"),";")
+ if !strings.EqualFold(strings.TrimSpace(media),"application/problem+json"){return ""}
+ var problem struct{Type string `json:"type"`;Entries []struct{Field string `json:"field"`;Message string `json:"message"`} `json:"validation_errors"`}
+ if json.Unmarshal(response.Body,&problem)!=nil{return ""}
+ var parts []string
+ if slug:=printableText(problem.Type[strings.LastIndex(problem.Type,"/")+1:]);slug!=""{parts=append(parts,"problem "+slug)}
+ for i,entry:=range problem.Entries{
+  if i==5{break}
+  field,message:=printableText(entry.Field),printableText(entry.Message)
+  switch{case field!=""&&message!="":parts=append(parts,field+": "+message);case field!="":parts=append(parts,field);case message!="":parts=append(parts,message)}
+ }
+ if len(parts)==0{return ""}
+ return ": "+strings.Join(parts,"; ")
+}
+// printableText gives text as printable ASCII of at most 120 characters: each other character becomes ?, so a
+// control character or an escape sequence of the answer cannot change the terminal.
+func printableText(text string)string{
+ var b strings.Builder
+ for _,r:=range text{if b.Len()==120{break};if r<0x20||r>0x7e{r='?'};b.WriteRune(r)}
+ return strings.TrimSpace(b.String())
+}
 // idempotencyKey gives a new Idempotency-Key: a structured string that holds a random UUID (ST-SUP-RC04-OC31). It
 // fails rather than give a key that is not random.
 func idempotencyKey()(string,error){

@@ -402,7 +402,7 @@ No client can read a secret back. Only the fills of commands and workers can
 read a readable secret.
 
 A worker that only reads an entity declares it in `reads`, not in `writes`
-(runtime v0.169.0). The worker `sum-balances` of the example reads the wallets
+(runtime v0.173.0). The worker `sum-balances` of the example reads the wallets
 this way. Its fill gets `workers.WalletReader(h)`, a read-only repository with
 `Get` and `List` only, whose value `workers.WalletView` has each field of the
 wallet except `api_key` and `pin`. The statements of the reader do not read
@@ -527,7 +527,7 @@ so a wrong PIN tells nothing of the balance.
 
 A PIN of 4 digits has only 10,000 values. A caller who may operate the wallet,
 such as with a stolen session, could try each value in some minutes. Thus the
-example declares a limit of wrong PINs on the field (runtime v0.169.0):
+example declares a limit of wrong PINs on the field (runtime v0.173.0):
 
 <!-- excerpt -->
 ```yaml
@@ -1072,7 +1072,7 @@ type Change struct {
 
 A worker handle has no network client, so a consuming fill cannot read a row
 from the service `wallets`. Thus an entity declares the fields that its change
-events carry (runtime v0.169.0, rest-api 4.29.0):
+events carry (runtime v0.173.0, rest-api 4.32.0):
 
 <!-- excerpt -->
 ```yaml
