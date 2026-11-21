@@ -1,6 +1,7 @@
 package declaration
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -18,11 +19,20 @@ func TestSubscriptionNames(t *testing.T) {
 	t.Run("ST-DECL-INV96-T A subscription with a name of its own and one consuming worker is accepted", func(t *testing.T) {
 		wantNoFault(t, workerFaults(t, subscribed("")))
 	})
-	t.Run("ST-DECL-INV96-T A second subscription is refused while kafka-consumer is alpha", func(t *testing.T) {
+	t.Run("ST-DECL-INV96-T A second subscription with a worker of its own is accepted, and a ninth is refused", func(t *testing.T) {
+		// Decision on ST-SUP-Q204: each subscription reads in a consumer group of its own, at most 8 for each service.
 		service := subscribed("  - name: more-orders\n    source: shop\n    events: [shop.order.deleted]\n",
 			worker("ship", "trigger: consumes shop-orders", "writes: [Order]", "fill: apply"),
 			worker("more", "trigger: consumes more-orders", "writes: [Order]", "fill: other"))
-		wantFault(t, workerFaults(t, service, "subscription-count"), "at most 1", "a later version")
+		wantNoFault(t, workerFaults(t, service))
+		extra := ""
+		items := []string{worker("ship", "trigger: consumes shop-orders", "writes: [Order]", "fill: apply")}
+		for i := 2; i <= 9; i++ {
+			name := fmt.Sprintf("orders-%d", i)
+			extra += "  - name: " + name + "\n    source: shop\n    events: [shop.order.deleted]\n"
+			items = append(items, worker("w"+name, "trigger: consumes "+name, "writes: [Order]", "fill: f"+name))
+		}
+		wantFault(t, workerFaults(t, subscribed(extra, items...), "subscription-count"), "9 subscriptions", "at most 8")
 	})
 	for _, c := range []struct{ name, service string }{
 		{"the name of a worker", strings.Replace(subscribed(""), "- name: shop-orders", "- name: ship", 1)},

@@ -127,10 +127,11 @@ type WorkerParts struct {
 	// trigger, which calls RunConsumer on the command runtime of the workers (ST-SUP-RC35-OC06). Nil: the service
 	// has no such worker.
 	Consumers func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error
-	// Inbox gives the Kafka inbox of the declared subscription, which writes each record that it takes into the outbox
-	// for the worker that consumes the subscription (ST-SUP-RC38-OC01). The worker mode runs it, and the purge timer
-	// of the outbox worker purges its refused records. Nil: the service declares no subscription.
-	Inbox func(env InboxEnv) (*kafkainbox.Inbox, error)
+	// Inboxes gives the Kafka inbox of each declared subscription, in the order of the declaration, which writes each
+	// record that it takes into the outbox for the worker that consumes the subscription (ST-SUP-RC38-OC01). The
+	// worker mode runs each, and the purge timer of the outbox worker purges the refused records. Nil: the service
+	// declares no subscription.
+	Inboxes func(env InboxEnv) ([]*kafkainbox.Inbox, error)
 	// ConsumerTables are the tables in public of the entities that the workers with a consumes trigger write, which
 	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
 	// under the owner's delegation, 2026-11-15).
@@ -141,7 +142,7 @@ type WorkerParts struct {
 	ConsumerReadTables map[string][]string
 }
 
-// InboxEnv is what the Kafka inbox of a subscription gets from the worker mode.
+// InboxEnv is what the Kafka inbox of each subscription gets from the worker mode.
 type InboxEnv struct {
 	// Queue is the outbox queue on the pool of the worker role, DB, on which the inbox writes.
 	Queue *outbox.Queue
@@ -221,16 +222,10 @@ type Workers struct {
 
 	workerDB, relayDB *sql.DB
 	worker            *outbox.Worker
-	// inboxName is the component name of the Kafka inbox of a declared subscription, or empty: a stopped inbox, such
-	// as one that the retention of its topic stopped, makes the worker mode not ready (ST-SUP-RP14-LC08).
-	inboxName string
-	// inbox tells the failure class of an inbox whose sessions fail in a row, which makes the worker mode not ready
-	// (security review of PR #418, M2).
-	inbox interface {
-		Failing() string
-		// Failed gives the stage of the failure that stopped the inbox for good, such as kafka-consumer.retention.
-		Failed() string
-	}
+	// inboxes are the Kafka inboxes of the declared subscriptions, in the order of the declaration, by their component
+	// names: a stopped inbox, such as one that the retention of its topic stopped, and an inbox whose sessions fail in
+	// a row make the worker mode not ready (ST-SUP-RP14-LC08; security review of PR #418, M2).
+	inboxes    []namedInbox
 	relay      *authz.Relay
 	periodic   *lease.Periodic
 	tickers    []*command.Ticker
@@ -380,7 +375,7 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 	// A message of the Kafka inbox that is done frees the later messages of its key that are parked as poison, with the
 	// audit row of each resolution, in its transaction (ST-SUP-RP01-LC39). Only a service with the inbox has such
 	// messages, and its worker role holds the audit grants of its consuming workers (ST-SUP-Q141).
-	if config.Auditor == nil && p.Inbox != nil {
+	if config.Auditor == nil && p.Inboxes != nil {
 		config.Auditor = &resolveAuditor{writer: svc.writer, settings: svc.parts.AuditSettings, service: svc.parts.Service,
 			version: svc.version, declaration: svc.parts.DeclarationVersion}
 	}
@@ -421,8 +416,8 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 			return nil, err
 		}
 	}
-	var inbox *kafkainbox.Inbox
-	if p.Inbox != nil {
+	var inboxes []*kafkainbox.Inbox
+	if p.Inboxes != nil {
 		if p.TenantSchema == "" {
 			return nil, errors.New("service: the Kafka inbox needs the schema of the tenant list")
 		}
@@ -430,31 +425,41 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		if err != nil {
 			return nil, err
 		}
-		if inbox, err = p.Inbox(InboxEnv{Queue: queue, DB: w.workerDB, Retention: w.worker.Retention(),
+		if inboxes, err = p.Inboxes(InboxEnv{Queue: queue, DB: w.workerDB, Retention: w.worker.Retention(),
 			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(), Tenants: lookup, TenantSchema: p.TenantSchema}); err != nil {
 			return nil, inboxSetting(err)
 		}
-		// The refused records are purged on the timer of the outbox (ST-SUP-RP01-LC37).
-		if err := w.worker.AddPurge(inbox.Purge); err != nil {
-			return nil, err
+		// Each subscription reads in a consumer group of its own (decision on ST-SUP-Q204).
+		if err := kafkainbox.CheckGroups(inboxes); err != nil {
+			return nil, inboxSetting(err)
 		}
-		// The worker's own identity resolves the parked messages that a done message of the inbox frees, never a
-		// column of the row (ST-SUP-RP01-LC39; security review of PR #457, L2).
-		if err := w.worker.SetResolver(inbox.Destination(), inbox.Principal()); err != nil {
-			return nil, err
+		for i, inbox := range inboxes {
+			// The refused records of every subscription are in one table, which the timer of the outbox purges once
+			// (ST-SUP-RP01-LC37).
+			if i == 0 {
+				if err := w.worker.AddPurge(inbox.Purge); err != nil {
+					return nil, err
+				}
+			}
+			// The worker's own identity resolves the parked messages that a done message of the inbox frees, never a
+			// column of the row (ST-SUP-RP01-LC39; security review of PR #457, L2).
+			if err := w.worker.SetResolver(inbox.Destination(), inbox.Principal()); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Each registered destination has a claim slot of its own, so a service with more destinations than Concurrency
-	// runs one slot for each, and each slot holds one connection (ST-SUP-RP01-LC34).
-	if slots := max(config.Concurrency, len(w.worker.Registrations())); w.workerDB.Stats().MaxOpenConnections < slots+2 &&
+	// runs one slot for each, and each slot holds one connection (ST-SUP-RP01-LC34). Each Kafka inbox holds one more
+	// while it writes a poll.
+	if slots := max(config.Concurrency, len(w.worker.Registrations())) + len(inboxes); w.workerDB.Stats().MaxOpenConnections < slots+2 &&
 		w.workerDB.Stats().MaxOpenConnections > 0 {
 		w.workerDB.SetMaxOpenConns(slots + 2)
 	}
 	set := []modes.Component{{Name: OutboxWorkerName, Run: w.worker.Run}}
-	if inbox != nil {
-		// The inbox runs in the worker mode; a start that it refuses for good, such as a topic retention longer than
+	for _, inbox := range inboxes {
+		// Each inbox runs in the worker mode; a start that it refuses for good, such as a topic retention longer than
 		// the done retention, stops it, and the readiness of the worker mode names it (ST-SUP-RC38-OC01).
-		w.inboxName, w.inbox = inbox.Name(), inbox
+		w.inboxes = append(w.inboxes, namedInbox{name: inbox.Name(), state: inbox})
 		set = append(set, modes.Component{Name: inbox.Name(), Run: inbox.Run})
 	}
 	if p.Tickers != nil {
@@ -726,9 +731,11 @@ func (w *Workers) stopped(names ...string) string {
 				text := "the component " + c.name + " stopped"
 				// A stopped inbox names the stage that stopped it, as the docs and the event kafka.consumer.start_refused
 				// give it (core builder 16).
-				if c.name == w.inboxName && w.inbox != nil {
-					if stage := w.inbox.Failed(); stage != "" {
-						text += " at the stage " + stage
+				for _, inbox := range w.inboxes {
+					if c.name == inbox.name {
+						if stage := inbox.state.Failed(); stage != "" {
+							text += " at the stage " + stage
+						}
 					}
 				}
 				out = append(out, text)
@@ -760,7 +767,7 @@ func (w *Workers) Ready(ctx context.Context) error {
 		if m == modes.Worker && w.workerDB != nil {
 			if err := w.workerDB.PingContext(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w: the worker role's pool does not reach the database", m, modes.ErrNotReady))
-			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
+			} else if reason := w.stopped(append([]string{OutboxWorkerName, RelayWatchName}, w.inboxNames()...)...); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			} else if reason := w.inboxFailing(); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
@@ -869,13 +876,33 @@ func (w *Workers) destinationFailing() string {
 	return w.worker.Failing()
 }
 
-// inboxFailing names the Kafka inbox and its fixed failure class while its sessions fail in a row, or gives "".
+// namedInbox is one Kafka inbox by its component name, inbox-<subscription>, and what it tells of its state.
+type namedInbox struct {
+	name  string
+	state interface {
+		// Failing gives the failure class while the sessions of the inbox fail in a row, or "".
+		Failing() string
+		// Failed gives the stage of the failure that stopped the inbox for good, such as kafka-consumer.retention.
+		Failed() string
+	}
+}
+
+// inboxNames gives the component name of each Kafka inbox.
+func (w *Workers) inboxNames() []string {
+	names := make([]string, len(w.inboxes))
+	for i, inbox := range w.inboxes {
+		names[i] = inbox.name
+	}
+	return names
+}
+
+// inboxFailing names each Kafka inbox and its fixed failure class while its sessions fail in a row, or gives "".
 func (w *Workers) inboxFailing() string {
-	if w.inbox == nil {
-		return ""
+	var out []string
+	for _, inbox := range w.inboxes {
+		if class := inbox.state.Failing(); class != "" {
+			out = append(out, "the component "+inbox.name+" fails: "+class)
+		}
 	}
-	if class := w.inbox.Failing(); class != "" {
-		return "the component " + w.inboxName + " fails: " + class
-	}
-	return ""
+	return strings.Join(out, "; ")
 }

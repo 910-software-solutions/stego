@@ -2918,12 +2918,13 @@ func TestInboxSetting(t *testing.T) {
 	t.Run("ST-SUP-RP14-LC08-T02 A refused setting of the Kafka inbox names the stage of kafka-consumer and the variable, and no value", func(t *testing.T) {
 		t.Setenv("STEGO_KAFKA_BROKERS", "127.0.0.1:9092")
 		t.Setenv("STEGO_KAFKA_INSECURE_LOOPBACK", "1")
-		t.Setenv(kafkainbox.TopicSetting, "")
+		topic := kafkainbox.Setting(kafkainbox.TopicSetting, "order-changes")
+		t.Setenv(topic, "")
 		_, err := kafkainbox.ReadSettings("fulfilment", "order-changes")
-		if stage := StartStage(inboxSetting(err)); stage != "service.start.setting.kafka-consumer."+kafkainbox.TopicSetting {
+		if stage := StartStage(inboxSetting(err)); stage != "service.start.setting.kafka-consumer."+topic {
 			t.Fatalf("the stage of a missing topic is %q", stage)
 		}
-		t.Setenv(kafkainbox.TopicSetting, "secret-topic-name!")
+		t.Setenv(topic, "secret-topic-name!")
 		_, err = kafkainbox.ReadSettings("fulfilment", "order-changes")
 		if err = inboxSetting(err); err == nil || strings.Contains(err.Error(), "secret-topic-name") {
 			t.Fatalf("the refusal of a malformed topic is %v", err)
@@ -2936,20 +2937,27 @@ func TestInboxSetting(t *testing.T) {
 
 func TestInboxReadiness(t *testing.T) {
 	t.Run("ST-SUP-RP14-LC08-T03 A stopped Kafka inbox is named by the readiness of the worker mode", func(t *testing.T) {
-		w := &Workers{inboxName: "inbox-order-changes"}
+		w := &Workers{inboxes: []namedInbox{{name: "inbox-order-changes", state: &failingInbox{}}, {name: "inbox-carrier-changes", state: &failingInbox{}}}}
 		w.track(OutboxWorkerName)
+		w.track("inbox-carrier-changes")
 		w.track("inbox-order-changes").running.Store(false)
-		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "the component inbox-order-changes stopped" {
+		names := append([]string{OutboxWorkerName, RelayWatchName}, w.inboxNames()...)
+		if reason := w.stopped(names...); reason != "the component inbox-order-changes stopped" {
 			t.Fatalf("the reason is %q", reason)
 		}
 		// An inbox that its retention check stopped names that stage (core builder 16).
-		w.inbox = &failingInbox{stage: "kafka-consumer.retention"}
-		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "the component inbox-order-changes stopped at the stage kafka-consumer.retention" {
+		w.inboxes[0].state = &failingInbox{stage: "kafka-consumer.retention"}
+		if reason := w.stopped(names...); reason != "the component inbox-order-changes stopped at the stage kafka-consumer.retention" {
 			t.Fatalf("the reason of an inbox stopped by its retention is %q", reason)
 		}
 		w.track("inbox-order-changes")
-		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
+		if reason := w.stopped(names...); reason != "" {
 			t.Fatalf("a running inbox gives the reason %q", reason)
+		}
+		// The second inbox stops on its own (decision on ST-SUP-Q204).
+		w.track("inbox-carrier-changes").running.Store(false)
+		if reason := w.stopped(names...); reason != "the component inbox-carrier-changes stopped" {
+			t.Fatalf("the reason of the second inbox is %q", reason)
 		}
 	})
 }
@@ -2963,12 +2971,16 @@ func (f *failingInbox) Failing() string { return f.class }
 
 func TestInboxFailingReadiness(t *testing.T) {
 	t.Run("ST-SUP-RP14-LC08-T04 An inbox that fails each session is named with its failure class by the readiness of the worker mode", func(t *testing.T) {
-		inbox := &failingInbox{class: "broker:TOPIC_AUTHORIZATION_FAILED"}
-		w := &Workers{inboxName: "inbox-order-changes", inbox: inbox}
+		inbox, other := &failingInbox{class: "broker:TOPIC_AUTHORIZATION_FAILED"}, &failingInbox{}
+		w := &Workers{inboxes: []namedInbox{{name: "inbox-order-changes", state: inbox}, {name: "inbox-carrier-changes", state: other}}}
 		if reason := w.inboxFailing(); reason != "the component inbox-order-changes fails: broker:TOPIC_AUTHORIZATION_FAILED" {
 			t.Fatalf("the reason is %q", reason)
 		}
-		inbox.class = ""
+		other.class = "fetch:UNKNOWN_TOPIC_OR_PARTITION"
+		if reason := w.inboxFailing(); reason != "the component inbox-order-changes fails: broker:TOPIC_AUTHORIZATION_FAILED; the component inbox-carrier-changes fails: fetch:UNKNOWN_TOPIC_OR_PARTITION" {
+			t.Fatalf("the reason of two failing inboxes is %q", reason)
+		}
+		inbox.class, other.class = "", ""
 		if reason := w.inboxFailing(); reason != "" {
 			t.Fatalf("an inbox that reads gives the reason %q", reason)
 		}

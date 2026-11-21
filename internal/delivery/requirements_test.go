@@ -247,7 +247,7 @@ func TestNeedVariable(t *testing.T) {
 
 func TestTopicAccessRequirement(t *testing.T) {
 	t.Run("ST-SUP-RC38-OC02-T03 The access of a topic need reaches the platform requirements, and a wrong one is refused", func(t *testing.T) {
-		needs := []ComponentNeeds{{Component: "kafka-consumer", Needs: []Need{{Kind: "topic", Name: "{service}-subscription", Access: "read"}}},
+		needs := []ComponentNeeds{{Component: "kafka-consumer", Needs: []Need{{Kind: "topic", Name: "{service}-sub-order-changes", Access: "read"}}},
 			{Component: "kafka-producer", Needs: []Need{{Kind: "topic", Name: "{service}-events", Access: "write"}}}}
 		got, err := DeriveRequirements("fulfilment", needs)
 		if err != nil {
@@ -257,7 +257,7 @@ func TestTopicAccessRequirement(t *testing.T) {
 		for _, r := range got.Requirements {
 			access[r.Name] = r.Access
 		}
-		if access["fulfilment-subscription"] != "read" || access["fulfilment-events"] != "write" {
+		if access["fulfilment-sub-order-changes"] != "read" || access["fulfilment-events"] != "write" {
 			t.Fatalf("the requirements give the access %v", access)
 		}
 		for _, bad := range []Need{{Kind: "topic", Name: "x", Access: "all"}, {Kind: "egress", Name: "y", Port: 9093, Access: "read"}} {

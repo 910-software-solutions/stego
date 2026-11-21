@@ -350,23 +350,35 @@ func readSecret(name, path string) (string, error) {
 	return secret, nil
 }
 
-// The settings of the Kafka inbox that this package reads for it, by their fixed names (ST-SUP-RP01-LC38): the topic
-// that the inbox reads and its consumer group, each from its value or the file of its _FILE form.
+// SubscriptionPlaceholder is the part of the name of a setting of the Kafka inbox that names its subscription
+// (ST-SUP-RP01-LC38, decision on ST-SUP-Q204).
+const SubscriptionPlaceholder = "{subscription}"
+
+// The settings of the Kafka inbox that this package reads for it, by the name of the subscription in place of
+// SubscriptionPlaceholder (ST-SUP-RP01-LC38): the topic that the inbox reads and its consumer group, each from its value
+// or the file of its _FILE form.
 const (
-	ConsumerTopicSetting     = "STEGO_KAFKA_CONSUMER_TOPIC"
-	ConsumerTopicFileSetting = "STEGO_KAFKA_CONSUMER_TOPIC_FILE"
-	ConsumerGroupSetting     = "STEGO_KAFKA_CONSUMER_GROUP"
-	ConsumerGroupFileSetting = "STEGO_KAFKA_CONSUMER_GROUP_FILE"
+	ConsumerTopicSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
+	ConsumerTopicFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"
+	ConsumerGroupSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP"
+	ConsumerGroupFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE"
 )
 
-// ReadConsumer reads the topic and the consumer group of the Kafka inbox from the process environment, each from its
-// setting or from the file of its _FILE form, never both, with the rules of the settings of the destination
-// (ST-SUP-RP01-LC32, ST-SUP-RP01-LC38). An empty value is not set.
-func ReadConsumer() (topic, group string, err error) {
-	if topic, err = value(ConsumerTopicSetting, ConsumerTopicFileSetting); err != nil {
+// SubscriptionSetting gives the name of the setting pattern of the subscription subscription: the pattern with the
+// subscription name in capital letters and '_' in place of '-' in place of SubscriptionPlaceholder, such as
+// STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC for order-changes.
+func SubscriptionSetting(pattern, subscription string) string {
+	return strings.ReplaceAll(pattern, SubscriptionPlaceholder, strings.ToUpper(strings.ReplaceAll(subscription, "-", "_")))
+}
+
+// ReadConsumer reads the topic and the consumer group of the Kafka inbox of the subscription subscription from the
+// process environment, each from its setting or from the file of its _FILE form, never both, with the rules of the
+// settings of the destination (ST-SUP-RP01-LC32, ST-SUP-RP01-LC38). An empty value is not set.
+func ReadConsumer(subscription string) (topic, group string, err error) {
+	if topic, err = value(SubscriptionSetting(ConsumerTopicSetting, subscription), SubscriptionSetting(ConsumerTopicFileSetting, subscription)); err != nil {
 		return "", "", err
 	}
-	if group, err = value(ConsumerGroupSetting, ConsumerGroupFileSetting); err != nil {
+	if group, err = value(SubscriptionSetting(ConsumerGroupSetting, subscription), SubscriptionSetting(ConsumerGroupFileSetting, subscription)); err != nil {
 		return "", "", err
 	}
 	return topic, group, nil
