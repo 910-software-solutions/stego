@@ -38,10 +38,10 @@ const subjectType = "user"
 
 // The problem types of the idempotency key (ST-SUP-RC30-OC02).
 const (
-	keyMissingType = "about:blank"
-	keyInvalidType = "about:blank"
-	keyBusyType    = "about:blank"
-	keyReusedType  = "about:blank"
+	keyMissingType = "https://api.example.com/errors/idempotency-key-missing"
+	keyInvalidType = "https://api.example.com/errors/idempotency-key-invalid"
+	keyBusyType    = "https://api.example.com/errors/idempotency-key-in-progress"
+	keyReusedType  = "https://api.example.com/errors/idempotency-key-reused"
 )
 
 // Entities are the entities that the generated commands write, for the Entities of the command runtime's Config.
