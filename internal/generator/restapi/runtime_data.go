@@ -523,9 +523,16 @@ func renderRuntimeHelpers(ctx gen.Context, names []string, dataImport, slotsImpo
 	}
 	fmt.Fprintf(&b, ")\n\n")
 	fmt.Fprintf(&b, "// subjectType is the subject type of the schema that a verified identity maps to.\nconst subjectType = %q\n\n", ctx.Authorization.SubjectFromIdentity)
+	// With no idempotency component the handler still keeps the key of a create and a patch (ST-SUP-RC20-OC56), so
+	// its refusals take the same problem types under the problem base as a command, whose runtime joins the slugs of
+	// the idempotency runtime to the base (walkthrough 19, W19-U3).
 	missing, invalid, busy, reuse := "about:blank", "about:blank", "about:blank", "about:blank"
-	if keys != nil {
+	switch {
+	case keys != nil:
 		missing, invalid, busy, reuse = keys.missing, keys.invalid, keys.busy, keys.reuse
+	case ctx.ErrorTypeBase != "":
+		missing, invalid, busy, reuse = ctx.ErrorTypeBase+"idempotency-key-missing", ctx.ErrorTypeBase+"idempotency-key-invalid",
+			ctx.ErrorTypeBase+"idempotency-key-in-progress", ctx.ErrorTypeBase+"idempotency-key-reused"
 	}
 	fmt.Fprintf(&b, "// The problem types of the idempotency key (ST-SUP-RC30-OC02).\nconst (\n\tkeyMissingType = %q\n\tkeyInvalidType = %q\n\tkeyBusyType = %q\n\tkeyReusedType = %q\n)\n\n", missing, invalid, busy, reuse)
 	fmt.Fprintf(&b, "// Entities are the entities that the generated commands write, for the Entities of the command runtime's Config.\nfunc Entities() []command.Declared {\n\treturn []command.Declared{")

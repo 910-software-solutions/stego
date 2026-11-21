@@ -169,6 +169,46 @@ func TestKeptKeyWithNoComponent(t *testing.T) {
 			t.Errorf("the handlers write Idempotency-Kept %d times, want 2: the create and the patch", marks)
 		}
 	})
+	t.Run("ST-SUP-RC20-OC56-T03 With no idempotency component, a refused key of a create or a patch takes the problem type under the problem base, as a command does", func(t *testing.T) {
+		keyTypes := func(t *testing.T, ctx gen.Context) string {
+			t.Helper()
+			files, _, err := new(Generator).Generate(onRuntime(ctx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				if file.Path != "internal/api/runtime.go" {
+					continue
+				}
+				text := string(file.Bytes())
+				start := strings.Index(text, "const (\n\tkeyMissingType")
+				if start < 0 {
+					t.Fatal("runtime.go declares no problem types of the idempotency key")
+				}
+				// keyMissing answers a malformed key with keyInvalidType and an absent one with keyMissingType.
+				if !strings.Contains(text, "problem.Type = keyInvalidType") || !strings.Contains(text, "problem.Type = keyMissingType") {
+					t.Fatal("the refusal of a key does not take the problem types of the key")
+				}
+				return strings.Join(strings.Fields(text[start:start+strings.Index(text[start:], ")")]), " ")
+			}
+			t.Fatal("no runtime.go is generated")
+			return ""
+		}
+		ctx := todoIdempotencyContext(types.OpCreate, types.OpPatch)
+		ctx.Idempotency, ctx.PeerNamespaces = nil, nil
+		got := keyTypes(t, ctx)
+		for name, slug := range map[string]string{"keyMissingType": "idempotency-key-missing", "keyInvalidType": "idempotency-key-invalid",
+			"keyBusyType": "idempotency-key-in-progress", "keyReusedType": "idempotency-key-reused"} {
+			if !strings.Contains(got, name+" = \""+todoProblemBase+slug+"\"") {
+				t.Errorf("with no idempotency component, %s is not %s%s: %s", name, todoProblemBase, slug, got)
+			}
+		}
+		// With no problem base, the types stay about:blank.
+		ctx.ErrorTypeBase = ""
+		if got := keyTypes(t, ctx); strings.Count(got, `"about:blank"`) != 4 {
+			t.Errorf("with no problem base, the problem types of the key are not about:blank: %s", got)
+		}
+	})
 }
 
 func TestIdempotencyKeptHeaderDocument(t *testing.T) {
