@@ -1104,12 +1104,13 @@ func duplicateRefusal(m Migration, err, build error) error {
 // pg_get_indexdef writes it, CREATE [UNIQUE] INDEX <name> ON <table> USING
 // ..., or "its table" when the definition does not have that form.
 func indexTable(definition string) string {
-	_, rest, found := strings.Cut(definition, " ON ")
-	table, _, using := strings.Cut(rest, " USING ")
-	if !found || !using || table == "" {
-		return "its table"
+	words := strings.Fields(definition)
+	for i := 0; i+2 < len(words); i++ {
+		if strings.EqualFold(words[i], "on") && strings.EqualFold(words[i+2], "using") {
+			return words[i+1]
+		}
 	}
-	return table
+	return "its table"
 }
 
 // keyRefusal is the refusal of a validate migration whose foreign key a row
