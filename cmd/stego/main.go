@@ -463,6 +463,11 @@ func runPlan(args []string) error {
 				return err
 			}
 			printSchemaSteps(os.Stdout, "Apply writes the", gate.steps)
+			if strictSecretSources {
+				// A branch whose declaration needs add steps did not run stego apply, so its generated files are not
+				// those of its declaration (walkthrough 23, T-N).
+				return fmt.Errorf("--strict refuses: the declaration needs %d add step(s) that service.yaml does not hold, so the generated files are not those of the declaration; run stego apply and commit the files it writes", len(gate.steps))
+			}
 			fmt.Println("\nThe declaration needs these add steps, so plan saved no plan; run stego apply, which writes them in service.yaml.")
 			return nil
 		}
@@ -504,6 +509,10 @@ func runPlan(args []string) error {
 	if err := refuseChangedBodies(gate, plan, os.Stdout); err != nil {
 		return err
 	}
+	if strictSecretSources && plan.HasChanges() {
+		fmt.Print(compiler.FormatPlan(plan))
+		return refusePendingPlan(plan)
+	}
 	if err := compiler.SavePlan(plan, input.ProjectDir); err != nil {
 		return err
 	}
@@ -521,6 +530,28 @@ func runPlan(args []string) error {
 	}
 	fmt.Println("\nSaved the plan in .stego/plan.yaml; stego apply --saved-plan carries it out.")
 	return nil
+}
+
+// refusePendingPlan is the refusal of plan --strict for a plan that would change a generated file or the record: in
+// a check of a pull request, the generated files of the branch must be those that its declaration gives, so the
+// refusal names the count of each action and the remedy, and plan saves no plan (ST-GEN-CLI03; walkthrough 23, T-N).
+func refusePendingPlan(plan *compiler.Plan) error {
+	var generate, update, remove int
+	for _, f := range plan.Files {
+		switch f.Action {
+		case compiler.ActionGenerate:
+			generate++
+		case compiler.ActionUpdate:
+			update++
+		case compiler.ActionDelete:
+			remove++
+		}
+	}
+	record := "unchanged"
+	if plan.StateChanged {
+		record = "changed"
+	}
+	return fmt.Errorf("--strict refuses: apply would create %d, update %d and delete %d generated file(s), and the record is %s, so the generated files are not those of the declaration; run stego apply and commit the files it writes, so plan saved no plan", generate, update, remove, record)
 }
 
 // checkBeforeSteps runs the checks of stego validate on the declaration in the working folder, and prints the faults
@@ -1392,7 +1423,7 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 var strictSecretSources bool
 
 // strictUsage is the help of the flag --strict.
-const strictUsage = "refuse a secret source of an environment variable whose secret need the service does not state with that key, and in validate and plan a sign-off that counts only because of a key that the change adds to SIGNERS, in place of a warning"
+const strictUsage = "refuse a secret source of an environment variable whose secret need the service does not state with that key, and in validate and plan a sign-off that counts only because of a key that the change adds to SIGNERS, in place of a warning; in plan, also refuse a plan that would change a generated file"
 
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
 // (delivery.WriteRequirements, ST-DLV-CMD01): the needs, the environment variables that each component declares,

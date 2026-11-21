@@ -888,6 +888,29 @@ stego validate --strict --base "$PR_BASE_SHA"
 
 For GitHub Actions, `PR_BASE_SHA` is `${{ github.event.pull_request.base.sha }}`,
 and the checkout needs that commit, such as with `fetch-depth: 0`.
+
+#### The checks of a pull request
+
+Run these checks in CI for each pull request, in this order. Each one must
+exit 0:
+
+```sh
+stego validate --strict --base "$PR_BASE_SHA"
+stego test
+stego plan --strict --base "$PR_BASE_SHA"
+stego drift
+```
+
+- `stego plan --strict` refuses a branch whose generated files are not those
+  that its declaration gives: the plan would create, update or delete a
+  generated file or change the record, or the declaration needs add steps.
+  The refusal names the count of each action, and the remedy: run
+  `stego apply` and commit the files that it writes. Without `--strict`,
+  `stego plan` prints the same plan and exits 0. Before STEGO 3.255.0,
+  `stego plan --strict` also exited 0 there (walkthrough 23, T-N).
+- `stego drift` refuses a generated file that a person changed by hand, which
+  a plan does not show.
+
 In a release pipeline, the base of the SIGNERS check is the commit of the
 default branch that you release, such as `--base origin/main`: each pull
 request checked its change of `SIGNERS` before the merge. Do not give it the

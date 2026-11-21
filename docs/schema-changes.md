@@ -53,6 +53,8 @@ a field in the store, add a field with the new name and drop the old one.
 This changes the API, so it is a breaking change for each client.
 `stego validate` and `stego plan` also warn when the sign-off of a fill counts only
 because of a key that the change adds to `SIGNERS`; with `--strict` this is a fault.
+`stego plan --strict` also refuses a plan that would change a generated file; see
+[the checks of a pull request](../README.md#the-checks-of-a-pull-request).
 
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first

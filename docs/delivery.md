@@ -207,7 +207,9 @@ When a component names a secret source that the service does not state, such as 
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
 key, and the base gets no entry for that variable. With `--strict`, each of the three commands refuses such a source,
 names each variable, need and key, and writes nothing. Use `--strict` in CI, so that a source that the base does not
-wire stops the change.
+wire stops the change. `stego plan --strict` also refuses a branch whose generated files are not those that its
+declaration gives, and `stego drift` refuses a generated file that a person changed by hand: run both in CI, as
+[the checks of a pull request](../README.md#the-checks-of-a-pull-request) say.
 
 A need name is a Kubernetes name: lower-case letters, digits and `-`, which starts and ends with a letter or a digit,
 of at most 63 characters, also after `{service}` and the settings fill it. `stego apply` refuses a need name with a

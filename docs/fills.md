@@ -1197,6 +1197,10 @@ tell the consumers. The fault is `ST-GEN-INV39`:
 fault ST-GEN-INV39 Transaction.amount: the change events of Transaction carry the event fields of version 1 in the base, which a consumer reads as a contract, and the head leaves out the field amount; keep the field with its type, or raise events.version to 2, which tells each consumer of a breaking change (ST-GEN-INV39)
 ```
 
+In CI, `stego plan --strict` also refuses a branch whose generated files are not
+those that its declaration gives; see
+[the checks of a pull request](../README.md#the-checks-of-a-pull-request).
+
 ## Test a fill
 
 `stego test` runs `go test` on each fill and records the evidence. It exits

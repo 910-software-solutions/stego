@@ -64,6 +64,8 @@ variable that the base of the service does not wire (see
 [delivery](delivery.md)).
 `stego validate` and `stego plan` also warn when the sign-off of a fill counts only
 because of a key that the change adds to `SIGNERS`; with `--strict` this is a fault.
+`stego plan --strict` also refuses a plan that would change a generated file; see
+[the checks of a pull request](../README.md#the-checks-of-a-pull-request).
 
 The check reads the record of the base, not the out folder. `stego apply`
 writes a missing generated file again with no flag, and refuses only a
