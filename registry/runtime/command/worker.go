@@ -565,11 +565,16 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 			return outbox.Conflict(failure.err)
 		}
 		// A decision of the run denied a row whose relations the relay has not written yet, such as the row that the
-		// run of the message before made: the fill can have failed or refused only because of that lag, so the run is
-		// undecided, the message goes back to pending and the poison count does not count it; a later attempt decides
-		// the row with its relations (ST-SUP-RP10-LC17; walkthrough 21). A panic stays a panic.
-		if s.pendingRelations() && !errors.Is(failure.err, errPanic) {
-			return outbox.TransientRefusal(&relationsPendingError{err: failure.err})
+		// run of the message before made, and the failure comes from that deny: the run is undecided, the message
+		// goes back to pending and the poison count does not count it, so a later attempt decides the row with its
+		// relations. The wait is bounded: past RelationsPendingAttempts attempts or RelationsPendingAge, the failure
+		// is classed as with no such row, so it counts for poison or parks (ST-SUP-RP10-LC17; walkthrough 21;
+		// security review of PR #487, M1). A panic stays a panic.
+		if !errors.Is(failure.err, errPanic) && s.pendingCause(failure.err) {
+			if code, ok := rt.relationsPendingCode(d); ok {
+				return outbox.WithFailureCode(outbox.TransientRefusal(&relationsPendingError{err: failure.err}), code)
+			}
+			rt.relationsPastBound(ctx, w.spec.Name, d)
 		}
 		// A deny of the staging principal and a declared refusal give the same answer on every dispatch: the
 		// message is parked, so it does not hold back its key without end (ST-SUP-RP10-LC26, ST-SUP-RC35-OC06).
@@ -619,11 +624,88 @@ func (e *relationsPendingError) Error() string {
 func (e *relationsPendingError) Unwrap() error        { return e.err }
 func (e *relationsPendingError) Is(target error) bool { return target == errRelationsPending }
 
-// pendingRelations tells whether a decision of the run denied a row with an empty authorization token (notePending).
-func (s *state) pendingRelations() bool {
+// RelationsPendingAttempts and RelationsPendingAge bound the attempts of one consumed message that are undecided
+// because a row has no relations yet: the attempt after the last one, or one that starts RelationsPendingAge after the
+// first such attempt, is classed as with no such row. The age is that of the alert of the relay, so a row whose
+// relations never come, such as a row of an import or one whose tuple the destination authz refuses, parks or counts
+// for poison and raises the alert of a parked message (security review of PR #487, M1).
+const (
+	RelationsPendingAttempts = 10
+	RelationsPendingAge      = 5 * time.Minute
+)
+
+// RelationsPendingCode is the start of the failure code of an attempt that is undecided because a row has no
+// relations yet: relations-pending.<n>.<Unix seconds of the first such attempt>.
+const RelationsPendingCode = "relations-pending"
+
+// RelationsPastBoundEvent is the event name of the warn line of a consumed message that is still undecided for a row
+// with no relations at its bound, at most one line in each authz.LogEvery and worker with the count of the lines held back.
+const RelationsPastBoundEvent = "command.consumer.relations_pending_past_bound"
+
+// pendingLogs holds back the warn lines of RelationsPastBoundEvent.
+var pendingLogs = authz.NewCauseLog(nil)
+
+// pendingCause tells whether the failure err of a consumer run comes from a deny of a row with an empty
+// authorization token (notePending): the refused error of such a row, also inside a declared refusal, or a
+// not_found, declared refusal or fill error of a run whose list left out such a row. Any other failure, such as a deny
+// of a row with relations, an invalid value or a database statement, is classed as before.
+func (s *state) pendingCause(err error) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.relationsPending
+	var denied *deniedError
+	if errors.As(err, &denied) {
+		return denied.id != "" && s.pendingRows[denied.id]
+	}
+	if !s.pendingHidden {
+		return false
+	}
+	switch cause := causeOf(err); {
+	case cause == "not_found", errors.Is(err, errDeclaredRefusal):
+		return true
+	default:
+		return cause == "fill_error" || cause == "fill_json" || cause == "fill_parse"
+	}
+}
+
+// relationsPendingCode gives the failure code of the next undecided attempt of d, and false when the attempt is past
+// the bound: when the failure code of the last attempt is not of a relations-pending attempt, such as fill.<...> of
+// an attempt past the bound, the bound has passed already, and an empty or other code starts a new count.
+func (rt *Runtime) relationsPendingCode(d outbox.Delivery) (string, bool) {
+	now := rt.clock().Now()
+	n, first := 0, now.Unix()
+	if strings.HasPrefix(d.FailureCode, streakPrefix) || d.FailureCode == PoisonCode {
+		return "", false
+	}
+	if rest, ok := strings.CutPrefix(d.FailureCode, RelationsPendingCode+"."); ok {
+		count, since, found := strings.Cut(rest, ".")
+		c, errN := strconv.Atoi(count)
+		f, errF := strconv.ParseInt(since, 10, 64)
+		if !found || errN != nil || errF != nil || c < 1 || f > now.Unix() {
+			return "", false
+		}
+		n, first = c, f
+	}
+	if n+1 > RelationsPendingAttempts || now.Sub(time.Unix(first, 0)) >= RelationsPendingAge {
+		return "", false
+	}
+	return RelationsPendingCode + "." + strconv.Itoa(n+1) + "." + strconv.FormatInt(first, 10), true
+}
+
+// relationsPastBound writes the warn line RelationsPastBoundEvent with the worker, the destination and the event ID
+// of the message, and no value, at most one in each authz.LogEvery for each worker.
+func (rt *Runtime) relationsPastBound(ctx context.Context, worker string, d outbox.Delivery) {
+	ok, held := pendingLogs.Allow(worker)
+	if !ok || rt.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(RelationsPastBoundEvent)
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue("a consumed message waited past its bound for the relations of a row: " + worker))
+	record.AddAttributes(attribute.String("worker", worker), attribute.String("destination", d.Destination),
+		attribute.String("event_id", d.ID.String()), attribute.Int64("attempt", d.Attempts), attribute.Int("held_back", held))
+	rt.logger.Emit(context.WithoutCancel(ctx), record)
 }
 
 // PoisonAttempts is the number of attempts in a row of one consumed message that end with the same fill error or

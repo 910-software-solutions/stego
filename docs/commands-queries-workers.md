@@ -1206,11 +1206,20 @@ tenant and resource key, so the later events of the same row wait.
 A row that a worker writes gets its relations in SpiceDB from the relay, a
 moment after the run commits. Until then the worker is denied on the row, so a
 list does not give it and a read is refused. Thus the run of an update event
-can miss the row that the run of its create event made. When a run fails after
-such a deny, also with a declared refusal, the outcome is `undecided` and the
-cause is `relations_pending`. The message goes back to pending, the poison
-count does not count it, and it does not park. A later attempt sees the row
-(runtime v0.186.0). A run that commits does not change, so a fill that makes a
+can miss the row that the run of its create event made. When the failure of a
+run comes from such a deny, the outcome is `undecided` and the cause is
+`relations_pending`: the refused error of the row, also inside a declared
+refusal, or a not-found error, a declared refusal or a fill error of a run
+whose list left out such a row. The message goes back to pending with the
+failure code `relations-pending.<n>.<time>`, the poison count does not count
+it, and it does not park. A later attempt sees the row (runtime v0.186.0).
+Any other failure of the run counts as before. The wait has a bound: after 10
+such attempts (`command.RelationsPendingAttempts`), or 5 minutes after the
+first (`command.RelationsPendingAge`), the next attempt counts as if the row
+had its relations, so a row whose relations never come parks its message or
+counts for poison. That attempt writes the warn line
+`command.consumer.relations_pending_past_bound` with the worker, the
+destination and the event ID. A run that commits does not change, so a fill that makes a
 row when a list does not give it can still make a second row: declare a unique
 key on the reference that it makes the row from.
 
@@ -1440,11 +1449,16 @@ worker mode, which runs the relay, runs.
 
 - A consumer run that fails after a decision denied a row with an empty
   authorization token, whose relations the relay has not written yet, is a
-  transient refusal with the outcome `undecided` and the new cause class
-  `relations_pending` in `probe.WorkerCauses` (ST-SUP-RP10-LC17). The poison
-  count does not count it, and a declared refusal or a deny of the staging
-  principal of such a run does not park the message. A panic stays a panic,
-  and a run that commits does not change. Walkthrough 21: a consuming worker
+  transient refusal with the outcome `undecided`, the new cause class
+  `relations_pending` in `probe.WorkerCauses` and the failure code
+  `relations-pending.<n>.<time>` (ST-SUP-RP10-LC17), only when its failure
+  comes from that deny. The poison count does not count it, and a declared
+  refusal or a deny of the staging principal of such a run does not park the
+  message, for at most `command.RelationsPendingAttempts` (10) attempts and
+  `command.RelationsPendingAge` (5 minutes); then the attempt is classed as
+  before and writes the warn line `command.consumer.relations_pending_past_bound`
+  (`command.RelationsPastBoundEvent`). A panic stays a panic, and a run that
+  commits does not change. Walkthrough 21: a consuming worker
   failed about one first attempt in three with `fill_error`, as the list of
   an update event did not give the row of its create event.
 - `command.NewStruct` refuses a value of more than `command.MaxStructNodes`
