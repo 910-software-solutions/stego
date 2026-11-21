@@ -18,6 +18,8 @@
 # of the service does, so the platform requirements and the Kubernetes base no longer list it (walkthrough 17, W17-D2).
 # Version 1.21.0 gives no flag for a member of a create or an update request marked x-output-only, which the server
 # sets (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
+# Version 1.22.0 makes the definitions of a service with no rest-api component, such as an rpc-service, from the
+# document of its command and query routes that the command component writes (ST-SUP-RC04-OC32, ST-SUP-Q198 (a)).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -33,7 +35,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.21.0
+version: 1.22.0
 stage: ga
 output_namespace: cli
 config:

@@ -288,10 +288,12 @@ type Context struct {
 	// of ST-DECL-INV73 (ST-SUP-RC33-OC08). Generators must not change it.
 	QueryStreams map[string]bool
 
-	// ServiceOpenAPI is the OpenAPI document that the rest-api component emits for the service, which the compiler
-	// gives the client components go-sdk and cli-application when their declaration names no document and no
-	// factory, so that each client is generated from the service's own API (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32). It
-	// is nil for every other component and when the rest-api component is not active.
+	// ServiceOpenAPI is the OpenAPI document that the rest-api component emits for the service, or with no rest-api
+	// the document of the command and query routes that the command component writes (ST-SUP-RC32-OC29). The
+	// compiler gives it to the client components go-sdk, cli-application and typescript-sdk when their declaration
+	// names no document and no factory, so that each client is generated from the service's own API
+	// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32, ST-SUP-RC24-OC14), and, with no rest-api, to the command component, which
+	// writes it. It is nil for every other component.
 	ServiceOpenAPI []byte
 
 	// DroppedEntities are the entities that the declaration declares with dropped_by, and DroppedCollections the
@@ -944,6 +946,14 @@ const (
 // compiler gives the document to the client components that name no document of their own (ServiceOpenAPI).
 type OpenAPIProvider interface {
 	OpenAPIDocument(ctx Context) ([]byte, error)
+}
+
+// RouteOpenAPIProvider is a generator that makes the OpenAPI document of the command and query routes of a service
+// with no rest-api component from the context of the command component: the rest-api generator. The command
+// component writes the document, and the compiler gives it to the client components that name no document of their
+// own (ST-SUP-RC32-OC29). It gives nil when the service serves no command and no get or list query over HTTP.
+type RouteOpenAPIProvider interface {
+	RouteOpenAPIDocument(command Context) ([]byte, error)
 }
 
 // Emitter is one command, query, worker, process method or slot binding.

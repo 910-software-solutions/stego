@@ -38,6 +38,7 @@ compatible_mixins:
   - async-worker
   - go-sdk
   - cli-application
+  - typescript-sdk
 
 bindings:
   durable-outbox: outbox

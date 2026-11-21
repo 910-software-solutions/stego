@@ -350,3 +350,88 @@ func TestCommandSecretPathParameter(t *testing.T) {
 		}
 	})
 }
+
+func TestRouteDocument(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T01 With no rest-api, the document of the command component holds each command and query route and no collection route", func(t *testing.T) {
+		// The context of the command component of a service with no rest-api: its own settings and namespace, and
+		// the entity Todo, which no collection serves.
+		ctx := routesContext()
+		ctx.ComponentConfig, ctx.OutputNamespace = ctx.PeerConfigs["command"], ctx.PeerNamespaces["command"]
+		ctx.PeerConfigs, ctx.PeerNamespaces, ctx.Collections = nil, nil, nil
+		data, err := new(Generator).RouteOpenAPIDocument(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(data)
+		if err != nil {
+			t.Fatalf("the route document does not load: %v", err)
+		}
+		want := map[string]string{"POST /api/todo/v1/todos/{todo_id}/state:close": "closeTodo", "GET /api/todo/v1/todos/{todoId}/summary": "todoSummary", "GET /api/todo/v1/todos/open": "openTodos"}
+		got := map[string]string{}
+		for route, item := range doc.Paths.Map() {
+			for method, op := range item.Operations() {
+				if !strings.HasPrefix(route, "/authz/") {
+					got[method+" "+route] = op.OperationID
+				}
+			}
+		}
+		for route, id := range want {
+			if got[route] != id {
+				t.Errorf("the route document gives %s the operation %q, want %q", route, got[route], id)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("the route document has the operations %v, want only %v: no collection route", got, want)
+		}
+		command := doc.Paths.Find("/api/todo/v1/todos/{todo_id}/state:close").Post
+		if command.Parameters.GetByInAndName("header", "Idempotency-Key") == nil || command.Extensions["x-stego-command"] != true {
+			t.Errorf("the command has no Idempotency-Key or no x-stego-command mark: %+v", command)
+		}
+		for name := range doc.Components.Schemas {
+			if strings.HasPrefix(name, "Todo") {
+				t.Errorf("the route document has the collection schema %s", name)
+			}
+		}
+		// A service that serves no command and no get or list query over HTTP has no route document.
+		ctx.Commands, ctx.Queries = nil, nil
+		if data, err := new(Generator).RouteOpenAPIDocument(ctx); err != nil || data != nil {
+			t.Errorf("with no route the document is %d bytes, %v; want none", len(data), err)
+		}
+	})
+}
+
+func TestRouteDocumentSecretMembers(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T03 With no rest-api, the route document marks a debug_redact request member and a response that holds one", func(t *testing.T) {
+		// The context of the command component of a service with no rest-api, whose command messages have
+		// debug_redact members (security review of PR #467, I2).
+		ctx := routesContext()
+		ctx.Inputs = map[string][]byte{"proto/todo.proto": []byte(secretProto)}
+		ctx.ComponentConfig, ctx.OutputNamespace = ctx.PeerConfigs["command"], ctx.PeerNamespaces["command"]
+		ctx.PeerConfigs, ctx.PeerNamespaces, ctx.Collections = nil, nil, nil
+		data, err := new(Generator).RouteOpenAPIDocument(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.Validate(context.Background()); err != nil {
+			t.Fatalf("the route document is not valid OpenAPI: %v", err)
+		}
+		op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+		pin := op.RequestBody.Value.Content.Get("application/json").Schema.Value.Properties["pin"].Value
+		if pin.Extensions["x-sensitive"] != true || pin.Format != "password" || !pin.WriteOnly {
+			t.Errorf("the request member pin has x-sensitive %v, the format %q and writeOnly %t; want true, password and true", pin.Extensions["x-sensitive"], pin.Format, pin.WriteOnly)
+		}
+		response := op.Responses.Value("200").Value.Content.Get("application/json").Schema.Value
+		if response.Extensions["x-sensitive"] != true {
+			t.Errorf("the response root of the command, which holds the secret apiKey, has x-sensitive %v; want true", response.Extensions["x-sensitive"])
+		}
+		reason := op.RequestBody.Value.Content.Get("application/json").Schema.Value.Properties["reason"].Value
+		if reason.Extensions["x-sensitive"] != nil || reason.WriteOnly {
+			t.Error("the request member reason, which is not debug_redact, is marked a secret")
+		}
+	})
+}
+

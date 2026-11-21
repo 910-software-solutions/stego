@@ -262,6 +262,9 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		keyMissing(w, r, err)
 		return
 	}
+	if key != "" {
+		w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
+	}
 	requestID := command.NewID()
 	if key == "" {
 		key = requestKey(requestID)
@@ -842,6 +845,9 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		keyMissing(w, r, err)
 		return
+	}
+	if key != "" {
+		w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 	}
 	requestID := command.NewID()
 	if key == "" {

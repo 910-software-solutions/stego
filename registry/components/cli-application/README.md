@@ -11,9 +11,12 @@ accepted codes require valid JSON. HTTP 204 and 205 always require an empty body
 
 To get the CLI of the service's own API, bind the mixin `cli-application` in
 the service declaration (`mixins: [cli-application]`); the rest-crud archetype
-lists it. With no `factory_package`, STEGO makes the definitions from the
-OpenAPI document that the rest-api component writes for the service, in the
-package `<out>/cli/app`:
+lists it, and an rpc-service can bind it too. With no `factory_package`, STEGO
+makes the definitions from the OpenAPI document that the rest-api component
+writes for the service, or, in a service with no rest-api component such as an
+rpc-service, from the document of its command and query routes that the command
+component writes (`<out>/commands/openapi.json`), in the package
+`<out>/cli/app`:
 
 - one command for each operation, named by the words of its operationId,
   such as `create-clinics`, `read-clinics` and `discharge-patient`;
@@ -98,8 +101,8 @@ component). For an apply resource, the flag covers its create and its patch.
 `command.IdempotentWritesFrom(app, document)` sets the flag of each command
 and apply resource from the OpenAPI document of the service: true when the
 operation carries the `Idempotency-Key` header parameter, and false otherwise.
-The rest-api component states that parameter on each create and patch when
-the service has the idempotency component. A parameter that the document
+The rest-api component states that parameter on each create and patch, and
+each command has it. A parameter that the document
 gives by `$ref` does not count. A command that is not a POST or a PATCH must
 not set the flag.
 

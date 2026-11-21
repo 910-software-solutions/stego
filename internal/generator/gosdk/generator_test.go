@@ -467,3 +467,140 @@ func TestServiceDocument(t *testing.T) {
 		}
 	})
 }
+
+func TestRequiredSecretMember(t *testing.T) {
+	t.Run("ST-SUP-RC06-OC09-T03 A required secret member of a request is a plain field, and an optional one stays a pointer", func(t *testing.T) {
+		document := secretDocument()
+		ctx := gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(document)}
+		files, _, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire string
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "internal/wire/api.go") {
+				wire = string(f.Bytes())
+			}
+		}
+		create := wire[strings.Index(wire, "type PersonCreateRequest struct"):]
+		create = create[:strings.Index(create, "\n}\n")]
+		if !strings.Contains(create, " string `json:\"pin,omitempty\"") || strings.Contains(create, "*string `json:\"pin") {
+			t.Errorf("the required secret pin of the create is not a plain string:\n%s", create)
+		}
+		update := wire[strings.Index(wire, "type UpdatePersonJSONBody struct"):]
+		update = update[:strings.Index(update, "\n}\n")]
+		if !strings.Contains(update, "*string `json:\"pin,omitempty\"") {
+			t.Errorf("the optional secret pin of the update is not a pointer:\n%s", update)
+		}
+	})
+}
+
+// secretDocument is the sample document with a create whose request schema requires the writeOnly member pin, and an
+// update whose inline body has pin optional.
+func secretDocument() string {
+	document := strings.Replace(sample, "  /uuid/{id}:\n", `  /people:
+    post:
+      operationId: createPerson
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PersonCreateRequest'}
+      responses:
+        '201': {description: Created}
+  /people/{id}:
+    put:
+      operationId: updatePerson
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                pin: {type: string, writeOnly: true}
+      responses:
+        '200': {description: Updated}
+  /uuid/{id}:
+`, 1)
+	document = strings.Replace(document, "components:\n  schemas:\n", `components:
+  schemas:
+    PersonCreateRequest:
+      type: object
+      required: [name, pin]
+      properties:
+        name: {type: string}
+        pin: {type: string, writeOnly: true}
+`, 1)
+	return document
+}
+
+const redactionTest = `package sdk
+import ("bytes";"encoding/json";"fmt";"log/slog";"strings";"testing")
+func TestRedaction(t *testing.T) {
+	pin := "7310"
+	create := PersonCreateRequest{Name: "Ann", Pin: pin}
+	update := UpdatePersonJSONBody{Name: "Ann", Pin: &pin}
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logged, nil))
+	logger.Info("request", "create", create, "update", update, "pointer", &create)
+	for _, text := range []string{fmt.Sprint(create), fmt.Sprintf("%+v", create), fmt.Sprintf("%#v", create), fmt.Sprintf("%v", &create), fmt.Sprintf("%+v", update), fmt.Sprintf("%#v", &update), logged.String()} {
+		if strings.Contains(text, pin) || !strings.Contains(text, "[redacted]") || !strings.Contains(text, "Ann") {
+			t.Errorf("a printed request shows the secret or hides the rest: %s", text)
+		}
+	}
+	body, err := json.Marshal(create)
+	if err != nil || !strings.Contains(string(body), pin) {
+		t.Errorf("the JSON body of the request lost the secret: %s %v", body, err)
+	}
+	if create.Pin != pin || *update.Pin != pin {
+		t.Error("printing changed the request")
+	}
+}
+`
+
+func TestPrintedSecretMember(t *testing.T) {
+	t.Run("ST-SUP-RC06-OC09-T05 A printed or logged request redacts each secret member, and its JSON body keeps it", func(t *testing.T) {
+		files, wiring, err := new(Generator).Generate(gen.Context{ModuleName: "example.com/sdkprobe", OutputNamespace: "sdk", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(secretDocument())})
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, gen.File{Path: "sdk/redaction_test.go", Content: []byte(redactionTest)})
+		root := t.TempDir()
+		for _, file := range files {
+			target := filepath.Join(root, file.Path)
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, file.Bytes(), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var mod strings.Builder
+		mod.WriteString("module example.com/sdkprobe\ngo 1.26.0\nrequire(\n")
+		names := make([]string, 0, len(wiring.GoModRequires))
+		for name := range wiring.GoModRequires {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(&mod, "%s %s\n", name, wiring.GoModRequires[name])
+		}
+		mod.WriteString(")\n")
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(mod.String()), 0644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}, {"test", "-count=1", "-run", "TestRedaction", "./sdk/"}} {
+			cmd := exec.Command("go", args...)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "GOWORK=off")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("go %s: %v\n%s", args[0], err, output)
+			}
+		}
+	})
+}

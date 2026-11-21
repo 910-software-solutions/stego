@@ -2,6 +2,7 @@ package restapi
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -30,6 +31,35 @@ func (g *Generator) OpenAPIDocument(ctx gen.Context) ([]byte, error) {
 		return nil, err
 	}
 	file, err := serviceOpenAPIFile(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return file.Content, nil
+}
+
+// RouteOpenAPIDocument gives the OpenAPI document of the command and query routes of a service with no rest-api
+// component, from the context of the command component (ST-SUP-RC32-OC29): each command and each get or list query
+// that the service serves over HTTP, in the form of ST-SUP-RC20-OC53, and no collection route. It gives nil when the
+// service serves none.
+func (g *Generator) RouteOpenAPIDocument(command gen.Context) ([]byte, error) {
+	ctx := command
+	ctx.PeerConfigs = maps.Clone(command.PeerConfigs)
+	ctx.PeerNamespaces = maps.Clone(command.PeerNamespaces)
+	if ctx.PeerConfigs == nil {
+		ctx.PeerConfigs = map[string]map[string]any{}
+	}
+	if ctx.PeerNamespaces == nil {
+		ctx.PeerNamespaces = map[string]string{}
+	}
+	ctx.PeerConfigs["command"], ctx.PeerNamespaces["command"] = command.ComponentConfig, command.OutputNamespace
+	routes, err := routeOperations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(routes) == 0 {
+		return nil, nil
+	}
+	file, err := generateOpenAPI(command.OutputNamespace, nil, nil, nil, ctx.BasePath, ctx.Conventions.ResponseFormat, nil, routes)
 	if err != nil {
 		return nil, err
 	}

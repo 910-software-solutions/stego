@@ -1,6 +1,7 @@
 package command
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -1100,6 +1101,27 @@ func TestTypedRepository(t *testing.T) {
 			case c.refusal != "" && (err == nil || !strings.Contains(output, c.refusal)):
 				t.Errorf("%s: go build gave %v, want the refusal %q:\n%s", c.pkg, err, c.refusal, output)
 			}
+		}
+	})
+}
+
+func TestRouteDocumentFile(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T02 With no rest-api the command component writes the route document that it gets, also with no command, and with rest-api none", func(t *testing.T) {
+		document := []byte(`{"openapi":"3.0.3","paths":{}}`)
+		ctx := commandContext(t, declaration(t), commandSlot)
+		ctx.ServiceOpenAPI = document
+		if got := generated(t, ctx)["commands/openapi.json"]; !bytes.Equal(got, document) {
+			t.Errorf("with commands, commands/openapi.json is %q, want the route document", got)
+		}
+		// A service whose routes are queries alone, such as the rpc-service scaffold.
+		ctx.Commands, ctx.ComponentConfig = nil, map[string]any{}
+		if got := generated(t, ctx)["commands/openapi.json"]; !bytes.Equal(got, document) {
+			t.Errorf("with no command, commands/openapi.json is %q, want the route document", got)
+		}
+		// With rest-api the compiler gives the command component no document, and it writes none.
+		ctx = commandContext(t, declaration(t), commandSlot)
+		if _, written := generated(t, ctx)["commands/openapi.json"]; written {
+			t.Error("with no route document the command component writes commands/openapi.json")
 		}
 	})
 }
