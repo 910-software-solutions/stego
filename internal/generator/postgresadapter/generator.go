@@ -231,7 +231,7 @@ var reservedTypeNames = map[string]bool{
 	"Database": true, "inTransaction": true, "lockLedger": true, "recordMigration": true,
 	"refreshMarker": true, "RegisterStep": true, "RegisterSealStep": true, "RegisterValidateStep": true, "ValidateConstraint": true, "runtimetenant": true, "RegisterIndexStep": true, "applyPending": true,
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
-	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
+	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true, "duplicateRefusal": true, "indexTable": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
 	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "ledgerRefusal": true, "lastName": true, "foreignLedger": true, "historyRemedy": true, "laterRemedy": true, "refusedCause": true, "digestRemedy": true, "contractWait": true, "sealWait": true, "backfillWait": true, "reportsWait": true, "releaseWait": true, "MigrationDigests": true, "EarlierMigrationDigests": true, "earlierDigest": true, "RegisterSealCheckpoints": true, "applySealCheckpoints": true, "refreshSealCheckpoints": true, "sealCheckpoints": true, "RegisterEarlierDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
@@ -874,26 +874,26 @@ func checkLedger(applied, registered []Migration) error {
 	for i, row := range applied {
 		if i >= len(registered) {
 			if !row.Step {
-				return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, which is after the last migration %s of this release and is not a schema step: "+
+				return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the migration %q, which is after the last migration %q of this release and is not a schema step: "+
 					"a later release applied it. Deploy that release or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, lastName(registered))}
 			}
 			for _, name := range row.CompatibleWith {
 				if !known[name] {
-					return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the schema step %s of a later release, which needs the migration %s, and this release does not hold it: "+
+					return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the schema step %q of a later release, which needs the migration %q, and this release does not hold it: "+
 						"deploy the release of the step or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, name)}
 				}
 			}
 			continue
 		}
 		if row.Name != registered[i].Name {
-			return &ledgerRefusal{remedy: historyRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, and this release has the migration %s at that place: "+
+			return &ledgerRefusal{remedy: historyRemedy, text: fmt.Sprintf("the ledger row %d names the migration %q, and this release has the migration %q at that place: "+
 				"the database ran the migrations of another history, such as the build of a branch whose schema steps took other numbers before the merge. "+
 				"The body of an applied migration never changes, and nothing removes a ledger row. Run this release on a database that ran only releases of its own history: "+
 				"restore a backup made before the other build, or make the database again, such as a new preview database; the job changed nothing (ST-SUP-RC01-OC51)",
 				i+1, row.Name, registered[i].Name)}
 		}
 		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
-			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
+			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %q holds the digest %q, and this release registers the digest %q for its body: "+
 				"the body of an applied migration never changes, so a change comes as a new schema step. Deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; the job changed nothing, and nothing repairs the digest (ST-SUP-RC01-OC51)",
 				row.Name, row.Digest, registered[i].Digest)}
@@ -1201,6 +1201,9 @@ func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migrati
 	}
 	if _, err := conn.ExecContext(ctx, m.Body); err != nil {
 		build := fmt.Errorf("migration %s: %w", m.Name, err)
+		// Two rows that hold one value of a unique key stop the build of its index with a refusal that names the
+		// migration, the index and the table, and no row value (ST-SUP-RC01-OC38, ST-GEN-Q48).
+		build = duplicateRefusal(m, err, build)
 		if err := dropAfterFailure(context.WithoutCancel(ctx), conn, m.Index); err != nil {
 			return fmt.Errorf("%w; %v", build, err)
 		}
@@ -1380,10 +1383,38 @@ func violatesCheck(err error) bool {
 	return errors.As(err, &state) && state.SQLState() == "23514"
 }
 
+// duplicateRefusal gives the refusal of the index migration m whose build
+// failed with err: for a unique violation (SQLSTATE 23505), a refusal whose
+// text names the migration, the index and its table, says that two or more
+// rows hold one value of its key and what to do, and holds no row value, so
+// the migration job may log it; for each other error, build as it is.
+func duplicateRefusal(m Migration, err, build error) error {
+	var coded interface{ SQLState() string }
+	if !errors.As(err, &coded) || coded.SQLState() != "23505" {
+		return build
+	}
+	return &keyRefusal{text: fmt.Sprintf("the migration %s does not build the unique index %s of %s: two or more rows of the table hold one value of its key; correct or remove those rows, then run the migration job again (ST-SUP-RC01-OC38)",
+		m.Name, m.Index, indexTable(m.Definition)), err: err}
+}
+
+// indexTable gives the table of an index from its definition as
+// pg_get_indexdef writes it, CREATE [UNIQUE] INDEX <name> ON <table> USING
+// ..., or "its table" when the definition does not have that form.
+func indexTable(definition string) string {
+	words := strings.Fields(definition)
+	for i := 0; i+2 < len(words); i++ {
+		if strings.EqualFold(words[i], "on") && strings.EqualFold(words[i+2], "using") {
+			return words[i+1]
+		}
+	}
+	return "its table"
+}
+
 // keyRefusal is the refusal of a validate migration whose foreign key a row
-// breaks: its text names the step, the table and the key and no row value, so
-// the migration job may log it (Refusal). It wraps the database error, whose
-// SQLSTATE 23503 the job keeps.
+// breaks, or of an index migration whose unique key two rows break: its text
+// names the step, the table and the key and no row value, so the migration
+// job may log it (Refusal). It wraps the database error, whose SQLSTATE 23503
+// or 23505 the job keeps.
 type keyRefusal struct {
 	text string
 	err  error

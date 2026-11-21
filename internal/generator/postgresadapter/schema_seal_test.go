@@ -107,8 +107,8 @@ func TestSealSteps(t *testing.T) {
 		// CHECKs of the contract.
 		manifest := generated(t, files[1], "seal/schema_manifest.go")
 		for _, want := range []string{
-			`{Name: "note", Type: "character varying(200)", NotNull: false, Droppable: true}`, `{Name: "note_sealed", Type: "bytea", NotNull: false}`,
-			`{Name: "code", Type: "character varying(40)", NotNull: true, Droppable: true}`, `{Name: "code_sealed", Type: "bytea", NotNull: false}`,
+			`{Name: "note", Type: "character varying(200)", NotNull: false, Droppable: true}`, `{Name: "note_sealed", Type: "bytea", NotNull: false, Secret: true}`,
+			`{Name: "code", Type: "character varying(40)", NotNull: true, Droppable: true}`, `{Name: "code_sealed", Type: "bytea", NotNull: false, Secret: true}`,
 			`{Name: "vaults_note_sealed_complete", Kind: manifest.KindCheck, Definition: "CHECK (((note_sealed IS NOT NULL) OR (note IS NULL)))", NotValid: true}`,
 			`{Name: "vaults_code_sealed_not_null", Kind: manifest.KindCheck, Definition: "CHECK ((code_sealed IS NOT NULL))", NotValid: true}`,
 		} {
@@ -129,7 +129,7 @@ func TestSealSteps(t *testing.T) {
 		}
 		// After the contract the field is in its sealed column alone, NOT NULL for the required code.
 		manifest = generated(t, files[2], "sealc/schema_manifest.go")
-		for _, want := range []string{`{Name: "note_sealed", Type: "bytea", NotNull: false}`, `{Name: "code_sealed", Type: "bytea", NotNull: true}`} {
+		for _, want := range []string{`{Name: "note_sealed", Type: "bytea", NotNull: false, Secret: true}`, `{Name: "code_sealed", Type: "bytea", NotNull: true, Secret: true}`} {
 			if !strings.Contains(manifest, want) {
 				t.Errorf("the manifest after the contract does not hold %s:\n%s", want, manifest)
 			}

@@ -320,6 +320,10 @@ type tableModel struct {
 	// indexes, each after lead.
 	search []string
 	unique [][]string
+	// secret are the columns that hold the sealed bytes or the hash of a secret field, which the manifest marks
+	// Secret, so the schema check of the release before takes no unique index of a later step on them
+	// (ST-SUP-RP15-LC01; security review of PR #484, L2).
+	secret []string
 }
 
 // columnModel is one column: its name, its type, its NOT NULL, its DEFAULT clause, and its default as the schema
@@ -405,6 +409,9 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 			}
 			table.columns = append(table.columns, columnModel{name: field.ColumnName(), typ: columnTypeName,
 				notNull: !field.Optional && !field.Computed, defaultClause: fieldDefault, manifestDefault: literalDefault(field.Default, columnTypeName)})
+			if field.Secret() && !field.ClearStored {
+				table.secret = append(table.secret, field.ColumnName())
+			}
 			if checks := columnChecks(field, columnTypeName); len(checks) > 0 {
 				table.checks = append(table.checks, checkModel{name: sqlName(table.name, field.ColumnName(), "check"),
 					expression: joinChecks(checks, false), definition: "CHECK (" + joinChecks(checks, true) + ")"})

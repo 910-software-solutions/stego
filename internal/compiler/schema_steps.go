@@ -77,8 +77,10 @@ func MissingAddSteps(base BaseSource, head *types.ServiceDeclaration) ([]types.S
 	return steps, nil
 }
 
-// generatedSchemaKinds are the kinds of schema change whose steps generation carries out. The kind unique has no
-// generated step migration yet, so generation refuses it rather than write code that does not move the rows. An add is a step
+// generatedSchemaKinds are the kinds of schema change whose steps generation carries out. A unique of a declared
+// invariant has no generated step migration yet, so generation refuses it rather than write code that does not move
+// the rows; a unique of a field builds the unique index of the field at its expand step (ST-SUP-RC01-OC38,
+// ST-GEN-Q48), as unbuiltSchemaChanges lets it pass. An add is a step
 // migration of the postgres-adapter after the baseline 001_initial: the table of a new entity with its row-level
 // security, or the column of a new field (ST-SUP-RC01-OC22, ST-GEN-UC12-R02, ST-GEN-UC12-R06). A rename at expand
 // adds the new column, the sync trigger and the backfill of its change (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
@@ -95,7 +97,7 @@ var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype"
 func unbuiltSchemaChanges(service *types.ServiceDeclaration) error {
 	var refused []string
 	for _, change := range service.SchemaChanges {
-		if !generatedSchemaKinds[change.Kind] {
+		if !generatedSchemaKinds[change.Kind] && !change.UniqueOfField(service.Entities) {
 			refused = append(refused, fmt.Sprintf("%s (%s)", change.ID, change.Kind))
 		}
 	}

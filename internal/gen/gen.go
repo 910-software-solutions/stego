@@ -314,7 +314,8 @@ type Context struct {
 // length of the schema history is the context itself. An add of an entity is undone with the entity and each
 // collection over it, an add of a field with the field, a rename by giving the field the column From, with its
 // API name kept (StoredNames), and a relax by giving the field what it was before the change
-// (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a drop of a field by giving the
+// (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a unique of a field by taking
+// its unique off the field (types.WithoutUnique), a drop of a field by giving the
 // entity back the field of its Definition in its place (DropDefinition), and a drop of an entity by giving back the
 // entity and the collections over it, which the declaration keeps with dropped_by (ST-GEN-Q47).
 // A seal is undone by giving the field its sensitivity From in its clear column, and for From secret the mark of a
@@ -333,7 +334,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" && change.Kind != "seal" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" && change.Kind != "seal" && !change.UniqueOfField(c.Entities) {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -368,6 +369,17 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		}
 		if at < 0 {
 			return Context{}, fmt.Errorf("schema change %q adds to the entity %s, which the declaration does not have", change.ID, change.Entity)
+		}
+		if change.Kind == "unique" {
+			// A unique of a field is undone by taking unique, unique_when_live and its unique_composite group off the
+			// field, so its unique index leaves the shape (ST-GEN-INV33, ST-GEN-Q48).
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
+			if found < 0 || (!fields[found].Unique && len(fields[found].UniqueComposite) == 0) {
+				return Context{}, fmt.Errorf("schema change %q makes the field %s.%s unique, which the declaration does not declare unique or in a unique_composite", change.ID, change.Entity, change.Field)
+			}
+			shaped.Entities[at].Fields = types.WithoutUnique(fields, change.Field)
+			continue
 		}
 		if change.Kind == "within" {
 			// A within is undone by taking the within off its reference, so the composite key leaves the shape

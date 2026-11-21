@@ -201,6 +201,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"},
 		{withinBase("withinbase", "withinbasetenancy"), "withinbase_access.json"}, {withinHead("within", "withintenancy"), "within_access.json"},
 		{withinFresh("withinfresh", "withinfreshtenancy"), "withinfresh_access.json"},
+		{uniqueBase("uniquebase", "uniquebasetenancy"), "uniquebase_access.json"}, {uniqueHead("uniquestep", "uniquesteptenancy"), "uniquestep_access.json"},
 		{dropBase("dropbase", "dropbasetenancy"), "dropbase_access.json"}, {dropHead("drop", "droptenancy"), "drop_access.json"},
 		{dropContract("dropc", "dropctenancy"), "dropc_access.json"},
 		{sealBase("sealbase", "sealbasetenancy"), "sealbase_access.json"}, {sealSteps("seal", "sealtenancy", false), "seal_access.json"},
@@ -458,6 +459,7 @@ func TestTables(t *testing.T) {
 	t.Run("ST-GEN-UC12-R02-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R02-T02") })
 	t.Run("ST-SUP-RC01-OC46-T01 on PostgreSQL", func(t *testing.T) { onSteps(t, "ST-SUP-RC01-OC46-T01") })
 	t.Run("ST-SUP-RC01-OC46-T02 on PostgreSQL", func(t *testing.T) { onSteps(t, "ST-SUP-RC01-OC46-T02") })
+	t.Run("ST-SUP-RC01-OC38-T10 on PostgreSQL", func(t *testing.T) { onSteps(t, "ST-SUP-RC01-OC38-T10") })
 	t.Run("ST-SUP-RC01-OC23-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T01") })
 	t.Run("ST-SUP-RC01-OC25-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC25-T01") })
 	t.Run("ST-SUP-RC01-OC23-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T05") })

@@ -32,6 +32,10 @@
 # seal checkpoints at each migration job takes no ACCESS EXCLUSIVE lock on a database that has them, and the check of a
 # seal contract step runs the seal checkpoints in its own transaction (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50; security
 # review of PR #472, I2, and second review, L1).
+# Version 6.26.0 builds the unique index of a unique step of a field in its index migration at expand, quotes the
+# migration names of a ledger refusal, and stops the job with a refusal that names the migration, the index and the
+# table, and no row value, when two rows hold one value of a new unique key (ST-SUP-RC01-OC38, ST-SUP-RC01-OC51;
+# ST-GEN-Q48; security review of PR #476, I1).
 # Version 6.27.0 gives the refusal of a changed migration body and of a contract step that waits a fault class, the
 # table that tells it, a fixed remedy and the cause class refused, so the failure record of the migration job names
 # them with no change or row (ST-SUP-RC01-OC50, ST-SUP-RC01-OC51; walkthrough 21, U-F).

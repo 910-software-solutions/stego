@@ -677,10 +677,12 @@ func CheckName(table, column string) string {
 }
 
 // acceptUnique tells whether the unique index n of the entity table t, with the key columns key, is the unique index of
-// a later add step in its exact form: the columns of the primary key of the table (primary) but its last, the key id,
-// first, which on an owned table is the tenant column, so the key is unique within one tenant; then one or more
-// columns, each of a built-in base type of pg_catalog, of which at least one is a column that the manifest does not
-// list; and named as UniqueName names it. The caller checks that it is no primary key, has no expression or
+// a later add step or a later unique step of a field in its exact form: the columns of the primary key of the table
+// (primary) but its last, the key id, first, which on an owned table is the tenant column, so the key is unique within
+// one tenant; then one or more columns, each of a built-in base type of pg_catalog and none of them a column of that
+// lead, which the manifest may list or not (ST-GEN-Q48), but no column that the manifest marks Secret and no sealed
+// column <column>_sealed; and named as UniqueName names it. The caller also checks that the index is valid and
+// ready. The caller checks that it is no primary key, has no expression or
 // predicate, is not deferrable, treats nulls as distinct and has the default operator classes and collations.
 func acceptUnique(t Table, n string, key, primary []string, columns map[string]tableColumn) bool {
 	if len(primary) == 0 || primary[len(primary)-1] != "id" {
@@ -697,17 +699,20 @@ func acceptUnique(t Table, n string, key, primary []string, columns map[string]t
 		return false
 	}
 	rest := key[len(lead):]
-	unlisted := false
 	for _, k := range rest {
 		c, ok := columns[k]
 		if !ok || !c.builtin || slices.Contains(lead, k) {
 			return false
 		}
-		if !slices.ContainsFunc(t.Columns, func(c Column) bool { return c.Name == k }) {
-			unlisted = true
+		// A unique index tells a writer that a row holds the value: never on the sealed bytes or the hash of a
+		// secret, nor on the sealed column of a seal (security review of PR #484, L2).
+		if strings.HasSuffix(k, "_sealed") || slices.ContainsFunc(t.Columns, func(c Column) bool { return c.Name == k && c.Secret }) {
+			return false
 		}
 	}
-	return unlisted && n == UniqueName(t.Name, rest)
+	// The columns may all be listed: a later unique step of a field builds the unique index of a column that this
+	// release has (ST-GEN-Q48).
+	return n == UniqueName(t.Name, rest)
 }
 
 // UniqueName gives the name that the generator gives the unique index of the key columns of a table, after its tenant

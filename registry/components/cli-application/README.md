@@ -54,7 +54,9 @@ component writes (`<out>/commands/openapi.json`), in the package
   only `implicit` fields of the collection), the service answers 409 to a
   second create of a name (ST-SUP-RC04-OC36). Warning: when the name is not
   unique, two clients that apply one new name at the same time can make two
-  resources; `unique: true` on the field `name` closes this.
+  resources; `unique: true` on the field `name` closes this. On an entity
+  of the base, declare it with a unique step of the field `name` (see
+  [Unique steps](../../../docs/schema-changes.md#unique-steps)).
 
 Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
 `Idempotency-Key` header parameter states `IdempotentWrites`, as
