@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -279,6 +281,61 @@ func Principal(signature Signature, digest string, signers Signers) string {
 		return ""
 	}
 	return principal
+}
+
+// SSHSignatureKey reads the public key from an armored SSH signature, as
+// ssh-keygen -Y sign writes it (the SSHSIG format of OpenSSH's PROTOCOL.sshsig):
+// its SHA256 fingerprint in the form that ssh-keygen -l prints, and its line
+// in the authorized keys form ("<type> <base64>"), which a SIGNERS line holds
+// after the principal. It reads no file and runs no program. fill sign writes
+// the fingerprint as the signer of a key that SIGNERS does not list, so the
+// path of a key file never goes into fill.yaml.
+func SSHSignatureKey(armored string) (fingerprint, public string, err error) {
+	var body strings.Builder
+	inside := false
+	for _, line := range strings.Split(armored, "\n") {
+		text := strings.TrimSpace(line)
+		switch {
+		case text == armorLines[KeySSH][0]:
+			inside = true
+		case text == armorLines[KeySSH][1]:
+			inside = false
+		case inside:
+			body.WriteString(text)
+		}
+	}
+	blob, err := base64.StdEncoding.DecodeString(body.String())
+	if err != nil {
+		return "", "", fmt.Errorf("the SSH signature is not base64: %w", err)
+	}
+	const magic = "SSHSIG"
+	if len(blob) < len(magic)+4 || string(blob[:len(magic)]) != magic {
+		return "", "", errors.New("the SSH signature does not start with SSHSIG")
+	}
+	rest := blob[len(magic)+4:]
+	readString := func() ([]byte, error) {
+		if len(rest) < 4 {
+			return nil, errors.New("the SSH signature is cut short")
+		}
+		n := binary.BigEndian.Uint32(rest)
+		if uint64(n) > uint64(len(rest)-4) {
+			return nil, errors.New("the SSH signature is cut short")
+		}
+		value := rest[4 : 4+n]
+		rest = rest[4+n:]
+		return value, nil
+	}
+	key, err := readString()
+	if err != nil {
+		return "", "", err
+	}
+	rest = key
+	keyType, err := readString()
+	if err != nil || len(keyType) == 0 {
+		return "", "", errors.New("the public key of the SSH signature has no key type")
+	}
+	sum := sha256.Sum256(key)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), string(keyType) + " " + base64.StdEncoding.EncodeToString(key), nil
 }
 
 // dearmor decodes an armored OpenPGP public key block into its packets.

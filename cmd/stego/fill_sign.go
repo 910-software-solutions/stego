@@ -91,14 +91,29 @@ func runFillSign(args []string) error {
 	if err != nil {
 		return err
 	}
-	signature, err := key.sign(input.ProjectDir, digest)
+	signature, fingerprint, err := key.sign(input.ProjectDir, digest)
 	if err != nil {
 		return err
 	}
 	signature.Signer = fill.Principal(signature, digest, signers)
 	listed := signature.Signer != ""
+	var addLine string
 	if !listed {
-		signature.Signer = key.key
+		// The signer of a key that SIGNERS does not list is the fingerprint of
+		// the key, never the path of a key file (walkthrough 20, T-B).
+		if signature.KeyType == fill.KeySSH {
+			var public string
+			if fingerprint, public, err = fill.SSHSignatureKey(signature.Armored); err != nil {
+				return fmt.Errorf("reading the key of the new SSH signature: %w", err)
+			}
+			addLine = fmt.Sprintf("the line %q", gitEmail(input.ProjectDir)+" "+public)
+		} else {
+			if fingerprint == "" {
+				return fmt.Errorf("%s gave no SIG_CREATED status line, so the fingerprint of the key is not known", key.program)
+			}
+			addLine = fmt.Sprintf("the line %q, and below it the output of gpg --armor --export %s", gitEmail(input.ProjectDir)+" gpg", fingerprint)
+		}
+		signature.Signer = fingerprint
 	}
 	signOff := fill.FillSignOff{EvidenceDigest: digest, Signature: signature, SignedAt: time.Now().UTC().Truncate(time.Second)}
 	if err := fill.WriteSignOff(manifest, signOff); err != nil {
@@ -111,9 +126,25 @@ func runFillSign(args []string) error {
 	}
 	fmt.Printf("Signed the evidence %s of fill %q as %s.\n%s", event.EvidenceDigest, event.FillName, event.Signer, out)
 	if !listed {
-		fmt.Printf("SIGNERS does not list this key, so the fill is not qualified until SIGNERS lists it.\n")
+		fmt.Fprintf(os.Stderr, "warning: SIGNERS does not list the key %s that signed fill %q, so validate, plan, apply, deps and build refuse the fill.\n"+
+			"  Do one of these:\n"+
+			"  - Ask a person whom SIGNERS lists to run stego test and stego fill sign %s on your branch, and commit the fill.yaml that it writes.\n"+
+			"  - Add your key to SIGNERS with %s, in a change that a listed signer reviews and merges. When SIGNERS lists the key, this sign-off counts and you need not sign again.\n",
+			signature.Signer, name, name, addLine)
 	}
 	return nil
+}
+
+// gitEmail gives user.email of the git configuration, or <your email> when
+// none is set, for the SIGNERS line that the warning of an unlisted key shows.
+func gitEmail(projectDir string) string {
+	cmd := exec.Command("git", "config", "--get", "user.email")
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if email := strings.TrimSpace(string(out)); err == nil && email != "" {
+		return email
+	}
+	return "<your email>"
 }
 
 // signingKey is the key that the person's git configuration names for
@@ -161,8 +192,10 @@ func personalSigningKey(projectDir string) (signingKey, error) {
 	return key, nil
 }
 
-// sign signs the digest with the person's key through ssh-keygen or gpg.
-func (k signingKey) sign(projectDir, digest string) (fill.Signature, error) {
+// sign signs the digest with the person's key through ssh-keygen or gpg. For
+// gpg it also gives the fingerprint of the key that signed, from the status
+// line SIG_CREATED, which gpg writes with --status-fd as git asks it to.
+func (k signingKey) sign(projectDir, digest string) (fill.Signature, string, error) {
 	var cmd *exec.Cmd
 	var keyType string
 	switch k.format {
@@ -170,7 +203,7 @@ func (k signingKey) sign(projectDir, digest string) (fill.Signature, error) {
 		keyType = fill.KeySSH
 		keyFile := k.key
 		if strings.HasPrefix(keyFile, "key::") {
-			return fill.Signature{}, errors.New("user.signingkey names a literal key (key::); name the key file instead, so ssh-keygen signs with it")
+			return fill.Signature{}, "", errors.New("user.signingkey names a literal key (key::); name the key file instead, so ssh-keygen signs with it")
 		}
 		if strings.HasPrefix(keyFile, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
@@ -180,17 +213,24 @@ func (k signingKey) sign(projectDir, digest string) (fill.Signature, error) {
 		cmd = exec.Command(k.program, "-Y", "sign", "-n", fill.SSHNamespace, "-f", keyFile)
 	default:
 		keyType = fill.KeyGPG
-		cmd = exec.Command(k.program, "--batch", "--yes", "--detach-sign", "--armor", "--local-user", k.key)
+		cmd = exec.Command(k.program, "--batch", "--yes", "--status-fd=2", "--detach-sign", "--armor", "--local-user", k.key)
 	}
 	cmd.Dir = projectDir
 	cmd.Stdin = strings.NewReader(digest)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return fill.Signature{}, fmt.Errorf("signing with %s: %v: %s", k.program, err, strings.TrimSpace(stderr.String()))
+		return fill.Signature{}, "", fmt.Errorf("signing with %s: %v: %s", k.program, err, strings.TrimSpace(stderr.String()))
 	}
 	if stdout.Len() == 0 {
-		return fill.Signature{}, fmt.Errorf("signing with %s gave no signature", k.program)
+		return fill.Signature{}, "", fmt.Errorf("signing with %s gave no signature", k.program)
 	}
-	return fill.Signature{KeyType: keyType, Armored: stdout.String()}, nil
+	var fingerprint string
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		// [GNUPG:] SIG_CREATED <type> <pk algo> <hash algo> <class> <timestamp> <fingerprint>
+		if fields := strings.Fields(line); len(fields) == 8 && fields[0] == "[GNUPG:]" && fields[1] == "SIG_CREATED" {
+			fingerprint = strings.ToUpper(fields[7])
+		}
+	}
+	return fill.Signature{KeyType: keyType, Armored: stdout.String()}, fingerprint, nil
 }
