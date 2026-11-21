@@ -1561,6 +1561,23 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.185.0
+
+- The runtime counts each charge of a check of a counted compare-only secret
+  that cannot commit, so the call answers 503, in the counter
+  `command.attempts.failed` of the meter provider of the service, with the
+  unit `{charge}` and the attributes `action`, `entity` and `cause`. It has no
+  tenant and no value. The counter counts each failed charge, also when the
+  rate limit holds back the log line of the same name (ST-SUP-RP10-LC54,
+  security review of PR #482, I4). New field `command.Config.Meter`; with no
+  value, the runtime records no metric.
+- `kafkainbox.CheckSettings` names the setting of a subscription that it
+  cannot read: the topic or the group setting or its `_FILE` form, such as
+  `STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC_FILE`. Before, it named the group
+  setting for each such setting (ST-SUP-RP14-LC08, security review of PR #483,
+  L1). The new type `kafkaoutbox.SettingError` names the setting of each
+  refusal of the Kafka settings; its text does not change.
+
 ### Release notes for runtime v0.182.0
 
 - The worker mode runs the Kafka inbox of each declared subscription, each in
