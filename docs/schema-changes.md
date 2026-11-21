@@ -480,8 +480,9 @@ the last 30 seconds. The migration Job that first applies the expand step on
 the database makes the row, and a restore keeps the row of the dump with its
 time. Thus the first run after a rollout usually waits, and the first pass
 runs 10 minutes later: a seal then takes 10 to 13 minutes before you can
-deploy its contract step. When the row is 3 minutes old and the release
-before stopped, a controller that starts runs the pass at once. A pass reads
+deploy its contract step. When the row is 3 minutes old and no process of
+the release before reported itself in its last three report intervals, a
+controller that starts runs the pass at once. A pass reads
 100 rows at a time, with a pause of 50 ms after each batch, so its time grows
 with the number of rows. Look for the log line `seal of a secret column` with
 `completed=true` before you declare the contract step.

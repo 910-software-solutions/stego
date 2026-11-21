@@ -531,8 +531,12 @@ Do these steps in this order:
    the time since the migration Job first applied the expand step on the
    database, and a restore keeps the row of the dump with its time:
    - When the dump is from after the expand step, the row is older than
-     3 minutes. Stop each process of the release before, then start the
-     worker Deployment: the pass runs at its start. In walkthrough 18, the
+     3 minutes, so the 3-minute wait does not apply, and the stop of the
+     release before is the only guard. Stop each process of the release
+     before, make sure that its Deployments have no pods, wait three report
+     intervals (about 30 seconds), then start the worker Deployment: the pass
+     runs at its start. When a process of the release before reported itself
+     in those intervals, the pass waits for the next run, 10 minutes later. In walkthrough 18, the
      pass over 57 rows completed 2 seconds after the start of the worker.
    - When the dump is from before the expand step, the migration Job of that
      release makes a new row. Wait 3 minutes after the Job before you start

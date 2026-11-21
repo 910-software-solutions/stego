@@ -44,8 +44,9 @@ Do these steps for each upgrade. Do them in this order.
    and `stego apply` refuse it: `fill "<fill>" is stale ... the contract
    command.command changed after its evidence; run stego test, then stego
    fill sign <fill>`. `stego test` runs the tests of each fill on the new
-   contracts and records new evidence. Then run `stego fill sign <fill>` for
-   each fill whose evidence `stego test` recorded. When a test does not
+   contracts and records new evidence. Review each fill, its diff and the
+   change of its contract, then run `stego fill sign <fill>` for each fill
+   whose evidence `stego test` recorded. When a test does not
    compile, such as with `too many arguments in call to`, do the action of
    its release note (step 1) and run `stego test` again. When `stego plan`
    says that the declaration needs add steps and saved no plan, run `stego
