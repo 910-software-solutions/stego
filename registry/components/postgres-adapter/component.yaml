@@ -25,9 +25,12 @@
 # makes the first start in a new instance end the pass of the row, also a completed one, and makes the contract step of
 # a seal refuse a pass that did not run in this instance (ST-SUP-RP09-LC15, ST-SUP-RC01-OC50; security review of
 # PR #471, L1, L3).
+# Version 6.22.0 makes the ledger check name the ledger row, the migration and the remedy when the ledger is not the
+# history of the release, such as on a shared preview database that ran the build of a branch, and the job logs it
+# (ST-SUP-RC01-OC51; walkthrough 19, W19-T2).
 kind: component
 name: postgres-adapter
-version: 6.21.0
+version: 6.22.0
 stage: ga
 output_namespace: internal/storage
 

@@ -150,6 +150,81 @@ func TestCompat(t *testing.T) {
 			t.Fatalf("the refused plan saved a plan: %v", err)
 		}
 	})
+	t.Run("ST-GEN-INV38-T A seal expand step whose base body holds the seal checkpoints passes compat, plan and apply, and no other body does", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		s.write(t, "service.yaml", noteFields("[{name: title, type: string}, {name: body, type: string, optional: true, sensitivity: pii}]"))
+		s.must(t, "apply", "--base", "HEAD")
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "body in clear")
+		sealed := strings.Replace(strings.Replace(s.read(t, "service.yaml"), "sensitivity: pii", "sensitivity: secret", 1),
+			"schema_changes:\n", "schema_changes:\n  - {id: note-body-seal, kind: seal, entity: Note, field: body, from: pii}\n", 1) +
+			"  - {change: note-body-seal, phase: expand}\n"
+		s.write(t, "service.yaml", sealed)
+		s.must(t, "apply", "--base", "HEAD")
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "the release of the seal")
+		// The generated migrate.go registers the digests of the bodies that postgres-adapter 6.14.0 to 6.20.0 wrote
+		// for the expand step of the seal, with the text of the seal checkpoints in them (ST-SUP-RC01-OC51).
+		const expand = "step_0002_note-body-seal_expand"
+		call := regexp.MustCompile(`RegisterEarlierDigests\("` + expand + `", "([0-9a-f]{64})"`).FindStringSubmatch(s.read(t, "out/internal/storage/migrate.go"))
+		if call == nil {
+			t.Fatalf("migrate.go registers no earlier digest of %s", expand)
+		}
+		earlier := call[1]
+		record := s.read(t, ".stego/state.yaml")
+		line := func(file string) []string {
+			match := regexp.MustCompile(`(?m)^(\s+)(\S*migrations/` + regexp.QuoteMeta(file) + `): ([0-9a-f]{64})$`).FindStringSubmatch(record)
+			if match == nil {
+				t.Fatalf("the record lists no %s:\n%s", file, record)
+			}
+			return match
+		}
+		// base commits a record at the base whose digest of file is digest, as a release of an earlier generator
+		// wrote it, and keeps the record of the head, which apply wrote, in the working folder.
+		base := func(file, digest string) {
+			match := line(file)
+			s.write(t, ".stego/state.yaml", strings.Replace(record, match[0], match[1]+match[2]+": "+digest, 1))
+			git(t, s.service, "commit", "-q", "-am", "the record of a release whose "+file+" has the digest "+digest)
+			s.write(t, ".stego/state.yaml", record)
+		}
+		// The release of an earlier adapter wrote the expand step of the seal with the seal checkpoints in its body.
+		base(expand+".sql", earlier)
+		if output, code := s.compat(t, "--base", "HEAD"); code != 0 || strings.Contains(output, "ST-GEN-INV38") {
+			t.Fatalf("compat over the earlier body of the seal step gave exit %d, want 0 and no fault:\n%s", code, output)
+		}
+		for _, verb := range []string{"plan", "apply"} {
+			if stdout, stderr, err := s.stego(t, verb, "--base", "HEAD"); err != nil || strings.Contains(stdout+stderr, "ST-GEN-INV38") {
+				t.Fatalf("%s over the earlier body of the seal step: %v, want no fault:\n%s%s", verb, err, stdout, stderr)
+			}
+		}
+		// A file of migrate.go that apply did not write gives no earlier digest: a hand edit that registers the
+		// digest of another body does not make compat accept it.
+		other := sha256.Sum256([]byte("ALTER TABLE public.\"notes\" ADD COLUMN \"body_sealed\" text;\n"))
+		otherDigest := hex.EncodeToString(other[:])
+		migrate := s.read(t, "out/internal/storage/migrate.go")
+		s.write(t, "out/internal/storage/migrate.go", strings.Replace(migrate, call[0], `RegisterEarlierDigests("`+expand+`", "`+otherDigest+`", "`+earlier+`"`, 1))
+		base(expand+".sql", otherDigest)
+		if output, code := s.compat(t, "--base", "HEAD"); code != 1 || !strings.Contains(output, "ST-GEN-INV38") || !strings.Contains(output, expand) {
+			t.Fatalf("compat over another body of the seal step with a hand-edited migrate.go gave exit %d, want 1 and the fault:\n%s", code, output)
+		}
+		s.write(t, "out/internal/storage/migrate.go", migrate)
+		// Another body of the seal step, and the earlier digest of the seal step as the digest of another migration,
+		// are each refused by compat, plan and apply: an earlier digest counts only for its own migration.
+		for _, c := range []struct{ file, digest string }{{expand + ".sql", otherDigest}, {"001_initial.sql", earlier}} {
+			base(c.file, c.digest)
+			name := strings.TrimSuffix(c.file, ".sql")
+			if output, code := s.compat(t, "--base", "HEAD"); code != 1 || !strings.Contains(output, "ST-GEN-INV38") || !strings.Contains(output, "the migration "+name+" has another body") {
+				t.Fatalf("compat over the digest %s of %s gave exit %d, want 1 and the fault that names it:\n%s", c.digest, name, code, output)
+			}
+			for _, verb := range []string{"plan", "apply"} {
+				stdout, stderr, err := s.stego(t, verb, "--base", "HEAD")
+				if code := exitCode(t, err); code == 0 || !strings.Contains(stdout+stderr, "the migration "+name+" has another body") || !strings.Contains(stdout+stderr, "nothing is written") {
+					t.Fatalf("%s over the digest %s of %s gave exit %d, want the refusal of the changed body:\n%s%s", verb, c.digest, name, code, stdout, stderr)
+				}
+			}
+		}
+	})
 	t.Run("ST-GEN-UC14-R02-T01 With no record at the base ref, any stored shape is accepted", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

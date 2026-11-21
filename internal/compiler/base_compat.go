@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"maps"
+	pathpkg "path"
 	"reflect"
 	"regexp"
 	"slices"
@@ -1544,7 +1545,13 @@ func ledgeredMigration(path string) (string, bool) {
 // each generated file of the head by its path in the output folder: the plan of stego plan and stego apply, or the
 // record of the head for stego compat. A migration whose file the record at the base does not list is new, and a
 // base with no record, or no head, gives no fault. Each fault names the migration, the file and the remedy.
-func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, error) {
+//
+// The one other body that the check accepts is a body whose digest at the base the head registers as an earlier
+// digest of the same migration (ST-SUP-RC01-OC51): the body that an earlier version of the adapter wrote with the
+// text of the seal checkpoints in it, which the ledger check of the head accepts too (walkthrough 19, W19-U1).
+// migrate gives the content of each generated migrate.go of the adapter at the head by its path in the output
+// folder, beside the migrations folder of the migration; with no such file, the check accepts no earlier digest.
+func MigrationBodyFaults(base BaseSource, head map[string]string, migrate map[string][]byte) ([]BaseFault, error) {
 	if base.Record == nil || head == nil {
 		return nil, nil
 	}
@@ -1556,6 +1563,7 @@ func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, 
 		return nil, nil
 	}
 	var faults []BaseFault
+	earlier := map[string]map[string][]string{}
 	for _, path := range slices.Sorted(maps.Keys(state.LastApplied.Files)) {
 		name, ledgered := ledgeredMigration(path)
 		if !ledgered {
@@ -1566,12 +1574,40 @@ func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, 
 		if !generated || got == want {
 			continue
 		}
+		accepted, err := earlierBody(migrate, earlier, path, name, want)
+		if err != nil {
+			return nil, err
+		}
+		if accepted {
+			continue
+		}
 		faults = append(faults, BaseFault{Rule: MigrationBodyRule, Message: fmt.Sprintf(
 			"the migration %s has another body at the head: its generated file %s has the digest %s, and the record at the base ref %s (commit %s) lists %s. "+
 				"A database of that release applied the body, and the body of an applied migration never changes: keep the body, and bring the change in a new schema step",
 			name, path, got, base.Ref, base.Commit, want)})
 	}
 	return faults, nil
+}
+
+// earlierBody tells whether the head registers digest as an earlier digest of the migration name, whose generated SQL
+// file is at file: the migrate.go of the adapter beside the migrations folder of the file calls
+// RegisterEarlierDigests with the name and the digest (postgresadapter.EarlierDigests). read keeps the earlier
+// digests of each migrate.go that it read, by its path.
+func earlierBody(migrate map[string][]byte, read map[string]map[string][]string, file, name, digest string) (bool, error) {
+	source := pathpkg.Join(pathpkg.Dir(pathpkg.Dir(file)), postgresadapter.MigrateFile)
+	digests, done := read[source]
+	if !done {
+		content, there := migrate[source]
+		if !there {
+			return false, nil
+		}
+		var err error
+		if digests, err = postgresadapter.EarlierDigests(content); err != nil {
+			return false, fmt.Errorf("the generated file %s at the head: %w", source, err)
+		}
+		read[source] = digests
+	}
+	return slices.Contains(digests[name], digest), nil
 }
 
 // createDifference tells how the CREATE TABLE of a table in the baseline of the head differs from the one of the base:
