@@ -105,11 +105,27 @@ runtime v0.165.0, except for the cases below.
   releases run, and write the new type only to the new release. A require
   also refuses a create that does not send the new field. See [Retype and
   require](schema-changes.md#retype-and-require).
-- **A member that the entity does not take.** A create and an update ignore
-  such a member, such as a field that a drop removed, and answer as for a
-  body without it: a create gives 201, and the value is lost. See [A client
-  that still sends the dropped field](schema-changes.md#a-client-that-still-sends-the-dropped-field).
-  From 3.215.0, a patch refuses such a member with 400 and names it.
+- **A member that the entity does not take.** From 3.227.0, a create, an
+  update and an upsert refuse such a member, such as a field that a drop
+  removed, a typo or a name in another letter case, with 400 and the problem
+  type `validation-error`. The problem names the member, and the write
+  changes nothing. From 3.215.0, a patch refuses such a member in the same
+  way. Before 3.227.0, a create and an update ignored the member and answered
+  as for a body without it: a create gave 201, and the value was lost. See [A
+  client that still sends the dropped field](schema-changes.md#a-client-that-still-sends-the-dropped-field).
+- **An idempotency key that is not a structured string.** From 3.235.0, a
+  request whose `Idempotency-Key` header is there, but is not one structured
+  string of 1 to 255 characters, gets 400 with the problem type
+  `idempotency-key-invalid`, and the write changes nothing. A gRPC command
+  gives the message `idempotency-key-invalid`. Before, such a key got
+  `idempotency-key-missing`, which is now only for a request with no header.
+  Send the key in double quotes, such as `"k-1"`. A client of the release
+  before that reads only `idempotency-key-missing` must also read the new
+  type.
+- **A repeated apply of the CLI.** From 3.235.0, an apply of the same
+  document, whose values the service already stores, reports `unchanged` and
+  sends no patch. A CLI of the release before reports `configured` and sends
+  the patch. A script that reads the status of an apply must accept both.
 - **An entity that a drop removes.** From the expand step of the drop, the
   new release serves no route of the entity and its collections, so a
   request to such a route gets 404. The release before still serves them
