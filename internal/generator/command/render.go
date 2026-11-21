@@ -20,11 +20,11 @@ func (m *model) probeType(c *command) string {
 	return "probes." + c.goName + "Probe"
 }
 
-// usesTime tells whether an entity field is a timestamp.
+// usesTime tells whether an entity field is a timestamp or has a counter, whose window is a time.Duration.
 func (m *model) usesTime() bool {
 	for _, e := range m.entities {
 		for _, f := range e.fields {
-			if strings.Contains(f.goType, "time.Time") {
+			if strings.Contains(f.goType, "time.Time") || f.limit > 0 {
 				return true
 			}
 		}
@@ -136,6 +136,9 @@ func renderContract(m *model) []byte {
 		for _, h := range c.helpers {
 			renderRelationHelper(w, c, h)
 		}
+		for _, r := range c.resets {
+			renderResetHelper(w, c, r)
+		}
 		names := make([]string, len(c.lists))
 		for i, l := range c.lists {
 			RenderList(&w.Buffer, l.goName, l.decl.Name, "the command "+c.decl.Name, l.decl.Entity, l.plan)
@@ -187,6 +190,19 @@ func renderRelationHelper(w *writer, c *command, h relationHelper) {
 		w.f("\tresource, err := authz.NewResource(h.Tenant(), %q, on.ID())\n\tif err != nil {\n\t\treturn err\n\t}\n", h.resourceType)
 		w.f("\t_, err = h.Authz().%s(ctx, on, authz.Tuple{Resource: resource, Relation: %q, Subject: authz.Subject{Type: subjectType, ID: subjectID}})\n\treturn err\n}\n\n", op.call, h.relation)
 	}
+}
+
+// renderResetHelper writes the typed helper of one declared reset of attempts (ST-SUP-RC32-OC24, ST-DECL-INV104): the
+// fill of the command sets the count of the field on the row of a loaded value to 0 through it, in the transaction of
+// the command. Only the command that declares the reset has the helper, and the runtime decides the command's own
+// permission on the row first (ST-SUP-RP10-LC54). The helper gives only an error: no value, no hash and no count.
+func renderResetHelper(w *writer, c *command, r resetHelper) {
+	w.f("// %s sets the count of the wrong attempts of %s.%s on the row of on to 0 when %s commits: the declared\n", r.name, r.entity.decl.Name, r.field.decl.Name, c.decl.Name)
+	w.f("// step-up reset of a locked row. on is a loaded %s of this handle; the runtime decides the permission of the command\n", r.entity.decl.Name)
+	w.f("// on its row first. It gives no value, no hash and no count (decision ST-SUP-Q205 (c)).\n")
+	w.f("func %s(ctx context.Context, h *%sHandle, on Loaded%s) error {\n", r.name, c.goName, r.entity.goName)
+	w.f("\tif on == nil {\n\t\treturn command.ErrNoResource\n\t}\n")
+	w.f("\treturn command.ResetAttempts(ctx, h, %s, on)\n}\n\n", counterVar(r.entity, r.field))
 }
 
 // EntityFile gives a Go file of the package pkg that holds the repository declarations on the command runtime of the
@@ -411,6 +427,17 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 				w.f(", ")
 			}
 			w.f("command.Must(authz.ParseRelation(%q))", r)
+		}
+		w.f("},\n")
+	}
+	if len(c.resets) > 0 {
+		// The counters whose attempts the fill may reset (ST-DECL-INV104, ST-SUP-RP10-LC54).
+		w.f("\tResets: []string{")
+		for i, r := range c.resets {
+			if i > 0 {
+				w.f(", ")
+			}
+			w.f("%q", r.entity.decl.Name+"."+r.field.decl.Name)
 		}
 		w.f("},\n")
 	}

@@ -350,6 +350,10 @@ type CommandSpec[P any] struct {
 	// takes only these lists, so its fill gives no SQL text (ST-SUP-RP10-LC38). Each is a list of an entity in
 	// Writes.
 	Lists []AnyList
+	// Resets are the counters, as <entity>.<field>, whose count of wrong attempts the fill may set to 0 with
+	// ResetAttempts: the declared step-up reset of a command (ST-DECL-INV104, decision ST-SUP-Q205 (c)). Each is of an
+	// entity in Writes, and the command decides its permission on a row.
+	Resets []string
 }
 
 // Resource is the generated declaration of the resource of a command (ST-SUP-RP10-LC31): its resource type at the
@@ -382,6 +386,8 @@ type Command[P any] struct {
 	changeEvents map[string]ChangeEvents
 	// lists are the declared lists, which the handle takes only (ST-SUP-RP10-LC38).
 	lists map[AnyList]listCopy
+	// resets are the counters whose attempts the fill may reset (ST-DECL-INV104).
+	resets map[string]bool
 }
 
 // NewCommand checks the declaration of one command.
@@ -411,9 +417,13 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	resets, err := checkResets(spec.Name, spec.Permission, spec.Resource, spec.Resets, spec.Writes)
+	if err != nil {
+		return nil, err
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own,
-		changeEvents: changeEvents, lists: lists}, nil
+		changeEvents: changeEvents, lists: lists, resets: resets}, nil
 }
 
 // boundRelations gives the relations of an authorization handle: the declared ones, which the fill may write, and
@@ -675,6 +685,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	// runtime's clock (ST-SUP-RP10-LC38).
 	s.lists, s.runTime = cmd.lists, rt.clock().Now()
 	s.commandPermission = cmd.spec.Permission
+	s.resets = cmd.resets
 	s.lockTimeout = cmd.spec.LockTimeout
 	if s.lockTimeout == 0 {
 		s.lockTimeout = DefaultLockTimeout

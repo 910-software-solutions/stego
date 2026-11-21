@@ -57,6 +57,13 @@ func Exists(relation string) string {
 	return "pg_catalog.to_regclass(" + relation + ") IS NOT NULL"
 }
 
+// Column tells whether relation has the column name, which is not dropped. A migration adds a column with
+// ADD COLUMN IF NOT EXISTS only when it does not, as ALTER TABLE takes its lock before it reads the catalog.
+func Column(relation, name string) string {
+	return "EXISTS (SELECT 1 FROM pg_catalog.pg_attribute AS a WHERE a.attrelid = (" + relation +
+		")::pg_catalog.regclass AND a.attname = " + Text(name) + " AND NOT a.attisdropped)"
+}
+
 // Policy is one permissive row-level security policy as the catalog holds it: its relation and name, its command as
 // pg_policy.polcmd gives it (* for all, r, a, w or d), the roles it applies to (none for PUBLIC), and its USING and
 // WITH CHECK expressions as pg_get_expr gives them (empty for none).

@@ -189,6 +189,16 @@ type command struct {
 	// lists are the declared lists of the command, which the contract emits from the entity of the release
 	// (ST-SUP-RC32-OC16).
 	lists []*commandList
+	// resets are the declared step-up resets of the attempts of counted fields (ST-SUP-RC32-OC24, ST-DECL-INV104).
+	resets []resetHelper
+}
+
+// resetHelper is the typed helper of one declared reset of attempts: the written entity, its counted field, and the
+// name of the helper in the contract.
+type resetHelper struct {
+	entity *entity
+	field  *entityField
+	name   string
 }
 
 // commandList is one declared list of a command with its generated plan.
@@ -447,7 +457,40 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 	if err := m.planLists(cmd, byName); err != nil {
 		return nil, err
 	}
+	if err := planResets(cmd); err != nil {
+		return nil, err
+	}
 	return cmd, nil
+}
+
+// planResets plans the declared resets of attempts of the command (ST-DECL-INV104, decision ST-SUP-Q205 (c)): each
+// names <Entity>.<field> of a field with a counter of an entity that the command writes, once, and the command is
+// decided with a permission on a row of that entity, so the reset is decided on the row it resets.
+func planResets(cmd *command) error {
+	seen := map[string]bool{}
+	for _, text := range cmd.decl.ResetsAttempts {
+		name, field, _ := strings.Cut(text, ".")
+		var h resetHelper
+		for _, e := range cmd.writes {
+			if e.decl.Name != name {
+				continue
+			}
+			for _, f := range e.fields {
+				if f.decl.Name == field && f.limit > 0 {
+					h = resetHelper{entity: e, field: f, name: cmd.goName + "Reset" + e.goName + f.goName + "Attempts"}
+				}
+			}
+		}
+		if h.entity == nil || seen[text] {
+			return fmt.Errorf("command: the command %s resets the attempts of %q, which is not <Entity>.<field> of a field with attempts of an entity that it writes, or is named twice (ST-DECL-INV104)", cmd.decl.Name, text)
+		}
+		if cmd.service != "" || cmd.member == nil || cmd.decl.Permission == "" || h.entity.resourceType != cmd.decl.ResourceType {
+			return fmt.Errorf("command: the command %s resets the attempts of %s and is not decided with a permission on a row of %s (ST-DECL-INV104)", cmd.decl.Name, text, name)
+		}
+		seen[text] = true
+		cmd.resets = append(cmd.resets, h)
+	}
+	return nil
 }
 
 // planLists builds the plan of each declared list of the command from the entity of the release (ST-SUP-RC32-OC16),
@@ -656,6 +699,11 @@ func (m *model) takeNames() error {
 		}
 		for _, l := range c.lists {
 			if err := take("the list "+l.decl.Name+" of "+c.decl.Name, l.goName, l.goName+"With"); err != nil {
+				return err
+			}
+		}
+		for _, r := range c.resets {
+			if err := take("the reset of "+r.entity.decl.Name+"."+r.field.decl.Name+" of "+c.decl.Name, r.name); err != nil {
 				return err
 			}
 		}

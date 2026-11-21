@@ -141,8 +141,9 @@ func ManifestWithConsumers(schema, purgeRole, runtimeRole string, consumerRoles 
 // each check (ST-SUP-RP10-LC54, security review of PR #451, H1).
 const AttemptsTable = "attempt_counts"
 
-// attemptsMigration makes the table of the counts: the tenant, the counter as <entity>.<field>, the row ID and the
-// checks since the last reset, under row-level security with the tenant policy, with SELECT, INSERT, UPDATE and DELETE
+// attemptsMigration makes the table of the counts: the tenant, the counter as <entity>.<field>, the row ID, the
+// checks since the last reset and the time of the last charge, charged_at, on the clock of the database, from which a
+// count decays (decision ST-SUP-Q205 (c)), under row-level security with the tenant policy, with SELECT, INSERT, UPDATE and DELETE
 // for the runtime role only. Each object is read in the catalog first, so a run that changes nothing takes no lock
 // that conflicts with a request of the running release.
 var attemptsMigration = func() string {
@@ -153,9 +154,11 @@ CREATE TABLE IF NOT EXISTS attempt_counts (
 	counter text NOT NULL,
 	row_id text NOT NULL,
 	checks integer NOT NULL CHECK (checks >= 0),
+	charged_at timestamp with time zone,
 	PRIMARY KEY (tenant_id, counter, row_id)
 );
-` + catalogfirst.Unless(catalogfirst.RowSecurity(table), `ALTER TABLE attempt_counts ENABLE ROW LEVEL SECURITY;
+` + catalogfirst.Unless(catalogfirst.Column(table, "charged_at"), `ALTER TABLE attempt_counts ADD COLUMN IF NOT EXISTS charged_at timestamp with time zone;`) +
+		catalogfirst.Unless(catalogfirst.RowSecurity(table), `ALTER TABLE attempt_counts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE attempt_counts FORCE ROW LEVEL SECURITY;`) +
 		catalogfirst.Unless(catalogfirst.Policy{Relation: table, Name: "attempt_counts_tenant", Command: catalogfirst.EveryCommand, Using: catalogfirst.TenantForm, Check: catalogfirst.TenantForm}.Holds(),
 			`DROP POLICY IF EXISTS attempt_counts_tenant ON attempt_counts;
@@ -171,7 +174,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON attempt_counts TO {{runtime}};
 func attemptsTable(schema, runtimeRole, wall string) manifest.Table {
 	return manifest.Table{Schema: schema, Name: AttemptsTable,
 		Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "counter", Type: "text", NotNull: true},
-			{Name: "row_id", Type: "text", NotNull: true}, {Name: "checks", Type: "integer", NotNull: true}},
+			{Name: "row_id", Type: "text", NotNull: true}, {Name: "checks", Type: "integer", NotNull: true},
+			// The time of the last charge: nullable with no default, so the manifest of a release before the decay,
+			// which does not list it, still holds the table, and its charges leave it NULL (decision ST-SUP-Q205 (c)).
+			{Name: "charged_at", Type: "timestamp with time zone"}},
 		Constraints: []manifest.Constraint{
 			{Name: "attempt_counts_pkey", Kind: manifest.KindPrimaryKey, Definition: "PRIMARY KEY (tenant_id, counter, row_id)"},
 			{Name: "attempt_counts_checks_check", Kind: manifest.KindCheck, Definition: "CHECK ((checks >= 0))"},

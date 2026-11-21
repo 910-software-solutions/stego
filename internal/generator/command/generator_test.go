@@ -1112,7 +1112,7 @@ func TestCounterEmission(t *testing.T) {
 		}
 		text := string(source)
 		for _, want := range []string{
-			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5}))`,
+			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Limit: 5, UnlockAfter: 900 * time.Second}))`,
 			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin)`,
 			`command.HashCountedOf(walletPinCounter, id, v.Pin)`,
 		} {
@@ -1121,6 +1121,65 @@ func TestCounterEmission(t *testing.T) {
 			}
 		}
 		buildEntityFile(t, source)
+	})
+}
+
+func TestResetEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC24-T02 A command that declares the reset of a counted field gets its typed reset helper and its Resets, and no other command does", func(t *testing.T) {
+		svc := declaration(t)
+		svc.Entities[0].Fields = append(svc.Entities[0].Fields, types.Field{Name: "pin", Type: types.FieldTypeString, Sensitivity: "secret",
+			CompareOnly: true, Attempts: &types.FieldAttempts{Limit: 3, UnlockAfter: "1h"}})
+		unlock := types.Command{Name: "unlock-pin", Writes: []string{"Order"}, ResourceType: "order", Permission: "unlock_pin",
+			ResourceMember: "orderId", Route: "POST /orders/{orderId}/pin:unlock", Fill: types.FillNames{"unlock-pin"},
+			ResetsAttempts: []string{"Order.pin"}}
+		svc.Commands = append(svc.Commands, unlock)
+		ctx := commandContext(t, svc, commandSlot)
+		ctx.Inputs["proto/orders.proto"] = []byte(ordersProto + "\nmessage UnlockPinRequest {\n  string order_id = 1;\n}\n\nmessage UnlockPinResponse {}\n")
+		var all strings.Builder
+		for _, data := range generated(t, ctx) {
+			all.Write(data)
+		}
+		text := all.String()
+		for _, want := range []string{
+			`var orderPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Order", Field: "pin", Limit: 3, UnlockAfter: 3600 * time.Second}))`,
+			"func UnlockPinResetOrderPinAttempts(ctx context.Context, h *UnlockPinHandle, on LoadedOrder) error {",
+			"return command.ResetAttempts(ctx, h, orderPinCounter, on)",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the generated code does not hold %s", want)
+			}
+		}
+		if n := len(regexp.MustCompile(`Resets:\s+\[\]string\{"Order.pin"\},`).FindAllString(text, -1)); n != 1 || strings.Count(text, "Resets:") != 1 || strings.Contains(text, "func ReserveAndChargeReset") {
+			t.Errorf("the generated code holds %d declarations of resets, or a reset helper of reserve-and-charge, want one and none", n)
+		}
+		const head = "package %s\n\nimport (\n\t\"context\"\n\n\tcommands \"example.com/orders/out/commands\"\n)\n\n"
+		reset := fmt.Sprintf(head, "unlockpin") + "func New() commands.UnlockPinFill {\n\treturn func(ctx context.Context, req *commands.UnlockPinRequest, h *commands.UnlockPinHandle) (*commands.UnlockPinResponse, error) {\n" +
+			"\t\torders, err := commands.OrderRepository(h)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n" +
+			"\t\torder, err := orders.GetForUpdate(ctx, req.OrderId)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n" +
+			"\t\treturn &commands.UnlockPinResponse{}, commands.UnlockPinResetOrderPinAttempts(ctx, h, order)\n\t}\n}\n"
+		// The fill of reserve-and-charge, which may check the PIN, cannot call the reset of unlock-pin.
+		wrong := fmt.Sprintf(head, "wrongreset") + "func Run(ctx context.Context, h *commands.ReserveAndChargeHandle, order commands.LoadedOrder) error {\n" +
+			"\treturn commands.UnlockPinResetOrderPinAttempts(ctx, h, order)\n}\n"
+		p := newProject(t, ctx, map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill, "fills/unlock-pin/fill.go": []byte(reset),
+			"fills/wrongreset/fill.go": []byte(wrong)})
+		if output, err := p.goCommand("build", "./out/...", "./fills/unlock-pin"); err != nil {
+			t.Errorf("the code with the reset does not build: %v\n%s", err, output)
+		}
+		if output, err := p.goCommand("build", "./fills/wrongreset"); err == nil || !strings.Contains(output, "cannot use h") {
+			t.Errorf("the reset of unlock-pin in the fill of reserve-and-charge gave %v, want a refusal of the handle:\n%s", err, output)
+		}
+		for name, resets := range map[string][]string{"a field with no attempts": {"Order.sku"}, "an entity it does not write": {"Hold.pin"}, "the field twice": {"Order.pin", "Order.pin"}} {
+			bad := declaration(t)
+			bad.Entities[0].Fields = svc.Entities[0].Fields
+			c := unlock
+			c.ResetsAttempts = resets
+			bad.Commands = append(bad.Commands, c)
+			ctx := commandContext(t, bad, commandSlot)
+			ctx.Inputs["proto/orders.proto"] = []byte(ordersProto + "\nmessage UnlockPinRequest {\n  string order_id = 1;\n}\n\nmessage UnlockPinResponse {}\n")
+			if _, _, err := new(Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "ST-DECL-INV104") {
+				t.Errorf("a reset of %s gave %v, want a refusal that names ST-DECL-INV104", name, err)
+			}
+		}
 	})
 }
 

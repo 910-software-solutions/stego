@@ -118,6 +118,12 @@ func TestAttemptsCounter(t *testing.T) {
 				t.Fatalf("limit %s: want no fault, got %v", limit, faults)
 			}
 		}
+		// The window of the decay, from 1 minute to 24 hours (decision ST-SUP-Q205 (c)).
+		for _, window := range []string{"1m", "15m", "90s", "24h"} {
+			if faults := entityRuleFaults(t, "attempts-limit", "", "", title, pin("sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: "+window+"}")); len(faults) != 0 {
+				t.Fatalf("unlock_after %s: want no fault, got %v", window, faults)
+			}
+		}
 	})
 	refused := map[string]string{
 		"a limit of 0":                  "sensitivity: secret, compare_only: true, attempts: {limit: 0}",
@@ -125,6 +131,10 @@ func TestAttemptsCounter(t *testing.T) {
 		"attempts on a readable secret": "sensitivity: secret, attempts: {limit: 5}",
 		"attempts on a public field":    "attempts: {limit: 5}",
 		"attempts on a pii field":       "sensitivity: pii, attempts: {limit: 5}",
+		"an unlock_after of 59s":        "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 59s}",
+		"an unlock_after of 25h":        "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 25h}",
+		"an unlock_after of 90.5s":      "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 90.5s}",
+		"an unlock_after of soon":       "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: soon}",
 	}
 	for name, settings := range refused {
 		t.Run("ST-DECL-INV104-T "+name+" is refused", func(t *testing.T) {
@@ -186,6 +196,54 @@ func TestEventFields(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("no fault names %s: %v", c.names, faults)
+			}
+		})
+	}
+}
+
+func TestResetsAttempts(t *testing.T) {
+	const title = "- {name: title, type: string}"
+	const pin = "- {name: pin, type: string, sensitivity: secret, compare_only: true, attempts: {limit: 5}}"
+	const code = "- {name: code, type: string, sensitivity: secret, compare_only: true}"
+	const entity = "resource_type: todo\n    permissions: {create: edit, read: view, update: edit, delete: edit, list: view}"
+	// unlock is a command on a row of Todo with the lines given.
+	unlock := func(lines ...string) string {
+		return "commands:\n" + command("unlock-pin", append([]string{"writes: [Todo]", "fill: unlock-pin", "route: POST /todos/{todoId}/pin:unlock"}, lines...)...)
+	}
+	row := []string{"resource_type: todo", "resource_member: todo_id"}
+	accepted := unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...)
+	t.Run("ST-DECL-INV104-T A reset of the attempts of a counted field with a permission of its own on a row is accepted", func(t *testing.T) {
+		if faults := entityRuleFaults(t, "resets-attempts", entity, accepted, title, pin, code); len(faults) != 0 {
+			t.Fatalf("want no fault, got %+v", faults)
+		}
+	})
+	refused := []struct{ name, tail, names string }{
+		{"of a field with no attempts", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.code]")...), "Todo.code"},
+		{"of a field that Todo does not declare", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.colour]")...), "Todo.colour"},
+		{"of an entity with no field", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo]")...), "Todo"},
+		{"of the same field twice", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin, Todo.pin]")...), "twice"},
+		{"with no permission", unlock("resource_type: todo", "resource_member: todo_id", "resets_attempts: [Todo.pin]"), "permission"},
+		{"with no resource member", unlock("resource_type: todo", "permission: unlock_pin", "resets_attempts: [Todo.pin]"), "resource_member"},
+		{"with the edit permission of the operations of Todo", unlock(append(row, "permission: edit", "resets_attempts: [Todo.pin]")...), "the create of Todo"},
+		{"with the permission of another command", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...) +
+			command("withdraw", "writes: [Todo]", "fill: withdraw", "route: POST /todos/{todoId}/withdrawals", "resource_type: todo", "resource_member: todo_id", "permission: unlock_pin"),
+			"the command withdraw"},
+	}
+	for _, c := range refused {
+		t.Run("ST-DECL-INV104-T A reset "+c.name+" is refused", func(t *testing.T) {
+			faults := entityRuleFaults(t, "resets-attempts", entity, c.tail, title, pin, code)
+			if len(faults) == 0 {
+				t.Fatal("want a fault of resets-attempts, got none")
+			}
+			found := false
+			for _, fault := range faults {
+				if !strings.Contains(fault.Message, "ST-DECL-INV104") || !strings.Contains(fault.Message, `"unlock-pin"`) {
+					t.Errorf("the fault does not name the command and the rule: %s", fault.Message)
+				}
+				found = found || strings.Contains(fault.Message, c.names)
+			}
+			if !found {
+				t.Errorf("no fault names %s: %+v", c.names, faults)
 			}
 		})
 	}
