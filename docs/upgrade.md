@@ -38,6 +38,26 @@ Do these steps for each upgrade. Do them in this order.
    stego deps
    ```
 
+   Before `stego apply`, `stego compat` can warn that `migrate.go`, or its
+   digest in `.stego/state.yaml`, `is not what a new generation of the head
+   gives`. In an upgrade, this warning is expected: the new `stego` generates
+   other files than the release before, and `stego apply` writes them. compat
+   checks the declaration and the committed files against the base all the
+   same. Run `stego compat --base <tag of the running release>` again after
+   `stego apply` and the commit, and the warning goes.
+
+   The SIGNERS check of `stego validate` and `stego plan` reads the `SIGNERS`
+   of `--base`. With the tag of the running release, each fill that a key
+   signed which a reviewed change added to `SIGNERS` after that release gets a
+   warning, and `--strict` refuses it. Thus in a release pipeline, run the
+   SIGNERS check against the commit of the default branch that you release,
+   whose `SIGNERS` each pull request checked and merged:
+   `stego validate --strict --base origin/main`. Give `stego plan --base`
+   and `stego apply --base` the tag of the running release, for the schema
+   check, and no `--strict`: their SIGNERS warnings then name the keys that
+   were added after that release, which the pull requests checked. See
+   [Who signs the fills](../README.md#who-signs-the-fills).
+
    Run `stego test` first. A new STEGO release can change the contract of a
    fill, such as the command contract, also when you do not change the fill.
    Then the evidence of the fill is stale, and `stego validate`, `stego plan`
@@ -135,11 +155,14 @@ runtime v0.165.0, except for the cases below.
     the key is checked first. Before, the body check answered first, with
     `validation-error`.
 
-  The member `code` of the problem does not change: it stays
-  `<SVC>-VAL-001` for the 400 and `<SVC>-INT-001` for the 422. Send the key
-  in double quotes, such as `"k-1"`. A client of the release before that reads
-  only `idempotency-key-missing` or `about:blank` must also read the new
-  types; a client that reads only `code` sees no change.
+  For a collection write, the member `code` of the problem does not change:
+  it stays `<SVC>-VAL-001` for the 400 and `<SVC>-INT-001` for the 422. The
+  400 and the 422 of the key of a command have no member `code`, in the
+  release before and in the new release: a client of a command reads `type`.
+  Send the key in double quotes, such as `"k-1"`. A client of the release
+  before that reads only `idempotency-key-missing` or `about:blank` must also
+  read the new types; a client of a collection that reads only `code` sees no
+  change.
 - **A repeated apply of the CLI.** From 3.235.0, an apply of the same
   document, whose values the service already stores, reports `unchanged` and
   sends no patch. A CLI of the release before reports `configured` and sends
