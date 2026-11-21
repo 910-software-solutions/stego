@@ -435,10 +435,14 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
+		// member is the member of the body that the request message does not take, when the decode fails on one;
+		// the problem names it as a collection write does (walkthrough 20, U-D).
+		var member string
 		decode := func(body []byte) (Req, error) {
 			request := s.NewRequest()
 			if len(body) > 0 {
 				if err := (protojson.UnmarshalOptions{}).Unmarshal(body, request); err != nil {
+					member = unknownMember(body, request.ProtoReflect().Descriptor(), "", 0)
 					return request, ErrBadRequest
 				}
 			}
@@ -451,7 +455,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		}
 		request, err := decode(body)
 		if err != nil {
-			rt.writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeFieldProblem(w, http.StatusBadRequest, "", "", member)
 			return
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
@@ -644,6 +648,56 @@ func RPCCode(httpStatus int) codes.Code {
 		return codes.Unavailable
 	}
 	return codes.Internal
+}
+
+// maxMemberName is the most bytes of a member name that a problem repeats, as a collection write repeats it.
+const maxMemberName = 128
+
+// unknownMember gives the first member of a JSON body that the message md does not take, with the path of the
+// members of the messages that hold it, such as address.zip, or "" when the body has no such member or is not a JSON
+// object. A member matches a field by its JSON name or by its proto name, as protojson reads it. It looks into the
+// value of a member of a message type, except a well-known type, such as google.protobuf.Struct, which takes any
+// member, at most 32 levels deep. It gives at most maxMemberName bytes of the name, cut on a character boundary,
+// and never a value of the body. Serve names it in the field of its 400 problem (walkthrough 20, U-D).
+func unknownMember(body []byte, md protoreflect.MessageDescriptor, prefix string, depth int) string {
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
+		return ""
+	}
+	fields := md.Fields()
+	for dec.More() {
+		token, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		name, _ := token.(string)
+		field := fields.ByJSONName(name)
+		if field == nil {
+			field = fields.ByTextName(name)
+		}
+		if field == nil {
+			member := prefix + name
+			if len(member) > maxMemberName {
+				cut := maxMemberName
+				for cut > 0 && !utf8.RuneStart(member[cut]) {
+					cut--
+				}
+				member = member[:cut]
+			}
+			return member
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return ""
+		}
+		if field.Kind() == protoreflect.MessageKind && !field.IsList() && !field.IsMap() && depth < 32 &&
+			!strings.HasPrefix(string(field.Message().FullName()), "google.protobuf.") && len(value) > 0 && value[0] == '{' {
+			if member := unknownMember(value, field.Message(), prefix+name+".", depth+1); member != "" {
+				return member
+			}
+		}
+	}
+	return ""
 }
 
 // SetPath sets a request field from its path parameter. An empty parameter, and a body that gives the field

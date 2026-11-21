@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -719,6 +720,79 @@ func TestNewToken(t *testing.T) {
 		for _, size := range []int{-1, 0, 1, MinTokenSize - 1, MaxTokenSize + 1, 1 << 20} {
 			if b, err := NewToken(size); err == nil || b != nil {
 				t.Errorf("NewToken(%d) gives %d bytes and %v, want a refusal and no bytes", size, len(b), err)
+			}
+		}
+	})
+}
+
+func TestServeUnknownMember(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC33-T02 A command body with a member that the request message does not take gets 400 bad-request that names the member and no value", func(t *testing.T) {
+		str, msg, opt := descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+		file := &descriptorpb.FileDescriptorProto{Name: proto.String("ship.proto"), Package: proto.String("ship.v1"), Syntax: proto.String("proto3"),
+			Dependency: []string{"google/protobuf/struct.proto"},
+			MessageType: []*descriptorpb.DescriptorProto{
+				{Name: proto.String("Address"), Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("postal_code"), JsonName: proto.String("postalCode"), Number: proto.Int32(1), Type: &str, Label: &opt}}},
+				{Name: proto.String("ShipRequest"), Field: []*descriptorpb.FieldDescriptorProto{
+					{Name: proto.String("shipment_id"), JsonName: proto.String("shipmentId"), Number: proto.Int32(1), Type: &str, Label: &opt},
+					{Name: proto.String("address"), JsonName: proto.String("address"), Number: proto.Int32(2), Type: &msg, Label: &opt, TypeName: proto.String(".ship.v1.Address")},
+					{Name: proto.String("extra"), JsonName: proto.String("extra"), Number: proto.Int32(3), Type: &msg, Label: &opt, TypeName: proto.String(".google.protobuf.Struct")},
+				}},
+				{Name: proto.String("ShipResponse")},
+			}}
+		fd, err := protodesc.NewFile(file, protoregistry.GlobalFiles)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, response := fd.Messages().ByName("ShipRequest"), fd.Messages().ByName("ShipResponse")
+		calls := 0
+		h, err := Serve(&Runtime{cfg: Config{ProblemBase: "https://errors.example.com/ship/"}}, ServeSpec[*dynamicpb.Message, *dynamicpb.Message, testProbe]{
+			Command: &Command[testProbe]{spec: CommandSpec[testProbe]{Name: "ship"}}, ResourceType: "shipment", SubjectType: "user", Status: http.StatusOK,
+			NewRequest:  func() *dynamicpb.Message { return dynamicpb.NewMessage(request) },
+			NewResponse: func() *dynamicpb.Message { return dynamicpb.NewMessage(response) },
+			Resource:    func(*dynamicpb.Message) string { return "s1" },
+			Fill: func(context.Context, *dynamicpb.Message, *Handle[testProbe]) (*dynamicpb.Message, error) {
+				calls++
+				return nil, nil
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := authntest.NewKey(t, "k1")
+		set, err := authn.ParseKeys(authntest.Document(key.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "ship", ProblemCode: "SHIP", Keys: set, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "ship", "u-7", time.Now())
+		claims["tenant"] = "t1"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, key)
+		long := strings.Repeat("é", 100)
+		for _, c := range []struct{ body, member string }{
+			{`{"shipmentId":"s1","carrier":"jane.doe@example.com"}`, "carrier"},
+			{`{"shipment_id":"s1","ShipmentId":"x"}`, "ShipmentId"},
+			{`{"address":{"postalCode":"1","zip":"jane.doe@example.com"}}`, "address.zip"},
+			{`{"address":{"postal_code":"1"},"` + long + `":1}`, strings.Repeat("é", 64)},
+			{`{"extra":{"any":"thing"},"shipmentId":7}`, ""},
+			{`[1]`, ""},
+		} {
+			r := httptest.NewRequest(http.MethodPost, "/commands/ship", strings.NewReader(c.body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			verifier.Middleware(h).ServeHTTP(w, r)
+			var problem map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &problem); err != nil || w.Code != http.StatusBadRequest || calls != 0 {
+				t.Fatalf("the body %.40s gave %d %s, want 400 with no fill call", c.body, w.Code, w.Body.String())
+			}
+			field, named := problem["field"]
+			if problem["type"] != "https://errors.example.com/ship/bad-request" || (c.member == "") == named || (named && field != c.member) {
+				t.Errorf("the body %.40s gave the problem %s, want bad-request with the field %q", c.body, w.Body.String(), c.member)
+			}
+			if strings.Contains(w.Body.String(), "jane.doe") || strings.Contains(w.Body.String(), "thing") {
+				t.Errorf("the problem of the body %.40s holds a value: %s", c.body, w.Body.String())
 			}
 		}
 	})
