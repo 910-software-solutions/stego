@@ -178,7 +178,8 @@ export function createBrowserClient() {
     if (reader) { try { while (true) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.byteLength; if (length > maxResponse) fail("response_limit"); data += decoder.decode(chunk.value, { stream: true }); } data += decoder.decode(); } finally { try { await reader.cancel(); } finally { reader.releaseLock(); } } }
     if (!response.ok) {
       let apiCode;
-      if (response.status !== 401 && (response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase() === "application/json") {
+      const media = (response.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+      if (response.status !== 401 && (media === "application/json" || media === "application/problem+json")) {
         try { const value = parseJSON(data); if (value && typeof value === "object" && own(value, "code") && contract.errorCodes.includes(value.code)) apiCode = value.code; } catch {}
       }
       throw new SDKError(response.status === 401 ? "reauth_required" : "http_error", response.status, apiCode);

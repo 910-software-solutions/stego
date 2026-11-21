@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"go.opentelemetry.io/otel/attribute"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
@@ -247,6 +251,45 @@ func TestAttempts(t *testing.T) {
 		}
 		if balance, _ := state(); balance != 90 {
 			t.Fatalf("the balance is %d after a failed charge, want 90", balance)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T04 A charge that cannot commit logs one error line through the log provider of the runtime, with the cause class and no value", func(t *testing.T) {
+		logs := &logRecorder{}
+		rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs))).Logger("test")
+		defer func() { rt.logger = nil }()
+		e.exec("REVOKE INSERT, UPDATE ON attempt_counts FROM " + e.roles[0])
+		defer e.exec("GRANT INSERT, UPDATE ON attempt_counts TO " + e.roles[0])
+		if _, err := withdraw(locked, right); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("a failed charge gave %v, want ErrUnavailable", err)
+		}
+		var lines []sdklog.Record
+		for _, r := range logs.all() {
+			if r.EventName() == AttemptsFailedEvent {
+				lines = append(lines, r)
+			}
+		}
+		if len(lines) != 1 || lines[0].SeverityText() != "ERROR" {
+			t.Fatalf("a failed charge logged %d lines of %s, want one ERROR line", len(lines), AttemptsFailedEvent)
+		}
+		got := map[string]string{}
+		lines[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+			got[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		want := map[string]string{"stego.action": "withdraw", "stego.entity": "PinWallet", "stego.cause": "internal"}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("the line has the attributes %v, want %v", got, want)
+		}
+		if body := lines[0].Body().Emit(); strings.Contains(body, right) || strings.Contains(body, "permission") {
+			t.Errorf("the line holds a value or an error text: %q", body)
+		}
+		for _, c := range []struct {
+			err  error
+			want string
+		}{{context.DeadlineExceeded, "deadline"}, {fmt.Errorf("charge: %w", context.Canceled), "canceled"}, {errors.New("pin 1234 is wrong"), "internal"}} {
+			if got := chargeCause(c.err); got != c.want {
+				t.Errorf("chargeCause(%v) = %s, want %s", c.err, got, c.want)
+			}
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T03 A rerun of the call after a conflict does not charge the checks of an earlier attempt again", func(t *testing.T) {

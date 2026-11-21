@@ -110,6 +110,25 @@ test('ST-SUP-RC24-OC09-T02 Only declared API error codes leave the emitted clien
     });
   }
 });
+test('ST-SUP-RC24-OC09-T03 A declared refusal code with a dot sets apiCode from an application/problem+json answer', async () => {
+  const problem = (body, status, media) => new Response(JSON.stringify(body), {status, headers: {'Content-Type': media}});
+  for (const [code, media, want] of [
+    ['record.not_draft', 'application/problem+json', 'record.not_draft'],
+    ['record.not_draft', 'application/problem+json; charset=utf-8', 'record.not_draft'],
+    ['record.not_draft', 'application/json', 'record.not_draft'],
+    ['record_name_exists', 'application/problem+json', 'record_name_exists'],
+    ['record.private_failure', 'application/problem+json', undefined],
+    ['record.not_draft', 'text/plain', undefined],
+  ]) {
+    const sdk = client(async () => problem({type: 'https://problems.example.test/conflict', title: 'Conflict', status: 409, code, detail: 'private'}, 409, media));
+    await assert.rejects(sdk.getRecord({id: 'r1'}), e => {
+      assert.ok(error('http_error', 409)(e));
+      assert.equal(e.apiCode, want, code + ' ' + media);
+      assert.equal(e.detail, undefined);
+      return true;
+    });
+  }
+});
 test('ST-SUP-RC24-OC10-T01 The emitted client logs in through a fixed same-origin path', () => {
   const sdk = client(async () => json(record));
   let destination;

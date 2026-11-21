@@ -89,7 +89,7 @@ components:
 `
 
 func fixture() gen.Context {
-	return gen.Context{ModuleName: "example.com/records", OutDirName: "out", OutputNamespace: "sdk", ComponentConfig: map[string]any{"document": "api.yaml", "error_codes": []any{"record_name_exists"}}, Inputs: map[string][]byte{"api.yaml": []byte(sample)}}
+	return gen.Context{ModuleName: "example.com/records", OutDirName: "out", OutputNamespace: "sdk", ComponentConfig: map[string]any{"document": "api.yaml", "error_codes": []any{"record_name_exists", "record.not_draft"}}, Inputs: map[string][]byte{"api.yaml": []byte(sample)}}
 }
 func TestGeneration(t *testing.T) {
 	ctx := fixture()
@@ -251,7 +251,7 @@ func TestServiceDocument(t *testing.T) {
 			t.Fatal(err)
 		}
 		own := fixture()
-		own.ComponentConfig = map[string]any{"error_codes": []any{"record_name_exists"}}
+		own.ComponentConfig = map[string]any{"error_codes": []any{"record_name_exists", "record.not_draft"}}
 		own.Inputs, own.ServiceOpenAPI = nil, []byte(sample)
 		if names, err := g.InputFiles(own.ComponentConfig); err != nil || len(names) != 0 {
 			t.Fatalf("with no document the SDK names the inputs %v, %v; want none", names, err)
@@ -272,7 +272,7 @@ func TestServiceDocument(t *testing.T) {
 
 func TestErrorCodeConfiguration(t *testing.T) {
 	g := new(Generator)
-	for _, value := range []any{"wrong", []any{""}, []any{"Bad-Code"}, []any{"same", "same"}, []any{1}, []any{strings.Repeat("a", 129)}, make([]any, 65)} {
+	for _, value := range []any{"wrong", []any{""}, []any{"Bad-Code"}, []any{".record"}, []any{"record/not_draft"}, []any{"same", "same"}, []any{1}, []any{strings.Repeat("a", 129)}, make([]any, 65)} {
 		ctx := fixture()
 		ctx.ComponentConfig["error_codes"] = value
 		if g.ValidateContext(ctx) == nil {
