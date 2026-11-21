@@ -1038,8 +1038,13 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 // reported itself within its window after the start of that pass, since such a
 // release writes the clear column alone and its write would be lost with the
 // column (ST-SUP-RP09-LC15), no row of a listed tenant may have a clear value
-// and no sealed value, and no release before may run (runningReleases). When
-// the clear column is gone, a run before dropped it and the check passes.
+// and no sealed value, and no release before may run (runningReleases). The
+// pass must also have started in this database instance (seal_instance: the
+// database, the start of its server and the table of the checkpoints), so a
+// completed pass that a restore brings, or that ran before a restart of the
+// server, does not count until the seal job completes a new pass (security
+// review of PR #471, L3). When the clear column is gone, a run before dropped
+// it and the check passes.
 func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) error {
 	var there bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)", table, c.From).Scan(&there); err != nil {
@@ -1054,8 +1059,17 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 	}
 	state := "the seal checkpoint of the change is not there"
 	if seals {
-		var complete, stale bool
-		err := tx.QueryRowContext(ctx, "SELECT s.completed_at IS NOT NULL, EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < s.expand COLLATE \"C\" AND r.seen_at + r.every_ms * $2::integer * interval '1 millisecond' > s.pass_started) FROM stego_schema.seals s WHERE s.change_id = $1", c.Change, releaseWindow).Scan(&complete, &stale)
+		// A checkpoint with no record of the database instance where the seal job saw it counts as not seen here.
+		var instance bool
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regprocedure('stego_schema.seal_instance()') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in' AND a.attnum > 0 AND NOT a.attisdropped)").Scan(&instance); err != nil {
+			return err
+		}
+		seen := "false"
+		if instance {
+			seen = "s.armed_in IS NOT DISTINCT FROM stego_schema.seal_instance()"
+		}
+		var complete, stale, here bool
+		err := tx.QueryRowContext(ctx, "SELECT s.completed_at IS NOT NULL, EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < s.expand COLLATE \"C\" AND r.seen_at + r.every_ms * $2::integer * interval '1 millisecond' > s.pass_started), "+seen+" FROM stego_schema.seals s WHERE s.change_id = $1", c.Change, releaseWindow).Scan(&complete, &stale, &here)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -1064,6 +1078,8 @@ func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) er
 			state = "the seal job of the controller has not completed a pass over the rows"
 		case stale:
 			state = "a release before the step ran after the start of the last pass of the seal job, so a sealed value can be older than its clear value"
+		case !here:
+			state = "the last pass of the seal job did not run in this database instance, as after a restore or a restart of the database server, so a release before can have written a clear value after it"
 		default:
 			state = ""
 		}
