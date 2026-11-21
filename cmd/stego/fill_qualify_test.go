@@ -864,6 +864,29 @@ func TestFillQualification(t *testing.T) {
 		return git
 	}
 
+	t.Run("ST-EXT-UC02-R02-T19 plan names each fill whose sign-off counts only because of an added key also when the declaration needs add steps, and --strict refuses", func(t *testing.T) {
+		p := newFillProject(t)
+		signersRepo(t, p, "carol@example.test "+p.keys.unlistedPublic+"\n"+p.keys.signers)
+		// The branch also adds an optional field, so the declaration needs an add step, and plan stops before its
+		// plan (walkthrough 22, T-G).
+		withStep := strings.Replace(fillBaseService, "      - {name: label, type: string}\n", "      - {name: label, type: string}\n      - {name: note, type: string, optional: true}\n", 1)
+		if withStep == fillBaseService {
+			t.Fatal("the declaration has no field label to add a field after")
+		}
+		p.write(t, "service.yaml", withStep+"slots:\n  - {slot: before_create, collection: org-users, gate: [qualified-fill, unlisted-fill]}\n")
+		named := func(output string) bool {
+			return strings.Contains(output, `fill "unlisted-fill" counts only because of the key of carol@example.test`) && strings.Contains(output, "refs/heads/main")
+		}
+		stdout, stderr, err := p.stego(t, "no-key", "plan")
+		if err != nil || !strings.Contains(stdout, "needs these add steps") || !named(stdout) || !strings.Contains(stdout, "WARNING: fills/unlisted-fill/fill.yaml") {
+			t.Errorf("plan on the branch with an add step gave %v, want exit 0, the add steps and a warning that names unlisted-fill:\n%s\n%s", err, stdout, stderr)
+		}
+		stdout, stderr, err = p.stego(t, "no-key", "plan", "--strict")
+		if err == nil || !named(stdout) || !strings.Contains(stdout+stderr, "--strict refuses 1 fault(s)") || strings.Contains(stdout, "needs these add steps") {
+			t.Errorf("plan --strict on the branch with an add step gave %v, want a refusal that names unlisted-fill before the add steps:\n%s\n%s", err, stdout, stderr)
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R02-T17 With no base, validate and fill sign say that the SIGNERS check did not run, --strict refuses and names --base, and another failure of git fails", func(t *testing.T) {
 		p := newFillProject(t)
 		git := signersRepo(t, p, "carol@example.test "+p.keys.unlistedPublic+"\n"+p.keys.signers)
