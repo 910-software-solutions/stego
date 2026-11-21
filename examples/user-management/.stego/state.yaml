@@ -23,25 +23,25 @@ last_applied:
                 mode: 420
             go.sum:
                 exists: true
-                sha256: 42e50d295d2db7876d970cc0e882eae4f3cc57ecda866811fdb71d4f9e52d2a2
+                sha256: edc41648f02afd9f9023dec46951df5bb7eb7c5c8322f9a8e44d0864277cc54c
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: b058af3f3d1a79b00b618267314a8a13941824ca87bcf4529381d4e25ea3e534
+        sha256: 76fd4323de7ebcc218d197e88bfb0d6c1ed9cf215fbfa1fe26668a978a7e4080
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261121235718-79c72cf32c50
+        module_version: v0.0.0-20261121235845-172fdb06427f+dirty
         vcs: git
-        revision: 79c72cf32c50200a0ad57b7d7a7b194e409875c7
-        source_state: clean
+        revision: 172fdb06427fa2ae339f22152551197ab683cc34
+        source_state: modified
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: bade8e9382c64e04bec92f4b6aa7b93cb7900f47d1c987c0db300446372ace6a
+    registry_content_sha256: 2bc79ce77a09d55f92954b9a0962e9c153bf2652cac8f0e8b48d508e0adc4e0f
     components:
         audit-log:
             version: 1.2.0
@@ -214,21 +214,21 @@ last_applied:
         architecture/index.html: 46698d6b5faff1cc92a4e110e59dfaff54e821bc6b95b940302113c0db18c999
         deploy/base/deployment.yaml: f757ac733f521f217e954f6df579a86bb2bb8c8a3438ac095a5f3803fa4db4b9
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
-        deploy/base/migration-job.yaml: 9b455b1806046a143ec76d58e1f364fd0a9542d6bcdbd7379dbdf72c33cd1277
+        deploy/base/migration-job.yaml: 65e33b0cab614c146b9b512ad915db1bf281f419fab4a56b39a4c64f318ec00f
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
         deploy/base/worker-deployment.yaml: 4e4dcd749094876d9408717bb494c8d98679845bd1baeb5dfb9d4d0c91cb91c2
         deploy/base/worker-service-account.yaml: c3ff4f18d2f1abd6b90c278a754031f60df8796f79b31f78907104e42622a827
         deploy/components/fs-group/deployment-fs-group.yaml: 9a4f92991ebab2ead72ab1a3129ebf94f44fa63249b337e6e6ce8fa11944d667
-        deploy/components/fs-group/job-fs-group.yaml: 770776eb3f32918be3e152fc5bcb6690abb56f511bb43bd31ecaaa9163d23910
+        deploy/components/fs-group/job-fs-group.yaml: 9f443cb1eb75907b89d9e004ecdb134274b888b2160f56177e77a31795d378ec
         deploy/components/fs-group/kustomization.yaml: a2d4d6333b32022bd78ae60a4b33c580e49299b925218db208ce70b461690839
         deploy/components/fs-group/worker-deployment-fs-group.yaml: 688d28f419abab3a00b555f03d007885eb54a8c687275d46a291491f627760ee
         deploy/components/secret-files/kustomization.yaml: 17d9606eb43a3083fea20cf3ecf178c9dc1eb6369f5df7fb5af92f644c7c600d
         deploy/components/secret-files/mount-files.yaml: d7ce2a2f91934db433fd17d67e1b84900d42f1f20e2db3023d2ff8f3e284bb4f
-        deploy/components/secret-files/mount-job-files.yaml: 593398320488b7da87c1b41d9d8e4f3e96b4b7d7ea62d28abbfd3d474c2ae590
+        deploy/components/secret-files/mount-job-files.yaml: 6a5bd49db7766a34c722d2ec3efaed073fc025010585bb3abb17ab0bff1cc1b6
         deploy/components/secret-files/mount-worker-files.yaml: 2255037cd8bb971e12ccc5f714cfe2557582a9f3e539d81cbdd61fe6a532cd34
         deploy/components/secret-files/remove-env.yaml: a60c4392c97e190ccb6a164f0ccf5e79c018239ed2223baefcff29d4e17a3260
-        deploy/components/secret-files/remove-job-env.yaml: 9a7a7f066468cda3727b2f02281277ecc2615ca6baffcff44ae17f37e04a36a4
+        deploy/components/secret-files/remove-job-env.yaml: 83ae8cd5daf727f2a92f388869a444fc26a2a9f7e0c5155514641aa387e9059b
         deploy/components/secret-files/remove-worker-env.yaml: 89d5ed9887d7f954348c74b2cf12f1460086420d6680de5c033ca160036129f6
         deploy/environment-variables.md: cb9b91e3c84f56ee9dae931b2b136e47d839d542323108c5d183c9ce84752701
         deploy/platform-requirements.yaml: 7724068292bbca4dc9a0379c8817e944c5896e285c41a58bfc19720854950638
@@ -238,5 +238,5 @@ last_applied:
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.189.0
-            sum: h1:CwSoZ4i5bYceuCO0mpOfyfuXzaDE5l65QIx1jmNi2qA=
+            sum: h1:Tl6HA7kCdpJXzGADX5JuZi3d2hzlMfeJT41PxJdxvDA=
         imports_runtime: true
