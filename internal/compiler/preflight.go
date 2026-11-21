@@ -435,14 +435,50 @@ func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaCha
 
 // clientComponents are the components whose client is generated from the service's own OpenAPI document when the
 // declaration names no document of their own: the setting that names the document or the definitions, by component
-// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32).
-var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package"}
+// (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32, ST-SUP-RC24-OC14).
+var clientComponents = map[string]string{"go-sdk": "document", "cli-application": "factory_package", "typescript-sdk": "document"}
 
 // serviceOpenAPI gives each active client component whose declaration does not set its setting of clientComponents
-// the OpenAPI document that the rest-api component emits for the service, in ServiceOpenAPI. The rest-api generator
-// makes it from the context of the rest-api component, so it is the document of the same generation.
+// the OpenAPI document of the service, in ServiceOpenAPI: the document that the rest-api component emits, made from
+// the context of the rest-api component, so it is the document of the same generation. With no rest-api component,
+// it is the document of the command and query routes, made from the context of the command component, which the
+// command component then writes too (ST-SUP-RC32-OC29).
 func serviceOpenAPI(input ReconcilerInput, resolved *resolvedCompilation) error {
 	var document []byte
+	made := false
+	build := func() error {
+		if made {
+			return nil
+		}
+		made = true
+		if rest, ok := resolved.Contexts[restAPIComponent]; ok {
+			provider, built := input.Generators[restAPIComponent].(gen.OpenAPIProvider)
+			if !built {
+				return nil
+			}
+			var err error
+			document, err = provider.OpenAPIDocument(rest)
+			return err
+		}
+		command, ok := resolved.Contexts[commandComponent]
+		provider, built := input.Generators[restAPIComponent].(gen.RouteOpenAPIProvider)
+		if !ok || !built {
+			return nil
+		}
+		var err error
+		if document, err = provider.RouteOpenAPIDocument(command); err != nil || document == nil {
+			return err
+		}
+		command.ServiceOpenAPI = document
+		resolved.Contexts[commandComponent] = command
+		return nil
+	}
+	if _, rest := resolved.Contexts[restAPIComponent]; !rest {
+		// The command component writes the document of its routes also when no client takes it.
+		if err := build(); err != nil {
+			return fmt.Errorf("component %q: the OpenAPI document of the command and query routes: %w", commandComponent, err)
+		}
+	}
 	for _, name := range sortedKeys(clientComponents) {
 		ctx, active := resolved.Contexts[name]
 		if !active {
@@ -451,16 +487,11 @@ func serviceOpenAPI(input ReconcilerInput, resolved *resolvedCompilation) error 
 		if value, set := ctx.ComponentConfig[clientComponents[name]]; set && value != nil && value != "" {
 			continue
 		}
-		rest, ok := resolved.Contexts[restAPIComponent]
-		provider, built := input.Generators[restAPIComponent].(gen.OpenAPIProvider)
-		if !ok || !built {
-			continue
+		if err := build(); err != nil {
+			return fmt.Errorf("component %q: the OpenAPI document of the service: %w", name, err)
 		}
 		if document == nil {
-			var err error
-			if document, err = provider.OpenAPIDocument(rest); err != nil {
-				return fmt.Errorf("component %q: the OpenAPI document of the service: %w", name, err)
-			}
+			continue
 		}
 		ctx.ServiceOpenAPI = document
 		resolved.Contexts[name] = ctx

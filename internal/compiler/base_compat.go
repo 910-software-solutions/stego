@@ -717,11 +717,18 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 	// first is the first retype of each field in the order of the schema history: the baseline has the field of its
 	// type From, so the search index of 001_initial follows that field, not the declared one (review of PR #314, L14).
 	first := map[string]types.SchemaChange{}
+	// sealedFrom is the sensitivity before its seal of each field that a seal names: 001_initial creates the clear
+	// column with the index of that sensitivity, so a seal from public keeps the search index of the field, also
+	// when another change of the same release, such as a rename, keeps generation from comparing the baselines
+	// (walkthrough 17, W17-B2).
+	sealedFrom := map[string]string{}
 	for _, change := range service.SchemaChanges {
 		if change.Entity != entity {
 			continue
 		}
 		switch change.Kind {
+		case "seal":
+			sealedFrom[change.Field] = change.From
 		case "rename":
 			renames = append(renames, change)
 		case "add", "require":
@@ -784,6 +791,10 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 				sensitivity := field.Sensitivity
 				field = gen.RetypeField(retype)
 				field.Sensitivity = sensitivity
+			}
+			if from, sealed := sealedFrom[field.Name]; sealed {
+				// No from is the same as from: public (docs/schema-changes.md, Seal steps).
+				field.Sensitivity = from
 			}
 			if !added[field.Name] && postgresadapter.Searchable(field) {
 				filtered[original(field.Name)] = true

@@ -368,6 +368,9 @@ func TestBaseCompat(t *testing.T) {
 		// their steps, and a new implicit field that the search of the list indexes already, were refused.
 		td01 := string(userManagementBase(t))
 		base := parseHead(t, td01)
+		sealed := strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: secret }", 1)
+		const displayNameSeal = "  - {id: user-display-name-seal, kind: seal, entity: User, field: display_name, from: public}\n"
+		const displayNameSealExpand = "  - {change: user-display-name-seal, phase: expand}\n"
 		chained := withChanges(strings.ReplaceAll(strings.Replace(td01, "{ name: source_type, type: string, max_length: 50 }", "{ name: kind_type, type: string, max_length: 50 }", 1), "implicit: { source_type:", "implicit: { kind_type:"),
 			"  - {id: activityentry-origin-type-rename, kind: rename, entity: ActivityEntry, field: kind_type, from: origin_type}\n"+
 				"  - {id: activityentry-source-type-rename, kind: rename, entity: ActivityEntry, field: origin_type, from: source_type}\n",
@@ -381,6 +384,11 @@ func TestBaseCompat(t *testing.T) {
 			{"a new implicit field of a list that the search of the list indexes already", strings.Replace(td01, "    implicit: { source_type: \"User\" }\n", "    implicit: { source_type: \"User\", action: \"login\" }\n", 1), false},
 			{"a searched field of a listed entity marked pii", strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: pii }", 1), true},
 			{"list taken from the only collection that lists an entity", strings.Replace(td01, "    operations: [create, read, delete, list]\n", "    operations: [create, read, delete]\n", 1), true},
+			// Walkthrough 17, W17-B2: a seal from public keeps the search index of the clear column, also beside a
+			// rename in the same release; the seal and the rename are each checked on their own.
+			{"a seal from public of a searched field, with a rename in the same release", withChanges(renameEmail(sealed), displayNameSeal+emailRename, displayNameSealExpand+emailRenameExpand), false},
+			{"a seal with no from of a searched field, with a rename in the same release", withChanges(renameEmail(sealed), strings.Replace(displayNameSeal, ", from: public", "", 1)+emailRename, displayNameSealExpand+emailRenameExpand), false},
+			{"a seal from pii of a field that the base searched", withChanges(sealed, strings.Replace(displayNameSeal, "from: public", "from: pii", 1), displayNameSealExpand), true},
 		} {
 			faults := collectionIndexFaults(base, parseHead(t, c.head))
 			if (len(faults) > 0) != c.fault {

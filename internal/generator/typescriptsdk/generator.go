@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path"
 	"regexp"
 	"sort"
@@ -63,7 +64,21 @@ type parameter struct {
 	In       string `json:"in"`
 	Required bool   `json:"required"`
 	Schema   schema `json:"schema"`
+	// Header is the HTTP name of a header parameter, whose input name is Name (ST-SUP-RC24-OC15).
+	Header string `json:"header,omitempty"`
 }
+
+// forwardedHeaders are the header parameters that the client takes: the request headers that the API proxy of the
+// browser backend forwards (ST-SUP-RC02-OC07), by their canonical HTTP name, with the input name of each
+// (ST-SUP-RC24-OC15).
+var forwardedHeaders = map[string]string{
+	"Idempotency-Key":        "idempotencyKey",
+	"If-Match":               "ifMatch",
+	"If-None-Match":          "ifNoneMatch",
+	"Authz-Revocation-After": "authzRevocationAfter",
+	"Prefer":                 "prefer",
+}
+
 type operation struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
@@ -166,10 +181,17 @@ func compile(ctx gen.Context) (compiled, error) {
 				if p == nil || p.Schema == nil || p.Schema.Value == nil {
 					return c, fmt.Errorf("SDK parameters require schemas")
 				}
-				if p.In != "path" && p.In != "query" {
-					return c, fmt.Errorf("browser SDK supports path and query parameters")
+				header := ""
+				if p.In == "header" {
+					var forwarded bool
+					header = http.CanonicalHeaderKey(p.Name)
+					if _, forwarded = forwardedHeaders[header]; !forwarded {
+						return c, fmt.Errorf("browser SDK supports path and query parameters, and only the header parameters that the browser backend forwards (Idempotency-Key, If-Match, If-None-Match, Authz-Revocation-After, Prefer)")
+					}
+				} else if p.In != "path" && p.In != "query" {
+					return c, fmt.Errorf("browser SDK supports path and query parameters, and only the header parameters that the browser backend forwards (Idempotency-Key, If-Match, If-None-Match, Authz-Revocation-After, Prefer)")
 				}
-				if p.AllowReserved || p.AllowEmptyValue || len(p.Content) > 0 || (p.Style != "" && p.Style != "simple" && p.In == "path") || (p.Style != "" && p.Style != "form" && p.In == "query") {
+				if p.AllowReserved || p.AllowEmptyValue || len(p.Content) > 0 || (p.Style != "" && p.Style != "simple" && (p.In == "path" || p.In == "header")) || (p.Style != "" && p.Style != "form" && p.In == "query") {
 					return c, fmt.Errorf("unsupported SDK parameter encoding")
 				}
 				s, err := raw(p.Schema.Value)
@@ -185,6 +207,13 @@ func compile(ctx gen.Context) (compiled, error) {
 				}
 				if p.In == "path" && (!p.Required || !strings.Contains(route, "{"+p.Name+"}")) {
 					return c, fmt.Errorf("invalid SDK path parameter")
+				}
+				if header != "" {
+					if typ != "string" {
+						return c, fmt.Errorf("SDK header parameters must be strings")
+					}
+					params["header:"+header] = parameter{Name: forwardedHeaders[header], In: "header", Required: p.Required, Schema: s, Header: header}
+					continue
 				}
 				params[p.In+":"+p.Name] = parameter{Name: p.Name, In: p.In, Required: p.Required, Schema: s}
 			}
@@ -335,15 +364,20 @@ func checkSchema(s schema, models map[string]schema, depth int) error {
 	}
 	if format, ok := s["format"].(string); ok {
 		switch format {
-		case "int32", "int64":
+		case "int32":
 			if typ != "integer" {
+				return fmt.Errorf("integer format requires integer type")
+			}
+		case "int64":
+			// A 64-bit integer is an integer, or a decimal string in the protobuf JSON form of a command message.
+			if typ != "integer" && typ != "string" {
 				return fmt.Errorf("integer format requires integer type")
 			}
 		case "float", "double":
 			if typ != "number" {
 				return fmt.Errorf("number format requires number type")
 			}
-		case "date-time", "uri", "password":
+		case "date-time", "uri", "password", "uuid", "byte":
 			if typ != "string" {
 				return fmt.Errorf("string format requires string type")
 			}

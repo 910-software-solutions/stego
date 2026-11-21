@@ -28,12 +28,15 @@
 # an archetype with no rest-api (ST-SUP-RC20-OC54; security review of PR #462, L2).
 # Version 1.18.0 puts Idempotency-Kept: 1 on each answer to a command request with a key, through the runtime's
 # Serve (ST-SUP-RC32-OC27, ST-SUP-Q193 (a)).
-# Version 1.19.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
+# Version 1.20.0 writes <out>/commands/openapi.json, the OpenAPI document of the command and query routes, in a
+# service with no rest-api component, such as an rpc-service; the generated clients are made from it
+# (ST-SUP-RC32-OC29, decision ST-SUP-Q198 (a)).
+# Version 1.21.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
 # its entity (ST-SUP-RC32-OC24, decision ST-SUP-Q185 (a)), and gives an entity with event fields its EventData and
 # EventVersion, so its change events carry the declared fields (ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
 kind: component
 name: command
-version: 1.19.0
+version: 1.21.0
 stage: ga
 output_namespace: commands
 

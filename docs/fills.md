@@ -402,7 +402,7 @@ No client can read a secret back. Only the fills of commands and workers can
 read a readable secret.
 
 A worker that only reads an entity declares it in `reads`, not in `writes`
-(runtime v0.167.0). The worker `sum-balances` of the example reads the wallets
+(runtime v0.169.0). The worker `sum-balances` of the example reads the wallets
 this way. Its fill gets `workers.WalletReader(h)`, a read-only repository with
 `Get` and `List` only, whose value `workers.WalletView` has each field of the
 wallet except `api_key` and `pin`. The statements of the reader do not read
@@ -527,7 +527,7 @@ so a wrong PIN tells nothing of the balance.
 
 A PIN of 4 digits has only 10,000 values. A caller who may operate the wallet,
 such as with a stolen session, could try each value in some minutes. Thus the
-example declares a limit of wrong PINs on the field (runtime v0.167.0):
+example declares a limit of wrong PINs on the field (runtime v0.169.0):
 
 <!-- excerpt -->
 ```yaml
@@ -980,6 +980,30 @@ compare their SHA-256 digests with `crypto/sha256`. Then the time of the
 compare does not show the values, but it can show how much of the two
 digests is the same.
 
+### Declare a fill module
+
+To let the fills import a Go module, list it under `fill_modules` at the top
+level of the declaration, with the reason that the fills need it, so a
+reviewer can judge it:
+
+```yaml
+fill_modules:
+  - {module: github.com/google/uuid, reason: fills make request IDs}
+```
+
+Then add the module to `go.mod` with `go get`, as for any module. A fill can
+import each package of a listed module. The rules:
+
+- `module` is the module path, which has a dot in its first element. A
+  module whose path only starts with a listed path, such as
+  `github.com/google/uuidx`, is not listed.
+- `stego test` and `stego validate` follow the imports of the module too, and
+  refuse the fill when the module reaches a refused package, such as
+  `database/sql` or `os`, or prints, with a fault that names the chain of
+  imports.
+- A test file of a fill does not need the list: it can import any module of
+  `go.mod`.
+
 ## Change events
 
 With the mixins `durable-events` and `kafka-events`, each create, update and
@@ -1048,7 +1072,7 @@ type Change struct {
 
 A worker handle has no network client, so a consuming fill cannot read a row
 from the service `wallets`. Thus an entity declares the fields that its change
-events carry (runtime v0.167.0, rest-api 4.29.0):
+events carry (runtime v0.169.0, rest-api 4.29.0):
 
 <!-- excerpt -->
 ```yaml

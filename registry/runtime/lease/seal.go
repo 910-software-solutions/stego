@@ -30,12 +30,20 @@ const sealsText = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 	created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
 );
 ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
+CREATE OR REPLACE FUNCTION stego_schema.seal_instance()
+ RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
+ AS $stego_seal$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
+  FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$stego_seal$;
+REVOKE ALL ON FUNCTION stego_schema.seal_instance() FROM PUBLIC;
+ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
+ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_at timestamptz;
+ALTER TABLE stego_schema.seals ALTER COLUMN armed_in SET DEFAULT stego_schema.seal_instance();
 REVOKE ALL ON TABLE stego_schema.seals FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  RETURNS TABLE (last_tenant text, last_id text, sealed_rows bigint, checked_rows bigint, started boolean, completed boolean, waiting boolean, stale boolean)
  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_seal$SELECT s.last_tenant, s.last_id::text, s.sealed_rows, s.checked_rows, s.pass_started IS NOT NULL, s.completed_at IS NOT NULL,
-  s.created_at + interval '3 minutes' > pg_catalog.clock_timestamp() OR EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
+  GREATEST(s.created_at, s.armed_at) + interval '3 minutes' > pg_catalog.clock_timestamp() OR EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()),
   s.pass_started IS NOT NULL AND EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started)
@@ -49,7 +57,12 @@ BEGIN
     RETURN 0;
   END IF;
   IF $6 THEN
-    IF EXISTS (SELECT 1 FROM stego_schema.seals s WHERE s.change_id = $1 AND s.created_at + interval '3 minutes' > pg_catalog.clock_timestamp())
+    UPDATE stego_schema.seals s SET armed_in = stego_schema.seal_instance(), armed_at = pg_catalog.clock_timestamp()
+     WHERE s.change_id = $1 AND s.token <= $9 AND s.armed_in IS DISTINCT FROM stego_schema.seal_instance();
+    IF FOUND THEN
+      RETURN -1;
+    END IF;
+    IF EXISTS (SELECT 1 FROM stego_schema.seals s WHERE s.change_id = $1 AND GREATEST(s.created_at, s.armed_at) + interval '3 minutes' > pg_catalog.clock_timestamp())
      OR EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
      WHERE s.change_id = $1 AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()) THEN
       RETURN -1;
@@ -106,7 +119,11 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 // interval, so that each process of a release before has reported itself before a first pass (waiting; security
 // review of PR #443, L1) and whether one reported itself after the start of the pass
 // (stale); seal_checkpoint starts a pass, which it refuses with -1 while such a release reports itself, or moves its
-// position; seal_complete marks the pass completed, or starts it again with -1 when such a release reported itself
+// position. A restore keeps created_at from the dump, so the row also keeps the database instance where a start
+// last saw it, armed_in (the OID of the database and the start time of the server, seal_instance), and the time of
+// that first sight, armed_at: a start in another instance, as after a restore or a restart of the server, sets the
+// two and refuses with -1, and the 3 minutes count from the later of created_at and armed_at (security review of
+// PR #470, sec-470); the caller commits that refusal; seal_complete marks the pass completed, or starts it again with -1 when such a release reported itself
 // after its start. seal_checkpoint and seal_complete change the row only under the lease stego.backfill.<change ID>
 // of the holder with its token, as ST-SUP-RP09-LC07 states, and give 0 when they are fenced. All three are SECURITY
 // DEFINER functions of the owner role with the search path pg_catalog, pg_temp and a lock timeout of 1 s, and the
@@ -131,8 +148,9 @@ type SealState struct {
 	Sealed, Checked int64
 	// Started tells that a pass runs or completed, and Completed that it completed.
 	Started, Completed bool
-	// Waiting tells that a release before the expand migration of the change reports itself now, and Stale that one
-	// reported itself after the start of the pass.
+	// Waiting tells that a release before the expand migration of the change reports itself now, or that the row
+	// is younger than 3 minutes, and Stale that one reported itself after the start of the pass. A row that no start
+	// saw in this database instance does not read as waiting: its first start refuses and sets its guard time.
 	Waiting, Stale bool
 }
 
@@ -162,7 +180,8 @@ func ReadSeal(ctx context.Context, tx RowQuerier, change string) (SealState, err
 
 // SealCheckpoint moves the position of the pass of the change in tx under held: the last tenant and row that the pass
 // checked and its counts, or, with start, starts a new pass. It gives ErrFenced when the lease or the row refused the
-// write, and ErrSealWaiting for a start while a release before the expand migration reports itself.
+// write, and ErrSealWaiting for a start while a release before the expand migration reports itself, while the row is
+// younger than 3 minutes, or at the first start in this database instance, whose guard time the caller commits.
 func SealCheckpoint(ctx context.Context, tx RowQuerier, held *Held, change, lastTenant, lastID string, sealed, checked int64, start bool) error {
 	var tenant, id any
 	if lastTenant != "" {
