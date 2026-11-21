@@ -1647,6 +1647,39 @@ Thus the location never reads data of another tenant and never tells that a
 row exists. Give it only to users who may know when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.189.0
+
+- In a rolling release, the relay of the release before no longer parks a
+  message that only the new release can read (walkthrough 23, P2-R;
+  recommendation (a) of ST-SUP-Q207, open for the Product owner). New mark
+  `outbox.NotUnderstood`: the worker takes the attempt back, keeps the
+  message pending with the wait of an unknown destination, so a worker of
+  the new release delivers it in the order of its key, and parks it with the
+  cause `not_understood` only when it is older than
+  `Destination.NotUnderstoodBound` (one hour by default, at most seven days).
+  The relay gives the mark for a tuple of a relation that is not on its allow
+  list (`authz-relation-unknown`), a payload of a later version or with a
+  field or an operation that it does not know (`authz-payload-newer`), and a
+  delete of a retired tenant of a resource type outside
+  `RelayConfig.Types` (`authz-type-unknown`). It writes nothing for them.
+  The metric `outbox.not_understood` counts them.
+- The metric and the log line `outbox.parked` name the fixed cause class
+  (`refused`, `not_understood`, `attempts_exhausted`, `lookups_exhausted`,
+  `outcome_unknown` or `tenant_not_active`), and the line names the failure
+  code.
+- The failure record of the migration Job names the fault, the object and
+  the remedy of the steps `open`, `authorization_schema`,
+  `authorization_schema_again` and `authorization_schema_served`
+  (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
+  refused key source of a start names its fault (`authn.Keys*Fault`).
+- A unique violation of an index that the entity does not declare names the
+  declared fields of its key when the name of the index is
+  `<table>_<columns>_key` and each part is a column of the entity, such as
+  the index of a unique step of a newer release.
+- New `command.Runtime.AwaitRevocationOn`: as `AwaitRevocation`, and it sets
+  `Preference-Applied` when a request with `Prefer: wait=N` waited. `Serve`
+  calls it.
+
 ### Release notes for runtime v0.187.0
 
 - `AwaitRevocation`, `AwaitRevocationRPC`, `AwaitWrite` and `AwaitWriteRPC`
