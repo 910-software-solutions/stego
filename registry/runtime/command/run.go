@@ -151,7 +151,9 @@ type Runtime struct {
 	missingSince, missingWarned map[string]time.Time
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
-	recorder     func(query string, args []any)
+	recorder func(query string, args []any)
+	// charged, set only by the tests, gets the result of each charge of a check of a counted secret.
+	charged      func(bool)
 	beforeCommit func(ctx context.Context, tx *sql.Tx) error
 	// rerun, when set by a test, gets the random wait before each rerun and the time left after it.
 	rerun func(n int, wait, left time.Duration)
@@ -699,6 +701,14 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 			Principal: req.Principal.Subject().String(), Key: req.Key, Fingerprint: req.Fingerprint,
 			Retention: req.Retention}), handler)
 	}
+	// A check of a counted secret whose charge did not commit ran no verify: the call answers 503 and commits
+	// nothing, whatever the fill returned (ST-SUP-RP10-LC54, security review of PR #451, H1).
+	s.mu.Lock()
+	chargeFailed := s.chargeFailed
+	s.mu.Unlock()
+	if chargeFailed {
+		return Result{}, chargeUnavailable(), false
+	}
 	var failure *fillFailure
 	switch {
 	case errors.As(err, &failure) && !failure.conflict && !failure.logged:
@@ -718,6 +728,11 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	case !wrapped.Commit:
 		// A transient response of the fill: the wrapper stored nothing, and the attempt rolls back.
 		return Result{Response: wrapped.Response}, nil, false
+	}
+	// A check that matched, and a new value of a counted field, reset the count of the row in the transaction that
+	// commits (ST-SUP-RP10-LC54).
+	if err := s.countAttempts(ctx); err != nil {
+		return Result{}, err, errors.Is(err, ErrConflict)
 	}
 	if err := commit(ctx, s); err != nil {
 		return Result{}, err, errors.Is(err, ErrConflict)

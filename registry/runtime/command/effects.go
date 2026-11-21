@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -148,18 +149,49 @@ func checkChangeEvents(owner string, writes []Declared, destinations map[string]
 	return byEntity, nil
 }
 
-// changeEventPayload is the payload of a change event: the entity name, the action and the row ID, and no field
-// value, so no pii or secret field leaves the service in an event (ST-SUP-RC20-OC40).
-func changeEventPayload(entity, action, id string) json.RawMessage {
-	payload, err := json.Marshal(struct {
-		Entity string `json:"entity"`
-		Action string `json:"action"`
-		ID     string `json:"id"`
-	}{entity, action, id})
-	if err != nil {
-		panic(err)
+// EventValue gives the value of an event field as its change event holds it: a timestamp in UTC, which JSON gives as
+// RFC 3339 with nanoseconds, and each other value as it is (ST-SUP-RP10-LC55).
+func EventValue(value any) any {
+	if t, ok := value.(time.Time); ok {
+		return t.UTC()
 	}
-	return payload
+	return value
+}
+
+// JSONValue gives the value of a jsonb event field as its change event holds it: its JSON value, or null for no value
+// (ST-SUP-RP10-LC55).
+func JSONValue(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return json.RawMessage(value)
+}
+
+// eventData is the declared event fields of a row and their version (ST-SUP-RP10-LC55).
+type eventData struct {
+	fields  map[string]any
+	version int
+}
+
+// changeEventPayload is the payload of a change event: the entity name, the action and the row ID, and, for an entity
+// that declares event fields, those fields of the row as data and their version as data_version; an entity with none
+// gives no field value, so no pii or secret field leaves the service in its event (ST-SUP-RC20-OC40, ST-SUP-RP10-LC55).
+// A field that does not encode is an error that names no value.
+func changeEventPayload(entity, action, id string, data *eventData) (json.RawMessage, error) {
+	payload := struct {
+		Entity      string         `json:"entity"`
+		Action      string         `json:"action"`
+		ID          string         `json:"id"`
+		Data        map[string]any `json:"data,omitempty"`
+		DataVersion int            `json:"data_version,omitempty"`
+	}{Entity: entity, Action: action, ID: id}
+	if data != nil {
+		payload.Data, payload.DataVersion = data.fields, data.version
+		if payload.Data == nil {
+			payload.Data = map[string]any{}
+		}
+	}
+	return json.Marshal(payload)
 }
 
 // stageChange stages, right after a write of the handle, the change event of the written row: the entity entity
@@ -168,7 +200,7 @@ func changeEventPayload(entity, action, id string) json.RawMessage {
 // same Kafka message key, so the events of one row keep the order of their commits whichever path wrote it. The
 // message joins the staged messages of the attempt in the order of the calls, so it commits or rolls back with its
 // write. A declaration with no change events stages none.
-func (s *state) stageChange(entity, resourceType, id, action string) error {
+func (s *state) stageChange(entity, resourceType, id, action string, data *eventData) error {
 	c, ok := s.changeEvents[entity]
 	if !ok {
 		return nil
@@ -188,8 +220,12 @@ func (s *state) stageChange(entity, resourceType, id, action string) error {
 	if err != nil {
 		return s.breakWith(internalf("the change event of %s has no message ID", entity))
 	}
+	payload, err := changeEventPayload(entity, action, id, data)
+	if err != nil {
+		return s.breakWith(internalf("the change event of %s does not encode its event fields", entity))
+	}
 	message := outbox.Message{ID: messageID, Destination: ChangeEventDestination, ResourceKey: r.resourceKey(), Kind: name,
-		Payload: changeEventPayload(entity, action, id), OutgoingKey: key, Idempotent: true}
+		Payload: payload, OutgoingKey: key, Idempotent: true}
 	if err := outbox.ValidateMessage(message); err != nil {
 		return s.breakWith(internalf("the change event of %s is not a valid outbox message", entity))
 	}

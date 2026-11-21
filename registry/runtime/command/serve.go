@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -749,6 +750,50 @@ func NewToken(size int) ([]byte, error) {
 		panic(err)
 	}
 	return b, nil
+}
+
+// MaxStructDepth is the most levels of nested objects and lists that NewStruct takes. A deeper value, such as a map
+// that holds itself, is refused with an error, so a fill cannot make the conversion recurse until the process stops.
+const MaxStructDepth = 64
+
+// NewStruct gives a google.protobuf.Struct of fields, for a member of type google.protobuf.Struct of a command or
+// worker message that a fill makes (ST-SUP-RP10-LC57; walkthrough 19, W19-P1). The fill allow list keeps
+// google.golang.org/protobuf out of a fill, and the contract reaches this package, so a fill makes such a member
+// only through NewStruct. Each value is nil, a bool, a number of a Go number type, a json.Number, a string (valid
+// UTF-8), a []byte (as base64 text), a map[string]any or a []any, as structpb.NewValue takes it; a number becomes a
+// JSON number (float64), so an integer above 2^53 loses its exact value: give it as a string. NewStruct refuses any
+// other value, a key or a string that is not valid UTF-8, and a value nested more than MaxStructDepth levels, with an
+// error and no Struct. A member of type google.protobuf.Value or ListValue is a value of the Fields of such a Struct.
+func NewStruct(fields map[string]any) (*structpb.Struct, error) {
+	if err := structDepth(fields, 1); err != nil {
+		return nil, err
+	}
+	return structpb.NewStruct(fields)
+}
+
+// structDepth refuses a value whose objects and lists nest more than MaxStructDepth levels.
+func structDepth(value any, depth int) error {
+	switch v := value.(type) {
+	case map[string]any:
+		if depth > MaxStructDepth {
+			return fmt.Errorf("a Struct nests at most %d levels of objects and lists", MaxStructDepth)
+		}
+		for _, item := range v {
+			if err := structDepth(item, depth+1); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if depth > MaxStructDepth {
+			return fmt.Errorf("a Struct nests at most %d levels of objects and lists", MaxStructDepth)
+		}
+		for _, item := range v {
+			if err := structDepth(item, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ValidUUID tells whether id is a UUID in its text form, the key type of every entity.

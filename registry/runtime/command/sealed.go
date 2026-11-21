@@ -135,6 +135,22 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 				return nil, sealedf("command: the column %s of the row %s of %s does not seal", at.Column, at.Row, at.Table)
 			}
 			value = b
+		case countedHash:
+			// A new value of a counted field resets the count of its row when the call commits (security review of
+			// PR #451, L2).
+			if a.value.IsNew() {
+				// sealArgs runs inside a method of the handle, which holds the lock of the state.
+				s.resetAttemptsHeld(attemptKey{counter: a.counter, row: a.row})
+			}
+			stored, err := a.value.StoredContext(ctx)
+			if err != nil {
+				return nil, sealedf("command: a compare-only value does not hash")
+			}
+			if stored == "" {
+				value = nil
+			} else {
+				value = stored
+			}
 		case hashArg:
 			stored, err := a.value.StoredContext(ctx)
 			if err != nil {
@@ -163,7 +179,8 @@ type openingRow struct {
 	s *state
 }
 
-// opening wraps a row of a statement of the handle so that its scan opens each readable secret.
+// opening wraps a row of a statement of the handle so that its scan opens each readable secret and binds each counted
+// compare-only value to the counter of its row (ST-SUP-RP10-LC54).
 func (s *state) opening(row Scanner) Scanner { return openingRow{Scanner: row, s: s} }
 
 func (o openingRow) Scan(dest ...any) error {
@@ -171,6 +188,10 @@ func (o openingRow) Scan(dest ...any) error {
 		return err
 	}
 	for _, d := range dest {
+		if counted, ok := d.(*countedTarget); ok {
+			o.s.bindCounted(counted)
+			continue
+		}
 		if sealing, ok := d.(sealingTarget); ok {
 			// A field whose seal step is open reads the clear value when the two columns differ (ST-SUP-RP10-LC49).
 			at := sealed.Place{Tenant: o.s.tenant.ID(), Table: sealing.s.table, Column: sealing.s.column}

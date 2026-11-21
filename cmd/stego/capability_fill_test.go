@@ -401,10 +401,11 @@ func TestBuildRefusesUnqualifiedFill(t *testing.T) {
 			t.Fatalf("stego build refused qualified fills, or built from an empty module cache: %v", err)
 		}
 
-		// A sign-off by a key that SIGNERS does not list stops the build.
+		// A sign-off by a key that SIGNERS does not list stops the build. The fill holds a current sign-off by a listed
+		// key, which fill sign keeps, so the unlisted key signs over it with --force.
 		keys := testFillKeys(t)
 		t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(keys.homes["unlisted-ssh"], ".gitconfig"))
-		mustRun(t, runFillSign, "place-order")
+		mustRun(t, runFillSign, "--force", "place-order")
 		if err := build(); err == nil || !strings.Contains(err.Error(), "SIGNERS does not list its key") {
 			t.Fatalf("stego build did not refuse the sign-off of an unlisted key: %v", err)
 		}

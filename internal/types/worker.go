@@ -10,6 +10,9 @@ type Worker struct {
 	Trigger string `yaml:"trigger"`
 	// Writes names the entities that the worker handle may read and write.
 	Writes []string `yaml:"writes"`
+	// Reads names the entities that the worker handle may only read, through a read-only repository whose values hold
+	// no secret field (ST-DECL-EN25 Reads, decision ST-SUP-Q186 (a)). No entity is in both Writes and Reads.
+	Reads []string `yaml:"reads,omitempty"`
 	// ResourceType is the type in the authorization schema that the worker acts on.
 	ResourceType string `yaml:"resource_type,omitempty"`
 	// Permission is the permission that the worker's service account needs on each resource it reads or writes.

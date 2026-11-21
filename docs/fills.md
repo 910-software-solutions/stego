@@ -13,9 +13,11 @@ make, test and sign a fill.
 
 The example is the service `wallets`. A customer has wallets, and each wallet
 has transactions. Each wallet has a readable secret `api_key` and a
-compare-only secret `pin`. The commands take money from a wallet, move money
-between two wallets, change the PIN, and start a campaign of the tenant. The
-worker `sum-balances` writes the daily total of the balances every hour.
+compare-only secret `pin`, with a limit of wrong PINs. The commands take
+money from a wallet, move money between two wallets, change the PIN, and start
+a campaign of the tenant. The worker `sum-balances` reads the wallets and
+writes the daily total of the balances every hour. The change events of
+customers, wallets and transactions carry declared fields.
 
 A test of the STEGO repository runs `stego validate` on this declaration, with
 the schema and the proto file below (ST-STD-DOCS-R02). Each smaller part of a
@@ -52,6 +54,9 @@ entities:
     fields:
       - { name: name, type: string, min_length: 1, max_length: 120 }
       - { name: email, type: string, max_length: 255, sensitivity: pii }
+    events:
+      fields: [name, email]
+      pii_reasons: {email: the ledger sends each customer a receipt}
   - name: Wallet
     resource_type: wallet
     permissions: {create: public, read: view, list: view, delete: edit}
@@ -63,7 +68,9 @@ entities:
       - { name: label, type: string, min_length: 1, max_length: 80 }
       - { name: balance, type: int64, min: 0, default: 0, writable: never }
       - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
+    events:
+      fields: [customer_id, label, balance]
   - name: Transaction
     resource_type: wallet_transaction
     permissions: {read: view, list: view}
@@ -73,6 +80,8 @@ entities:
       - { name: wallet_id, type: ref, to: Wallet }
       - { name: kind, type: enum, values: [deposit, withdrawal, transfer_in, transfer_out] }
       - { name: amount, type: int64, min: 1 }
+    events:
+      fields: [wallet_id, kind, amount]
   - name: Campaign
     resource_type: campaign
     permissions: {read: view, list: view}
@@ -147,7 +156,8 @@ queries:
 workers:
   - name: sum-balances
     trigger: every 1h
-    writes: [Wallet, DailyTotal]
+    reads: [Wallet]
+    writes: [DailyTotal]
     resource_type: daily_total
     permission: record
     fill: sum-balances
@@ -307,6 +317,10 @@ Each field of an entity is one item of `fields`:
 | `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
+| `attempts` | For a compare-only secret only: `{limit: <1 to 100>}`, the limit of wrong checks. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
+
+An entity can also declare `events`, the fields that its change events carry.
+See [The fields of a change event](#the-fields-of-a-change-event).
 
 ### sensitivity
 
@@ -380,19 +394,22 @@ writable: never` lets only the commands of the example change a balance.
 |---|---|---|
 | A collection create, update, upsert and patch | Takes it in the body. A write that leaves it out, or gives it empty, keeps the stored value. | Takes it in the body and stores its hash. |
 | A collection answer, a list, a query, an event, the audit | Never holds it. The OpenAPI document marks it `writeOnly`. | Never holds it. |
-| A command fill or a worker fill | Reads it with `Reveal`, sets it with `sealed.SecretOf`. | Checks a value with `Matches`, sets it with `sealed.ComparedOf`. |
+| A command fill, or a worker fill of an entity in `writes` | Reads it with `Reveal`, sets it with `sealed.SecretOf`. | Checks a value with `Matches`, sets it with `sealed.ComparedOf`. |
+| A worker fill of an entity in `reads` | Never: the value has no secret field. | Never. |
 | A query fill | Never: the value of a query has no secret field. | Never. |
 
 No client can read a secret back. Only the fills of commands and workers can
 read a readable secret.
 
-A worker has no read-only access: to list the rows of an entity, it must
-declare the entity in `writes`. Thus the worker `sum-balances` of the example
-can read the `api_key` of each wallet of the tenant, and change each wallet.
-A fault in such a fill can leak or change each secret. Do not let a broad
-worker, such as a report, write an entity with a secret field: put the secret
-in an entity of its own, which the worker does not write. A read-only access of
-a worker (`reads`) is decided (ST-SUP-Q186 (a)) and not built yet.
+A worker that only reads an entity declares it in `reads`, not in `writes`
+(runtime v0.176.0). The worker `sum-balances` of the example reads the wallets
+this way. Its fill gets `workers.WalletReader(h)`, a read-only repository with
+`Get` and `List` only, whose value `workers.WalletView` has each field of the
+wallet except `api_key` and `pin`. The statements of the reader do not read
+the secret columns, so a fault in the fill cannot leak or change a secret. A
+fill that tries to read `w.Value().ApiKey` does not compile. An entity is in
+`writes` or in `reads`, not in both. Give a worker `writes` only for the
+entities that it changes.
 
 Put a secret in the response message of a command only when the command
 issues it, such as an API key that the client gets one time, and only in a
@@ -506,15 +523,59 @@ The fill reads the wallet with `GetForUpdate`, so no other command changes the
 balance before this transaction ends. The check runs before the balance check,
 so a wrong PIN tells nothing of the balance.
 
-A PIN of 4 digits has only 10,000 values, and the runtime does not limit the
-wrong attempts. A caller who may operate the wallet, such as with a stolen
-session, can try each value in some minutes. Thus limit the wrong attempts
-outside the fill, at the gateway or for each caller and wallet, and use a
-longer PIN where you can. A fill cannot count the wrong attempts itself: a
-refusal is an error of the fill, and the runtime commits nothing when the fill
-returns an error, so a counter that the fill writes before the refusal rolls
-back with it. A declared counter of wrong attempts that a refusal commits is
-decided (ST-SUP-Q185 (a)) and not built yet.
+### Limit the wrong attempts
+
+A PIN of 4 digits has only 10,000 values. A caller who may operate the wallet,
+such as with a stolen session, could try each value in some minutes. Thus the
+example declares a limit of wrong PINs on the field (runtime v0.176.0):
+
+<!-- excerpt -->
+```yaml
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
+```
+
+Only a compare-only secret can have `attempts`. The limit is from 1 to 100, as
+NIST SP 800-63B (5.2.2) asks for each account. `stego validate` refuses each
+other limit.
+
+The fill does not change. The runtime binds each PIN that a read of the handle
+gives to the count of its row:
+
+- Before each `Matches` checks the value, the runtime adds one to the count, in
+  a short transaction of its own that commits before the check. Thus the count
+  stays after the fill returns its refusal, such as `pin.wrong`, and the
+  runtime rolls back the command. Commands that check one row at the same time
+  each see the counts before them: at most the limit of checks run.
+- At the limit, `Matches` gives `false` and does not check the value, also for
+  the right PIN. The answer is the same refusal, and the check takes the same
+  time, so the caller does not learn that the limit is reached.
+- When the runtime cannot write the count, such as when the database cannot
+  serve, `Matches` gives `false` and the command answers 503 and commits
+  nothing.
+- A `Matches` that matches in a command that commits sets the count to 0. A
+  write of a new value of the field, such as a new PIN, also sets it to 0.
+- In a worker, `Matches` gives `false` and counts nothing.
+- The count is not a field of the entity: the runtime keeps it in a table of
+  its own, `attempt_counts`, which the migration job makes. A count never
+  changes the row, its version, an audit row or a change event.
+
+Read the row through the handle, such as with `GetForUpdate`, before you call
+`Matches`: the read decides the permission of the caller on the row, so a
+caller who may not operate the wallet cannot use its checks. Then check the PIN
+before any other rule, as `Withdraw` does.
+
+To unlock a wallet, write a command that sets a new PIN, such as with a
+permission that only an admin has:
+
+```go
+		v := wallet.Value()
+		v.Pin = sealed.ComparedOf(req.NewPin)
+		if _, err := wallets.Update(ctx, wallet, v); err != nil {
+			return nil, err
+		}
+```
+
+Use a longer PIN where you can.
 
 To set a new PIN, give a new Compared to the value and update the row. The
 fill of `change-pin` does this:
@@ -540,7 +601,9 @@ value.
 
 A command fill and a worker fill get a repository for each entity in
 `writes`, such as `commands.WalletRepository(h)` or
-`workers.WalletRepository(h)`.
+`workers.DailyTotalRepository(h)`. A worker fill gets a reader for each entity
+in `reads`, such as `workers.WalletReader(h)`, with only `Get` and `List`,
+and values with no secret field.
 
 Two kinds of entity have repositories of different forms:
 
@@ -717,7 +780,7 @@ The worker `sum-balances` creates a DailyTotal row with no parent:
 // New gives the fill of the worker sum-balances.
 func New() workers.SumBalancesFill {
 	return func(ctx context.Context, tick time.Time, h *workers.SumBalancesHandle) error {
-		wallets, err := workers.WalletRepository(h)
+		wallets, err := workers.WalletReader(h)
 		if err != nil {
 			return err
 		}
@@ -917,6 +980,36 @@ compare their SHA-256 digests with `crypto/sha256`. Then the time of the
 compare does not show the values, but it can show how much of the two
 digests is the same.
 
+A fill does not import `google.golang.org/protobuf` either. To give a member
+of the type `google.protobuf.Struct` in a command or a worker message, such as
+the summary of an export, call `command.NewStruct(fields)` (from runtime
+v0.175.0). It takes a `map[string]any` and gives the `*structpb.Struct` of the
+member, with no import of `structpb` in the fill:
+
+```go
+summary, err := command.NewStruct(map[string]any{
+	"period": req.Period,
+	"sites":  []any{"s-1", "s-2"},
+	"counts": map[string]any{"enrolled": 12, "withdrawn": 1},
+})
+if err != nil {
+	return nil, err
+}
+return &commands.ExportPeriodResponse{Summary: summary}, nil
+```
+
+Each value is `nil`, a `bool`, a Go number, a `json.Number`, a `string`, a
+`[]byte` (it becomes base64 text), a `map[string]any` or a `[]any`. A number
+becomes a JSON number, which holds an integer exactly only up to 2^53: give a
+larger integer, such as an ID, as a string. `NewStruct` refuses another type,
+a key or a string that is not valid UTF-8, and objects and lists nested more
+than 64 levels, such as a map that holds itself, with an error. A member of
+the type `google.protobuf.Value` or `ListValue` is a value of the `Fields` of
+such a Struct, such as `summary.Fields["sites"].GetListValue()`. To read such a
+member of a request, call its methods, such as `req.Filter.AsMap()`. The
+OpenAPI document marks a command answer that holds such a member
+`x-stego-opaque`, so the CLI writes it only to `--output-file FILE`.
+
 ### Declare a fill module
 
 To let the fills import a Go module, list it under `fill_modules` at the top
@@ -957,7 +1050,7 @@ mixins:
 The value of the Kafka record is this JSON object, and nothing else:
 
 ```json
-{"entity":"Wallet","action":"updated","id":"01a1efce-4159-74fc-81cd-da9fb5696bb8"}
+{"entity":"Wallet","action":"updated","id":"01a1efce-4159-74fc-81cd-da9fb5696bb8","data":{"balance":90,"customer_id":"01a1efce-4100-7aa0-8c11-0b5a2e3f4d61","label":"main"},"data_version":1}
 ```
 
 | Member | What it is |
@@ -965,6 +1058,8 @@ The value of the Kafka record is this JSON object, and nothing else:
 | `entity` | The name of the entity, as the declaration gives it. |
 | `action` | `created`, `updated` or `deleted`. |
 | `id` | The ID of the row. |
+| `data` | Only for an entity with `events`: the declared fields of the row by their names. See below. |
+| `data_version` | Only for an entity with `events`: the version of the fields. |
 
 The record has the headers `stego-event-id`, `stego-event-type` (the event
 kind, such as `wallets.wallet.updated`), `stego-event-action`,
@@ -978,11 +1073,17 @@ A worker that consumes the subscription of these events in another service
 gets this object as its message, and the event kind as its effect name:
 
 ```go
-// Change is the payload of a change event.
+// Change is the payload of a change event of a wallet.
 type Change struct {
-	Entity string `json:"entity"`
-	Action string `json:"action"`
-	ID     string `json:"id"`
+	Entity      string `json:"entity"`
+	Action      string `json:"action"`
+	ID          string `json:"id"`
+	DataVersion int    `json:"data_version"`
+	Data        struct {
+		CustomerID string `json:"customer_id"`
+		Label      string `json:"label"`
+		Balance    int64  `json:"balance"`
+	} `json:"data"`
 }
 ```
 
@@ -992,17 +1093,49 @@ type Change struct {
 		if err := json.Unmarshal(message, &c); err != nil || effect != "wallets.wallet.updated" {
 			return workers.Refused(ErrBadMessage)
 		}
-		// c.ID is the ID of the wallet in the service wallets.
+		// c.ID is the ID of the wallet in the service wallets, and c.Data.Balance its balance after the write.
 		return nil
 	}
 ```
 
-The event holds no field value, also no `public` field, so that no `pii` or
-`secret` value leaves the service in an event. A worker handle has no network
-client, so the consuming fill cannot read the amount or the balance from the
-service `wallets`. A declared projection of the fields that an event carries
-is decided (ST-SUP-Q184 (c)) and not built yet. Until then, a consumer can use
-only the ID and the action.
+### The fields of a change event
+
+A worker handle has no network client, so a consuming fill cannot read a row
+from the service `wallets`. Thus an entity declares the fields that its change
+events carry (runtime v0.176.0, rest-api 4.32.0):
+
+<!-- excerpt -->
+```yaml
+    events:
+      fields: [wallet_id, kind, amount]
+```
+
+- `fields` names one to 64 fields of the entity, each once. The event of a
+  create and of an update holds the fields of the row after the write, and the
+  event of a delete the row before the delete. A field with no value is
+  `null`. A timestamp is an RFC 3339 text in UTC, bytes are base64, and a
+  `jsonb` field is its JSON value.
+- A `secret` field cannot be in `fields`.
+- A `pii` field needs a reason in `pii_reasons`, such as `{email: the ledger
+  sends each customer a receipt}`. The audit rows of the service redact the
+  field, but the event holds it in clear for each consumer of the topic.
+- `version` is a whole number from 1, and 1 when you leave it out. The event
+  gives it as `data_version`.
+
+An entity with no `events` gives no `data`: the event holds no field value,
+also no `public` field. `stego validate` refuses `events` in a declaration
+with no `kafka-events` mixin.
+
+A consumer reads the fields as a contract. Thus `stego compat`, and the check
+against the base of `stego plan` and `stego apply`, refuse a head that removes
+a field from the list of the base, gives it another type, removes a value of
+an enum field, lowers the version or removes `events`. A field that you add is
+accepted. To make one of the other changes, raise `version`, such as to 2, and
+tell the consumers. The fault is `ST-GEN-INV39`:
+
+```text
+fault ST-GEN-INV39 Transaction.amount: the change events of Transaction carry the event fields of version 1 in the base, which a consumer reads as a contract, and the head leaves out the field amount; keep the field with its type, or raise events.version to 2, which tells each consumer of a breaking change (ST-GEN-INV39)
+```
 
 ## Test a fill
 

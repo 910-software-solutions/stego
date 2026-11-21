@@ -128,12 +128,27 @@ func validateWorkerTrigger(workers []types.Worker, facts Facts) []ValidationErro
 	return faults
 }
 
-// validateWorkerWrites checks that each worker names at least one entity it reads or writes, and only entities
-// that the declaration declares (ST-DECL-INV67).
+// validateWorkerWrites checks that each worker names at least one entity it reads or writes, only entities that the
+// declaration declares, and no entity in both its writes and its reads (ST-DECL-INV67, decision ST-SUP-Q186 (a)).
 func validateWorkerWrites(workers []types.Worker, entities []types.Entity) []ValidationError {
 	var faults []ValidationError
 	for i, worker := range workers {
-		faults = append(faults, entityFaults("worker", worker.Name, workerPath(i), "writes", worker.Writes, entities)...)
+		path := workerPath(i)
+		if len(worker.Writes) == 0 && len(worker.Reads) > 0 {
+			// A worker that only reads names its entities in reads.
+			faults = append(faults, entityFaults("worker", worker.Name, path, "reads", worker.Reads, entities)...)
+			continue
+		}
+		faults = append(faults, entityFaults("worker", worker.Name, path, "writes", worker.Writes, entities)...)
+		if len(worker.Reads) > 0 {
+			faults = append(faults, entityFaults("worker", worker.Name, path, "reads", worker.Reads, entities)...)
+		}
+		for j, name := range worker.Reads {
+			if contains(worker.Writes, name) {
+				faults = append(faults, ValidationError{Category: "worker", Rule: "worker-reads", Path: fmt.Sprintf("%s.reads[%d]", path, j), Found: name,
+					Message: fmt.Sprintf("worker %q names the entity %q in both writes and reads; a worker that writes an entity reads it through its repository, so name it in one list only (ST-DECL-INV67)", worker.Name, name)})
+			}
+		}
 	}
 	return faults
 }
@@ -392,16 +407,17 @@ var listOperators = []string{types.ListEquals, types.ListNotEquals, types.ListLe
 func validateWorkerLists(workers []types.Worker, commands []types.Command, entities []types.Entity) []ValidationError {
 	var faults []ValidationError
 	for i, worker := range workers {
-		faults = append(faults, validateLists("worker", worker.Name, workerPath(i), worker.Writes, worker.Lists, entities)...)
+		faults = append(faults, validateLists("worker", worker.Name, workerPath(i), worker.Writes, worker.Reads, worker.Lists, entities)...)
 	}
 	for i, command := range commands {
-		faults = append(faults, validateLists("command", command.Name, commandPath(i), command.Writes, command.Lists, entities)...)
+		faults = append(faults, validateLists("command", command.Name, commandPath(i), command.Writes, nil, command.Lists, entities)...)
 	}
 	return faults
 }
 
-// validateLists checks the lists of one worker or command, of the kind worker or command.
-func validateLists(kind, name, at string, writes []string, lists []types.WorkerList, entities []types.Entity) []ValidationError {
+// validateLists checks the lists of one worker or command, of the kind worker or command: a list reads an entity
+// that it writes, or that a worker reads, and locks only an entity that it writes (ST-DECL-INV94).
+func validateLists(kind, name, at string, writes, reads []string, lists []types.WorkerList, entities []types.Entity) []ValidationError {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
@@ -422,9 +438,13 @@ func validateLists(kind, name, at string, writes []string, lists []types.WorkerL
 		}
 		seen[list.Name] = true
 		entity, declared := byName[list.Entity]
-		if !declared || !contains(writes, list.Entity) {
+		read := contains(reads, list.Entity)
+		if !declared || (!contains(writes, list.Entity) && !read) {
 			fault(".entity", list.Entity, "the list reads the entity "+strconv.Quote(list.Entity)+", which the "+kind+" does not write; name an entity of its writes")
 			continue
+		}
+		if read && list.Lock {
+			fault(".lock", "true", "the list locks rows of "+entity.Name+", which the worker only reads; a read-only entity has no locked list (ST-DECL-INV94)")
 		}
 		if _, ok := LockAtMost(entity); list.Lock && !ok {
 			fault(".lock", "true", "the list locks rows of "+entity.Name+", which declares no Lock at most; declare lock_at_most on the entity (ST-DECL-INV81)")
@@ -450,6 +470,14 @@ func validateLists(kind, name, at string, writes []string, lists []types.WorkerL
 		for k, term := range list.Filter {
 			at := fmt.Sprintf(".filter[%d]", k)
 			reason := listTermFault(entity, term, byName)
+			if reason == "" && term.Parent {
+				// The fill gives the loaded parent row, so the parent entity is one that it writes or reads.
+				for _, f := range entity.Fields {
+					if f.Name == term.Field && !contains(writes, f.To) && !contains(reads, f.To) {
+						reason = "the parent term takes a row of " + f.To + ", which the " + kind + " does not write or read, so its fill cannot load one"
+					}
+				}
+			}
 			if reason == "" && term.Param != "" {
 				if params[term.Param] {
 					reason = "the parameter " + strconv.Quote(term.Param) + " is used twice in the list; give each parameter its own name"
