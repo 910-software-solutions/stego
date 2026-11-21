@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -315,7 +316,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, ChargeDB: svc.chargeDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
-		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
+		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring,
+		// Each command runtime logs through the log provider of the service, so the lines command.attempts.failed and
+		// command.attempts.pool_saturated of a command or a collection are JSON lines with stego.* attributes, as each
+		// other log line of the runtime (ST-SUP-RP10-LC54; walkthrough 21, U-E).
+		Logger: svc.telemetry.LoggerProvider()}
 	if err := ringNeeded(p, s.Ring); err != nil {
 		return nil, err
 	}
@@ -347,9 +352,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// The worker runs and the consumed messages run on the runtime of the workers' entities; a consumer runs no
 		// fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
 		config.Entities = p.WorkerEntities
-		// A consumer attempt that does not commit writes one warn log line (ST-SUP-RC35-OC06).
+		// A consumer attempt that does not commit writes one warn log line through the log provider (ST-SUP-RC35-OC06).
 		workers := config
-		workers.Logger = svc.telemetry.LoggerProvider()
 		if p.Provisioning != nil && p.declaresTenant() && svc.provider != nil {
 			// A consumer runs no fill before the tuple of its worker is in SpiceDB, which Provision and the reconcile
 			// of the controller write (ST-SUP-RC35-OC18).
@@ -363,7 +367,6 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// Provision and Retire are commands of their own, on a command runtime with no entity (ST-SUP-RC27-OC09),
 		// which logs the outcomes that write no audit row (ST-SUP-RC27-OC10).
 		config.Entities = nil
-		config.Logger = svc.telemetry.LoggerProvider()
 		provisioning, err := command.New(ctx, config)
 		if err != nil {
 			return nil, err
@@ -768,6 +771,13 @@ func (e *databaseError) Error() string {
 }
 
 func (e *databaseError) Unwrap() error { return e.err }
+
+// UseJSONLog makes log/slog, and the standard logger with it, write each line of the process as one JSON line on
+// standard error, in the format of the console lines of the log provider, with the attributes under stego.
+// (otel.SlogHandler; ST-SUP-RP03-LC16, walkthrough 21, U-E). So the lines of the runtime that do not go through the
+// log provider, such as the lines of the seal jobs of the controller and the refused step of the migration job, are
+// JSON lines too. The generated code calls it first in NewService and in Migrate.
+func UseJSONLog() { slog.SetDefault(slog.New(otel.NewSlogHandler(os.Stderr))) }
 
 // StartStage gives the stage of a start that ReadSettings or New refused, for the failure record of the process,
 // which holds no error text and no value (ST-SUP-RP14-LC05): service.start.setting.<component>.<variable> for a

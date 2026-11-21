@@ -29,6 +29,9 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
+// StepRefusedEvent is the event name of the line that says why a step of the migration job is refused.
+const StepRefusedEvent = "migrate.step.refused"
+
 // MigrationTimeout is the longest time that the migration job runs when Migration gives none.
 const MigrationTimeout = 10 * time.Minute
 
@@ -286,7 +289,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			// ST-SUP-Q124 (a)).
 			var refused interface{ Refusal() string }
 			if errors.As(err, &refused) {
-				slog.ErrorContext(ctx, "migrate: the step is refused", "step", name, "refusal", refused.Refusal())
+				slog.ErrorContext(ctx, "migrate: the step is refused", otel.SlogEventKey, StepRefusedEvent, "step", name, "refusal", refused.Refusal())
 			}
 			return failed(name, err)
 		}
