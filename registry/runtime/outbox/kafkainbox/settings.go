@@ -14,35 +14,47 @@ import (
 // (ST-SUP-RP01-LC38, decision on ST-SUP-Q204). The connection settings are the settings of the Kafka destination
 // (ST-SUP-RP01-LC32).
 const (
-	// TopicSetting is the topic that the inbox reads: the topic of the source service's change events. These names
-	// are those of kafkaoutbox.ConsumerTopicSetting and the others, which read them, as text, so that the release scan
-	// reads them here too (TestSettings holds them equal).
-	TopicSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
-	TopicFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"
-	// GroupSetting is the consumer group. Unset: <service>.<subscription>.
-	GroupSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP"
-	GroupFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE"
-	// InfiniteRetentionSetting set to 1 lets the inbox read a topic whose retention is infinite. The inbox keeps its
-	// dedup rows for the done retention of the outbox only, so an offset reset to a record older than that can apply
-	// it again; the setting says that the operator accepts this.
-	InfiniteRetentionSetting = "STEGO_KAFKA_CONSUMER_{subscription}_ACCEPT_INFINITE_RETENTION"
+	// SubscriptionTopicSetting is the topic that the inbox reads: the topic of the source service's change events.
+	// These names are those of kafkaoutbox.ConsumerSubscriptionTopicSetting and the others, which read them, as text,
+	// so that the release scan reads them here too (TestSettings holds them equal).
+	SubscriptionTopicSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
+	SubscriptionTopicFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"
+	// SubscriptionGroupSetting is the consumer group. Unset: <service>.<subscription>.
+	SubscriptionGroupSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP"
+	SubscriptionGroupFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE"
+	// SubscriptionInfiniteRetentionSetting set to 1 lets the inbox read a topic whose retention is infinite. The
+	// inbox keeps its dedup rows for the done retention of the outbox only, so an offset reset to a record older than
+	// that can apply it again; the setting says that the operator accepts this.
+	SubscriptionInfiniteRetentionSetting = "STEGO_KAFKA_CONSUMER_{subscription}_ACCEPT_INFINITE_RETENTION"
+)
+
+// The fixed names of the settings of kafka-consumer before 0.5.0, which named the one subscription of a service. They
+// stay for the API of the runtime (ST-STD-RUNTIME-R03); the inbox reads them only to refuse a value.
+//
+// Deprecated: use SubscriptionTopicSetting and the others with Setting.
+const (
+	TopicSetting             = kafkaoutbox.ConsumerTopicSetting
+	TopicFileSetting         = kafkaoutbox.ConsumerTopicFileSetting
+	GroupSetting             = kafkaoutbox.ConsumerGroupSetting
+	GroupFileSetting         = kafkaoutbox.ConsumerGroupFileSetting
+	InfiniteRetentionSetting = "STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION"
 )
 
 // formerSettings are the fixed names of the settings of kafka-consumer before 0.5.0, which named the one subscription
 // of a service, each with the setting of a subscription that takes its place. The inbox reads them only to refuse a
 // value of each, so that a value is never ignored in silence (ST-SUP-RP01-LC38, decision on ST-SUP-Q204).
 var formerSettings = []formerSetting{
-	{name: "STEGO_KAFKA_CONSUMER_TOPIC", setting: TopicSetting},
-	{name: "STEGO_KAFKA_CONSUMER_TOPIC_FILE", setting: TopicFileSetting},
-	{name: "STEGO_KAFKA_CONSUMER_GROUP", setting: GroupSetting},
-	{name: "STEGO_KAFKA_CONSUMER_GROUP_FILE", setting: GroupFileSetting},
-	{name: "STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION", setting: InfiniteRetentionSetting},
+	{name: "STEGO_KAFKA_CONSUMER_TOPIC", setting: SubscriptionTopicSetting},
+	{name: "STEGO_KAFKA_CONSUMER_TOPIC_FILE", setting: SubscriptionTopicFileSetting},
+	{name: "STEGO_KAFKA_CONSUMER_GROUP", setting: SubscriptionGroupSetting},
+	{name: "STEGO_KAFKA_CONSUMER_GROUP_FILE", setting: SubscriptionGroupFileSetting},
+	{name: "STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION", setting: SubscriptionInfiniteRetentionSetting},
 }
 
 // formerSetting is a setting of kafka-consumer before 0.5.0 and the setting of a subscription in its place.
 type formerSetting struct{ name, setting string }
 
-// Setting gives the name of the setting setting, such as TopicSetting, of the subscription subscription, such as
+// Setting gives the name of the setting setting, such as SubscriptionTopicSetting, of the subscription subscription, such as
 // STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC for order-changes.
 func Setting(setting, subscription string) string {
 	return kafkaoutbox.SubscriptionSetting(setting, subscription)
@@ -105,14 +117,14 @@ func CheckSettings(service string, subscriptions []string) error {
 	}
 	groups := map[string]string{}
 	for _, subscription := range subscriptions {
-		if os.Getenv(kafkaoutbox.SubscriptionSetting(TopicSetting, subscription)) == "" && os.Getenv(kafkaoutbox.SubscriptionSetting(TopicFileSetting, subscription)) == "" {
-			return &SettingError{Variable: Setting(TopicSetting, subscription),
-				Problem: "or " + Setting(TopicFileSetting, subscription) + " must be set for the worker mode: it is the topic of the subscription " + subscription}
+		if os.Getenv(kafkaoutbox.SubscriptionSetting(SubscriptionTopicSetting, subscription)) == "" && os.Getenv(kafkaoutbox.SubscriptionSetting(SubscriptionTopicFileSetting, subscription)) == "" {
+			return &SettingError{Variable: Setting(SubscriptionTopicSetting, subscription),
+				Problem: "or " + Setting(SubscriptionTopicFileSetting, subscription) + " must be set for the worker mode: it is the topic of the subscription " + subscription}
 		}
-		_, group, err := kafkaoutbox.ReadConsumer(subscription)
+		_, group, err := kafkaoutbox.ReadSubscriptionConsumer(subscription)
 		if err != nil {
 			// The error of kafkaoutbox names its setting and holds no value.
-			return &SettingError{Variable: Setting(GroupSetting, subscription), Problem: "of the subscription cannot be read: " + strings.TrimPrefix(err.Error(), "kafkaoutbox: ")}
+			return &SettingError{Variable: Setting(SubscriptionGroupSetting, subscription), Problem: "of the subscription cannot be read: " + strings.TrimPrefix(err.Error(), "kafkaoutbox: ")}
 		}
 		if group == "" {
 			group = service + "." + subscription
@@ -128,7 +140,7 @@ func CheckSettings(service string, subscriptions []string) error {
 // groupClash is the refusal of the subscription subscription whose consumer group is the group of the subscription
 // first: it names the group setting of subscription and no group.
 func groupClash(subscription, first string) error {
-	return &SettingError{Variable: Setting(GroupSetting, subscription),
+	return &SettingError{Variable: Setting(SubscriptionGroupSetting, subscription),
 		Problem: "gives the subscription " + subscription + " the consumer group of the subscription " + first + "; give each subscription a group of its own, because one group splits the partitions between the two and each loses records"}
 }
 
@@ -147,18 +159,18 @@ func ReadSettings(service, subscription string) (Settings, error) {
 	}
 	connection.Topic = ""
 	s := Settings{Subscription: subscription, Connection: connection}
-	if s.Topic, s.Group, err = kafkaoutbox.ReadConsumer(subscription); err != nil {
+	if s.Topic, s.Group, err = kafkaoutbox.ReadSubscriptionConsumer(subscription); err != nil {
 		return Settings{}, err
 	}
 	if s.Group == "" {
 		s.Group = service + "." + subscription
 	}
-	switch os.Getenv(kafkaoutbox.SubscriptionSetting(InfiniteRetentionSetting, subscription)) {
+	switch os.Getenv(kafkaoutbox.SubscriptionSetting(SubscriptionInfiniteRetentionSetting, subscription)) {
 	case "", "0":
 	case "1":
 		s.AcceptInfiniteRetention = true
 	default:
-		return Settings{}, &SettingError{Variable: Setting(InfiniteRetentionSetting, subscription), Problem: "must be 0 or 1"}
+		return Settings{}, &SettingError{Variable: Setting(SubscriptionInfiniteRetentionSetting, subscription), Problem: "must be 0 or 1"}
 	}
 	return s, s.Check()
 }
@@ -170,10 +182,10 @@ func (s Settings) Check() error {
 	if err := s.Connection.Check(); err != nil {
 		return err
 	}
-	topic, group := Setting(TopicSetting, s.Subscription), Setting(GroupSetting, s.Subscription)
+	topic, group := Setting(SubscriptionTopicSetting, s.Subscription), Setting(SubscriptionGroupSetting, s.Subscription)
 	switch {
 	case s.Topic == "":
-		return &SettingError{Variable: topic, Problem: "or " + Setting(TopicFileSetting, s.Subscription) + " must be set for the worker mode: it is the topic of the subscription " + s.Subscription}
+		return &SettingError{Variable: topic, Problem: "or " + Setting(SubscriptionTopicFileSetting, s.Subscription) + " must be set for the worker mode: it is the topic of the subscription " + s.Subscription}
 	case !topicPattern.MatchString(s.Topic) || s.Topic == "." || s.Topic == ".." || strings.HasPrefix(s.Topic, "__"):
 		return &SettingError{Variable: topic, Problem: "must be a Kafka topic name that Kafka does not keep for itself"}
 	case !groupPattern.MatchString(s.Group):

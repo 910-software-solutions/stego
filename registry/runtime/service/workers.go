@@ -132,6 +132,12 @@ type WorkerParts struct {
 	// worker mode runs each, and the purge timer of the outbox worker purges the refused records. Nil: the service
 	// declares no subscription.
 	Inboxes func(env InboxEnv) ([]*kafkainbox.Inbox, error)
+	// Inbox gives the Kafka inbox of the one subscription of a service whose generated code is from kafka-consumer
+	// before 0.5.0; the worker mode takes it as Inboxes of one inbox when Inboxes is nil. It stays for the API of the
+	// runtime (ST-STD-RUNTIME-R03).
+	//
+	// Deprecated: use Inboxes.
+	Inbox func(env InboxEnv) (*kafkainbox.Inbox, error)
 	// ConsumerTables are the tables in public of the entities that the workers with a consumes trigger write, which
 	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
 	// under the owner's delegation, 2026-11-15).
@@ -375,7 +381,7 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 	// A message of the Kafka inbox that is done frees the later messages of its key that are parked as poison, with the
 	// audit row of each resolution, in its transaction (ST-SUP-RP01-LC39). Only a service with the inbox has such
 	// messages, and its worker role holds the audit grants of its consuming workers (ST-SUP-Q141).
-	if config.Auditor == nil && p.Inboxes != nil {
+	if config.Auditor == nil && (p.Inboxes != nil || p.Inbox != nil) {
 		config.Auditor = &resolveAuditor{writer: svc.writer, settings: svc.parts.AuditSettings, service: svc.parts.Service,
 			version: svc.version, declaration: svc.parts.DeclarationVersion}
 	}
@@ -417,6 +423,16 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		}
 	}
 	var inboxes []*kafkainbox.Inbox
+	if p.Inboxes == nil && p.Inbox != nil {
+		one := p.Inbox
+		p.Inboxes = func(env InboxEnv) ([]*kafkainbox.Inbox, error) {
+			inbox, err := one(env)
+			if err != nil {
+				return nil, err
+			}
+			return []*kafkainbox.Inbox{inbox}, nil
+		}
+	}
 	if p.Inboxes != nil {
 		if p.TenantSchema == "" {
 			return nil, errors.New("service: the Kafka inbox needs the schema of the tenant list")

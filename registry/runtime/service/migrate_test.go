@@ -2918,7 +2918,7 @@ func TestInboxSetting(t *testing.T) {
 	t.Run("ST-SUP-RP14-LC08-T02 A refused setting of the Kafka inbox names the stage of kafka-consumer and the variable, and no value", func(t *testing.T) {
 		t.Setenv("STEGO_KAFKA_BROKERS", "127.0.0.1:9092")
 		t.Setenv("STEGO_KAFKA_INSECURE_LOOPBACK", "1")
-		topic := kafkainbox.Setting(kafkainbox.TopicSetting, "order-changes")
+		topic := kafkainbox.Setting(kafkainbox.SubscriptionTopicSetting, "order-changes")
 		t.Setenv(topic, "")
 		_, err := kafkainbox.ReadSettings("fulfilment", "order-changes")
 		if stage := StartStage(inboxSetting(err)); stage != "service.start.setting.kafka-consumer."+topic {

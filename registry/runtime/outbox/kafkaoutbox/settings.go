@@ -358,10 +358,21 @@ const SubscriptionPlaceholder = "{subscription}"
 // SubscriptionPlaceholder (ST-SUP-RP01-LC38): the topic that the inbox reads and its consumer group, each from its value
 // or the file of its _FILE form.
 const (
-	ConsumerTopicSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
-	ConsumerTopicFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"
-	ConsumerGroupSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP"
-	ConsumerGroupFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE"
+	ConsumerSubscriptionTopicSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC"
+	ConsumerSubscriptionTopicFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE"
+	ConsumerSubscriptionGroupSetting     = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP"
+	ConsumerSubscriptionGroupFileSetting = "STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE"
+)
+
+// The fixed names of the settings of the Kafka inbox of kafka-consumer before 0.5.0, which named the one subscription
+// of a service. They stay for the API of the runtime (ST-STD-RUNTIME-R03); the inbox reads them only to refuse a value.
+//
+// Deprecated: use ConsumerSubscriptionTopicSetting and the others with SubscriptionSetting.
+const (
+	ConsumerTopicSetting     = "STEGO_KAFKA_CONSUMER_TOPIC"
+	ConsumerTopicFileSetting = "STEGO_KAFKA_CONSUMER_TOPIC_FILE"
+	ConsumerGroupSetting     = "STEGO_KAFKA_CONSUMER_GROUP"
+	ConsumerGroupFileSetting = "STEGO_KAFKA_CONSUMER_GROUP_FILE"
 )
 
 // SubscriptionSetting gives the name of the setting pattern of the subscription subscription: the pattern with the
@@ -371,14 +382,28 @@ func SubscriptionSetting(pattern, subscription string) string {
 	return strings.ReplaceAll(pattern, SubscriptionPlaceholder, strings.ToUpper(strings.ReplaceAll(subscription, "-", "_")))
 }
 
-// ReadConsumer reads the topic and the consumer group of the Kafka inbox of the subscription subscription from the
-// process environment, each from its setting or from the file of its _FILE form, never both, with the rules of the
-// settings of the destination (ST-SUP-RP01-LC32, ST-SUP-RP01-LC38). An empty value is not set.
-func ReadConsumer(subscription string) (topic, group string, err error) {
-	if topic, err = value(SubscriptionSetting(ConsumerTopicSetting, subscription), SubscriptionSetting(ConsumerTopicFileSetting, subscription)); err != nil {
+// ReadSubscriptionConsumer reads the topic and the consumer group of the Kafka inbox of the subscription subscription
+// from the process environment, each from its setting or from the file of its _FILE form, never both, with the rules
+// of the settings of the destination (ST-SUP-RP01-LC32, ST-SUP-RP01-LC38). An empty value is not set.
+func ReadSubscriptionConsumer(subscription string) (topic, group string, err error) {
+	if topic, err = value(SubscriptionSetting(ConsumerSubscriptionTopicSetting, subscription), SubscriptionSetting(ConsumerSubscriptionTopicFileSetting, subscription)); err != nil {
 		return "", "", err
 	}
-	if group, err = value(SubscriptionSetting(ConsumerGroupSetting, subscription), SubscriptionSetting(ConsumerGroupFileSetting, subscription)); err != nil {
+	if group, err = value(SubscriptionSetting(ConsumerSubscriptionGroupSetting, subscription), SubscriptionSetting(ConsumerSubscriptionGroupFileSetting, subscription)); err != nil {
+		return "", "", err
+	}
+	return topic, group, nil
+}
+
+// ReadConsumer reads the topic and the consumer group of the fixed names of kafka-consumer before 0.5.0 from the
+// process environment, with the same rules. It stays for the API of the runtime (ST-STD-RUNTIME-R03).
+//
+// Deprecated: use ReadSubscriptionConsumer.
+func ReadConsumer() (topic, group string, err error) {
+	if topic, err = value(ConsumerTopicSetting, ConsumerTopicFileSetting); err != nil {
+		return "", "", err
+	}
+	if group, err = value(ConsumerGroupSetting, ConsumerGroupFileSetting); err != nil {
 		return "", "", err
 	}
 	return topic, group, nil

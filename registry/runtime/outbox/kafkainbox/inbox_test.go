@@ -730,8 +730,8 @@ func TestInbox(t *testing.T) {
 		}
 		infinite := e.topic(t, 1, "-1")
 		if err := e.inbox(t, infinite, "group-infinite", week).Run(context.Background()); !errors.Is(err, ErrRetention) ||
-			!strings.Contains(err.Error(), Setting(InfiniteRetentionSetting, in.sub.Name)) {
-			t.Fatalf("Run on a topic of infinite retention gave %v, want ErrRetention that names %s", err, Setting(InfiniteRetentionSetting, in.sub.Name))
+			!strings.Contains(err.Error(), Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name)) {
+			t.Fatalf("Run on a topic of infinite retention gave %v, want ErrRetention that names %s", err, Setting(SubscriptionInfiniteRetentionSetting, in.sub.Name))
 		}
 		// A compacted topic keeps the last record of each key without end (security review of PR #418, M1).
 		compact := e.topic(t, 1, "86400000", [2]string{"cleanup.policy", "compact,delete"})
@@ -789,7 +789,7 @@ func TestInbox(t *testing.T) {
 			fits   bool
 		}{{604800000, "delete", false, true}, {604800001, "delete", false, false}, {-1, "delete", false, false}, {-1, "delete", true, true},
 			{1000, "delete", false, true}, {1000, "compact", false, false}, {1000, "delete, compact", false, false}, {1000, "compact", true, true}} {
-			if err := RetentionFits(c.ms, c.policy, week, c.accept, "X_ACCEPT_INFINITE_RETENTION"); (err == nil) != c.fits {
+			if err := RetentionFitsFor(c.ms, c.policy, week, c.accept, "X_ACCEPT_INFINITE_RETENTION"); (err == nil) != c.fits {
 				t.Fatalf("RetentionFits(%d, %s, 7d, %t) = %v, want fits %t", c.ms, c.policy, c.accept, err, c.fits)
 			}
 		}
@@ -1002,14 +1002,14 @@ func TestRefusedReasons(t *testing.T) {
 
 func TestSettings(t *testing.T) {
 	t.Run("ST-SUP-RP01-LC38-T01 The inbox reads its topic and group by the name of its subscription, defaults the group, and refuses a setting by its name", func(t *testing.T) {
-		topic, group := Setting(TopicSetting, "order-changes"), Setting(GroupSetting, "order-changes")
-		retention := Setting(InfiniteRetentionSetting, "order-changes")
+		topic, group := Setting(SubscriptionTopicSetting, "order-changes"), Setting(SubscriptionGroupSetting, "order-changes")
+		retention := Setting(SubscriptionInfiniteRetentionSetting, "order-changes")
 		if topic != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC" || group != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_GROUP" ||
 			retention != "STEGO_KAFKA_CONSUMER_ORDER_CHANGES_ACCEPT_INFINITE_RETENTION" {
 			t.Fatalf("the settings of order-changes are %s, %s and %s", topic, group, retention)
 		}
-		if TopicSetting != kafkaoutbox.ConsumerTopicSetting || TopicFileSetting != kafkaoutbox.ConsumerTopicFileSetting ||
-			GroupSetting != kafkaoutbox.ConsumerGroupSetting || GroupFileSetting != kafkaoutbox.ConsumerGroupFileSetting {
+		if SubscriptionTopicSetting != kafkaoutbox.ConsumerSubscriptionTopicSetting || SubscriptionTopicFileSetting != kafkaoutbox.ConsumerSubscriptionTopicFileSetting ||
+			SubscriptionGroupSetting != kafkaoutbox.ConsumerSubscriptionGroupSetting || SubscriptionGroupFileSetting != kafkaoutbox.ConsumerSubscriptionGroupFileSetting {
 			t.Fatal("the names of the settings differ from those that kafkaoutbox reads")
 		}
 		t.Setenv(kafkaoutbox.BrokersSetting, "127.0.0.1:9092")
@@ -1050,9 +1050,9 @@ func TestSettings(t *testing.T) {
 	t.Run("ST-SUP-RP01-LC38-T02 The settings of two subscriptions are apart, and a setting of kafka-consumer before 0.5.0 is refused by its name with the name to set", func(t *testing.T) {
 		t.Setenv(kafkaoutbox.BrokersSetting, "127.0.0.1:9092")
 		t.Setenv(kafkaoutbox.InsecureLoopbackSetting, "1")
-		t.Setenv(Setting(TopicSetting, "order-changes"), "orders-events")
-		t.Setenv(Setting(TopicSetting, "carrier-changes"), "carriers-events")
-		t.Setenv(Setting(InfiniteRetentionSetting, "carrier-changes"), "1")
+		t.Setenv(Setting(SubscriptionTopicSetting, "order-changes"), "orders-events")
+		t.Setenv(Setting(SubscriptionTopicSetting, "carrier-changes"), "carriers-events")
+		t.Setenv(Setting(SubscriptionInfiniteRetentionSetting, "carrier-changes"), "1")
 		orders, err := ReadSettings("fulfilment", "order-changes")
 		if err != nil {
 			t.Fatal(err)
@@ -1074,19 +1074,19 @@ func TestSettings(t *testing.T) {
 		// One group for two subscriptions, by a group setting or by the default group of another, is refused at the
 		// start, naming the group setting of the second and no group.
 		for _, group := range []string{"fulfilment.order-changes", "fulfilment.shared"} {
-			t.Setenv(Setting(GroupSetting, "order-changes"), "")
+			t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), "")
 			if group == "fulfilment.shared" {
-				t.Setenv(Setting(GroupSetting, "order-changes"), group)
+				t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), group)
 			}
-			t.Setenv(Setting(GroupSetting, "carrier-changes"), group)
+			t.Setenv(Setting(SubscriptionGroupSetting, "carrier-changes"), group)
 			var clash *SettingError
 			if err := CheckSettings("fulfilment", []string{"order-changes", "carrier-changes"}); !errors.As(err, &clash) ||
 				clash.Variable != "STEGO_KAFKA_CONSUMER_CARRIER_CHANGES_GROUP" || strings.Contains(err.Error(), group) {
 				t.Fatalf("CheckSettings with the group %s for two subscriptions gave %v", group, err)
 			}
 		}
-		t.Setenv(Setting(GroupSetting, "order-changes"), "")
-		t.Setenv(Setting(GroupSetting, "carrier-changes"), "")
+		t.Setenv(Setting(SubscriptionGroupSetting, "order-changes"), "")
+		t.Setenv(Setting(SubscriptionGroupSetting, "carrier-changes"), "")
 		for _, former := range formerSettings {
 			t.Run(former.name, func(t *testing.T) {
 				t.Setenv(former.name, "a-value")
