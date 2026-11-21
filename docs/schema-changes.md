@@ -8,8 +8,8 @@ release.
 ## Declare a schema change
 
 A schema change has an ID, a kind and the entity and the field it changes.
-The kinds are `add`, `rename`, `retype`, `require`, `drop`, `unique` and
-`relax`. The
+The kinds are `add`, `rename`, `retype`, `require`, `drop`, `unique`,
+`relax`, `within` and `seal`. The
 schema history puts the steps of the changes in order. A step moves one change
 to `expand` or to `contract`.
 
@@ -188,6 +188,51 @@ continues at the validate migration. `stego compat` names the within step to
 declare when you add `within` to a reference of a table with rows. A change or
 a removal of `within` has no step yet, so the check against the base refuses
 it.
+
+## Unique steps
+
+A field of a table with rows can become unique: `unique: true`, or a place
+in a `unique_composite`, on a field of an entity of the base. The rows of the
+table can already hold one value two times, so declare a unique step of the
+field. Its `field` names the field, and it has an expand step only:
+
+```yaml
+entities:
+  - name: Site
+    fields:
+      - { name: name, type: string, max_length: 64, unique: true }
+schema_changes:
+  - {id: site-name-unique, kind: unique, entity: Site, field: name}
+schema_history:
+  - {change: site-name-unique, phase: expand}
+```
+
+The step builds the unique index of the tenant column and the key, such as
+`sites_name_key`, `CONCURRENTLY` in its index migration, which blocks no read
+and no write. For a field in a `unique_composite`, the key is the group, and
+the step makes the whole group unique. A field of a new entity, or a new field
+of an add step, needs no unique step: its add makes it unique.
+
+When two rows of one tenant hold one value of the key, the build of the index
+fails, the job drops the invalid index, and the migration job stops. Its
+refusal names the index migration, the index and the table, and no value of a
+row. Find the rows with a query such as
+`SELECT tenant_id, name, count(*) FROM sites GROUP BY 1, 2 HAVING count(*) > 1`,
+correct or remove them, then run the migration job again: it builds the index
+again. Rows of two tenants that hold one value are no duplicate, because the
+key starts with the tenant column. From the end of the build, a write of the
+release before that gives a second row one value of the key fails with 409
+`conflict`, which names no field.
+
+The schema check of the release before accepts the new unique index from
+runtime library v0.183.0, so its pods can restart after the index migration.
+`stego compat` refuses a new unique step on a base that runs an earlier runtime
+library, and names the version to deploy first. When you make a field of the
+base unique with no step, `stego compat` names the unique step to declare.
+
+A `unique` change whose `field` names a declared invariant of kind `unique`
+is a different change, which generation does not build yet. A field and an
+invariant of the entity cannot have the same name.
 
 ## Drop steps
 

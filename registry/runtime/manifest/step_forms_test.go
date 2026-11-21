@@ -271,7 +271,8 @@ GRANT SELECT, INSERT ON public.books TO ` + writer + `;
 			{"a non-default operator class", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug" text_pattern_ops);` + "\n"},
 			{"a non-default collation", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug" COLLATE "POSIX");` + "\n"},
 			{"a deferrable unique constraint", slug + `ALTER TABLE public.books ADD CONSTRAINT "books_slug_key" UNIQUE ("tenant_id", "slug") DEFERRABLE;` + "\n"},
-			{"listed columns only", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("tenant_id", "title");` + "\n"},
+			{"listed columns with another name", `CREATE UNIQUE INDEX "books_title_uq" ON public.books ("tenant_id", "title");` + "\n"},
+			{"listed columns with no tenant lead", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("title");` + "\n"},
 			{"the lead twice", slug + `CREATE UNIQUE INDEX "books_tenant_id_slug_key" ON public.books ("tenant_id", "tenant_id", "slug");` + "\n"},
 			{"a domain column", "CREATE DOMAIN public.dom AS text;\nALTER TABLE public.books ADD COLUMN \"slug\" public.dom;\n" +
 				`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug");` + "\n"},
@@ -282,6 +283,8 @@ GRANT SELECT, INSERT ON public.books TO ` + writer + `;
 		// The partition-only index is in TestStepPartitions.
 		stepCase(t, "control: the step form", slug+`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug");`+"\n", stepManifest(), false)
 		stepCase(t, "control: the step form as a unique constraint", slug+`ALTER TABLE public.books ADD CONSTRAINT "books_slug_key" UNIQUE ("tenant_id", "slug");`+"\n", stepManifest(), false)
+		// A unique step of a field builds the unique index of a column that the manifest lists (ST-GEN-Q48).
+		stepCase(t, "control: the unique step of a listed column", `CREATE UNIQUE INDEX "books_title_key" ON public.books ("tenant_id", "title");`+"\n", stepManifest(), false)
 		stepCase(t, "control: the step form with INCLUDE", slug+`CREATE UNIQUE INDEX "books_slug_key" ON public.books ("tenant_id", "slug") INCLUDE ("title");`+"\n", stepManifest(), false)
 	})
 

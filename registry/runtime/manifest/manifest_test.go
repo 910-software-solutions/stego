@@ -914,10 +914,16 @@ func TestUnnamedCode(t *testing.T) {
 				// A unique index that the manifest does not name: without the tenant column first, a write of one tenant
 				// that fails with 23505 tells it that another tenant holds the value (review of PR #270, older gap).
 				{"a unique index without the tenant column", "CREATE UNIQUE INDEX books_title_key ON public.books (title);\n"},
+			} {
+				stepCase(t, c.name+m.name, hostileFunctions+c.setup, m.m(), true)
+			}
+			// A unique index on listed columns under the step name is the index of a unique step of a field, which an
+			// entity table accepts (ST-GEN-Q48); a table that is not an entity table refuses it.
+			for _, c := range []struct{ name, setup string }{
 				{"a unique index on listed columns", "CREATE UNIQUE INDEX books_title_key ON public.books (tenant_id, title);\n"},
 				{"a unique constraint", "ALTER TABLE public.books ADD CONSTRAINT books_title_key UNIQUE (tenant_id, title);\n"},
 			} {
-				stepCase(t, c.name+m.name, hostileFunctions+c.setup, m.m(), true)
+				stepCase(t, c.name+m.name, hostileFunctions+c.setup, m.m(), m.name == "")
 			}
 			// Controls: an index on plain columns is no code of the database, and the objects of the manifest pass.
 			stepCase(t, "an index on plain columns"+m.name, "CREATE INDEX books_note ON public.books (tenant_id, note);\n", m.m(), false)
@@ -991,12 +997,15 @@ func TestUnnamedCode(t *testing.T) {
 			stepCase(t, "the step form not yet validated on a table that is not an entity table: "+c.name, notValid, want(), true)
 		}
 		// The unique index of a later add step on an entity table, in the exact form that the add step of the generator
-		// gives: the tenant column first, then the key columns, of which at least one the manifest does not list, named
-		// as UniqueName names it, valid or still building.
+		// gives, or a unique step of a field: the tenant column first, then the key columns, listed or not, named as
+		// UniqueName names it, valid or still building.
 		const slug = `ALTER TABLE public.books ADD COLUMN "slug" text;` + "\n"
 		for _, c := range []struct{ name, setup string }{
 			{"a unique field", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public."books" ("tenant_id", "slug");` + "\n"},
 			{"a composite with a listed column", slug + `CREATE UNIQUE INDEX "books_title_slug_key" ON public."books" ("tenant_id", "title", "slug");` + "\n"},
+			// The unique index of a unique step of a field, on columns that the manifest lists (ST-GEN-Q48).
+			{"a unique step of a listed column", `CREATE UNIQUE INDEX "books_title_key" ON public."books" ("tenant_id", "title");` + "\n"},
+			{"a unique step of two listed columns", `CREATE UNIQUE INDEX "books_note_pages_key" ON public."books" ("tenant_id", "note", "pages");` + "\n"},
 		} {
 			stepCase(t, "the step form: "+c.name, c.setup, stepManifest(), false)
 			stepCase(t, "the step form on a table that is not an entity table: "+c.name, c.setup, want(), true)
@@ -1007,7 +1016,6 @@ func TestUnnamedCode(t *testing.T) {
 				`CREATE UNIQUE INDEX "books_label_key" ON public."books" ("slug", "label");` + "\n"},
 			{"the step unique index with the tenant column second", slug + `CREATE UNIQUE INDEX "books_slug_tenant_id_key" ON public."books" ("slug", "tenant_id");` + "\n"},
 			{"the step unique index under another name", slug + `CREATE UNIQUE INDEX "books_slug_uq" ON public."books" ("tenant_id", "slug");` + "\n"},
-			{"a unique index on listed columns under the step name", `CREATE UNIQUE INDEX "books_title_key" ON public."books" ("tenant_id", "title");` + "\n"},
 			{"the step unique index with nulls not distinct", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public."books" ("tenant_id", "slug") NULLS NOT DISTINCT;` + "\n"},
 			{"the step unique index with another collation", slug + `CREATE UNIQUE INDEX "books_slug_key" ON public."books" ("tenant_id", "slug" COLLATE "POSIX");` + "\n"},
 			{"the step unique constraint deferrable", slug + `ALTER TABLE public.books ADD CONSTRAINT "books_slug_key" UNIQUE ("tenant_id", "slug") DEFERRABLE;` + "\n"},

@@ -269,9 +269,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || change.Kind == "seal" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
+		// A unique of a field adds the unique index of the field at its expand step, as addedSQL builds each new unique
+		// key of a table with rows, and finishes the change (ST-SUP-RC01-OC38, ST-GEN-Q48).
+		fieldUnique := change.UniqueOfField(ctx.Entities)
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || change.Kind == "seal" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within" || fieldUnique) && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype, a require, a drop and a seal", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax, a within and a unique of a field and the expand and contract steps of a rename, a retype, a require, a drop and a seal", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {

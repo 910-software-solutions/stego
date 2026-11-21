@@ -17,6 +17,8 @@ import (
 	"example.com/tables-check/boardsnote"
 	"example.com/tables-check/boardsslug"
 	"example.com/tables-check/tenancy"
+	"example.com/tables-check/uniquebase"
+	"example.com/tables-check/uniquestep"
 	"example.com/tables-check/within"
 	"example.com/tables-check/withinbase"
 	"example.com/tables-check/withinfresh"
@@ -611,5 +613,90 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 			t.Errorf("after the job the CHECK %s is present %v and validated %v", withinCheck, present, validated)
 		}
 		unscoped(t, db, s1)
+	})
+
+	t.Run("ST-SUP-RC01-OC38-T10 A unique of a field stops the job on two rows with one value with a refusal that names no value, builds the index once they are gone, and the release before still starts", func(t *testing.T) {
+		own, db := database(t, cfg, admin)
+		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return uniquebase.Migrate(ctx, conn) }, "uniquebase_access.json")
+		dup := uuid.NewString()
+		for _, row := range []struct{ tenant, id, name string }{
+			{"tenant-a", uuid.NewString(), "alpha"}, {"tenant-a", uuid.NewString(), "beta"}, {"tenant-a", dup, "alpha"}, {"tenant-b", uuid.NewString(), "alpha"},
+		} {
+			if code := write(t, db, row.tenant, `INSERT INTO public."sites" ("id", "name", "region") VALUES ($1, $2, 'eu')`, row.id, row.name); code != "" {
+				t.Fatalf("the release before writes no site: %s", code)
+			}
+		}
+		job := stdlib.OpenDB(*own)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		const index, key = "step_0001_site-name-unique_expand_index_01", "sites_name_key"
+		// Two sites of tenant-a named alpha: the index migration stops the job with a refusal that names the migration,
+		// the index and the table, and no row value; the error keeps SQLSTATE 23505, and no index is left.
+		err = uniquestep.Migrate(ctx, conn)
+		var refused interface{ Refusal() string }
+		if !errors.As(err, &refused) {
+			t.Fatalf("the job over two sites with one name gives %v, want a refusal", err)
+		}
+		text := refused.Refusal()
+		for _, part := range []string{index, key, "public.sites", "two or more rows", "run the migration job again"} {
+			if !strings.Contains(text, part) {
+				t.Errorf("the refusal %q does not name %s", text, part)
+			}
+		}
+		for _, value := range []string{"alpha", "tenant-a", dup} {
+			if strings.Contains(text, value) {
+				t.Errorf("the refusal %q holds the row value %s", text, value)
+			}
+		}
+		var coded *pgconn.PgError
+		if !errors.As(err, &coded) || coded.Code != "23505" {
+			t.Errorf("the refusal %v does not keep SQLSTATE 23505", err)
+		}
+		if present, _ := indexState(t, db, key); present {
+			t.Error("after the refusal the unique index is still there")
+		}
+		if ledgerHolds(t, db, index) {
+			t.Errorf("after the refusal the ledger holds %s", index)
+		}
+		// Once the second alpha is gone, the job builds the index, and the key holds within one tenant only.
+		if _, err := db.Exec(`DELETE FROM public."sites" WHERE "id" = $1`, dup); err != nil {
+			t.Fatal(err)
+		}
+		if err := uniquestep.Migrate(ctx, conn); err != nil {
+			t.Fatalf("the job after the duplicate is gone: %v", err)
+		}
+		if present, valid := indexState(t, db, key); !present || !valid {
+			t.Errorf("after the job the unique index is present %v and valid %v", present, valid)
+		}
+		if !ledgerHolds(t, db, index) {
+			t.Errorf("after the job the ledger does not hold %s", index)
+		}
+		if code, constraint := keyed(t, db, `INSERT INTO public."sites" ("id", "name", "region") VALUES ($1, 'alpha', 'us')`, uuid.NewString()); code != "23505" || constraint != key {
+			t.Errorf("after the job a second alpha of tenant-a gives %q on %q, want 23505 on %s", code, constraint, key)
+		}
+		if code := write(t, db, "tenant-b", `INSERT INTO public."sites" ("id", "name", "region") VALUES ($1, 'beta', 'us')`, uuid.NewString()); code != "" {
+			t.Errorf("tenant-b with the name of a site of tenant-a is refused: %s", code)
+		}
+		// The release before and the release of the step each accept the database, so the pods of the release before
+		// restart after the index migration (ST-SUP-RP15-LC01, ST-GEN-Q48).
+		if _, err := db.Exec("ALTER ROLE " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize() + " LOGIN PASSWORD 'unique-check'"); err != nil {
+			t.Fatal(err)
+		}
+		runtime := own.Copy()
+		runtime.User, runtime.Password = tenancy.RuntimeRole, "unique-check"
+		reader := stdlib.OpenDB(*runtime)
+		defer reader.Close()
+		for name, m := range map[string]manifest.Manifest{"the release before": uniquebase.SchemaManifest, "the release of the step": uniquestep.SchemaManifest} {
+			if err := manifest.Check(ctx, reader, owned(m)); err != nil {
+				t.Errorf("after the index migration the schema manifest of %s refuses the database: %v", name, err)
+			}
+		}
 	})
 }

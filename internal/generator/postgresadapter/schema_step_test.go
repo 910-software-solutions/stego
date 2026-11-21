@@ -679,3 +679,85 @@ func TestNamesApart(t *testing.T) {
 		}
 	})
 }
+
+// siteEntities are the entities of the unique cases of a field (ST-SUP-RC01-OC38, ST-GEN-Q48): the owned Site with
+// a name and a region, with the unique of the field given to name, or none.
+func siteEntities(name types.Field) []types.Entity {
+	name.Name, name.Type = "name", types.FieldTypeString
+	return []types.Entity{{Name: "Site", Fields: []types.Field{name, {Name: "region", Type: types.FieldTypeString}}}}
+}
+
+// uniqueBase is the release before the unique step: the name of a site is not unique.
+func uniqueBase(ns, tenancyNS string) gen.Context {
+	return runtimeService(ns, tenancyNS, siteEntities(types.Field{}), nil)
+}
+
+// uniqueHead is uniqueBase with name made unique by the unique of the field site-name-unique on the tables with
+// rows (ST-SUP-RC01-OC38, ST-GEN-Q48).
+func uniqueHead(ns, tenancyNS string) gen.Context {
+	ctx := runtimeService(ns, tenancyNS, siteEntities(types.Field{Unique: true}), nil)
+	ctx.SchemaChanges = []types.SchemaChange{{ID: "site-name-unique", Kind: "unique", Entity: "Site", Field: "name"}}
+	ctx.SchemaHistory = []types.SchemaStep{{Change: "site-name-unique", Phase: "expand"}}
+	return ctx
+}
+
+func TestUniqueOfFieldStep(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC38-T09 A unique of a field builds the unique index of the field in its index migration at expand, and has no contract step", func(t *testing.T) {
+		migrations := func(ctx gen.Context) map[string]string {
+			t.Helper()
+			files, _, err := new(postgresadapter.Generator).Generate(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bodies := map[string]string{}
+			for _, f := range files {
+				if dir, name := filepath.Split(f.Path); dir == filepath.Join(ctx.OutputNamespace, "migrations")+string(os.PathSeparator) {
+					bodies[strings.TrimSuffix(name, ".sql")] = string(f.Content)
+				}
+			}
+			return bodies
+		}
+		bodies := migrations(uniqueHead("uniquestep", "uniquesteptenancy"))
+		const index = "step_0001_site-name-unique_expand_index_01"
+		if want := `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "sites_name_key" ON public."sites" ("tenant_id", "name");` + "\n"; bodies[index] != want {
+			t.Errorf("the index migration %s is %q, want %q (all: %v)", index, bodies[index], want, bodies)
+		}
+		if body, ok := bodies["step_0001_site-name-unique_expand"]; !ok || body != "" {
+			t.Errorf("the step's own migration is %q (present %v), want an empty body: the index is its own migration", body, ok)
+		}
+		if initial := bodies["001_initial"]; strings.Contains(initial, "sites_name_key") {
+			t.Errorf("001_initial holds the unique index that the step builds:\n%s", initial)
+		}
+		for name := range bodies {
+			if strings.Contains(name, "_validate") || strings.Contains(name, "_sync") || strings.Contains(name, "_keys") {
+				t.Errorf("the unique of a field has the migration %s, want only its own and its index migration", name)
+			}
+		}
+		// A unique_composite: the index of the group, in the order of the group, after the tenant column.
+		composite := uniqueHead("uniquegroup", "uniquegrouptenancy")
+		composite.Entities = siteEntities(types.Field{UniqueComposite: []string{"region", "name"}})
+		if body := migrations(composite)["step_0001_site-name-unique_expand_index_01"]; !strings.Contains(body, `"sites_region_name_key" ON public."sites" ("tenant_id", "region", "name")`) {
+			t.Errorf("the index migration of the unique_composite is %q", body)
+		}
+		// A contract step is not built, and the release of the unique step names its index in its manifest.
+		contract := uniqueHead("uniquec", "uniquectenancy")
+		contract.SchemaHistory = append(contract.SchemaHistory, types.SchemaStep{Change: "site-name-unique", Phase: "contract"})
+		if _, _, err := new(postgresadapter.Generator).Generate(contract); err == nil || !strings.Contains(err.Error(), "is not built") {
+			t.Errorf("a contract step of the unique of a field gives %v, want the refusal", err)
+		}
+		files, _, err := new(postgresadapter.Generator).Generate(uniqueHead("uniquem", "uniquemtenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if source := generated(t, files, "uniquem/schema_manifest.go"); !strings.Contains(source, `{Name: "sites_name_key", Columns: []string{"tenant_id", "name"}}`) {
+			t.Errorf("the manifest of the release of the step does not name its unique index:\n%s", source)
+		}
+		// A unique change that names no field of the entity is a unique of an invariant, which generation does not
+		// build yet.
+		invariant := uniqueHead("uniquei", "uniqueitenancy")
+		invariant.SchemaChanges[0].Field = "site_name_once"
+		if _, _, err := new(postgresadapter.Generator).Generate(invariant); err == nil {
+			t.Error("a unique of an invariant is built")
+		}
+	})
+}
