@@ -714,9 +714,21 @@ git merge-base --is-ancestor main origin/feature/reviews && echo "fast-forward"
 
 If the command prints `fast-forward`, `main` did not change after the branch
 started, and the branch already holds the files that STEGO writes from its
-declaration. Then merge it with `git merge --ff-only origin/feature/reviews`,
-run `stego validate`, `stego drift` and `go build ./out`, and then the tests
-of the service. Do not do the steps below.
+declaration. Then do these steps, and not the steps below:
+
+1. See if the branch changes `SIGNERS`:
+
+   ```sh
+   git diff main origin/feature/reviews -- SIGNERS
+   ```
+
+   If the command shows a change, stop. Review the change of `SIGNERS` on its
+   own, before the merge (see [Who signs the fills](#who-signs-the-fills)).
+2. Review each fill that the branch changes:
+   `git diff --stat main origin/feature/reviews -- fills`.
+3. Merge the branch with `git merge --ff-only origin/feature/reviews`.
+4. Run `stego validate`, `stego drift` and `go build ./out`, and then the
+   tests of the service.
 
 Else do these steps:
 
@@ -825,6 +837,11 @@ fill, and name it. `stego fill sign <fill>` with the key of the author still
 signs and exits 0, but it prints a warning that names the fingerprint of the
 key and the two fixes. The sign-off names the fingerprint of the key, not the
 path of a key file.
+
+The `signer` of a sign-off in `fill.yaml` is only a label. Do not trust a fill
+because of it. `stego validate`, `stego plan` and the build make the trust
+decision: they verify the signature over the current evidence against the keys
+that `SIGNERS` lists.
 
 The author can do these steps:
 
