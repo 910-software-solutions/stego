@@ -208,4 +208,118 @@ func TestSealCheckpoint(t *testing.T) {
 			t.Fatalf("the cleanup after the seal leaves %d reports: %v", left, err)
 		}
 	})
+	t.Run("ST-SUP-RP09-LC15-T02 A seal row that a restore brings waits 3 minutes after its first start in this database", func(t *testing.T) {
+		ctx := context.Background()
+		d := openDatabase(t)
+		role := "lease_seal_restore_rt"
+		d.exec(t, "DROP ROLE IF EXISTS "+role)
+		d.exec(t, "CREATE ROLE "+role+" LOGIN PASSWORD 'lease-seal'")
+		t.Cleanup(func() {
+			_, _ = d.other.Exec("DROP OWNED BY " + role)
+			_, _ = d.other.Exec("DROP ROLE IF EXISTS " + role)
+		})
+		releases, err := Releases(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seals, err := SealsText(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.exec(t, releases)
+		d.exec(t, seals)
+		const change, expand = "todo-title-seal", "step_0002_todo-title-seal_expand"
+		// A dump keeps each column of the row: a created_at ten minutes old, and the instance of the database where
+		// a start last saw it, which is not this one.
+		d.exec(t, "INSERT INTO stego_schema.seals (change_id, expand, created_at, armed_in, armed_at) VALUES ($1, $2, clock_timestamp() - interval '10 minutes', '1/20261101000000000000', clock_timestamp() - interval '9 minutes')", change, expand)
+		d.exec(t, "INSERT INTO public.leases (name) VALUES ($1)", "stego.backfill."+change)
+		d.exec(t, "GRANT SELECT, UPDATE ON TABLE public.leases TO "+role)
+		config, err := pgx.ParseConfig(d.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.User, config.Password = role, "lease-seal"
+		pool := stdlib.OpenDB(*config)
+		t.Cleanup(func() { _ = pool.Close() })
+		client, err := New(pool, "stego.backfill."+change, "holder-1", Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		held, err := client.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// start starts a pass and commits also when the start waits, as the seal job does.
+		start := func() error {
+			tx, err := pool.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tx.Rollback() }()
+			waits := SealCheckpoint(ctx, tx, held, change, "", "", 0, 0, true)
+			if waits != nil && !errors.Is(waits, ErrSealWaiting) {
+				return waits
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			return waits
+		}
+		read := func() SealState {
+			t.Helper()
+			tx, err := pool.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			s, err := ReadSeal(ctx, tx, change)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return s
+		}
+		armed := func() (here bool, age float64) {
+			t.Helper()
+			if err := d.other.QueryRowContext(ctx, "SELECT armed_in = stego_schema.seal_instance(), extract(epoch FROM clock_timestamp() - armed_at)::float8 FROM stego_schema.seals WHERE change_id = $1", change).Scan(&here, &age); err != nil {
+				t.Fatal(err)
+			}
+			return here, age
+		}
+		// The first start in this database sets the guard time of the row and waits.
+		if err := start(); !errors.Is(err, ErrSealWaiting) {
+			t.Fatalf("the first start of a restored seal gives %v, want ErrSealWaiting", err)
+		}
+		if here, age := armed(); !here || age > 60 {
+			t.Fatalf("the first start leaves the row seen in this database %v, %.0f s ago, want here and now", here, age)
+		}
+		if s := read(); !s.Waiting || s.Started {
+			t.Fatalf("the restored seal reads %+v after its first start, want waiting and no pass", s)
+		}
+		// A start again within 3 minutes of the first sight still waits, and does not move the guard time.
+		d.exec(t, "UPDATE stego_schema.seals SET armed_at = clock_timestamp() - interval '2 minutes'")
+		if err := start(); !errors.Is(err, ErrSealWaiting) {
+			t.Fatalf("a start 2 minutes after the first sight gives %v, want ErrSealWaiting", err)
+		}
+		if _, age := armed(); age < 110 {
+			t.Fatalf("a start again moved the guard time to %.0f s ago", age)
+		}
+		// 3 minutes after the first sight, with no release before, the pass starts.
+		d.exec(t, "UPDATE stego_schema.seals SET armed_at = clock_timestamp() - interval '4 minutes'")
+		if err := start(); err != nil {
+			t.Fatalf("a start 4 minutes after the first sight gives %v, want a pass", err)
+		}
+		if s := read(); !s.Started || s.Waiting {
+			t.Fatalf("the seal reads %+v after its start, want a pass", s)
+		}
+		// A row that the expand migration makes in this database is seen here from its start.
+		d.exec(t, "INSERT INTO stego_schema.seals (change_id, expand) VALUES ('made-here', $1)", expand)
+		var here bool
+		if err := d.other.QueryRowContext(ctx, "SELECT armed_in = stego_schema.seal_instance() AND armed_at IS NULL FROM stego_schema.seals WHERE change_id = 'made-here'").Scan(&here); err != nil || !here {
+			t.Fatalf("a row made in this database is not seen here: %v, %v", here, err)
+		}
+		// The runtime role cannot call the instance function directly.
+		if _, err := pool.ExecContext(ctx, "SELECT stego_schema.seal_instance()"); sqlState(err) != "42501" {
+			t.Fatalf("the runtime role calls seal_instance: %v", err)
+		}
+	})
 }
