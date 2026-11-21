@@ -1628,6 +1628,28 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.188.0
+
+- A count of wrong attempts decays (ST-SUP-RP10-LC54, decision ST-SUP-Q205
+  (c)). New field `command.CounterSpec.UnlockAfter`, from
+  `command.MinUnlockAfter` (1 minute) to `command.MaxUnlockAfter` (24 hours) in
+  whole seconds, and `command.DefaultUnlockAfter` (15 minutes) when it is zero,
+  as in the code of a generator before. The charge counts again from 1 when
+  the last charge of the row is the window or longer before on the clock of
+  the database, and changes nothing at the limit. New method
+  `command.(*Counter).UnlockAfter`.
+- New function `command.ResetAttempts` and new field
+  `command.CommandSpec.Resets`: a command that declares the reset of a field
+  sets the count of a row to 0 when it commits, after a decision of its own
+  permission on that row. It gives only an error.
+- The migration of the key table adds the nullable column `charged_at` to
+  `attempt_counts`, only when the catalog does not hold it. The manifest of a
+  release before still holds the table.
+- A charge that waits for a slot counts the waiting charges of all the
+  tenants only for the line `command.attempts.pool_saturated` (security review
+  of PR #488, L2).
+- apidiff against v0.187.0: compatible.
+
 ### Release notes for runtime v0.187.0
 
 - `AwaitRevocation`, `AwaitRevocationRPC`, `AwaitWrite` and `AwaitWriteRPC`

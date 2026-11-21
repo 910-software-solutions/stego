@@ -78,9 +78,11 @@
 # in the handler, as a command does: a malformed key gets idempotency-key-invalid, and an absent required key
 # idempotency-key-missing, also when the body is not valid (ST-SUP-RC30-OC02, decision ST-SUP-Q202 (a); walkthrough
 # 19, W19-U3).
+# Version 4.35.0 writes the entity code of command 1.25.0: the counter of a field with attempts holds its declared
+# unlock_after (ST-SUP-RC32-OC24, decision ST-SUP-Q205 (c)).
 kind: component
 name: rest-api
-version: 4.34.0
+version: 4.35.0
 stage: ga
 output_namespace: internal/api
 

@@ -37,9 +37,12 @@
 # Version 1.24.0 binds a compare-only field with a limit of wrong attempts to its counter in the scan and the values of
 # its entity (ST-SUP-RC32-OC24, decision ST-SUP-Q185 (a)), and gives an entity with event fields its EventData and
 # EventVersion, so its change events carry the declared fields (ST-SUP-RC32-OC25, decision ST-SUP-Q184 (c)).
+# Version 1.25.0 gives the counter of a field with attempts its declared unlock_after, the window of the decay of its
+# count, and gives a command that declares resets_attempts one typed helper for each field and Resets in its
+# declaration, so only that command resets a count (ST-SUP-RC32-OC24, decision ST-SUP-Q205 (c)).
 kind: component
 name: command
-version: 1.24.0
+version: 1.25.0
 stage: ga
 output_namespace: commands
 
