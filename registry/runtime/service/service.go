@@ -322,6 +322,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// command.attempts.pool_saturated of a command or a collection are JSON lines with stego.* attributes, as each
 		// other log line of the runtime (ST-SUP-RP10-LC54; walkthrough 21, U-E).
 		Logger: svc.telemetry.LoggerProvider()}
+	// The counter of the charges of counted checks that cannot commit (ST-SUP-RP10-LC54; security review of PR #482, I4).
+	config.Meter = svc.telemetry.MeterProvider()
 	if err := ringNeeded(p, s.Ring); err != nil {
 		return nil, err
 	}

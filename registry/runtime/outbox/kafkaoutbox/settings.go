@@ -93,9 +93,19 @@ type Settings struct {
 	InsecureLoopback bool
 }
 
+// SettingError is the refusal of a setting: Variable names the setting, or the two settings of a value and its _FILE
+// form that are both set, and Problem says what is wrong. It holds no value of a setting.
+type SettingError struct {
+	Variable, Problem string
+}
+
+func (e *SettingError) Error() string {
+	return fmt.Sprintf("kafkaoutbox: the setting %s %s", e.Variable, e.Problem)
+}
+
 // settingError gives the refusal of one setting: it names the setting and holds no value of it.
 func settingError(name, problem string) error {
-	return fmt.Errorf("kafkaoutbox: the setting %s %s", name, problem)
+	return &SettingError{Variable: name, Problem: problem}
 }
 
 // ReadSettings reads the settings of the Kafka destination from the process environment, each value from its
