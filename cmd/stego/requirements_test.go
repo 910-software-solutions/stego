@@ -817,7 +817,7 @@ func TestPlatformRequirementsChangeOnlyThroughTheDeclaration(t *testing.T) {
 			unbound, _, _ := strings.Cut(requirementsFillDeclaration(withKafka), "slots:\n")
 			p.write(t, "service.yaml", unbound)
 			p.must(t, "no-key", "apply")
-			t.Log(p.must(t, "no-key", "test"))
+			t.Log(p.unproved(t, "no-key", "no-tests-fill"))
 			t.Log(p.must(t, "no-key", "fill", "status"))
 			p.must(t, "listed-ssh", "fill", "sign", "qualified-fill")
 			p.write(t, "service.yaml", requirementsFillDeclaration(withKafka))

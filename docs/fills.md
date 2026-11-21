@@ -1139,7 +1139,11 @@ fault ST-GEN-INV39 Transaction.amount: the change events of Transaction carry th
 
 ## Test a fill
 
-`stego test` runs `go test` on each fill and records the evidence. A unit test
+`stego test` runs `go test` on each fill and records the evidence. It exits
+non-zero when a test fails, and also when it records no evidence for a fill:
+for example, a fill with no test file, a refused import, or a contract that
+cannot be generated because the declaration is not valid. The line of the fill
+names the cause. So a CI step of `stego test` fails then. A unit test
 cannot give a fill a real handle: STEGO has no test handle, and a handle needs
 the transaction, the tenant, the caller and the decisions of SpiceDB. With no
 handle, each method of a command or worker repository gives

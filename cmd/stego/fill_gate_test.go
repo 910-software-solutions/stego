@@ -91,7 +91,7 @@ func TestFillGate(t *testing.T) {
 			p.write(t, "fills/twin-fill/"+file, string(p.read(t, "fills/qualified-fill/"+file)))
 		}
 		p.replace(t, "fills/twin-fill/fill.yaml", "name: qualified-fill", "name: twin-fill")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		if err := fill.WriteSignOff(p.path("fills/twin-fill/fill.yaml"), *p.manifest(t, "qualified-fill").SignOff); err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestFillGate(t *testing.T) {
 		p.bind(t, slotBinding{"qualified-fill", "before_create", "org-users"})
 		signOff := *p.manifest(t, "qualified-fill").SignOff
 		p.replace(t, "fills/qualified-fill/policy.go", "// Evaluate allows the request.", "// Evaluate allows the request, as it did.")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		if err := fill.WriteSignOff(p.path("fills/qualified-fill/fill.yaml"), signOff); err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +130,7 @@ func TestQualifyFillFlow(t *testing.T) {
 	t.Run("ST-EXT-UC02-FL-T The service author records evidence and signs it with a listed key, and the fill becomes qualified", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"untested-fill", "before_create", "org-users"})
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatal("stego test wrote no evidence for untested-fill")
 		}
@@ -158,7 +158,7 @@ func TestQualifyFillFlow(t *testing.T) {
 
 		// The unlisted path, from the project of ST-EXT-TD01.
 		p = newFillProject(t)
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		p.must(t, "unlisted-ssh", "fill", "sign", "untested-fill-2")
 		p.bind(t, slotBinding{"untested-fill-2", "before_create", "org-groups"})
 		stdout, stderr, err := p.stego(t, "listed-ssh", "plan")
@@ -320,7 +320,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.addImport(t, "fills/untested-fill/policy.go", "github.com/lib/pq", "pq.Name")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "github.com/lib/pq")
 		if p.manifest(t, "untested-fill-2").Evidence == nil {
 			t.Fatal("untested-fill-2 got no evidence in the same run")
@@ -332,7 +332,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.addImport(t, "fills/untested-fill/policy.go", "github.com/google/uuidx", "uuidx.Name")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "github.com/google/uuidx")
 	})
 
@@ -341,7 +341,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.replace(t, "fills/untested-fill/policy.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t_ \"example.com/fills/out/internal/storage\"\n")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "example.com/fills/out/internal/storage")
 	})
 
@@ -350,7 +350,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.replace(t, "fills/untested-fill/policy_test.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t\"github.com/stretchr/testify/assert\"\n")
 		p.replace(t, "fills/untested-fill/policy_test.go", "\tif err != nil", "\tassert.True(t, err == nil)\n\tif err != nil")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatalf("untested-fill got no evidence:\n%s", stdout)
 		}
@@ -364,7 +364,7 @@ func TestFillImports(t *testing.T) {
 		p.withFillModules(t)
 		p.write(t, "fills/untested-fill/testutil.go", "package untested_fill\n\nimport \"github.com/stretchr/testify/assert\"\n\nvar _ = assert.True\n")
 		before := p.read(t, "fills/untested-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		expectNoEvidence(t, p, stdout, "untested-fill", before, "testutil.go", "github.com/stretchr/testify/assert")
 	})
 
@@ -408,7 +408,7 @@ func TestFillImports(t *testing.T) {
 			change(name)
 			before[name] = p.read(t, "fills/"+name+"/fill.yaml")
 		}
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		for i := range changes {
 			name := fmt.Sprintf("import-copy-%d", i+1)
 			if want, ok := refused[i+1]; ok {
@@ -489,7 +489,7 @@ func TestOnlyAnAdminCreatesAnAdmin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key", "no-tests-fill")
 		evidence := p.manifest(t, "admin-policy").Evidence
 		if evidence == nil || evidence.FillDigest != fillDigest || evidence.ContractDigest != contractDigest(t, p, "before_create") {
 			t.Fatalf("stego test did not write evidence with the digests of admin-policy and before_create.proto: %+v", evidence)
@@ -509,14 +509,14 @@ func TestOnlyAnAdminCreatesAnAdmin(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := p.read(t, "fills/admin-policy/fill.yaml")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "admin-policy")
 		expectNoEvidence(t, p, stdout, "admin-policy", before, "no test file")
 		p.write(t, "fills/admin-policy/fill_test.go", test)
 		p.withFillModules(t)
 		p.bind(t, slotBinding{"admin-policy", "before_create", "org-users"})
 		p.addImport(t, "fills/admin-policy/fill.go", "github.com/lib/pq", "pq.Name")
 		before = p.read(t, "fills/admin-policy/fill.yaml")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "admin-policy")
 		expectNoEvidence(t, p, stdout, "admin-policy", before, "github.com/lib/pq")
 	})
 }
@@ -547,7 +547,7 @@ func TestRequalifyGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key", "no-tests-fill")
 		if evidence := p.manifest(t, "stale-fill").Evidence; evidence == nil || evidence.FillDigest != newDigest {
 			t.Fatalf("stego test did not write new evidence with the new fill digest %s: %+v", newDigest, evidence)
 		}
@@ -566,7 +566,7 @@ func TestRequalifyFillFlow(t *testing.T) {
 		if !strings.Contains(line, "policy.go") {
 			t.Fatalf("fill status does not name policy.go as the file that changed:\n%s", line)
 		}
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh", "no-tests-fill")
 		f := p.manifest(t, "stale-fill")
 		p.must(t, "listed-ssh", "fill", "sign", "stale-fill")
 		signed := p.manifest(t, "stale-fill")
@@ -647,7 +647,7 @@ func TestFillAllowList(t *testing.T) {
 		p.replace(t, "fills/untested-fill/policy.go", "import (\n\t\"context\"\n", "import (\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"log\"\n\t\"log/slog\"\n\t\"time\"\n")
 		p.write(t, "fills/untested-fill/policy.go", string(p.read(t, "fills/untested-fill/policy.go"))+
 			"\nvar _ = json.Marshal\nvar _ = fmt.Sprint\nvar _ = log.Printf\nvar _ = slog.Info\nvar _ = time.Now\n")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key")
 		if p.manifest(t, "untested-fill").Evidence == nil {
 			t.Fatalf("untested-fill got no evidence:\n%s", stdout)
 		}

@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261121090203-c613e148ec00
+        module_version: v0.0.0-20261121093224-75577799f92b
         vcs: git
-        revision: c613e148ec0056fd661aca8a63c4f1d78f4a5347
+        revision: 75577799f92bedc6198b1a0cb6ed2e67c75a0038
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 8669c9e7344aee48b3d710737641c52b824c7b844005027cc1d47247761e7acc
+    registry_content_sha256: db0a689369fac7784770db13ac40e80f3b789e48588efe9839b70035b0557546
     components:
         audit-log:
             version: 1.2.0
@@ -68,14 +68,14 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.21.0
-            sha: ef082e1f5cd91fe7410f5a7661b9a85a2d478e181e5b356c406967fae10f3dc3
+            version: 6.22.0
+            sha: 2d10b0121b1a791f3320a880d2a770d17dcee24c1c8a5a25e94208179c650456
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.32.0
-            sha: 26c322fcfa9a1d89f6728cde350189c1d84cc3ed19952263cd3e50281166824e
+            version: 4.33.0
+            sha: ec94522fd3982e3683818beac05e916d82ef603f933d0f09a8bfc38692e83851
         spicedb-authz:
             version: 1.4.0
             sha: bc44dfacc5b8c323ef4988fda14d223f7c66d02f30ffbe65ffdec2a094217010
@@ -152,7 +152,7 @@ last_applied:
         internal/api/org_users_handler.go: 98b24ae5c3f11e4a7b3c4df8404d8f1e7599cf81ef8d09070e7316771ed586ae
         internal/api/organizations_handler.go: c85885a31df795efd2d130dd0f9f82a54d5b4328c004b5f7fc4106f99f541ceb
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
-        internal/api/runtime.go: 5183c864b836cbe6eac348975b55bdd685e937e573bba7d95cbff2f69ef2b164
+        internal/api/runtime.go: 3bc26739eccdecc2a7a00d834c48ce8568e31428c9d9dc78a8ac0ef77e862e41
         internal/api/user_activity_handler.go: 108a91d545c14ab94d6a3d9e51009db276febb77512f01da8f92da5162cebec2
         internal/api/validation.go: b1ac759ce59900e5f94fa2ada68f52c0054a6aada0a1fdd543c67b89eb3b7b33
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
@@ -161,9 +161,9 @@ last_applied:
         internal/outbox/outbox.go: c2957ac0acaf9f20e543beb6aa0297ea72a898a969fb43fd21d408dc42df6caf
         internal/stegoruntime/runtime.go: 407f1169607839c261fd593c78989cd24056fa9e05b79f5aa954f12a23c431f0
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
-        internal/storage/migrate.go: 973c3f4b06932eb843e00db298159e4e4b706a3db04f28e7ff3d08c1e1b0081d
+        internal/storage/migrate.go: b38d337cd74968eb0fe3cb6ff9a4bc68fad18a7352d849312c371706ff220552
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
-        internal/storage/runtime_access.go: 481fe15f6bbf782aad8cbdbbdafc9c0927577efa6636d79ed96d7cf83e1870c3
+        internal/storage/runtime_access.go: c4f0790a79fcb565ccaec23f6ece51d6d9c150a308ca5e4fb3bc0bac390abd19
         internal/storage/schema_generation.go: ff7f059441677f4253c98670350c304d3111b391d877ba049b943a4ae1d9671e
         internal/storage/schema_manifest.go: 927c002c8ceeb0ef98ac75a6113f146374f92b1166bdc486582a85338c0901d8
         internal/storage/tables.go: f3eaaff347c443b907317549ab299251599a0976e0796e2362e18b227f154ec3
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: a7cd34083f9553b9ec0e76222849c8d5d09ad4ae15bbafc0c8aed37c01b01961
-        architecture/index.html: 59aa2992fe6ffa6b9416c67795c37b029fcb648c332435953cf18f2387fa3859
+        architecture/architecture.json: 26fa9d786cc21bbc287c2d649f246c005be8863c71894513a089cba81c811aed
+        architecture/index.html: 72b872c1dc0da51196866640888d2a3dd5e31f2e464f6b5f55c80d863cd6e363
         deploy/base/deployment.yaml: f757ac733f521f217e954f6df579a86bb2bb8c8a3438ac095a5f3803fa4db4b9
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: aee632ad91e32482b13a21810a3755a49bd0fc84d8c34e151c7d936af02aa9cc
@@ -234,7 +234,7 @@ last_applied:
         deploy/platform-requirements.yaml: 7724068292bbca4dc9a0379c8817e944c5896e285c41a58bfc19720854950638
     archetype:
         name: rest-crud
-        version: 3.241.0
+        version: 3.242.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.176.0

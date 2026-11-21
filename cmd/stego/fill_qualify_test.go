@@ -223,6 +223,23 @@ func (p *fillProject) must(t *testing.T, key string, args ...string) string {
 	return stdout
 }
 
+// unproved runs stego test in a project where a fill gets no evidence, such as no-tests-fill of ST-EXT-TD01, and gives
+// its output: stego test exits non-zero, names each fill of fills as a fill with no evidence, and reports no failed test
+// (ST-EXT-CLI02; walkthrough 19, W19-T3).
+func (p *fillProject) unproved(t *testing.T, key string, fills ...string) string {
+	t.Helper()
+	stdout, stderr, err := p.stego(t, key, "test")
+	if err == nil || !strings.Contains(stderr, "no evidence is recorded for") || strings.Contains(stderr, "tests of") {
+		t.Fatalf("stego test: %v, want a non-zero exit that names the fills with no evidence and no failed test\n%s\n%s", err, stdout, stderr)
+	}
+	for _, name := range fills {
+		if !regexp.MustCompile(`no evidence is recorded for \d+ fill\(s\): [^;]*\b` + regexp.QuoteMeta(name) + `\b`).MatchString(stderr) {
+			t.Fatalf("stego test does not name %s as a fill with no evidence:\n%s\n%s", name, stdout, stderr)
+		}
+	}
+	return stdout
+}
+
 // fillBaseService is the declaration of ST-EXT-TD01 with no slot binding.
 var fillBaseService = onRuntimePath(`kind: service
 name: fills
@@ -505,7 +522,7 @@ func TestFillQualification(t *testing.T) {
 			}
 			want[name] = digest
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		for name, digest := range want {
 			f := p.manifest(t, name)
 			if f.Evidence == nil || f.Evidence.FillDigest != digest || f.Evidence.ContractDigest != contract {
@@ -761,7 +778,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal(err)
 		}
 		contract := contractDigest(t, p, "before_create")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		p.replace(t, "fills/untested-fill/policy.go", "// Policy allows each request.", "// Policy allows each request, changed.")
 		f := p.manifest(t, "untested-fill")
 		if f.Evidence == nil || f.Evidence.FillDigest != fillDigest || f.Evidence.ContractDigest != contract {
@@ -821,7 +838,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal("the copy is qualified")
 		}
 		p.replace(t, "fills/unsigned-fill/policy.go", "// Policy allows each request.", "// Policy allows each request, changed.")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		renewed := p.manifest(t, "unsigned-fill")
 		if renewed.SignOff == nil {
 			t.Fatal("the new evidence removed the old sign-off")
@@ -838,7 +855,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 	t.Run("ST-EXT-INV04-T A fill with no test file gets no evidence, and STEGO names it", func(t *testing.T) {
 		p := newFillProject(t)
 		before := p.read(t, "fills/no-tests-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key", "no-tests-fill")
 		if !strings.Contains(stdout, "fill no-tests-fill: no evidence recorded: it has no test file") {
 			t.Fatalf("stego test does not name no-tests-fill with the reason that it has no test file:\n%s", stdout)
 		}
@@ -849,7 +866,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal("untested-fill got no evidence")
 		}
 		p.write(t, "fills/no-tests-fill/notes_test.txt", "These are not tests.\n")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "no-tests-fill")
 		if !strings.Contains(stdout, "fill no-tests-fill: no evidence recorded: it has no test file") {
 			t.Fatalf("stego test does not name no-tests-fill with the reason that it has no test file:\n%s", stdout)
 		}
