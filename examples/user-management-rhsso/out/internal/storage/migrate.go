@@ -274,7 +274,7 @@ func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) 
 					// table and the key, and no row value (ST-SUP-RC01-OC46).
 					var coded interface{ SQLState() string }
 					if errors.As(err, &coded) && coded.SQLState() == "23503" {
-						return &keyRefusal{text: fmt.Sprintf("the step %s does not validate the foreign key %s of %s.%s: a row of the table breaks it; correct or remove the rows that break it, then run the migration job again", name, c.Name, c.Schema, c.Table), err: err}
+						return &keyRefusal{text: fmt.Sprintf("the step %s does not validate the foreign key %s of %s.%s: a row of the table breaks it; correct or remove the rows that break it, then run the migration job again", name, c.Name, c.Schema, c.Table), err: err, key: foreignKeyFault, name: c.Name}
 					}
 					return err
 				}
@@ -1114,7 +1114,7 @@ func duplicateRefusal(m Migration, err, build error) error {
 		return build
 	}
 	return &keyRefusal{text: fmt.Sprintf("the migration %s does not build the unique index %s of %s: two or more rows of the table hold one value of its key; correct or remove those rows, then run the migration job again (ST-SUP-RC01-OC38)",
-		m.Name, m.Index, indexTable(m.Definition)), err: err}
+		m.Name, m.Index, indexTable(m.Definition)), err: err, key: uniqueKeyFault, name: m.Index}
 }
 
 // indexTable gives the table of an index from its definition as
@@ -1134,15 +1134,59 @@ func indexTable(definition string) string {
 // breaks, or of an index migration whose unique key two rows break: its text
 // names the step, the table and the key and no row value, so the migration
 // job may log it (Refusal). It wraps the database error, whose SQLSTATE 23503
-// or 23505 the job keeps.
+// or 23505 the job keeps. The failure record of the process names the key as
+// its fault class, the constraint or the index as its object, and the remedy:
+// fixed texts with no row value (walkthrough 23, D-f).
 type keyRefusal struct {
 	text string
 	err  error
+	key  keyFault
+	name string
 }
 
-func (r *keyRefusal) Error() string   { return r.text }
-func (r *keyRefusal) Refusal() string { return r.text }
-func (r *keyRefusal) Unwrap() error   { return r.err }
+// keyFault is the fault class and the remedy of a key refusal.
+type keyFault struct{ fault, object, remedy string }
+
+// The faults of a key refusal.
+var (
+	foreignKeyFault = keyFault{"schema_change.foreign_key_broken", "foreign_key", "a row breaks the foreign key that the step validates: find the rows whose reference names no row of the referenced table, correct or remove them, then run the migration job again; the line migrate: the step is refused names the step, the key and the table"}
+	uniqueKeyFault  = keyFault{"schema_change.unique_duplicates", "unique_index", "two or more rows hold one value of the key of the unique index that the migration builds: find them with a GROUP BY of the key columns HAVING count(*) > 1, correct or remove them, then run the migration job again; the line migrate: the step is refused names the migration, the index and the table"}
+)
+
+func (r *keyRefusal) Error() string       { return r.text }
+func (r *keyRefusal) Refusal() string     { return r.text }
+func (r *keyRefusal) Unwrap() error       { return r.err }
+func (r *keyRefusal) FaultClass() string  { return r.key.fault }
+func (r *keyRefusal) FaultRemedy() string { return r.key.remedy }
+
+// FaultObject gives the name of the constraint or of the index, with no
+// schema and no quotes, when it has the form of a name of the generated code,
+// else the kind of the key.
+func (r *keyRefusal) FaultObject() string {
+	name := r.name
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	if name = strings.Trim(name, "\""); faultName(name) {
+		return name
+	}
+	return r.key.object
+}
+
+// faultName tells whether name has the form of a name that the failure
+// record takes as an object: a lower-case letter, then at most 127 lower-case
+// letters, digits, '_' and '.'.
+func faultName(name string) bool {
+	if len(name) == 0 || len(name) > 128 || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if c := name[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
 
 // contractRefusal is the refusal of a contract step: its text names the
 // change, the counts and the labels of the running releases, and no row
