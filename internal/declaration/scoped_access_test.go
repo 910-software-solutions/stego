@@ -146,6 +146,22 @@ func TestScopeFieldDefault(t *testing.T) {
 		if faults := validateCollectionReferences(collections, entities(nil)); len(faults) != 0 {
 			t.Fatalf("a scope field with no default is refused: %+v", faults)
 		}
+		// A scope of two fields: the default of each scope field is refused at its own path, the second too
+		// (security review of PR #474, I2).
+		composite := []types.Entity{{Name: "Organization", Fields: []types.Field{{Name: "name", Type: "string"}}},
+			{Name: "Team", Fields: []types.Field{{Name: "name", Type: "string"}}},
+			{Name: "Project", Fields: []types.Field{{Name: "org_id", Type: types.FieldTypeRef}, {Name: "team_id", Type: types.FieldTypeRef, Default: "team-1"}}}}
+		scoped := []types.Collection{{Name: "team-projects", Entity: "Project", Operations: []types.Operation{types.OpCreate},
+			Scope: map[string]string{"org_id": "Organization", "team_id": "Team"}}}
+		faults = validateCollectionReferences(scoped, composite)
+		if len(faults) != 1 || faults[0].Path != "collections.team-projects.scope.team_id" || faults[0].Found != "team-1" {
+			t.Fatalf("want one fault for the default of the second scope field, got %+v", faults)
+		}
+		composite[2].Fields[0].Default = "org-1"
+		faults = validateCollectionReferences(scoped, composite)
+		if len(faults) != 2 || faults[0].Path != "collections.team-projects.scope.org_id" || faults[1].Path != "collections.team-projects.scope.team_id" {
+			t.Fatalf("want a fault for the default of each scope field, in the order of the fields, got %+v", faults)
+		}
 	})
 }
 

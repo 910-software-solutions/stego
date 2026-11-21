@@ -1,14 +1,17 @@
 # Subscriptions
 
-A service can take the change events that another STEGO service sends to
-Kafka (the mixin `kafka-events`). Declare a subscription and one worker that
-consumes it:
+A service can take the change events that other STEGO services send to
+Kafka (the mixin `kafka-events`). Declare a subscription for each source and
+one worker that consumes each subscription:
 
 ```yaml
 subscriptions:
   - name: order-changes
     source: orders
     events: [orders.order.created]
+  - name: carrier-changes
+    source: carriers
+    events: [carriers.carrier.updated]
 
 workers:
   - name: ship-orders
@@ -17,6 +20,12 @@ workers:
     resource_type: shipment
     permission: ship
     fill: ship-orders
+  - name: track-carriers
+    trigger: consumes carrier-changes
+    writes: [Shipment]
+    resource_type: shipment
+    permission: track
+    fill: track-carriers
 
 experimental_acceptances:
   - {component: kafka-consumer, accepted_until: 2027-03-31, reason: fulfilment ships each new order}
@@ -28,8 +37,12 @@ experimental_acceptances:
 | `source` | The name of the service that sends the events. It cannot be the service itself. |
 | `events` | 1 to 32 event kinds of the source, each `<source>.<entity in lower case with hyphens>.<created, updated or deleted>`. |
 
-A service has one subscription while the component `kafka-consumer` is alpha.
-A subscription selects `kafka-consumer`, so accept it in the declaration.
+A service has 1 to 8 subscriptions. Two subscriptions can have the same
+source, each with its own events and its own worker. A subscription selects
+`kafka-consumer`, so accept it in the declaration. Before `kafka-consumer`
+0.5.0 (archetypes 3.248.0 and 1.248.0), a service had one subscription only;
+see [Move the settings of a subscription to kafka-consumer
+0.5.0](upgrade.md#move-the-settings-of-a-subscription-to-kafka-consumer-050).
 
 The inbox writes each record into the outbox, so `kafka-consumer` needs the
 port `durable-outbox`. The archetypes `rest-crud` and `rpc-service` bind this
@@ -37,15 +50,19 @@ port to the component `outbox`, so you do not bind it in `overrides`. The
 archetype `browser-service` has no outbox, and thus a browser service cannot
 declare a subscription.
 
-In the worker mode, the Kafka inbox reads the topic in the consumer group
-`<service>.<subscription>`. For each record it checks the headers, the key and
+In the worker mode, the Kafka inbox of each subscription reads its topic in
+the consumer group `<service>.<subscription>`, with a Kafka client of its own.
+Thus each subscription has its own offsets, its own lag and its own reset,
+and a topic that fails, such as a topic that the user may not read, stops
+only the inbox of its subscription. For each record it checks the headers, the key and
 the payload, and it looks up the tenant of the header `stego-tenant` in the
 tenant list. Then it writes the record into the outbox as a message for the
 worker, in the transaction of that tenant. It commits the offset of a record
 only after that transaction commits. The ID of the message comes from the
 subscription, the tenant and the event ID. Thus when Kafka delivers a record
 again, after a crash or a rebalance, the inbox writes nothing new, and the
-worker runs once for each event.
+worker runs once for each event. When two subscriptions read the same topic,
+each event is one message of each subscription, for the worker of each.
 
 - A record of a kind of the source that the subscription does not name is
   skipped.
@@ -84,7 +101,8 @@ outbox keeps a done message (7 days by default), because an offset reset to an
 older record could apply that record two times. A compacted topic
 (`cleanup.policy` with `compact`) keeps the last record of each key without
 end, so the inbox does not start on it either. For a topic that keeps its
-records without end, set `STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION=1`.
+records without end, set `STEGO_KAFKA_CONSUMER_<S>_ACCEPT_INFINITE_RETENTION=1`
+for its subscription (see the table below).
 The inbox then writes the info event `kafka.consumer.retention_accepted` once.
 When the inbox does not start, the readiness of the worker mode,
 `/readyz/modes`, answers 503 with `worker: not ready: the component
@@ -94,20 +112,47 @@ The stage `kafka-consumer.retention` is not in that text: it is in the event
 `kafka.consumer.start_refused`. The readiness of the api pod stays 200,
 because it reads only the api mode.
 
-The worker mode reads these settings, with the connection settings
-`STEGO_KAFKA_*` of the Kafka destination:
+The worker mode reads these settings of each subscription, with the
+connection settings `STEGO_KAFKA_*` of the Kafka destination. In each name,
+`<S>` is the name of the subscription in capital letters with `_` in place of
+`-`, such as `ORDER_CHANGES` for `order-changes`:
 
 | Variable | What it is |
 |---|---|
-| `STEGO_KAFKA_CONSUMER_TOPIC` | The topic of the source service. The worker mode does not start without it or its `_FILE` form. |
-| `STEGO_KAFKA_CONSUMER_GROUP` | The consumer group. The default is `<service>.<subscription>`. |
-| `STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION` | `1` to read a topic with an infinite retention. |
+| `STEGO_KAFKA_CONSUMER_<S>_TOPIC` | The topic of the source service of the subscription. The worker mode does not start without it or its `_FILE` form. |
+| `STEGO_KAFKA_CONSUMER_<S>_GROUP` | The consumer group, or its `_FILE` form. The default is `<service>.<subscription>`. |
+| `STEGO_KAFKA_CONSUMER_<S>_ACCEPT_INFINITE_RETENTION` | `1` to read a topic with an infinite retention. |
 
-When the sessions of the inbox fail 5 times in a row, for example because the
+For the example above, set `STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC` and
+`STEGO_KAFKA_CONSUMER_CARRIER_CHANGES_TOPIC`. The platform requirements
+(`deploy/platform-requirements.yaml`) and the reference
+(`deploy/environment-variables.md`) list each variable of each subscription by
+its name, and the topic need `<service>-sub-<subscription>` of each
+subscription with the access `read`. `stego env check` asks for one value of
+the topic of each subscription.
+
+Each subscription needs a consumer group of its own. When you set the group of
+two subscriptions to one value, the worker mode does not start, at the stage
+`service.start.setting.kafka-consumer.STEGO_KAFKA_CONSUMER_<S>_GROUP` of the
+second: one group would split the partitions between the two inboxes, and
+each would lose records.
+
+The worker mode does not start when the environment gives a value to a name
+of `kafka-consumer` before 0.5.0: `STEGO_KAFKA_CONSUMER_TOPIC`,
+`STEGO_KAFKA_CONSUMER_GROUP`, their `_FILE` forms, or
+`STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION`. The failure record has the
+stage `service.start.setting.kafka-consumer.<variable>` with that name, and no
+value. Set the name of the subscription in its place (see [Move the settings
+of a subscription to kafka-consumer
+0.5.0](upgrade.md#move-the-settings-of-a-subscription-to-kafka-consumer-050)).
+
+When the sessions of an inbox fail 5 times in a row, for example because the
 topic is missing or the user may not read it, the readiness of the worker mode
-names the inbox and a fixed failure class, such as
+names the inbox, such as `inbox-carrier-changes`, and a fixed failure class, such as
 `broker:TOPIC_AUTHORIZATION_FAILED (describe-configs)`, and the gauge
-`kafka.consumer.failing` is 1. The class names the operation that failed at
+`kafka.consumer.failing` of the subscription is 1. Each failed session writes the
+warn event `kafka.consumer.failed` with the attributes `subscription` and
+`failure`. The inbox of each other subscription continues to read. The class names the operation that failed at
 the broker: `describe-configs` (the check of the retention of the topic),
 `fetch` or `commit`. Thus a missing ACL names its operation. A session that reads the topic again clears both. In Kubernetes, the worker
 Deployment of the base is then not ready.
@@ -190,20 +235,25 @@ only the source service write the topic. Thus:
   `deploy/platform-requirements.yaml`, and the need of the consumer has
   `access: read`. Give each service only that access.
 - Give the consumer a Kafka user of its own, with read access to the topic and
-  to its consumer group only. The inbox needs these ACLs, and no more:
+  to the consumer group of each subscription only. The inbox of each
+  subscription needs these ACLs, and no more:
 
   | Resource | Operations | Why |
   |---|---|---|
   | The topic of the source service | `Read`, `Describe`, `DescribeConfigs` | `Read` and `Describe` to fetch the records; `DescribeConfigs` to read `retention.ms` and `cleanup.policy` for the retention check, at start and again while it reads |
   | The consumer group `<service>.<subscription>` | `Read` | to join the group and commit the offsets |
 
-  For example, with Apache Kafka:
+  For example, with Apache Kafka, for the two subscriptions above:
 
   ```sh
   kafka-acls.sh --add --allow-principal User:fulfilment \
     --operation Read --operation Describe --operation DescribeConfigs --topic orders-events
   kafka-acls.sh --add --allow-principal User:fulfilment \
     --operation Read --group fulfilment.order-changes
+  kafka-acls.sh --add --allow-principal User:fulfilment \
+    --operation Read --operation Describe --operation DescribeConfigs --topic carriers-events
+  kafka-acls.sh --add --allow-principal User:fulfilment \
+    --operation Read --group fulfilment.carrier-changes
   ```
 
   Without `DescribeConfigs`, the records come, but the retention check fails

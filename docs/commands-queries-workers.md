@@ -1276,7 +1276,8 @@ idempotent, so it refuses `acted`.
 ### Take the change events of another service
 
 A worker can consume the change events of another service through a
-subscription. See [Subscriptions](subscriptions.md).
+subscription. A service has 1 to 8 subscriptions, and one worker consumes
+each. See [Subscriptions](subscriptions.md).
 
 ### A reference held within a field
 
@@ -1424,6 +1425,60 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.182.0
+
+- The worker mode runs the Kafka inbox of each declared subscription, each in
+  its own consumer group and with its own Kafka client (ST-SUP-RP14-LC08,
+  decision on ST-SUP-Q204). `service.WorkerParts` has the new field
+  `Inboxes`: a function that gives the inbox of each subscription. The field
+  `Inbox` is deprecated; the worker mode takes it as one inbox when `Inboxes`
+  is nil. The purge timer of the outbox purges the refused records once, and
+  the readiness of the worker mode names each inbox that stopped or that fails.
+- The inbox of a subscription reads its settings by the name of the
+  subscription: the new `kafkainbox.SubscriptionTopicSetting`,
+  `SubscriptionGroupSetting`, their `_FILE` forms and
+  `SubscriptionInfiniteRetentionSetting` are patterns with `{subscription}`,
+  and `kafkainbox.Setting` gives the name of one subscription, such as
+  `STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC`. The new
+  `kafkaoutbox.ReadSubscriptionConsumer` takes the subscription. `Settings`
+  has the field `Subscription`, and the new `RetentionFitsFor` takes the name
+  of the retention setting for its error (ST-SUP-RP01-LC38). The fixed names
+  `TopicSetting` and the others, `kafkaoutbox.ReadConsumer` and
+  `RetentionFits` stay, deprecated, for the API of the runtime.
+- `kafkainbox.ReadSettings` and the new `kafkainbox.CheckSettings` refuse a
+  value of a fixed name of `kafka-consumer` before 0.5.0, such as
+  `STEGO_KAFKA_CONSUMER_TOPIC`, with an error that names it and the name to
+  set. `CheckSettings`, which the start of the worker mode calls, and the new
+  `kafkainbox.CheckGroups` also refuse two subscriptions with one consumer
+  group, naming the group setting of the second. The start of the worker mode
+  stops at the stage `service.start.setting.kafka-consumer.<variable>`.
+- The events `kafka.consumer.failed` and `kafka.consumer.start_refused` of an
+  inbox have the attribute `subscription`.
+
+### Release notes for runtime v0.181.0
+
+- The charges of the checks of counted compare-only secrets of one tenant use
+  at most half of the connections of the pool of the charges at one time, and
+  at least one. The charges of all the tenants use at most all but one
+  connection, and only a tenant with no charge in flight can take the last
+  one. A charge waits for a slot, not for a connection that another tenant
+  needs. Before, the checks of one tenant could fill the pool of 4
+  connections, and the checks of the other tenants waited up to 5 s and
+  answered 503 (ST-SUP-RP10-LC54, security review of PR #481, L1, and of PR
+  #482, L1). The runtime writes the warn line `command.attempts.pool_small`
+  once for a pool of the charges of fewer than 3 connections or with no
+  bound: in `command.New` for `Config.ChargeDB`, and else at the first charge.
+- The error line `command.attempts.failed` comes at most once in 10 s for
+  each action, entity and cause class, with the new attribute
+  `stego.held_back` (`held_back` with no log provider), the count of the lines
+  that it held back. Before, each failed charge wrote a line (security review
+  of PR #481, I1).
+- `sealed.CountedBy` is deprecated and binds nothing: it gives its value with
+  no change. A counter binds only with the store key of a runtime, through
+  `sealed.CountedByKey`, so code with no store key, such as a fill, cannot
+  make a counted value. The function stays, so the API stays compatible
+  within v0 (ST-STD-RUNTIME-R03, security review of PR #481, I2).
+
 ### Release notes for runtime v0.180.0
 
 - The runtime writes a counted compare-only value that a read gave only into
@@ -1461,8 +1516,9 @@ worker mode, which runs the relay, runs.
   `sealed.ErrCounted` for a counted stored value, and no hash. The new
   `sealed.Compared.StoredBy`, `sealed.StoreKey` and `sealed.NewStoreKey` give
   the hash only to the runtime that bound the counter with the new
-  `sealed.CountedByKey`. `sealed.CountedBy` binds no store key, and both keep
-  the counter of a value that has one (ST-SUP-RP16-LC03, security review of PR
+  `sealed.CountedByKey`. `sealed.CountedBy` binds no store key (and binds
+  nothing as of runtime v0.181.0), and both keep the counter of a value that
+  has one (ST-SUP-RP16-LC03, security review of PR
   #451, L1).
 - `lease.SealsText` adds the columns and the default of `stego_schema.seals`
   only when they are not there, so a run again takes no `ACCESS EXCLUSIVE` lock

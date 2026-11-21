@@ -7,9 +7,10 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
-// MaxSubscriptions is the most subscriptions of a service while the kafka-consumer component is alpha: its topic and
-// group variables have fixed names, so one service reads one topic (decision on ST-SUP-Q158, 2026-11-17).
-const MaxSubscriptions = 1
+// MaxSubscriptions is the most subscriptions of a service. Each reads its topic in a consumer group of its own, with
+// one Kafka client and the settings of its name, so the bound holds the clients and the variables of a service small,
+// as the 8 apis of a browser service (decision on ST-SUP-Q204, 2026-11-21).
+const MaxSubscriptions = 8
 
 // MaxSubscriptionEvents is the most event kinds of one subscription.
 const MaxSubscriptionEvents = 32
@@ -39,7 +40,7 @@ func validateSubscriptionNames(service *types.ServiceDeclaration, facts Facts) [
 	if len(service.Subscriptions) > MaxSubscriptions {
 		faults = append(faults, ValidationError{Category: "subscription", Rule: "subscription-count", Path: "subscriptions",
 			Found:   fmt.Sprint(len(service.Subscriptions)),
-			Message: fmt.Sprintf("the declaration has %d subscriptions; while the kafka-consumer component is alpha a service has at most %d, because its topic and group settings have fixed names; a later version takes more", len(service.Subscriptions), MaxSubscriptions)})
+			Message: fmt.Sprintf("the declaration has %d subscriptions; a service has at most %d, each read in a consumer group of its own", len(service.Subscriptions), MaxSubscriptions)})
 	}
 	others := map[string]string{}
 	for _, c := range service.Commands {

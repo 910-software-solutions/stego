@@ -7,9 +7,12 @@
 # Version 0.3.0 gives the SCRAM password file and the certificate authority file a secret source: the secret need
 # {service}-kafka-client with the keys ca-crt and password, which the worker Deployment mounts through the
 # Component secret-files (walkthrough 10, N1; ST-DLV-Q19).
+# Version 0.5.0 takes up to 8 subscriptions, each read in a consumer group of its own, with the settings and the topic
+# need of each by its name (decision on ST-SUP-Q204). The fixed names STEGO_KAFKA_CONSUMER_TOPIC, _GROUP and
+# _ACCEPT_INFINITE_RETENTION of 0.3.0 are refused at start, with the name to set in their place.
 kind: component
 name: kafka-consumer
-version: 0.3.0
+version: 0.5.0
 stage: alpha
 sunset: 2027-05-31
 output_namespace: internal/subscriptions
@@ -128,48 +131,51 @@ environment:
     description: "Set to 1 to let loopback brokers go without TLS, for a local test only. When it has no value, each broker needs TLS."
     secret: false
     allowed: {values: ["0", "1"]}
-  - name: STEGO_KAFKA_CONSUMER_TOPIC
+  # The settings of each subscription by its name: {subscription} is the name of each declared subscription in capital
+  # letters with '_' in place of '-', such as STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC, and the platform requirements
+  # list each variable once for each subscription (decision on ST-SUP-Q204, version 0.5.0).
+  - name: STEGO_KAFKA_CONSUMER_{subscription}_TOPIC
     read_by_mode: worker
     type: string
     required: false
-    description: "The topic of the change events of the source service, which the inbox reads. Give it or STEGO_KAFKA_CONSUMER_TOPIC_FILE; the worker mode does not start when the two have no value."
+    description: "The topic of the change events of the source service of the subscription, which its inbox reads. Give it or its _FILE form; the worker mode does not start when the two have no value."
     secret: false
-    one_of: kafka-consumer-topic
+    one_of: "{subscription}-topic"
     example: "orders-events"
-  - name: STEGO_KAFKA_CONSUMER_TOPIC_FILE
+  - name: STEGO_KAFKA_CONSUMER_{subscription}_TOPIC_FILE
     read_by_mode: worker
     type: path
     required: false
-    description: "The file that holds the topic that the inbox reads. Give it or STEGO_KAFKA_CONSUMER_TOPIC, not the two."
+    description: "The file that holds the topic that the inbox of the subscription reads. Give it or the variable without _FILE, not the two."
     secret: false
-    one_of: kafka-consumer-topic
-    example: "/etc/stego/kafka/consumer-topic"
-  - name: STEGO_KAFKA_CONSUMER_GROUP
+    one_of: "{subscription}-topic"
+    example: "/etc/stego/kafka/order-changes-topic"
+  - name: STEGO_KAFKA_CONSUMER_{subscription}_GROUP
     read_by_mode: worker
     type: string
     required: false
-    description: "The consumer group of the inbox, or STEGO_KAFKA_CONSUMER_GROUP_FILE in its place. When the two have no value, the group is <service>.<subscription>."
+    description: "The consumer group of the inbox of the subscription, or its _FILE form in its place. When the two have no value, the group is <service>.<subscription>, and each subscription needs a group of its own."
     secret: false
     example: "fulfilment.order-changes"
-  - name: STEGO_KAFKA_CONSUMER_GROUP_FILE
+  - name: STEGO_KAFKA_CONSUMER_{subscription}_GROUP_FILE
     read_by_mode: worker
     type: path
     required: false
-    description: "The file that holds the consumer group of the inbox. Give it or STEGO_KAFKA_CONSUMER_GROUP, not the two."
+    description: "The file that holds the consumer group of the inbox of the subscription. Give it or the variable without _FILE, not the two."
     secret: false
-    example: "/etc/stego/kafka/consumer-group"
-  - name: STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION
+    example: "/etc/stego/kafka/order-changes-group"
+  - name: STEGO_KAFKA_CONSUMER_{subscription}_ACCEPT_INFINITE_RETENTION
     read_by_mode: worker
     type: boolean
     required: false
     default: "0"
-    description: "Set to 1 to let the inbox read a topic with an infinite retention or a compacted one. Then an offset reset to a record older than the outbox done retention can apply it twice."
+    description: "Set to 1 to let the inbox of the subscription read a topic with an infinite retention or a compacted one. Then an offset reset to a record older than the outbox done retention can apply it twice."
     secret: false
     allowed: {values: ["0", "1"]}
-# The platform needs (ST-SUP-EN09): the topic of the source service's change events, which the service reads in its
-# consumer group, and the network path to the brokers on their TLS port.
+# The platform needs (ST-SUP-EN09): the topic of the source service's change events of each subscription, which the
+# service reads in the consumer group of the subscription, and the network path to the brokers on their TLS port.
 needs:
-  - {kind: topic, name: "{service}-subscription", variable: STEGO_KAFKA_CONSUMER_TOPIC, access: read}
+  - {kind: topic, name: "{service}-sub-{subscription}", variable: "STEGO_KAFKA_CONSUMER_{subscription}_TOPIC", access: read}
   - {kind: egress, name: "{service}-kafka", port: 9093}
   # The SCRAM password of the service's Kafka user and the certificate authorities of the brokers, which only the
   # worker mode reads (walkthrough 10, N1; ST-DLV-Q19).

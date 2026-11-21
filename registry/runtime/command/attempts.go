@@ -35,10 +35,14 @@ import (
 // beyond those that an earlier attempt of the call charged on that row (security review of PR #451, second review,
 // I1), for the same stored value only: a new value that a reset wrote between two attempts gets its own charges
 // (security review of PR #479, L2). A charge waits at most chargeLockTimeout for the row of its count (security
-// review of PR #479, L3). A stored counted value gives its hash only to this runtime, through storeKey, so a fill
-// cannot check it against the hash with no charge (security review of PR #451, L1), and the runtime writes it again
-// only into the field and the row of its count, in the attempt that read it, so a fill cannot copy it to a field with
-// no limit or to a row with a new count (security review of PR #479, L1).
+// review of PR #479, L3). The charges of one tenant hold at most half of the connections of that pool at one time,
+// and the charges of all the tenants hold at most all but one, which a tenant with no charge in flight can take, so
+// the checks of one or two tenants cannot fill the pool that all tenants share (security review of PR #481, L1, and
+// of PR #482, L1). A stored
+// counted value gives its hash only to this runtime, through storeKey, so a fill cannot check it against the hash with
+// no charge (security review of PR #451, L1), and the runtime writes it again only into the field and the row of its
+// count, in the attempt that read it, so a fill cannot copy it to a field with no limit or to a row with a new count
+// (security review of PR #479, L1).
 
 // maxAttempts is the highest limit of a counter (ST-DECL-INV104).
 const maxAttempts = 100
@@ -259,10 +263,20 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 		defer cancelDeadline()
 	}
 	db := rt.chargeDB()
+	rt.warnSmallChargePool()
+	perTenant, shared := chargeLimits(db)
+	release, err := rt.chargeSlots.take(ctx, t.ID(), perTenant, shared)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	rt.saturated(db, key)
 	tx, err := tenant.Begin(ctx, db, t, nil)
 	if err != nil {
 		return false, err
+	}
+	if rt.chargeBegun != nil {
+		rt.chargeBegun(t.ID())
 	}
 	rt.record(setChargeLockTimeout, nil)
 	if _, err := tx.ExecContext(ctx, setChargeLockTimeout, chargeLockTimeout); err != nil {
@@ -307,12 +321,19 @@ func chargeCause(err error) string {
 
 // logChargeFailure logs the charge of a counted check that cannot commit, so the call answers 503: one error line
 // through the log provider of the runtime, in the format of each other log line of the runtime, with the action, the
-// entity and the cause class, and no value and no error text (ST-SUP-RP10-LC54; walkthrough 20, P-C). With no log
+// entity, the cause class and the count of the lines held back, and no value and no error text (ST-SUP-RP10-LC54;
+// walkthrough 20, P-C). It logs one line for each action, entity and cause class in each authz.LogEvery. With no log
 // provider, it logs the same fields with log/slog.
 func (rt *Runtime) logChargeFailure(action, entity string, err error) {
 	cause := chargeCause(err)
+	// One line for each action, entity and cause class in each authz.LogEvery, with the count of the lines held back,
+	// so a flood of failed charges cannot flood the log (security review of PR #481, I1).
+	allowed, held := statementLog.Allow(action + "/attempts_failed/" + entity + "/" + cause)
+	if !allowed {
+		return
+	}
 	if rt.logger == nil {
-		slog.Error(AttemptsFailedEvent, "action", action, "entity", entity, "cause", cause)
+		slog.Error(AttemptsFailedEvent, "action", action, "entity", entity, "cause", cause, "held_back", held)
 		return
 	}
 	var record otellog.Record
@@ -320,7 +341,8 @@ func (rt *Runtime) logChargeFailure(action, entity string, err error) {
 	record.SetSeverity(otellog.SeverityError)
 	record.SetSeverityText("ERROR")
 	record.SetBody(attribute.StringValue("the charge of a counted check did not commit, so the check fails and the call answers 503"))
-	record.AddAttributes(attribute.String("stego.action", action), attribute.String("stego.entity", entity), attribute.String("stego.cause", cause))
+	record.AddAttributes(attribute.String("stego.action", action), attribute.String("stego.entity", entity), attribute.String("stego.cause", cause),
+		attribute.Int("stego.held_back", held))
 	rt.logger.Emit(context.Background(), record)
 }
 
@@ -402,6 +424,168 @@ func (s *state) countAttempts(ctx context.Context) error {
 	}
 	return nil
 }
+
+// chargeLimits gives the limits of the slots of the charges on the pool db of n connections: each tenant holds at
+// most perTenant of the n-1 shared slots, and only a tenant that holds no slot can take the one reserved slot. Thus
+// the charges of one or two tenants never hold the whole pool, and a tenant with no charge in flight can take the
+// last connection (security review of PR #481, L1, and of PR #482, L1). perTenant is half of n, and at least one and
+// at most n-1 when n is 2 or more. A pool with no bound has no limit of all the slots and no reserved slot (shared is
+// -1), and takes defaultTenantCharges for each tenant; a pool of 1 has no shared slot, so its charges run one at a
+// time. New warns of both.
+func chargeLimits(db *sql.DB) (perTenant, shared int) {
+	n := db.Stats().MaxOpenConnections
+	if n <= 0 {
+		return defaultTenantCharges, -1
+	}
+	return max(1, min(n/2, n-1)), n - 1
+}
+
+// defaultTenantCharges is the most charges of one tenant at one time on a pool of the charges with no bound.
+const defaultTenantCharges = 2
+
+// minChargeConnections is the smallest pool of the charges with which the slots keep the charges of two tenants from
+// holding the whole pool: New warns of a smaller pool, and of a pool with no bound.
+const minChargeConnections = 3
+
+// tenantSlots limits the charges that run at one time, before a charge takes a connection of the pool of the charges
+// (security review of PR #481, L1, and of PR #482, L1): a charge takes one of the shared slots while its tenant holds
+// fewer than perTenant slots and fewer than shared slots are in use, and else the one reserved slot while its tenant
+// holds no slot and the reserved slot is free. Else it waits for a slot, never for a connection that another tenant
+// needs. It keeps an entry only for a tenant with a charge that runs or waits, so many tenants cannot grow it. Its
+// zero value is ready.
+type tenantSlots struct {
+	mu       sync.Mutex
+	tenants  map[string]*tenantSlot
+	shared   int
+	reserved bool
+	// changed is closed and made new when a slot is given back, so each waiting charge looks again.
+	changed chan struct{}
+}
+
+// tenantSlot is the slots that one tenant holds, the count of its charges that run or wait, and the count of those
+// that wait.
+type tenantSlot struct {
+	held, users, blocked int
+}
+
+// take takes a slot for a charge of the tenant id under the limits perTenant and shared (no limit of all the slots,
+// and no reserved slot, when shared is negative, as for a pool with no bound), and gives the function that
+// gives it back. It waits at most until ctx ends, and then gives the error of ctx, so the check fails and the call
+// answers 503.
+func (s *tenantSlots) take(ctx context.Context, id string, perTenant, shared int) (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tenants == nil {
+		s.tenants = map[string]*tenantSlot{}
+	}
+	slot := s.tenants[id]
+	if slot == nil {
+		slot = &tenantSlot{}
+		s.tenants[id] = slot
+	}
+	slot.users++
+	bounded := shared >= 0
+	for {
+		switch {
+		case slot.held < perTenant && (!bounded || s.shared < shared):
+			slot.held++
+			s.shared++
+			return func() { s.give(id, slot, false) }, nil
+		case bounded && slot.held == 0 && !s.reserved:
+			slot.held++
+			s.reserved = true
+			return func() { s.give(id, slot, true) }, nil
+		}
+		if s.changed == nil {
+			s.changed = make(chan struct{})
+		}
+		changed := s.changed
+		slot.blocked++
+		s.mu.Unlock()
+		select {
+		case <-changed:
+			s.mu.Lock()
+			slot.blocked--
+		case <-ctx.Done():
+			s.mu.Lock()
+			slot.blocked--
+			s.leave(id, slot)
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// give gives back a slot of the tenant id, the reserved slot when reserved, and wakes each waiting charge.
+func (s *tenantSlots) give(id string, slot *tenantSlot, reserved bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	slot.held--
+	if reserved {
+		s.reserved = false
+	} else {
+		s.shared--
+	}
+	s.leave(id, slot)
+	if s.changed != nil {
+		close(s.changed)
+		s.changed = nil
+	}
+}
+
+// leave counts out one charge of the tenant id, and removes the entry of a tenant with no charge that runs or waits.
+// The caller holds s.mu.
+func (s *tenantSlots) leave(id string, slot *tenantSlot) {
+	if slot.users--; slot.users == 0 {
+		delete(s.tenants, id)
+	}
+}
+
+// waiting gives the count of the charges of the tenant id that run or wait for a slot.
+func (s *tenantSlots) waiting(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slot := s.tenants[id]; slot != nil {
+		return slot.users
+	}
+	return 0
+}
+
+// blocked gives the count of the charges of the tenant id that wait for a slot.
+func (s *tenantSlots) blocked(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slot := s.tenants[id]; slot != nil {
+		return slot.blocked
+	}
+	return 0
+}
+
+// warnSmallChargePool logs, once for the runtime, that the pool of the charges has fewer than minChargeConnections
+// connections or no bound, so the slots cannot keep the charges of two tenants from holding the whole pool (security
+// review of PR #482, L1): through the log provider of the runtime, or with log/slog when it has none. New calls it
+// for a configuration with Config.ChargeDB, and the first charge calls it, so a runtime whose charges use the audit
+// pool warns only when it charges.
+func (rt *Runtime) warnSmallChargePool() {
+	n := rt.chargeDB().Stats().MaxOpenConnections
+	if n >= minChargeConnections || !rt.chargePoolWarned.CompareAndSwap(false, true) {
+		return
+	}
+	const body = "the pool of the charges of counted checks has fewer than 3 connections or no bound, so the charges of a few tenants can hold the whole pool"
+	if rt.logger == nil {
+		slog.Warn(PoolSmallEvent, "max_open", n, "min_open", minChargeConnections)
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(PoolSmallEvent)
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue(body))
+	record.AddAttributes(attribute.Int("stego.pool.max_open", n), attribute.Int("stego.pool.min_open", minChargeConnections))
+	rt.logger.Emit(context.Background(), record)
+}
+
+// PoolSmallEvent is the event name of the warn log line of a pool of the charges that is too small or has no bound.
+const PoolSmallEvent = "command.attempts.pool_small"
 
 // chargeDB is the pool of the charges: Config.ChargeDB, or the audit pool when the configuration has none. Both are
 // apart from the main pool.

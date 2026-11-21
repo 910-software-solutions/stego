@@ -756,6 +756,36 @@ func TestBaseDrop(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-GEN-INV33-T A drop whose definition gives the field another place names the column out of place and its place in the base", func(t *testing.T) {
+		t.Parallel()
+		// Walkthrough 20, W20-P-B: the fault gave the two CREATE TABLE texts and named no column.
+		td01 := string(userManagementBase(t))
+		head := strings.Replace(td01, "      - { name: description, type: string, optional: true, max_length: 1000 }\n", "", 1)
+		head = withChanges(head, "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, max_length 1000, optional, first\"}\n",
+			"  - {change: organization-description-drop, phase: expand}\n")
+		base := []byte(td01)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var messages []string
+		for _, fault := range check.Faults {
+			messages = append(messages, fault.Message)
+		}
+		text := strings.Join(messages, "\n")
+		for _, want := range []string{
+			"the column description is out of place: it comes after id in the head, and after name in the base.",
+			`the definition "string, max_length 1000, optional, first" of the drop organization-description-drop gives the field description the place "first"`,
+			`end the definition with "after name"`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the faults do not say %q:\n%s", want, text)
+			}
+		}
+		if strings.Contains(text, "the base creates\n") {
+			t.Errorf("the faults still give the two CREATE TABLE texts:\n%s", text)
+		}
+	})
 }
 
 // eventBase is a base whose Transaction declares the event fields wallet_id, kind and amount at version 1, with the

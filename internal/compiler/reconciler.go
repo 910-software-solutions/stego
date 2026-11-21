@@ -1037,7 +1037,9 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 			return nil, err
 		}
 		variables := readVariables(declaredModeVariables(component.Variables(), svcDecl.Modes), imported)
-		stated := ComponentNeeds{Component: name, Needs: readNeeds(component.Needs, component.Variables(), variables), Variables: variables, Settings: settings}
+		componentNeeds := readNeeds(component.Needs, component.Variables(), variables)
+		variables, componentNeeds = perSubscription(variables, componentNeeds, svcDecl.Subscriptions)
+		stated := ComponentNeeds{Component: name, Needs: componentNeeds, Variables: variables, Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
 			if err != nil {
@@ -1052,6 +1054,49 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
 	}
 	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
+}
+
+// perSubscription gives the variables and the needs of a component with each one whose name holds
+// registry.SubscriptionPlaceholder listed once for each declared subscription, in the order of the declaration, and
+// the others unchanged (ST-SUP-EN14 field Name, decision on ST-SUP-Q204): in a variable name, the variable of a need
+// and the secret source of a variable, the subscription name in capital letters with '_' in place of '-', such as
+// STEGO_KAFKA_CONSUMER_ORDER_CHANGES_TOPIC; in a group of one of and a need name, the name as the declaration gives
+// it. A service with no subscription lists no such variable or need.
+func perSubscription(variables []registry.EnvironmentVariable, needs []registry.Need, subscriptions []types.Subscription) ([]registry.EnvironmentVariable, []registry.Need) {
+	const placeholder = registry.SubscriptionPlaceholder
+	upper := func(name string) string { return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) }
+	var outVariables []registry.EnvironmentVariable
+	for _, variable := range variables {
+		if !strings.Contains(variable.Name, placeholder) {
+			outVariables = append(outVariables, variable)
+			continue
+		}
+		for _, subscription := range subscriptions {
+			v := variable
+			v.Name = strings.ReplaceAll(variable.Name, placeholder, upper(subscription.Name))
+			v.OneOf = strings.ReplaceAll(variable.OneOf, placeholder, subscription.Name)
+			if variable.SecretSource != nil {
+				source := *variable.SecretSource
+				source.Name = strings.ReplaceAll(source.Name, placeholder, subscription.Name)
+				v.SecretSource = &source
+			}
+			outVariables = append(outVariables, v)
+		}
+	}
+	var outNeeds []registry.Need
+	for _, need := range needs {
+		if !strings.Contains(need.Name, placeholder) {
+			outNeeds = append(outNeeds, need)
+			continue
+		}
+		for _, subscription := range subscriptions {
+			n := need
+			n.Name = strings.ReplaceAll(need.Name, placeholder, subscription.Name)
+			n.Variable = strings.ReplaceAll(need.Variable, placeholder, upper(subscription.Name))
+			outNeeds = append(outNeeds, n)
+		}
+	}
+	return outVariables, outNeeds
 }
 
 // readVariables gives the variables that the generated service reads: each one whose Read with names no package, or
