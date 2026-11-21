@@ -105,6 +105,37 @@ func TestFactoryFromDocument(t *testing.T) {
 	})
 }
 
+func TestFactoryStrictRequest(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC55-T05 The CLI gives no flag for kind or for an x-kept or x-output-only member of a closed create request", func(t *testing.T) {
+		document := strings.Replace(serviceDocument, `"NoteCreateRequest": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "size": {"type": "integer"}}}`,
+			`"NoteCreateRequest": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string"}, "size": {"type": "integer"},
+			 "kind": {"type": "string", "enum": ["Note"]}, "state": {"type": "string", "x-kept": true}, "created_by": {"type": "string", "nullable": true, "x-output-only": true},
+			 "id": {"nullable": true, "x-output-only": true}}}`, 1)
+		if document == serviceDocument {
+			t.Fatal("the document has no create request to close")
+		}
+		ctx := gen.Context{ModuleName: "example.com/notes-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "notes", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(document)}
+		files, _, err := new(cliapplication.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var app string
+		for _, file := range files {
+			if file.Path == "cli/app/commands.go" {
+				app = string(file.Bytes())
+			}
+		}
+		if want := `CreateFields: []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "size", Key: "size", Type: "integer", Required: false}}, PatchFields:`; !strings.Contains(app, want) {
+			t.Errorf("the definitions do not hold %s:\n%s", want, app)
+		}
+		for _, member := range []string{`"kind"`, `"state"`, `"created_by"`, `"id"`} {
+			if strings.Contains(app, "Key: "+member) {
+				t.Errorf("the definitions give a flag to the member %s", member)
+			}
+		}
+	})
+}
+
 // secretDocument is a document with a create whose body has a writeOnly member, a member marked x-sensitive and a
 // plain member, and a delete.
 const secretDocument = `{"openapi": "3.0.3", "info": {"title": "Generated API", "version": "1.0.0"},

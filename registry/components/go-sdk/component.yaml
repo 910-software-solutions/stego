@@ -2,11 +2,13 @@
 # (ST-SUP-RC06-OC09).
 # Version 2.2.1 takes the boolean OpenAPI marks x-kept and x-stego-opaque of the rest-api document (security
 # review of PR #463, F1).
+# Version 2.2.2 takes a document whose request schemas mark a member x-output-only, as the rest-api component writes a
+# create or an update request (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
 kind: component
 name: go-sdk
 # Version 2.1.0: the common HTTPS client gives ErrTransport for a request that failed in transport or stopped
 # before the end of its answer, and ErrDeadline for a request whose time limit ended (security review of PR #447, I-2).
-version: 2.2.1
+version: 2.2.2
 stage: ga
 output_namespace: sdk
 config:

@@ -1072,6 +1072,49 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// maxMemberName is the most bytes of a member name of the body that a problem repeats (security review of PR #464).
+const maxMemberName = 128
+
+// memberName gives a member name of the body as a problem repeats it: at most maxMemberName bytes, cut on a
+// character boundary.
+func memberName(name string) string {
+	if len(name) <= maxMemberName {
+		return name
+	}
+	cut := maxMemberName
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut]
+}
+
+// duplicateMember gives the first member name, after its escapes, that the top-level object of body gives more than
+// once. The JSON decoder keeps the last value of such a member, so a check of one value and a decode of another
+// could disagree: a write refuses the body (ST-SUP-RC20-OC15, ST-SUP-RC20-OC55, security review of PR #464).
+func duplicateMember(body []byte) (string, bool) {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return "", false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		name, _ := token.(string)
+		if seen[name] {
+			return name, true
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // float32Of gives the API value of an optional float field of a view: nil for NULL.
 func float32Of(v *float64) *float32 {
 	if v == nil {
@@ -1496,15 +1539,20 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("\treturn v\n}\n\n")
 	}
 	if c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpUpsert] {
-		w.f("// decode%s gives the %s of a create or an update body. A kind member that is not %s is refused, and the\n// client values of the server-managed fields are cleared (ST-SUP-RC20-OC17, ST-SUP-RC20-OC19).\n", c.pascal, e.Name, e.Name)
+		w.f("// decode%s gives the %s of a create, an update or an upsert body. Each member that is not kind, id, href or a\n// field of %s, in its exact letter case, is refused, and so is a kind member that is not %s and an implicit field\n// with another value than that of the collection; the client values of the server-managed fields are cleared\n// (ST-SUP-RC20-OC55, ST-SUP-RC20-OC17, ST-SUP-RC20-OC19, ST-SUP-RC20-OC23).\n", c.pascal, e.Name, e.Name, e.Name)
 		w.f("func decode%s(bodyBytes []byte) (%s, error) {\n", c.pascal, e.Name)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", e.Name)
+		w.f("\tif member, twice := duplicateMember(bodyBytes); twice {\n\t\treturn %s, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: \"the body gives this member more than once\"}})}\n\t}\n", e.Name+"{}")
+		w.writeMembers()
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, e.Name, e.Name)
+		w.implicitMembers()
 		w.clientTimeText(e.Name+"{}", e.Fields)
+		w.stripServerMembers()
 		w.f("\tvar %s %s\n", c.lower, e.Name)
 		w.presetDefaults(c.lower, e.Fields)
 		w.f("\tif err := json.Unmarshal(bodyBytes, &%s); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body does not decode into %s\")}\n\t}\n", c.lower, e.Name, e.Name)
 		w.clientTimeValue(c.lower, e.Name+"{}", e.Fields, false)
+		w.implicitValues()
 		w.f("\t%s.ID = \"\"\n", c.lower)
 		emitClearServerManagedFields(&w.Buffer, c.lower, e)
 		w.canonicalRefs(c.lower, e.Fields, false)
@@ -1519,6 +1567,7 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("// decode%sPatch gives the patch of a patch body. A kind member that is not %s is refused, and so is each\n// member that is not kind or the API name of a patchable field, in its exact letter case (ST-SUP-RC20-OC15).\n", c.pascal, e.Name)
 		w.f("func decode%sPatch(bodyBytes []byte) (%sPatchRequest, error) {\n", c.pascal, c.pascal)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", c.pascal)
+		w.f("\tif member, twice := duplicateMember(bodyBytes); twice {\n\t\treturn %s, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: \"the body gives this member more than once\"}})}\n\t}\n", c.pascal+"PatchRequest{}")
 		w.patchMembers()
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, c.pascal, e.Name)
 		w.clientTimeText(c.pascal+"PatchRequest{}", c.patchFields())
@@ -1556,8 +1605,90 @@ func (w *runtimeHandlerWriter) patchMembers() {
 		quoted[i] = strconv.Quote(name)
 	}
 	message := "the member is not a patchable field of " + c.decl.Name + "; a patch takes only " + strings.Join(names[1:], ", ") + " and kind"
+	w.unknownMembers(c.pascal+"PatchRequest{}", quoted, message)
+}
+
+// unknownMembers writes the refusal of each member of rawMap that is not one of the quoted names, compared in their
+// exact letter case, with a 400 validation problem that names the first such member in byte order and holds no value
+// (ST-SUP-RC20-OC15, ST-SUP-RC20-OC55).
+func (w *runtimeHandlerWriter) unknownMembers(zero string, quoted []string, message string) {
 	w.f("\tunknown := \"\"\n\tfor member := range rawMap {\n\t\tswitch member {\n\t\tcase %s:\n\t\tdefault:\n\t\t\tif unknown == \"\" || member < unknown {\n\t\t\t\tunknown = member\n\t\t\t}\n\t\t}\n\t}\n", strings.Join(quoted, ", "))
-	w.f("\tif unknown != \"\" {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: %q}})}\n\t}\n", c.pascal, message)
+	w.f("\tif unknown != \"\" {\n\t\treturn %s, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: %q}})}\n\t}\n", zero, message)
+}
+
+// writeMembers writes, in the decode of a create, an update or an upsert body, the refusal of each member that is not
+// kind, id, href in the envelope format or the API name of a field of the entity. The JSON decoder ignores an unknown
+// member and matches a member name to a field with no regard to case, so a body that gives the declared name of a
+// renamed field, a typo, a tenant or a name in another letter case would answer 2xx and set nothing. A member that a
+// read gives and the server sets is taken, and the decode clears its value (ST-SUP-RC20-OC55, ST-SUP-RC20-OC17); a
+// field that a collection write cannot change, the scope field and each implicit field are taken and checked by their
+// own rules (ST-SUP-RC20-OC44, ST-SUP-RC20-OC45, ST-SUP-RC20-OC23).
+func (w *runtimeHandlerWriter) writeMembers() {
+	e := w.c.entity
+	names := []string{"kind", "id"}
+	if w.envelope {
+		names = append(names, "href")
+	}
+	for _, f := range e.Fields {
+		if !slices.Contains(names, f.Name) {
+			names = append(names, f.Name)
+		}
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = strconv.Quote(name)
+	}
+	message := "the member is not a field of " + e.Name + "; a create, an update or an upsert takes only the fields of " + e.Name + " and kind, in the letter case of the OpenAPI document"
+	w.unknownMembers(e.Name+"{}", quoted, message)
+}
+
+// stripServerMembers writes, in the decode of a create, an update or an upsert body, the removal of each member that
+// the server sets, id, href and each server-managed field, before the body is decoded into the entity: the server
+// ignores their values, so a value of another JSON type is not a decode failure (ST-SUP-RC20-OC17, ST-SUP-RC20-OC55,
+// security review of PR #464).
+func (w *runtimeHandlerWriter) stripServerMembers() {
+	names := []string{strconv.Quote("id"), strconv.Quote("href")}
+	for _, f := range w.c.entity.Fields {
+		if isServerManaged(f) {
+			names = append(names, strconv.Quote(f.Name))
+		}
+	}
+	w.f("\tfor _, member := range []string{%s} {\n\t\tdelete(rawMap, member)\n\t}\n", strings.Join(names, ", "))
+	w.f("\tif stripped, err := json.Marshal(rawMap); err == nil {\n\t\tbodyBytes = stripped\n\t}\n")
+}
+
+// implicitValues writes, in the decode of a create, an update or an upsert body, the refusal of each implicit field
+// whose decoded value is not the declared one, as the scope check reads the decoded value too (ST-SUP-RC20-OC23,
+// security review of PR #464).
+func (w *runtimeHandlerWriter) implicitValues() {
+	c := w.c
+	for _, kv := range c.implicit {
+		message := "the collection " + c.decl.Name + " sets this field itself; leave it out or give the value of the collection"
+		for _, f := range c.entity.Fields {
+			if f.Name != kv[0] {
+				continue
+			}
+			cond := fmt.Sprintf("%s.%s != \"\" && %s.%s != %q", c.lower, toPascalCase(f.Name), c.lower, toPascalCase(f.Name), kv[1])
+			if f.Optional {
+				cond = fmt.Sprintf("%s.%s != nil && *%s.%s != %q", c.lower, toPascalCase(f.Name), c.lower, toPascalCase(f.Name), kv[1])
+			}
+			w.f("\tif %s {\n\t\treturn %s{}, &invalidRequest{problem: Validation([]ValidationError{{Field: %q, Message: %q}})}\n\t}\n", cond, c.entity.Name, kv[0], message)
+		}
+	}
+}
+
+// implicitMembers writes, in the decode of a create, an update or an upsert body, the refusal of each implicit field
+// of the collection that the body gives with another value than the declared one, with a 400 validation problem that
+// names the field and holds no value. A body that leaves the field out, gives null or gives the declared value is
+// taken, and the handler sets the declared value (ST-SUP-RC20-OC23). An implicit field is a text or an enum field
+// (validateRuntimeScope).
+func (w *runtimeHandlerWriter) implicitMembers() {
+	c := w.c
+	for _, kv := range c.implicit {
+		message := "the collection " + c.decl.Name + " sets this field itself; leave it out or give the value of the collection"
+		w.f("\tif raw, ok := rawMap[%q]; ok && string(raw) != \"null\" {\n\t\tvar value string\n\t\tif err := json.Unmarshal(raw, &value); err != nil || value != %q {\n", kv[0], kv[1])
+		w.f("\t\t\treturn %s{}, &invalidRequest{problem: Validation([]ValidationError{{Field: %q, Message: %q}})}\n\t\t}\n\t}\n", c.entity.Name, kv[0], message)
+	}
 }
 
 // clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.
