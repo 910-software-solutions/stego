@@ -13,7 +13,7 @@ metadata:
     app.kubernetes.io/component: migration
     app.kubernetes.io/name: user-management
     app.kubernetes.io/part-of: user-management
-  name: user-management-migrate-e022624fca
+  name: user-management-migrate-f23ef1faab
 spec:
   activeDeadlineSeconds: 7200
   backoffLimit: 2
