@@ -33,6 +33,8 @@ that your schema needs. The example declares:
 - The worker `fulfill-orders`, which consumes the messages of `place-order`.
 - The worker `low-stock-scan`, which runs every minute and emits the
   observation `low_stock`.
+- The worker `ship-orders`, which runs every minute and creates one shipment
+  for each fulfilled order.
 
 A test of the STEGO repository runs `stego validate` on this declaration,
 with the schema and the proto file below (ST-STD-DOCS-R02). Each smaller
@@ -88,6 +90,15 @@ entities:
       - { name: warehouse_id, type: ref, to: Warehouse }
       - { name: status, type: enum, values: [draft, placed, fulfilled], default: draft }
       - { name: total_units, type: int32, min: 0, max: 1000000, default: 0 }
+  - name: Shipment
+    resource_type: shipment
+    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
+    public_reasons: {create: a new shipment is decided on edit of its order through the reference order_id}
+    references:
+      order_id: {relation: order, permission: edit}
+    fields:
+      - { name: order_id, type: ref, to: Order, unique: true }
+      - { name: units, type: int32, min: 0, max: 1000000 }
 
 collections:
   warehouses:
@@ -162,6 +173,21 @@ workers:
         entity: StockItem
         filter:
           - {field: quantity, op: less_than, value: 10}
+  - name: ship-orders
+    trigger: every 1m
+    writes: [Order, Shipment]
+    resource_type: order
+    permission: ship
+    fill: ship-orders
+    lists:
+      - name: fulfilled-orders
+        entity: Order
+        filter:
+          - {field: status, op: equals, value: fulfilled}
+      - name: shipments-of-order
+        entity: Shipment
+        filter:
+          - {field: order_id, op: equals, param: order_id}
 
 observations:
   - name: low_stock
@@ -218,6 +244,17 @@ definition order {
 
 	relation tenant: tenant
 	permission fulfill = tenant->worker_fulfill_orders
+	permission ship = tenant->worker_ship_orders
+}
+
+definition shipment {
+	relation order: order
+	permission view = order->view
+	permission edit = order->edit
+	permission manage = order->manage
+
+	relation tenant: tenant
+	permission ship = tenant->worker_ship_orders
 }
 
 definition service_account {}
@@ -225,6 +262,7 @@ definition service_account {}
 definition tenant {
 	relation worker_fulfill_orders: service_account
 	relation worker_low_stock_scan: service_account
+	relation worker_ship_orders: service_account
 }
 
 definition outbox_destination {
@@ -980,6 +1018,7 @@ Do these steps in the schema for each worker:
    definition tenant {
    	relation worker_fulfill_orders: service_account
    	relation worker_low_stock_scan: service_account
+   	relation worker_ship_orders: service_account
    }
    ```
 
@@ -1158,6 +1197,103 @@ did not write yet. A worker that checks a rule over all the rows, such as a
 sum of the balances, does not see such a row. Write the rows only through the
 service. [The developer reference of fills](fills.md) gives the decision of
 each method of the handle.
+
+### A worker that creates a row from another row
+
+A worker can handle one row two times. A consuming worker can get one
+message two times, and an interval worker lists the same rows at each tick.
+When the fill creates a row from another row, such as `ship-orders`, which
+creates a shipment for each fulfilled order, a check in the fill alone does
+not stop a second row. The list of a worker keeps only the rows whose tuples
+the relay wrote (see [The lists of a worker](#the-lists-of-a-worker)). Thus a
+new shipment is not in the list of the shipments of its order for a short
+time, and a run in that time creates a second shipment. In a trial run, a
+worker that ran again in this time made three invoices for one job.
+
+Declare a unique key on the reference that the new row takes from the other
+row. Then the database refuses the second row:
+
+<!-- excerpt -->
+```yaml
+  - name: Shipment
+    resource_type: shipment
+    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
+    public_reasons: {create: a new shipment is decided on edit of its order through the reference order_id}
+    references:
+      order_id: {relation: order, permission: edit}
+    fields:
+      - { name: order_id, type: ref, to: Order, unique: true }
+      - { name: units, type: int32, min: 0, max: 1000000 }
+```
+
+<!-- excerpt -->
+```yaml
+  - name: ship-orders
+    trigger: every 1m
+    writes: [Order, Shipment]
+    resource_type: order
+    permission: ship
+    fill: ship-orders
+    lists:
+      - name: fulfilled-orders
+        entity: Order
+        filter:
+          - {field: status, op: equals, value: fulfilled}
+      - name: shipments-of-order
+        entity: Shipment
+        filter:
+          - {field: order_id, op: equals, param: order_id}
+```
+
+The fill keeps its check, so a run after the relay creates no row and fails
+on no key:
+
+```go
+// New gives the fill of ship-orders.
+func New() workers.ShipOrdersFill {
+	return func(ctx context.Context, tick time.Time, h *workers.ShipOrdersHandle) error {
+		orders, err := workers.OrderRepository(h)
+		if err != nil {
+			return err
+		}
+		shipments, err := workers.ShipmentRepository(h)
+		if err != nil {
+			return err
+		}
+		fulfilled, err := orders.List(ctx, workers.ShipOrdersFulfilledOrders, 100)
+		if err != nil {
+			return err
+		}
+		for _, order := range fulfilled {
+			shipped, err := shipments.List(ctx, workers.ShipOrdersShipmentsOfOrderWith(order.ID()), 1)
+			if err != nil {
+				return err
+			}
+			if len(shipped) > 0 {
+				continue
+			}
+			shipment := workers.Shipment{OrderID: order.ID(), Units: order.Value().TotalUnits}
+			if _, err := shipments.Create(ctx, shipment, order); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+```
+
+When a run creates a shipment that is already there, `Create` gives
+`command.ErrConflict` and the fill returns it. The run commits nothing, and
+`worker.run.failed` has the cause `conflict`. A later run, after the relay
+wrote the tuples of the first shipment, finds that shipment and creates none.
+The run record of [A job that runs once a month](#a-job-that-runs-once-a-month)
+takes the same key: `unique: true` on `period`.
+
+A key of the reference alone permits one row for each referenced row. When
+an order can have one shipment for each warehouse, make the key of the
+reference and the warehouse with `unique_composite`. To make a field of an
+entity of the base unique, declare a unique step: see
+[Unique steps](schema-changes.md#unique-steps).
 
 ### A failed run of a consuming worker
 
