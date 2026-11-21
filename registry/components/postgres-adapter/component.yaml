@@ -25,9 +25,16 @@
 # makes the first start in a new instance end the pass of the row, also a completed one, and makes the contract step of
 # a seal refuse a pass that did not run in this instance (ST-SUP-RP09-LC15, ST-SUP-RC01-OC50; security review of
 # PR #471, L1, L3).
+# Version 6.22.0 makes the ledger check name the ledger row, the migration and the remedy when the ledger is not the
+# history of the release, such as on a shared preview database that ran the build of a branch, and the job logs it
+# (ST-SUP-RC01-OC51; walkthrough 19, W19-T2).
+# Version 6.23.0 adds the columns and the default of stego_schema.seals only when they are not there, so the run of the
+# seal checkpoints at each migration job takes no ACCESS EXCLUSIVE lock on a database that has them, and the check of a
+# seal contract step runs the seal checkpoints in its own transaction (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50; security
+# review of PR #472, I2, and second review, L1).
 kind: component
 name: postgres-adapter
-version: 6.21.0
+version: 6.23.0
 stage: ga
 output_namespace: internal/storage
 

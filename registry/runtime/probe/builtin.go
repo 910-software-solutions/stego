@@ -134,8 +134,10 @@ var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanic
 
 // WorkerCauses are the values of the field cause of worker.run.failed: the fixed class of the error of a run that did
 // not commit, never its text (ST-SUP-RC35-OC06). invalid, not_found, refused, conflict, closed and internal are the
-// errors of the handle; deadline is a run that reached its deadline; panic a fill that panicked; fill_error an error
-// of the fill that the runtime does not class; undecided a provider that could not decide now; not_granted a
+// errors of the handle; deadline is a run that reached its deadline; panic a fill that panicked; fill_json, fill_parse
+// and fill_canceled an error of the fill whose chain holds an encoding/json error, a strconv NumError or a time
+// ParseError, or context.Canceled, read from its type (decision ST-SUP-Q203 (b)); fill_error another error of the
+// fill; undecided a provider that could not decide now; not_granted a
 // privilege that the worker role lacks; statement a statement that the database failed, such as for an undefined
 // column, a statement timeout or a lost connection; data a statement that failed on the values of the row, such as
 // for a foreign key or a check; declared_refusal a declared refusal of the fill; staging_denied a deny of
@@ -145,7 +147,7 @@ var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanic
 // (command.ErrNoParent); and unknown a run whose class the observer did not get.
 var WorkerCauses = []string{"invalid", "not_found", "refused", "conflict", "closed", "internal", "deadline", "panic",
 	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "statement", "data", "unknown",
-	"create_without_parent", "worker_tuple_missing"}
+	"create_without_parent", "worker_tuple_missing", "fill_json", "fill_parse", "fill_canceled"}
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
 type SchemaChange struct {

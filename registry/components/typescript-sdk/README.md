@@ -45,9 +45,20 @@ a bounded local return path. It does not navigate after an API error unless
 the application calls this method.
 
 Declare `error_codes` for public API error codes that the UI needs. Use at most
-64 unique names with lowercase letters, digits, and underscores. Each name
-starts with a letter and has at most 128 characters. `SDKError.apiCode` contains
-only a declared code. Error bodies and private diagnostic fields stay hidden.
+64 unique names with lowercase letters, digits, underscores, and dots. Each name
+starts with a letter and has at most 128 characters. Thus you can list the code
+of a declared refusal of a command, such as `shipment.not_draft`:
+
+```yaml
+overrides:
+  typescript-sdk:
+    error_codes: [shipment.not_draft, shipment.not_found]
+```
+
+`SDKError.apiCode` contains only a declared code. The client reads the member
+`code` of an error answer of the media type `application/json` or
+`application/problem+json`, as a command refusal gives it. Error bodies and
+private diagnostic fields stay hidden.
 
 See the contract and test record (a retired record, in git history) for limits
 and open work. Browser telemetry and the full Hypershell UI migration remain

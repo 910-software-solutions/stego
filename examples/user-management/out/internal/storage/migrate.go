@@ -594,17 +594,23 @@ func checkLedger(applied, registered []Migration) error {
 	for i, row := range applied {
 		if i >= len(registered) {
 			if !row.Step {
-				return ErrMigrationLedger
+				return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, which is after the last migration %s of this release and is not a schema step: "+
+					"a later release applied it. Deploy that release or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, lastName(registered))}
 			}
 			for _, name := range row.CompatibleWith {
 				if !known[name] {
-					return ErrMigrationLedger
+					return &ledgerRefusal{remedy: laterRemedy, text: fmt.Sprintf("the ledger row %d names the schema step %s of a later release, which needs the migration %s, and this release does not hold it: "+
+						"deploy the release of the step or a later one; the job changed nothing (ST-SUP-RC01-OC28)", i+1, row.Name, name)}
 				}
 			}
 			continue
 		}
 		if row.Name != registered[i].Name {
-			return ErrMigrationLedger
+			return &ledgerRefusal{remedy: historyRemedy, text: fmt.Sprintf("the ledger row %d names the migration %s, and this release has the migration %s at that place: "+
+				"the database ran the migrations of another history, such as the build of a branch whose schema steps took other numbers before the merge. "+
+				"The body of an applied migration never changes, and nothing removes a ledger row. Run this release on a database that ran only releases of its own history: "+
+				"restore a backup made before the other build, or make the database again, such as a new preview database; the job changed nothing (ST-SUP-RC01-OC51)",
+				i+1, row.Name, registered[i].Name)}
 		}
 		if row.Digest != registered[i].Digest && !earlierDigest(registered[i], row.Digest) {
 			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
@@ -615,6 +621,36 @@ func checkLedger(applied, registered []Migration) error {
 	}
 	return nil
 }
+
+// lastName gives the name of the last migration of registered, or none.
+func lastName(registered []Migration) string {
+	if len(registered) == 0 {
+		return "(none)"
+	}
+	return registered[len(registered)-1].Name
+}
+
+// ledgerRefusal is the refusal of a ledger that is not the history of this
+// release, other than a changed body: a row of another migration at the
+// place of one of this release, or a row after this release that it cannot
+// accept. Its text names the row, the migration and the remedy, and no part
+// of a body, so the migration job may log it (Refusal). It matches
+// ErrMigrationLedger. The failure record of the process names its fault
+// class, the ledger and its remedy, fixed texts with no name of a row.
+type ledgerRefusal struct{ text, remedy string }
+
+// The remedies of a ledger that is not the history of this release.
+const (
+	historyRemedy = "the database ran the migrations of another history, such as a branch build: restore a backup made before it, or make the database again; the line migrate: the step is refused names the row and the migration"
+	laterRemedy   = "a later release applied a migration that this release cannot accept: deploy that release or a later one; the line migrate: the step is refused names the row and the migration"
+)
+
+func (r *ledgerRefusal) Error() string        { return r.text }
+func (r *ledgerRefusal) Refusal() string      { return r.text }
+func (r *ledgerRefusal) Is(target error) bool { return target == ErrMigrationLedger }
+func (r *ledgerRefusal) FaultClass() string   { return "migration_ledger.history" }
+func (r *ledgerRefusal) FaultObject() string  { return "stego_schema.migrations" }
+func (r *ledgerRefusal) FaultRemedy() string  { return r.remedy }
 
 // earlierDigest tells whether digest is one of the earlier digests of m.
 func earlierDigest(m Migration, digest string) bool {
@@ -889,7 +925,8 @@ func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migrati
 // (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39). It holds the ledger lock for its
 // session on one connection, reads the ledger again and runs nothing when
 // another job has applied m. It first checks the step in its own transaction
-// (checkContract), and refuses with the change and the count of rows left,
+// (checkContract), which runs the seal checkpoints first for the step of a
+// seal (applySealCheckpoints), and refuses with the change and the count of rows left,
 // changes no schema and writes no ledger row when the check fails. Then it
 // runs each statement in its own short transaction under the lock timeout and
 // the statement timeout of a step, again after a pause when the lock wait ends
@@ -938,6 +975,14 @@ func applyContract(ctx context.Context, db Database, ordered []Migration, m Migr
 	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
 		if err := stepTimeouts(ctx, tx, m); err != nil {
 			return err
+		}
+		// The check of a seal reads the functions of this release: the check transaction runs the seal
+		// checkpoints itself, and does not depend on the run at the start of the job and on the ledger lock
+		// (security review of PR #472, second review, L1).
+		if c.Seal {
+			if err := applySealCheckpoints(ctx, tx); err != nil {
+				return fmt.Errorf("the seal checkpoints: %w", err)
+			}
 		}
 		return checkContract(ctx, tx, c)
 	}); err != nil {

@@ -230,7 +230,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.176.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.180.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -576,6 +576,12 @@ func TestTables(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
+	})
+	t.Run("ST-SUP-RC01-OC50-T06 The check of a seal contract runs the functions of this release in its own transaction, also when another job put older functions in place after the start of the job", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T06")
+	})
+	t.Run("ST-SUP-RC01-OC49-T13 A migration job again on a database with the seal checkpoints takes no ACCESS EXCLUSIVE lock on their table", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC49-T13")
 	})
 	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T03")

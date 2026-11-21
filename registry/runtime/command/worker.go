@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -571,7 +572,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		}
 		// A fill error or a panic that ends PoisonAttempts attempts of the message in a row parks it as poison; a
 		// provider that cannot decide now stays transient (ST-SUP-RC35-OC06).
-		return poisonStreak(d, failure.err)
+		return poisonStreak(ctx, d, failure.err)
 	case err != nil:
 		return outbox.TransientRefusal(internalf("the idempotency wrapper failed"))
 	case wrapped.Replayed:
@@ -624,10 +625,13 @@ const streakPrefix = "fill."
 // the attempt that makes n reach PoisonAttempts with the same outcome and cause class is a permanent refusal with the
 // failure code poison, so the message is parked with the alert of ST-SUP-RP01-LC12; any other attempt between them,
 // such as a conflict, starts the count again. Any other error, such as a provider that cannot decide now, is a
-// transient refusal that is not counted.
-func poisonStreak(d outbox.Delivery, err error) error {
+// transient refusal that is not counted. So is a fill canceled while ctx, the context of the run, is done: the
+// worker stops, such as at a rollout, and the message is valid, so stops never park it; a fill_canceled with a live
+// ctx is counted (security review of PR #478, L1).
+func poisonStreak(ctx context.Context, d outbox.Delivery, err error) error {
 	outcome, cause := consumerOutcome(err)
-	if (outcome != probe.WorkerRolledBack && outcome != probe.WorkerPanicked) || !streakCauses[cause] {
+	if (outcome != probe.WorkerRolledBack && outcome != probe.WorkerPanicked) || !streakCauses[cause] ||
+		(cause == "fill_canceled" && ctx.Err() != nil) {
 		// The failure code delivery-refused of this attempt starts the count again.
 		return outbox.TransientRefusal(err)
 	}
@@ -644,13 +648,15 @@ func poisonStreak(d outbox.Delivery, err error) error {
 	return outbox.WithFailureCode(outbox.TransientRefusal(err), prefix+strconv.Itoa(n))
 }
 
-// streakCauses are the cause classes that the fill causes, which count for the poison bound: an error of the fill,
+// streakCauses are the cause classes that the fill causes, which count for the poison bound: an error of the fill
+// (fill_error, fill_json, fill_parse and fill_canceled, decision ST-SUP-Q203 (b); fill_canceled not when the run's
+// context is done, poisonStreak),
 // a read of a row that is not there, an invalid value, a deny of the worker's permission, a unique violation, which
 // a consumer counts as an attempt, a statement that fails on the values of the row (data: SQLSTATE classes 22 and
 // 23, decision on the re-review of PR #411), and a panic. A statement that the database failed, a timeout, a lost connection
 // and any other internal error stay transient, are not counted and start the count again (decision of the
 // orchestrator on the security review of PR #411, M1).
-var streakCauses = map[string]bool{"fill_error": true, "not_found": true, "invalid": true, "refused": true, "conflict": true,
+var streakCauses = map[string]bool{"fill_error": true, "fill_json": true, "fill_parse": true, "fill_canceled": true, "not_found": true, "invalid": true, "refused": true, "conflict": true,
 	"panic": true, "data": true, "create_without_parent": true}
 
 // consumerOutcome gives the fixed outcome and cause class of the error of a consumer run (ST-SUP-RC35-OC06).
@@ -719,6 +725,28 @@ func causeOf(err error) string {
 		return "data"
 	case errors.Is(err, ErrInternal):
 		return "internal"
+	}
+	return workerFillCause(err)
+}
+
+// workerFillCause gives the fixed cause class of an error of the fill that the handle did not give: fill_json when an
+// error in its chain is an encoding/json SyntaxError, UnmarshalTypeError or InvalidUnmarshalError, fill_parse when one
+// is a strconv NumError or a time ParseError, fill_canceled when one is context.Canceled, and fill_error else. It
+// reads the type of each error in the chain (errors.As), never its text, so the set stays fixed and the series of
+// worker.run.failed stay bounded (ST-SUP-RC35-OC06, decision ST-SUP-Q203 (b)).
+func workerFillCause(err error) string {
+	var syntax *json.SyntaxError
+	var unmarshalType *json.UnmarshalTypeError
+	var invalidUnmarshal *json.InvalidUnmarshalError
+	var number *strconv.NumError
+	var parse *time.ParseError
+	switch {
+	case errors.As(err, &syntax), errors.As(err, &unmarshalType), errors.As(err, &invalidUnmarshal):
+		return "fill_json"
+	case errors.As(err, &number), errors.As(err, &parse):
+		return "fill_parse"
+	case errors.Is(err, context.Canceled):
+		return "fill_canceled"
 	}
 	return "fill_error"
 }

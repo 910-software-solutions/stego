@@ -178,8 +178,10 @@ type Service struct {
 	ring          *sealed.Ring
 	provider      *authz.SpiceDB
 	pool, auditDB *sql.DB
-	keys          *authn.KeySet
-	verifier      *authn.Verifier
+	// chargeDB is the small pool of the charges of checks of counted values (ST-SUP-RP10-LC54).
+	chargeDB *sql.DB
+	keys     *authn.KeySet
+	verifier *authn.Verifier
 	// issuer is the issuer whose tokens the verifier accepts, the one trusted issuer of an admin of Provision
 	// (ST-SUP-RC27-OC13).
 	issuer      string
@@ -206,7 +208,7 @@ type Service struct {
 // main pool of the runtime role through tenant.Open with the adapter's connection configuration, reports the
 // process under its release (Parts.Release) until Close, refuses a database whose migration ledger does not hold
 // that release (ST-SUP-RP14-LC07), alerts a database that does not hold the schema manifest (ST-SUP-RP14-LC06),
-// opens the audit pool,
+// opens the audit pool and the small pool of the charges of counted checks,
 // connects to SpiceDB with the preshared key and checks that it answers, starts the telemetry and the probes, and
 // gives the verifier, the authorization runtime, the audit writer, the outbox queue and the command and query
 // runtimes. It refuses settings or parts that lack a part, and closes what it opened when a step fails.
@@ -249,6 +251,13 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	svc.blocked = blockedReason(blocking)
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
+		return nil, &databaseError{err}
+	}
+	// The charges of checks of counted values take a small pool of their own, so a full main pool never makes a
+	// check wait for a second main connection (security review of PR #451, L2).
+	charges := pools
+	charges.Pool = tenant.PoolBounds{MaxOpen: chargeConnections, MaxIdle: 1, MaxLifetime: pools.Pool.MaxLifetime, MaxIdleTime: pools.Pool.MaxIdleTime}
+	if svc.chargeDB, err = tenant.Open(ctx, charges); err != nil {
 		return nil, &databaseError{err}
 	}
 	if svc.queue, err = p.NewQueue(svc.pool); err != nil {
@@ -304,7 +313,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		Keys: svc.keys}); err != nil {
 		return nil, err
 	}
-	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
+	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, ChargeDB: svc.chargeDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
 	if err := ringNeeded(p, s.Ring); err != nil {
@@ -852,13 +861,17 @@ func (svc *Service) Close() error {
 	if svc.beat != nil {
 		errs = append(errs, svc.beat.Stop(context.Background()))
 	}
-	for _, db := range []*sql.DB{svc.auditDB, svc.pool} {
+	for _, db := range []*sql.DB{svc.chargeDB, svc.auditDB, svc.pool} {
 		if db != nil {
 			errs = append(errs, db.Close())
 		}
 	}
 	return errors.Join(errs...)
 }
+
+// chargeConnections is the most connections of the pool of the charges: a charge is one short statement, so a few
+// connections serve the checks of all the commands that the main pool runs at one time.
+const chargeConnections = 4
 
 // identityManifest is the manifest of the table of the release identity row in the schema of the tenant list: one
 // row, read by the runtime role only (ST-SUP-RP14-LC06).

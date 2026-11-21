@@ -89,7 +89,7 @@ func TestFillRequalification(t *testing.T) {
 	t.Run("ST-EXT-UC04-R03-T02 A new sign-off of the new evidence requalifies the fill", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"stale-fill", "before_create", "org-users"})
-		p.must(t, "listed-ssh", "test")
+		p.unproved(t, "listed-ssh")
 		p.must(t, "listed-ssh", "fill", "sign", "stale-fill")
 		expectStanding(t, p.must(t, "listed-ssh", "fill", "status"), "stale-fill", fill.Qualified)
 		p.must(t, "listed-ssh", "plan")

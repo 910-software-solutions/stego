@@ -1168,10 +1168,34 @@ the cause class. It never gives the error text or a value of the message. The
 attempt is also sent as `worker.run.failed` with the worker, the outcome and
 the cause class.
 
+An error of the fill that is not an error of the handle gets one of these
+cause classes. The runtime reads the type of each error in the chain of the
+error (`errors.As`), never its text:
+
+| Cause | What the chain of the error holds |
+|---|---|
+| `fill_json` | An `encoding/json` `SyntaxError`, `UnmarshalTypeError` or `InvalidUnmarshalError`, such as from a decode of the payload. |
+| `fill_parse` | A `strconv` `NumError` or a `time` `ParseError`. |
+| `fill_canceled` | `context.Canceled`. |
+| `fill_error` | Another error. |
+
+The text of a fill error can hold a value of the message or of a row, so no
+log line and no observation gives it. To tell an operator more, the fill logs
+its own context with `log/slog`, which the fill allow list takes, before it
+returns the error: names and counts, never a value. For example:
+
+```go
+	if err := json.Unmarshal(payload, &reply); err != nil {
+		slog.WarnContext(ctx, "apply-partner-replies: the reply does not decode", "bytes", len(payload))
+		return fmt.Errorf("decode the reply: %w", err)
+	}
+```
+
 When the fill fails with the same outcome and cause class in 5 attempts in a
 row, the runtime parks the message as poison (failure code `poison`) and
 raises the alert of a parked message. Only the errors that the fill causes are
-counted: an error of the fill, a row that is not there, an invalid value, a
+counted: an error of the fill (`fill_error`, `fill_json`, `fill_parse` and
+`fill_canceled`, but not a fill canceled because the worker stops), a row that is not there, an invalid value, a
 refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
@@ -1399,6 +1423,66 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.180.0
+
+- The runtime writes a counted compare-only value that a read gave only into
+  its own field and row, in the attempt that read it. A fill that gives it to
+  a compare-only field with no limit, or to another row, gets an internal
+  error, and the command commits nothing. Thus a fill cannot get the stored
+  hash back through a field with no limit, and cannot give the hash a new
+  count of 0 in a new row (ST-SUP-RP10-LC54, security review of PR #479, L1).
+  New methods `sealed.Compared.IsCounted` and `sealed.Compared.CounterBy`.
+- A rerun of a command in the same request does not charge again the checks
+  that an earlier attempt charged only for the same stored value. A new PIN
+  that a reset wrote between two attempts gets its own charges (security
+  review of PR #479, L2).
+- The charge of a check waits at most 1 s for a lock, such as behind the reset
+  of a command that has not committed; then the command answers 503, and the
+  line `command.attempts.failed` has the cause `lock_timeout`. When each
+  connection of the pool of the charges is in use, the runtime writes the warn
+  line `command.attempts.pool_saturated` through its log provider, with the
+  entity and the counts of the pool and no value, at most once in 10 s
+  (security review of PR #479, L3).
+
+### Release notes for runtime v0.178.0
+
+- The charge of a check of a counted compare-only secret runs on a small pool
+  of its own, of at most 4 connections, apart from the main pool. Before, it
+  took a second connection of the main pool, so a full main pool made the
+  check wait for 5 s and the command answered 503. New field
+  `command.Config.ChargeDB`; with no value, the charges use the audit pool
+  (ST-SUP-RP10-LC54, security review of PR #451, L2).
+- A rerun of a command in the same request, such as after a conflict, a stale
+  prepared statement or a seal switch, does not charge again the checks that an
+  earlier attempt charged (security review of PR #451, I1 of the second
+  review).
+- `sealed.Compared.Stored` and `StoredContext` give the new error
+  `sealed.ErrCounted` for a counted stored value, and no hash. The new
+  `sealed.Compared.StoredBy`, `sealed.StoreKey` and `sealed.NewStoreKey` give
+  the hash only to the runtime that bound the counter with the new
+  `sealed.CountedByKey`. `sealed.CountedBy` binds no store key, and both keep
+  the counter of a value that has one (ST-SUP-RP16-LC03, security review of PR
+  #451, L1).
+- `lease.SealsText` adds the columns and the default of `stego_schema.seals`
+  only when they are not there, so a run again takes no `ACCESS EXCLUSIVE` lock
+  on the table (security review of PR #472, I2).
+
+### Release notes for runtime v0.177.0
+
+- The cause of `worker.run.failed` and of the log line
+  `command.consumer.run_failed` is `fill_json`, `fill_parse` or
+  `fill_canceled` for a fill error whose chain holds an `encoding/json` error,
+  a `strconv` `NumError` or a `time` `ParseError`, or `context.Canceled`, and
+  `fill_error` for another fill error. The runtime reads the type of the
+  error, never its text. The three new classes count for the poison bound as
+  `fill_error` does (ST-SUP-RC35-OC06, decision ST-SUP-Q203 (b)). New values
+  of `probe.WorkerCauses`. See [A failed run of a consuming
+  worker](#a-failed-run-of-a-consuming-worker).
+- The failure record of a migration Job step that SpiceDB failed gives the
+  cause class of the gRPC status code, such as `unavailable`, never the text
+  (ST-SUP-RP14-LC03). New method `service.StepError.CauseClass`, new function
+  `authz.CodeClass`. See [When the Job fails](delivery.md#when-the-job-fails).
 
 ### Release notes for runtime v0.176.0
 
@@ -1816,7 +1900,8 @@ the slot `worker.worker`.
 
    `stego test` tests the fill against the contract that apply plans to write,
    so you can do this before the first apply. The project's files do not
-   change. `stego fill status` shows the fill as `qualified`.
+   change. When a fill records no evidence, `stego test` names it and exits
+   non-zero. `stego fill status` shows the fill as `qualified`.
 
 4. Generate the contract, resolve the dependencies and build:
 
@@ -1869,4 +1954,6 @@ Upgrade: a project whose fills of commands, queries or workers have no
 signed evidence is refused at plan. Run `stego test`, then
 `stego fill sign <name>` for each fill that plan names. `stego fill sign` keeps a
 sign-off that already covers the current evidence with a key that `SIGNERS`
-lists, and writes nothing; give `--force` to sign it again with your key.
+lists, and writes nothing; give `--force` to sign it again with your key. When
+your key is not in `SIGNERS`, `stego fill sign` warns and names the fingerprint
+to list; the fill stays not qualified until a listed key signs.

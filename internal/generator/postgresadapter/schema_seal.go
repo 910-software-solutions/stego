@@ -56,17 +56,34 @@ const sealsTable = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 // at its start before the first pending migration, after each migration that it applies, and once at its end
 // (applySealCheckpoints, refreshSealCheckpoints), as a repeatable migration of Flyway or a
 // change set with runOnChange of Liquibase: a new version of the text takes effect on a database whose expand
-// migration ran with an older one, and the ledger digest of that migration does not change.
-const sealCheckpoints = `ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
+// migration ran with an older one, and the ledger digest of that migration does not change. The columns and the
+// default come in DO blocks that run an ALTER TABLE only when the column or the default is not there, so a run on a
+// database that has them takes no ACCESS EXCLUSIVE lock on stego_schema.seals (security review of PR #472, I2).
+const sealCheckpoints = `DO $stego_seal$BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'created_at' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
+  END IF;
+END$stego_seal$;
 CREATE OR REPLACE FUNCTION stego_schema.seal_instance()
  RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
  AS $stego_seal$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
   || '/' || 'stego_schema.seals'::pg_catalog.regclass::pg_catalog.oid::text || '/' || pg_catalog.pg_relation_filenode('stego_schema.seals'::pg_catalog.regclass)::text
   FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$stego_seal$;
 REVOKE ALL ON FUNCTION stego_schema.seal_instance() FROM PUBLIC;
-ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
-ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_at timestamptz;
-ALTER TABLE stego_schema.seals ALTER COLUMN armed_in SET DEFAULT stego_schema.seal_instance();
+DO $stego_seal$BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_at' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_at timestamptz;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+   JOIN pg_catalog.pg_depend p ON p.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND p.objid = d.oid
+    AND p.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND p.refobjid = 'stego_schema.seal_instance()'::pg_catalog.regprocedure
+   WHERE d.adrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in') THEN
+    ALTER TABLE stego_schema.seals ALTER COLUMN armed_in SET DEFAULT stego_schema.seal_instance();
+  END IF;
+END$stego_seal$;
 REVOKE ALL ON TABLE stego_schema.seals FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  RETURNS TABLE (last_tenant text, last_id text, sealed_rows bigint, checked_rows bigint, started boolean, completed boolean, waiting boolean, stale boolean)

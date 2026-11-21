@@ -304,6 +304,24 @@ A release before this one read the owner credential from the key `migration-url`
 
 The image of the Job is the image of the base, so the `images` entry of the overlay sets its digest too.
 
+### When the Job fails
+
+A Job that fails writes one failure record, a JSON line with the event `service.failed`, to its error output. The
+record never holds the error text. It gives:
+
+- `stage`: the step that failed, such as `migrate.ledger_check` or `migrate.authorization_schema`.
+- `cause`: a fixed class of the cause, when the Job knows one. For the database, the class of its SQLSTATE, such as
+  `lock_timeout` or `authentication_failed`, with the SQLSTATE in `sqlstate`. For the network or a file, a class
+  such as `connection_refused`, `name_not_resolved`, `timeout` or `file_not_found`. For a call to SpiceDB, the class
+  of its gRPC status code: `unavailable` (SpiceDB is not there or refused the connection), `timeout`, `canceled`,
+  `authentication_failed` (the key is wrong), `permission_denied`, `insufficient_resources`,
+  `precondition_failed`, `invalid_argument`, `not_found`, `unimplemented`, or `provider_error` for another code.
+- `fault`, `object` and `remedy`: for a refused check, its fault class, the object and what to do.
+
+For example, a Job whose SpiceDB refused the connection writes
+`{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","cause":"unavailable"}`
+(with its time and message).
+
 ### With Argo CD
 
 Argo CD runs the Job as a PreSync hook: before it syncs the Deployment, it deletes the Job of the sync before
@@ -356,7 +374,13 @@ is done, and then starts. The process also stops at the stage `service.start.mig
 digest of the body of a migration of its release: the error line names the migration and the two digests. The body of
 an applied migration never changes, and nothing repairs a digest. The migration Job refuses the same database at its
 ledger check, with the same fault. `stego plan`, `stego apply` and `stego compat` refuse such a release before it is
-made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. To wait in a script, after the two commands:
+made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. One other body passes the Job, the start
+check and these commands: the body of the expand step of a seal, or of a step after it, that postgres-adapter 6.14.0 to
+6.20.0 wrote with the functions of the seal checkpoints in it. The release registers the digest of that body as an earlier
+digest of the same migration, so a database of such a release upgrades with no change. When the ledger is not the history
+of the release, such as a shared preview database that ran the build of a branch whose schema steps took other numbers
+before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
+migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h

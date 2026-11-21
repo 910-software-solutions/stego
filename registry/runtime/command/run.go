@@ -80,6 +80,10 @@ type Config struct {
 	// AuditDB is the pool of the audit connections, apart from DB, which only the short audit transactions use
 	// (ST-SUP-RP10-LC29). tenant.Open returned it too.
 	AuditDB *sql.DB
+	// ChargeDB is the small pool of the charges of checks of counted values, apart from DB, which only the short
+	// charge transactions use (ST-SUP-RP10-LC54; security review of PR #451, L2). tenant.Open returned it too. Nil
+	// makes the charges use AuditDB.
+	ChargeDB *sql.DB
 	// Authz binds the authorization handle of each transaction (ST-SUP-RP10-LC04).
 	Authz *authz.Runtime
 	// Audit writes the audit rows (ST-SUP-RP10-LC06), and AuditSettings are the service's audit settings.
@@ -152,9 +156,13 @@ type Runtime struct {
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder func(query string, args []any)
-	// charged, set only by the tests, gets the result of each charge of a check of a counted secret.
-	charged      func(bool)
-	beforeCommit func(ctx context.Context, tx *sql.Tx) error
+	// charged, set only by the tests, gets the result of each charge of a check of a counted secret, and chargeErr
+	// the error of each charge that did not commit.
+	charged   func(bool)
+	chargeErr func(error)
+	// saturationLogged is the time, in Unix nanoseconds, of the last log that the pool of the charges is full.
+	saturationLogged atomic.Int64
+	beforeCommit     func(ctx context.Context, tx *sql.Tx) error
 	// rerun, when set by a test, gets the random wait before each rerun and the time left after it.
 	rerun func(n int, wait, left time.Duration)
 	// step, when set by a test, runs right after lock_timeout is set before a statement of the wrapper, the enqueue,
@@ -195,7 +203,8 @@ func (rt *Runtime) clock() runClock {
 // New checks cfg and returns the command runtime. It refuses a configuration that lacks a part, a main pool or an
 // audit pool that does not close a connection that comes back with a tenant set, as a pool that tenant.Open
 // returned does, which tenant.Opened tells (ST-SUP-RP10-LC30, ST-SUP-RP04-LC08), an audit pool that is the main pool or holds fewer than two connections
-// (ST-SUP-RP10-LC29), and a telemetry runtime that does not register the names of SpanNames.
+// (ST-SUP-RP10-LC29), a pool of the charges that is the main pool or that tenant.Open did not return, and a telemetry
+// runtime that does not register the names of SpanNames.
 func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	switch {
 	case cfg.DB == nil:
@@ -210,6 +219,9 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	}
 	if !tenant.Opened(cfg.DB) || !tenant.Opened(cfg.AuditDB) {
 		return nil, errors.New("command: the main pool and the audit pool must be pools that tenant.Open returned")
+	}
+	if cfg.ChargeDB != nil && (cfg.ChargeDB == cfg.DB || !tenant.Opened(cfg.ChargeDB)) {
+		return nil, errors.New("command: the pool of the charges must be a pool of its own, apart from the main pool, that tenant.Open returned")
 	}
 	if cfg.Telemetry != nil {
 		for _, name := range SpanNames() {
@@ -537,8 +549,11 @@ func Run[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Requ
 	// prepared statements, and the call runs again once with no wait, beyond the declared Retry on conflict
 	// (ST-SUP-RP10-LC49, ST-SUP-RP04-LC11).
 	switched := 0
+	// paid are the checks of counted values that the attempts of this call charged: a rerun checks the same request
+	// again and does not charge them again (ST-SUP-RP10-LC54).
+	paid := &charges{}
 	for reruns := 0; ; reruns++ {
-		result, err, conflict := runAttempt(ctx, rt, cmd, req, reruns, decode, fill)
+		result, err, conflict := runAttempt(ctx, rt, cmd, req, reruns, paid, decode, fill)
 		result.Attempts = reruns + 1
 		if conflict && switched == 0 && rerunsOnce(err) && ctx.Err() == nil {
 			switched = 1
@@ -591,7 +606,7 @@ func (f *fillFailure) Error() string { return f.err.Error() }
 
 // runAttempt runs one attempt in a transaction of its own and reports whether it ended in a conflict that a rerun
 // may change.
-func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Request, reruns int,
+func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Request, reruns int, paid *charges,
 	decode func([]byte) (Req, error), fill Fill[Req, P]) (result Result, err error, conflict bool) {
 	ctx, finish := rt.span(ctx, AttemptSpanName)
 	outcome := otel.OutcomeRolledBack
@@ -633,6 +648,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	}()
 	s := newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
 	s.request = req
+	s.charges = paid
 	s.changeEvents = cmd.changeEvents
 	// The handle takes only the declared lists, and a list value RunTime takes the start of the attempt on the
 	// runtime's clock (ST-SUP-RP10-LC38).

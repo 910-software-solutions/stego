@@ -29,16 +29,31 @@ const sealsText = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 	token bigint NOT NULL DEFAULT 0,
 	created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
 );
-ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
+DO $stego_seal$BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'created_at' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
+  END IF;
+END$stego_seal$;
 CREATE OR REPLACE FUNCTION stego_schema.seal_instance()
  RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp
  AS $stego_seal$SELECT d.oid::text || '/' || pg_catalog.to_char(pg_catalog.pg_postmaster_start_time() AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS')
   || '/' || 'stego_schema.seals'::pg_catalog.regclass::pg_catalog.oid::text || '/' || pg_catalog.pg_relation_filenode('stego_schema.seals'::pg_catalog.regclass)::text
   FROM pg_catalog.pg_database d WHERE d.datname = pg_catalog.current_database()$stego_seal$;
 REVOKE ALL ON FUNCTION stego_schema.seal_instance() FROM PUBLIC;
-ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
-ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_at timestamptz;
-ALTER TABLE stego_schema.seals ALTER COLUMN armed_in SET DEFAULT stego_schema.seal_instance();
+DO $stego_seal$BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_in text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_at' AND a.attnum > 0 AND NOT a.attisdropped) THEN
+    ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS armed_at timestamptz;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+   JOIN pg_catalog.pg_depend p ON p.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass AND p.objid = d.oid
+    AND p.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND p.refobjid = 'stego_schema.seal_instance()'::pg_catalog.regprocedure
+   WHERE d.adrelid = 'stego_schema.seals'::pg_catalog.regclass AND a.attname = 'armed_in') THEN
+    ALTER TABLE stego_schema.seals ALTER COLUMN armed_in SET DEFAULT stego_schema.seal_instance();
+  END IF;
+END$stego_seal$;
 REVOKE ALL ON TABLE stego_schema.seals FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  RETURNS TABLE (last_tenant text, last_id text, sealed_rows bigint, checked_rows bigint, started boolean, completed boolean, waiting boolean, stale boolean)
@@ -142,7 +157,9 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 // the functions read; the migration job runs the rest of the text outside each migration body and its digest, after
 // each migration that it applies and once at its end, so a step that runs Releases again cannot leave the release_stop
 // of Releases, and a database whose expand migration an earlier release applied gets the functions of this one
-// (ST-SUP-RC01-OC49). Each statement runs again with no error on a database that it made.
+// (ST-SUP-RC01-OC49). Each statement runs again with no error on a database that it made, and a run again takes no
+// ACCESS EXCLUSIVE lock on stego_schema.seals: an ALTER TABLE runs only for a column or a default that is not there
+// (security review of PR #472, I2).
 func SealsText(runtimeRole string) (string, error) {
 	if !releaseRole.MatchString(runtimeRole) {
 		return "", fmt.Errorf("lease: the runtime role %q is not a lower-case SQL name of at most 63 characters", runtimeRole)

@@ -872,6 +872,8 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3\"\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
 	fmt.Fprintf(&buf, "\tlegacyrouter \"github.com/getkin/kin-openapi/routers/legacy\"\n")
+	fmt.Fprintf(&buf, "\n")
+	fmt.Fprintf(&buf, "\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
 	fmt.Fprintf(&buf, ")\n\n")
 
 	// Embedded OpenAPI spec.
@@ -918,6 +920,23 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\tif route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions[%q] == true {\n", commandMarker)
 	fmt.Fprintf(&buf, "\t\t\t\tnext.ServeHTTP(w, r)\n")
 	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
+	fmt.Fprintf(&buf, "\t\t\t}\n\n")
+
+	// The key of a create or a patch is read before the body, as the command runtime reads it (Serve), so a malformed
+	// key gets idempotency-key-invalid and an absent required key idempotency-key-missing also when the body is not
+	// valid, and each answer from here on to a request with a key carries Idempotency-Kept: 1 (ST-SUP-RC30-OC02,
+	// ST-SUP-RC20-OC56; walkthrough 19, W19-U3). The document states the header only on a create and a patch, required
+	// when the declaration requires it; the handler reads it again.
+	fmt.Fprintf(&buf, "\t\t\t// The Idempotency-Key header is read before the body, as a command reads it (ST-SUP-RC30-OC02).\n")
+	fmt.Fprintf(&buf, "\t\t\tif header := route.Operation.Parameters.GetByInAndName(openapi3.ParameterInHeader, \"Idempotency-Key\"); header != nil {\n")
+	fmt.Fprintf(&buf, "\t\t\t\tkey, err := idempotency.KeyFrom(r.Header, header.Required)\n")
+	fmt.Fprintf(&buf, "\t\t\t\tif err != nil {\n")
+	fmt.Fprintf(&buf, "\t\t\t\t\tkeyMissing(w, r, err)\n")
+	fmt.Fprintf(&buf, "\t\t\t\t\treturn\n")
+	fmt.Fprintf(&buf, "\t\t\t\t}\n")
+	fmt.Fprintf(&buf, "\t\t\t\tif key != \"\" {\n")
+	fmt.Fprintf(&buf, "\t\t\t\t\tw.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)\n")
+	fmt.Fprintf(&buf, "\t\t\t\t}\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
 	// Buffer the body so it can be read for validation and restored for the handler.

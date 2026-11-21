@@ -103,7 +103,12 @@ func openAPIConfig(config map[string]any) map[string]any {
 	return result
 }
 
-var errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// errorCodePattern is the form of a declared public error code: a lowercase
+// letter, then lowercase letters, digits, underscores and dots, so that the
+// code of a declared refusal, such as shipment.not_draft, can be listed
+// (walkthrough 20, P-A). The code goes into the emitted module only as a JSON
+// string, so a dot is safe.
+var errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_.]*$`)
 
 func errorCodes(config map[string]any) ([]string, error) {
 	codes := []string{}

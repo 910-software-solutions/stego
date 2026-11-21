@@ -118,6 +118,7 @@ func testFillKeys(t *testing.T) *fillKeys {
 			"listed-ssh":   {{"gpg.format", "ssh"}, {"user.signingkey", k.listedSSH}},
 			"unlisted-ssh": {{"gpg.format", "ssh"}, {"user.signingkey", k.unlistedSSH}},
 			"listed-gpg":   {{"gpg.format", "openpgp"}, {"user.signingkey", k.listedGPG}},
+			"keyring-gpg":  {{"gpg.format", "openpgp"}, {"user.signingkey", k.keyringGPG}},
 			"no-key":       nil,
 		} {
 			home := filepath.Join(k.dir, "home-"+name)
@@ -219,6 +220,23 @@ func (p *fillProject) must(t *testing.T, key string, args ...string) string {
 	stdout, stderr, err := p.stego(t, key, args...)
 	if err != nil {
 		t.Fatalf("stego %s: %v\n%s\n%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+	return stdout
+}
+
+// unproved runs stego test in a project where a fill gets no evidence, such as no-tests-fill of ST-EXT-TD01, and gives
+// its output: stego test exits non-zero, names each fill of fills as a fill with no evidence, and reports no failed test
+// (ST-EXT-CLI02; walkthrough 19, W19-T3).
+func (p *fillProject) unproved(t *testing.T, key string, fills ...string) string {
+	t.Helper()
+	stdout, stderr, err := p.stego(t, key, "test")
+	if err == nil || !strings.Contains(stderr, "no evidence is recorded for") || strings.Contains(stderr, "tests of") {
+		t.Fatalf("stego test: %v, want a non-zero exit that names the fills with no evidence and no failed test\n%s\n%s", err, stdout, stderr)
+	}
+	for _, name := range fills {
+		if !regexp.MustCompile(`no evidence is recorded for \d+ fill\(s\): [^;]*\b` + regexp.QuoteMeta(name) + `\b`).MatchString(stderr) {
+			t.Fatalf("stego test does not name %s as a fill with no evidence:\n%s\n%s", name, stdout, stderr)
+		}
 	}
 	return stdout
 }
@@ -505,7 +523,7 @@ func TestFillQualification(t *testing.T) {
 			}
 			want[name] = digest
 		}
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		for name, digest := range want {
 			f := p.manifest(t, name)
 			if f.Evidence == nil || f.Evidence.FillDigest != digest || f.Evidence.ContractDigest != contract {
@@ -643,6 +661,80 @@ func TestFillQualification(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-EXT-UC02-R02-T15 stego fill sign with a key that SIGNERS does not list warns, names the fix, signs, and writes the fingerprint of the key as the signer", func(t *testing.T) {
+		p := newFillProject(t)
+		out, err := exec.Command("ssh-keygen", "-l", "-E", "sha256", "-f", p.keys.unlistedSSH+".pub").Output()
+		if err != nil {
+			t.Fatalf("ssh-keygen -l: %v", err)
+		}
+		sshFingerprint := strings.Fields(string(out))[1]
+		for _, c := range []struct{ key, fingerprint, line string }{
+			{"unlisted-ssh", sshFingerprint, p.keys.unlistedPublic},
+			{"keyring-gpg", p.keys.keyringGPG, "gpg --armor --export " + p.keys.keyringGPG},
+		} {
+			before := p.read(t, "fills/unsigned-fill/fill.yaml")
+			stdout, stderr, err := p.stego(t, c.key, "fill", "sign", "unsigned-fill")
+			if err != nil {
+				t.Fatalf("%s: fill sign with a key that SIGNERS does not list exits non-zero: %v\n%s%s", c.key, err, stdout, stderr)
+			}
+			for _, want := range []string{"warning: SIGNERS does not list the key " + c.fingerprint, "validate, plan, apply, deps and build refuse the fill",
+				"stego fill sign unsigned-fill", "Add your key to SIGNERS", c.line} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("%s: the warning does not hold %q:\n%s", c.key, want, stderr)
+				}
+			}
+			f := p.manifest(t, "unsigned-fill")
+			if f.SignOff == nil || f.SignOff.EvidenceDigest != evidenceDigest(t, f) {
+				t.Fatalf("%s: fill sign did not sign the current evidence: %+v", c.key, f.SignOff)
+			}
+			if f.SignOff.Signature.Signer != c.fingerprint {
+				t.Errorf("%s: the signer is %q, want the fingerprint %q of the key", c.key, f.SignOff.Signature.Signer, c.fingerprint)
+			}
+			after := p.read(t, "fills/unsigned-fill/fill.yaml")
+			if bytes.Contains(after, []byte(p.keys.dir)) || bytes.Equal(before, after) {
+				t.Errorf("%s: fill.yaml holds the path of the key folder %s, or did not change:\n%s", c.key, p.keys.dir, after)
+			}
+		}
+		// The SSH sign-off verifies with the public key of the unlisted key.
+		p.must(t, "unlisted-ssh", "fill", "sign", "unsigned-fill", "--force")
+		f := p.manifest(t, "unsigned-fill")
+		if err := sshVerify(t, p.keys.unlistedPublic, f.SignOff, f.SignOff.EvidenceDigest); err != nil {
+			t.Fatalf("ssh-keygen -Y verify refuses the sign-off of the unlisted key: %v", err)
+		}
+		// A gpg.program whose SIG_CREATED line gives no fingerprint of 40 or 64 hexadecimal digits is refused, and
+		// fill.yaml stays as it is (security review of PR #480, I1).
+		for _, fpr := range []string{"../../etc/passwd", p.keys.keyringGPG[:39], p.keys.keyringGPG + "0"} {
+			dir := t.TempDir()
+			program := filepath.Join(dir, "fake-gpg")
+			script := "#!/bin/sh\ncat >/dev/null\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nAAAA\\n-----END PGP SIGNATURE-----\\n'\n" +
+				"printf '[GNUPG:] SIG_CREATED D 22 8 00 1795255948 " + fpr + "\\n' >&2\n"
+			if err := os.WriteFile(program, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(dir, "home")
+			if err := os.Mkdir(home, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for _, pair := range [][2]string{{"gpg.format", "openpgp"}, {"user.signingkey", p.keys.keyringGPG}, {"gpg.program", program}} {
+				cmd := exec.Command("git", "config", "--global", pair[0], pair[1])
+				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git config: %v\n%s", err, out)
+				}
+			}
+			p.keys.homes["fake-gpg"] = home
+			before := p.read(t, "fills/unsigned-fill/fill.yaml")
+			stdout, stderr, err := p.stego(t, "fake-gpg", "fill", "sign", "unsigned-fill", "--force")
+			if err == nil || !strings.Contains(stderr, "40 or 64 hexadecimal digits") {
+				t.Errorf("the fingerprint %q of SIG_CREATED gave %v, want a refusal that names its form:\n%s%s", fpr, err, stdout, stderr)
+			}
+			if !bytes.Equal(before, p.read(t, "fills/unsigned-fill/fill.yaml")) {
+				t.Errorf("the fingerprint %q of SIG_CREATED changed fill.yaml", fpr)
+			}
+			delete(p.keys.homes, "fake-gpg")
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R02-T04 Plan accepts a fill signed by a key that SIGNERS lists", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"qualified-fill", "before_create", "org-users"})
@@ -761,7 +853,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal(err)
 		}
 		contract := contractDigest(t, p, "before_create")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		p.replace(t, "fills/untested-fill/policy.go", "// Policy allows each request.", "// Policy allows each request, changed.")
 		f := p.manifest(t, "untested-fill")
 		if f.Evidence == nil || f.Evidence.FillDigest != fillDigest || f.Evidence.ContractDigest != contract {
@@ -821,7 +913,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal("the copy is qualified")
 		}
 		p.replace(t, "fills/unsigned-fill/policy.go", "// Policy allows each request.", "// Policy allows each request, changed.")
-		p.must(t, "no-key", "test")
+		p.unproved(t, "no-key")
 		renewed := p.manifest(t, "unsigned-fill")
 		if renewed.SignOff == nil {
 			t.Fatal("the new evidence removed the old sign-off")
@@ -838,7 +930,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 	t.Run("ST-EXT-INV04-T A fill with no test file gets no evidence, and STEGO names it", func(t *testing.T) {
 		p := newFillProject(t)
 		before := p.read(t, "fills/no-tests-fill/fill.yaml")
-		stdout := p.must(t, "no-key", "test")
+		stdout := p.unproved(t, "no-key", "no-tests-fill")
 		if !strings.Contains(stdout, "fill no-tests-fill: no evidence recorded: it has no test file") {
 			t.Fatalf("stego test does not name no-tests-fill with the reason that it has no test file:\n%s", stdout)
 		}
@@ -849,7 +941,7 @@ func TestFillEvidenceInvariants(t *testing.T) {
 			t.Fatal("untested-fill got no evidence")
 		}
 		p.write(t, "fills/no-tests-fill/notes_test.txt", "These are not tests.\n")
-		stdout = p.must(t, "no-key", "test")
+		stdout = p.unproved(t, "no-key", "no-tests-fill")
 		if !strings.Contains(stdout, "fill no-tests-fill: no evidence recorded: it has no test file") {
 			t.Fatalf("stego test does not name no-tests-fill with the reason that it has no test file:\n%s", stdout)
 		}
