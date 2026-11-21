@@ -20,10 +20,25 @@ the header `Idempotency-Key`. Each other create and each patch take it, not
 required: the service keeps the key and gives the stored answer to a second
 request with the same key and body. Give it in the parameters of the method,
 such as `DischargePatientParams{IdempotencyKey: key}` or
-`CreateApplicantsParams{IdempotencyKey: &key}`: a structured string, such as a
-quoted UUID. The SDK sends the key that you give, and never sends a request
-again. To send a write again after an unknown outcome, send it with the same
-key.
+`CreateApplicantsParams{IdempotencyKey: &key}`.
+
+The SDK sends the key exactly as you give it: it does not add the double
+quotes. The header holds a structured-field string (RFC 9651), which is the
+text in double quotes, so give the quotes in the value:
+
+```go
+key := strconv.Quote(uuid.NewString()) // a quoted UUID, such as "0f8e..." with the quotes
+params := sdk.DischargePatientParams{IdempotencyKey: key}
+```
+
+A key with no quotes, such as `k-1`, gets 400 with the problem type
+`idempotency-key-invalid`, and the write changes nothing. Between the
+quotes, give 1 to 255 printable ASCII characters (a space is one), with
+`\"` for a double quote and `\\` for a backslash. `strconv.Quote` gives such a
+key for printable ASCII text, such as a UUID; it escapes other characters in
+a way that the service refuses.
+The SDK never sends a request again. To send a write again after an unknown
+outcome, send it with the same key.
 
 A secret member of a request, such as a PIN, is never in an answer. When the
 request requires it, it is a plain field, such as `PortalPin string`; when the

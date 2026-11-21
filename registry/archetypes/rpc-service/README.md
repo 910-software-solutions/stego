@@ -38,6 +38,8 @@ through queries.
    ```
 
    Plan, apply, build and deps refuse a fill with no evidence or no sign-off.
+   `stego fill sign` keeps a sign-off that already covers the current evidence
+   with a key that `SIGNERS` lists; give `--force` to sign again.
 
 4. Generate, resolve the dependencies and build:
 
