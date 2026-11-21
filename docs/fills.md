@@ -551,7 +551,15 @@ gives to the count of its row:
   time, so the caller does not learn that the limit is reached.
 - When the runtime cannot write the count, such as when the database cannot
   serve, `Matches` gives `false` and the command answers 503 and commits
-  nothing.
+  nothing. The count has a small pool of its own, of at most 4 connections,
+  so a fill that holds the last connection of the main pool does not make its
+  check wait (runtime v0.178.0).
+- When the runtime runs the command again in the same request, such as after a
+  conflict, the checks that an earlier attempt counted do not count again
+  (runtime v0.178.0).
+- The PIN that a read gives does not give its stored hash to the fill:
+  `Stored` gives the error `sealed.ErrCounted` (runtime v0.178.0). Check a
+  value only with `Matches`.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.

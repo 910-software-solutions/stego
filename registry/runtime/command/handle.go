@@ -1638,6 +1638,10 @@ type state struct {
 	// check of a counted value did not commit (ST-SUP-RP10-LC54).
 	attempts     map[attemptKey]*attemptRow
 	chargeFailed bool
+	// checks count the checks of each counted row in this attempt, and charges are the checks that the attempts of
+	// the call charged, which a rerun does not charge again (security review of PR #451, second review, I1).
+	checks       map[attemptKey]int
+	charges      *charges
 	destinations map[string]Destination
 	// lists are the lists that the command or the worker declares, which its handle takes only (ST-SUP-RP10-LC38).
 	lists map[AnyList]listCopy

@@ -15,6 +15,11 @@ const Redacted = "[secret]"
 // JSON into its stored form, only given through SecretOf or ComparedOf.
 var ErrDecode = errors.New("sealed: a secret value is not decoded from JSON")
 
+// ErrCounted is the error of Stored for a stored value whose field has a counter of wrong attempts: such a value gives
+// its stored hash only to the runtime that bound its counter (StoredBy), so a fill cannot check a value against the
+// hash with no charge (security review of PR #451, L1).
+var ErrCounted = errors.New("sealed: a counted compare-only value gives no stored hash")
+
 // Secret is the value of a readable secret field: its text, or not set. Only Reveal gives its text; it gives [secret]
 // for each fmt verb, for String and for slog, and encodes as JSON null (ST-SUP-RP16-LC04). The text is behind a
 // pointer to a string, so fmt and slog, which reach a value through an unexported field without its methods, print an
@@ -75,9 +80,18 @@ func (s *Secret) UnmarshalJSON([]byte) error { return ErrDecode }
 type Compared struct {
 	text, hash *string
 	// counter counts the checks of a stored value whose field has a counter of wrong attempts; nil counts nothing
-	// (ST-SUP-RP10-LC54).
+	// (ST-SUP-RP10-LC54). key is the store key of the runtime that bound the counter.
 	counter Counter
+	key     *StoreKey
 }
+
+// StoreKey is the key of the runtime that binds a counter to a stored value (CountedBy): only the holder of that key
+// gets the stored hash of the counted value back, through StoredBy, to write it again. The command runtime keeps its
+// key in a variable of its own package, which fill code cannot reach.
+type StoreKey struct{ _ byte }
+
+// NewStoreKey gives a new store key, which no other key equals.
+func NewStoreKey() *StoreKey { return &StoreKey{} }
 
 // Counter counts the checks of a stored compare-only value whose field declares a limit of wrong attempts
 // (ST-DECL-INV104, ST-SUP-RP10-LC54). The command runtime binds it to each value that its handle reads.
@@ -106,10 +120,15 @@ func dummyHash() string {
 	return dummy.hash
 }
 
-// CountedBy gives c with the counter k: each later Matches of a stored value asks k first and records its result in
-// k. The command runtime calls it for the value of a counted field that its handle reads.
-func CountedBy(c Compared, k Counter) Compared {
-	c.counter = k
+// CountedBy gives c with the counter k and the store key key: each later Matches of a stored value asks k first and
+// records its result in k, and only StoredBy with key gives the stored hash. The command runtime calls it for the
+// value of a counted field that its handle reads. A value that has a counter keeps its counter and its key, and a nil
+// counter or key changes nothing, so a caller cannot bind a counted value to a key of its own.
+func CountedBy(c Compared, k Counter, key *StoreKey) Compared {
+	if c.counter != nil || k == nil || key == nil {
+		return c
+	}
+	c.counter, c.key = k, key
 	return c
 }
 
@@ -173,11 +192,19 @@ func (c Compared) Check(ok func(text string) bool) bool {
 	return ok(*c.text)
 }
 
-// Stored gives the text that the column stores: the hash of a new text, the stored hash, or empty when not set.
+// Stored gives the text that the column stores: the hash of a new text, the stored hash, or empty when not set. A
+// stored value with a counter of wrong attempts gives ErrCounted: only StoredBy gives its hash.
 func (c Compared) Stored() (string, error) { return c.StoredContext(context.Background()) }
 
 // StoredContext is Stored, whose wait for a hash slot ends with ctx.
-func (c Compared) StoredContext(ctx context.Context) (string, error) {
+func (c Compared) StoredContext(ctx context.Context) (string, error) { return c.StoredBy(ctx, nil) }
+
+// StoredBy is StoredContext, which also gives the stored hash of a counted value when key is the store key that
+// CountedBy bound to it.
+func (c Compared) StoredBy(ctx context.Context, key *StoreKey) (string, error) {
+	if c.counter != nil && c.hash != nil && (key == nil || key != c.key) {
+		return "", ErrCounted
+	}
 	switch {
 	case c.text != nil:
 		return HashContext(ctx, *c.text)
