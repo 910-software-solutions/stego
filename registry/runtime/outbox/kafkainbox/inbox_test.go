@@ -1135,6 +1135,11 @@ func TestSettings(t *testing.T) {
 			setting.Variable != Setting(SubscriptionTopicSetting, "order-changes")+" and "+Setting(SubscriptionTopicFileSetting, "order-changes") {
 			t.Fatalf("CheckSettings with a topic and its _FILE form gave %v, want a refusal that names the two", err)
 		}
+		// An error that is no SettingError of kafkaoutbox gives a fixed refusal with no error text.
+		if err := readError("order-changes", errors.New("a-secret-value")); !errors.As(err, &setting) || strings.Contains(err.Error(), "a-secret-value") ||
+			setting.Variable != Setting(SubscriptionTopicSetting, "order-changes")+" or "+Setting(SubscriptionGroupSetting, "order-changes") {
+			t.Fatalf("readError of another error gave %v, want a fixed SettingError of the topic and the group setting", err)
+		}
 	})
 }
 

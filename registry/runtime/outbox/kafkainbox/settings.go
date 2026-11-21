@@ -126,7 +126,7 @@ func CheckSettings(service string, subscriptions []string) error {
 		if err != nil {
 			// The error of kafkaoutbox names its setting, the topic or the group setting or its _FILE form, and holds
 			// no value (security review of PR #483, L1).
-			return readError(err)
+			return readError(subscription, err)
 		}
 		if group == "" {
 			group = service + "." + subscription
@@ -141,13 +141,15 @@ func CheckSettings(service string, subscriptions []string) error {
 
 // readError is the refusal of CheckSettings for an error of kafkaoutbox.ReadSubscriptionConsumer: a SettingError
 // that names the setting that kafkaoutbox names, which may be the topic or the group setting or its _FILE form, and
-// holds no value of it.
-func readError(err error) error {
+// holds no value of it. Any other error gives a fixed SettingError that names the topic and the group setting of the
+// subscription, and holds no error text (security review of PR #486, I1).
+func readError(subscription string, err error) error {
 	var setting *kafkaoutbox.SettingError
 	if errors.As(err, &setting) {
 		return &SettingError{Variable: setting.Variable, Problem: setting.Problem}
 	}
-	return err
+	return &SettingError{Variable: Setting(SubscriptionTopicSetting, subscription) + " or " + Setting(SubscriptionGroupSetting, subscription),
+		Problem: "of the subscription " + subscription + " cannot be read"}
 }
 
 // groupClash is the refusal of the subscription subscription whose consumer group is the group of the subscription
