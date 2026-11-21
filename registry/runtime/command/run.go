@@ -164,9 +164,11 @@ type Runtime struct {
 	saturationLogged atomic.Int64
 	// chargeSlots limits the charges of each tenant that run at one time on the pool of the charges (security review
 	// of PR #481, L1), and chargeBegun, set only by the tests, gets the tenant of each charge that has its connection.
-	chargeSlots  tenantSlots
-	chargeBegun  func(tenantID string)
-	beforeCommit func(ctx context.Context, tx *sql.Tx) error
+	chargeSlots tenantSlots
+	// chargePoolWarned tells whether the runtime logged that the pool of the charges is too small or has no bound.
+	chargePoolWarned atomic.Bool
+	chargeBegun      func(tenantID string)
+	beforeCommit     func(ctx context.Context, tx *sql.Tx) error
 	// rerun, when set by a test, gets the random wait before each rerun and the time left after it.
 	rerun func(n int, wait, left time.Duration)
 	// step, when set by a test, runs right after lock_timeout is set before a statement of the wrapper, the enqueue,
@@ -262,7 +264,9 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	if cfg.Logger != nil {
 		rt.logger = cfg.Logger.Logger("github.com/jsell-rh/stego/registry/runtime/command")
 	}
-	rt.warnSmallChargePool()
+	if cfg.ChargeDB != nil {
+		rt.warnSmallChargePool()
+	}
 	return rt, nil
 }
 

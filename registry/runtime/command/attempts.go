@@ -263,6 +263,7 @@ func (rt *Runtime) charge(t tenant.Tenant, key attemptKey, deadline time.Time) (
 		defer cancelDeadline()
 	}
 	db := rt.chargeDB()
+	rt.warnSmallChargePool()
 	perTenant, shared := chargeLimits(db)
 	release, err := rt.chargeSlots.take(ctx, t.ID(), perTenant, shared)
 	if err != nil {
@@ -559,13 +560,14 @@ func (s *tenantSlots) blocked(id string) int {
 	return 0
 }
 
-// warnSmallChargePool logs, once when New makes the runtime, that the pool of the charges has fewer than
-// minChargeConnections connections or no bound, so the slots cannot keep the charges of two tenants from holding the
-// whole pool (security review of PR #482, L1): through the log provider of the runtime, or with log/slog when it has
-// none.
+// warnSmallChargePool logs, once for the runtime, that the pool of the charges has fewer than minChargeConnections
+// connections or no bound, so the slots cannot keep the charges of two tenants from holding the whole pool (security
+// review of PR #482, L1): through the log provider of the runtime, or with log/slog when it has none. New calls it
+// for a configuration with Config.ChargeDB, and the first charge calls it, so a runtime whose charges use the audit
+// pool warns only when it charges.
 func (rt *Runtime) warnSmallChargePool() {
 	n := rt.chargeDB().Stats().MaxOpenConnections
-	if n >= minChargeConnections {
+	if n >= minChargeConnections || !rt.chargePoolWarned.CompareAndSwap(false, true) {
 		return
 	}
 	const body = "the pool of the charges of counted checks has fewer than 3 connections or no bound, so the charges of a few tenants can hold the whole pool"

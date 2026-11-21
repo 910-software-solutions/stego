@@ -1434,8 +1434,9 @@ worker mode, which runs the relay, runs.
   needs. Before, the checks of one tenant could fill the pool of 4
   connections, and the checks of the other tenants waited up to 5 s and
   answered 503 (ST-SUP-RP10-LC54, security review of PR #481, L1, and of PR
-  #482, L1). `command.New` writes the warn line `command.attempts.pool_small`
-  for a pool of the charges of fewer than 3 connections or with no bound.
+  #482, L1). The runtime writes the warn line `command.attempts.pool_small`
+  once for a pool of the charges of fewer than 3 connections or with no
+  bound: in `command.New` for `Config.ChargeDB`, and else at the first charge.
 - The error line `command.attempts.failed` comes at most once in 10 s for
   each action, entity and cause class, with the new attribute
   `stego.held_back` (`held_back` with no log provider), the count of the lines

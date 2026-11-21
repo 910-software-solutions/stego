@@ -579,8 +579,9 @@ gives to the count of its row:
   tenant with no count in flight can take the last connection. Thus the
   checks of one or two tenants do not make the checks of another tenant wait
   (runtime v0.181.0). The runtime writes the warn line
-  `command.attempts.pool_small` when it starts with a pool of the counts of
-  fewer than 3 connections or with no bound.
+  `command.attempts.pool_small` once when the pool of the counts has fewer
+  than 3 connections or no bound: when it starts, or at the first count when
+  the counts use the audit pool.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
 - In a worker, `Matches` gives `false` and counts nothing.
