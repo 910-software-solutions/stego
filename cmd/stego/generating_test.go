@@ -498,6 +498,32 @@ func TestStrictPlanRefusesPendingChanges(t *testing.T) {
 			t.Fatalf("plan without --strict does not save the plan:\n%s", printed)
 		}
 	})
+
+	t.Run("ST-GEN-UC05-R02-T04 plan --strict --show refuses a saved plan that no longer applies, and without --strict exits 0", func(t *testing.T) {
+		generatingProject(t, generatingDeclaration)
+		mustRun(t, runApply)
+		dir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "init", "-q")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "applied")
+		// A plan is saved for a declaration, and the declaration then changes, so the saved plan no longer applies
+		// (security review of PR #490, I4).
+		writeProjectFile(t, "service.yaml", strings.Replace(generatingDeclaration, "  notes: {entity: Note, operations: [create, read]}\n", "", 1))
+		if printed := mustRun(t, runPlan, "--base", "HEAD"); !strings.Contains(printed, "Saved the plan") {
+			t.Fatalf("plan does not save the plan:\n%s", printed)
+		}
+		writeProjectFile(t, "service.yaml", generatingDeclaration)
+		if printed := mustRun(t, runPlan, "--show"); !strings.Contains(printed, "The saved plan does not apply") {
+			t.Fatalf("plan --show does not say that the saved plan does not apply:\n%s", printed)
+		}
+		printed, err := capture(t, runPlan, "--strict", "--show")
+		if err == nil || !strings.Contains(err.Error(), "--strict refuses: the saved plan does not apply") {
+			t.Fatalf("plan --strict --show of a saved plan that does not apply gave %v:\n%s", err, printed)
+		}
+	})
 }
 
 // The declarations of these tests prove behaviour of the compiler that does not depend on the data path. Since the

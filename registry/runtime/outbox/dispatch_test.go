@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -1903,6 +1904,51 @@ func TestDispatchNotUnderstood(t *testing.T) {
 				NotUnderstoodBound: bound}); err == nil {
 				t.Errorf("Register took the not-understood bound %s", bound)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC40-T03 The first hold of a message that the handler cannot read writes one WARN line, at most one a minute for each destination, with no value", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		one, two := message("authz", "document:3"), message("authz", "document:4")
+		one.Payload, two.Payload = []byte(`{"secret":"buyer@example.com"}`), []byte(`{"secret":"buyer@example.com"}`)
+		enqueue(t, db, q, one, two)
+		events := &eventExporter{}
+		logs := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(events)))
+		w := newWorker(t, q, func(c *WorkerConfig) { c.Logger = logs; c.Concurrency = 2 })
+		register(t, w, Destination{Name: "authz", MustLand: true, Handler: func(context.Context, *sql.Tx, Delivery) error {
+			return WithFailureCode(NotUnderstood(errors.New("buyer@example.com")), "authz-relation-unknown")
+		}})
+		// The first two cycles hold each message for the first time; the third, a minute later on the queue clock, holds
+		// one of them again.
+		cycle(t, w)
+		cycle(t, w)
+		clock.Advance(time.Minute)
+		cycle(t, w)
+		// Both messages were held for the first time, and one of them again.
+		if a, b := readRow(t, db, one.ID), readRow(t, db, two.ID); a.FailureCode != "authz-relation-unknown" || b.FailureCode != "authz-relation-unknown" || w.Stats().NotUnderstood < 3 {
+			t.Fatalf("the messages are %+v and %+v after %d holds, want both held and one held again", a, b, w.Stats().NotUnderstood)
+		}
+		events.mu.Lock()
+		defer events.mu.Unlock()
+		var lines []map[string]string
+		for _, record := range events.records {
+			if record.EventName() != "outbox.not_understood" {
+				continue
+			}
+			if record.Severity() != otellog.SeverityWarn || strings.Contains(record.Body().AsString(), "buyer@") {
+				t.Fatalf("the line is %v %q, want WARN with no value", record.Severity(), record.Body().AsString())
+			}
+			got := map[string]string{}
+			record.WalkAttributes(func(kv attribute.KeyValue) bool {
+				got[string(kv.Key)] = kv.Value.AsString()
+				return true
+			})
+			lines = append(lines, got)
+		}
+		if len(lines) != 1 || lines[0]["destination"] != "authz" || lines[0]["failure_code"] != "authz-relation-unknown" || len(lines[0]) != 2 {
+			t.Fatalf("the lines of the holds are %v, want one line that names authz and authz-relation-unknown only", lines)
 		}
 	})
 }

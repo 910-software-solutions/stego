@@ -490,6 +490,11 @@ func runPlan(args []string) error {
 		}
 		if err != nil {
 			fmt.Printf("The saved plan does not apply: %v\n", err)
+			if strictSecretSources {
+				// A check that reads the saved plan with --strict must not pass a plan that apply would refuse
+				// (security review of PR #490, I4).
+				return fmt.Errorf("--strict refuses: the saved plan does not apply; run stego plan again to save a new plan")
+			}
 			return nil
 		}
 		fmt.Println("The saved plan still applies.")

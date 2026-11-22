@@ -625,9 +625,12 @@ func waitWorker(ctx context.Context, delay time.Duration) bool {
 
 // metrics are the instruments of ST-SUP-RP01-LC07 and ST-SUP-RP01-LC12.
 type metrics struct {
-	delay   metric.Float64Histogram
-	parks   metric.Int64Counter
-	lefts   metric.Int64Counter
+	delay metric.Float64Histogram
+	parks metric.Int64Counter
+	lefts metric.Int64Counter
+	// held is the time of the last line outbox.not_understood of each destination, which rate-limits the line.
+	heldMu  sync.Mutex
+	held    map[string]time.Time
 	hooks   metric.Int64Counter
 	freed   metric.Int64Counter
 	frees   metric.Int64Counter
@@ -715,6 +718,39 @@ func (m *metrics) left(ctx context.Context, destination string) {
 		return
 	}
 	m.lefts.Add(ctx, 1, metric.WithAttributes(attribute.String("destination", destination)))
+}
+
+// HeldLogEvery is the least time between two lines outbox.not_understood of one destination.
+const HeldLogEvery = time.Minute
+
+// heldFirst writes the WARN line outbox.not_understood of a message that a handler could not read and that the worker
+// holds for the first time: it names the destination and the failure code, a short label, and no value of the
+// message. It writes at most one line each HeldLogEvery for each destination, on the clock now.
+func (m *metrics) heldFirst(ctx context.Context, destination, failureCode string, now time.Time) {
+	if m == nil || m.logger == nil {
+		return
+	}
+	m.heldMu.Lock()
+	last, seen := m.held[destination]
+	if seen && now.Sub(last) < HeldLogEvery {
+		m.heldMu.Unlock()
+		return
+	}
+	if m.held == nil {
+		m.held = map[string]time.Time{}
+	}
+	m.held[destination] = now
+	m.heldMu.Unlock()
+	var record otellog.Record
+	record.SetEventName("outbox.not_understood")
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue("an outbox message waits for a worker of a newer release that can read it"))
+	record.AddAttributes(attribute.String("destination", destination))
+	if labelPattern.MatchString(failureCode) {
+		record.AddAttributes(attribute.String("failure_code", failureCode))
+	}
+	m.logger.Emit(ctx, record)
 }
 
 // parked raises the one alert event and metric of a parked message, which name the destination, the state the

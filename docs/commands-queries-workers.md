@@ -1403,7 +1403,9 @@ message left and the cause, one of these fixed classes (ST-SUP-RP01-LC12):
 - `not_understood`: the worker of no release could read the message within
   one hour (ST-SUP-RP01-LC40). A worker of an older release leaves such a
   message in pending for a worker of a newer release, and counts it in the
-  metric `outbox.not_understood`.
+  metric `outbox.not_understood`, and writes the WARN line
+  `outbox.not_understood` on its first hold, at most one line a minute for
+  each destination.
 - `attempts_exhausted`, `lookups_exhausted`: the attempts or the status
   lookups of the message are at their limit.
 - `outcome_unknown`: the outcome of the send is not known, and the
@@ -1662,7 +1664,11 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   field or an operation that it does not know (`authz-payload-newer`), and a
   delete of a retired tenant of a resource type outside
   `RelayConfig.Types` (`authz-type-unknown`). It writes nothing for them.
-  The metric `outbox.not_understood` counts them.
+  The metric `outbox.not_understood` counts them, and the first hold of each
+  writes a WARN line `outbox.not_understood`, at most one a minute for each
+  destination. The bound of `authz` is one hour (`authz.NotUnderstoodBound`).
+  A payload of a later version is held for each operation, also for a
+  filtered delete and the delete of a tenant.
 - The metric and the log line `outbox.parked` name the fixed cause class
   (`refused`, `not_understood`, `attempts_exhausted`, `lookups_exhausted`,
   `outcome_unknown` or `tenant_not_active`), and the line names the failure

@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -114,6 +115,26 @@ func TestUniqueKey(t *testing.T) {
 			if got := entity.uniqueFields("placed_orders", name); got != want {
 				t.Errorf("the index %s names %q, want %q", name, got, want)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC48-T03 The fields of an index name are split once for each name, and the memo holds a bounded count of names", func(t *testing.T) {
+		e := &Entity[placedOrder]{spec: EntitySpec[placedOrder]{Constraints: map[string]string{"customer_id": "customer", "product_id": "product"}}}
+		if got := e.uniqueFields("placed_orders", "placed_orders_customer_id_product_id_key"); got != "customer, product" {
+			t.Fatalf("the index names %q, want customer, product", got)
+		}
+		// The second read of the same name takes the memo: it does not split the name again.
+		e.spec.Constraints = nil
+		if got := e.uniqueFields("placed_orders", "placed_orders_customer_id_product_id_key"); got != "customer, product" {
+			t.Fatalf("the second read of the name gave %q, want the memo customer, product", got)
+		}
+		for i := 0; i < 2*maxUniqueNames; i++ {
+			e.uniqueFields("placed_orders", fmt.Sprintf("placed_orders_c%d_key", i))
+		}
+		kept := 0
+		e.uniqueNames.Range(func(any, any) bool { kept++; return true })
+		if kept > maxUniqueNames {
+			t.Fatalf("the memo holds %d names, want at most %d", kept, maxUniqueNames)
 		}
 	})
 }

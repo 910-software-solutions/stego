@@ -286,6 +286,11 @@ func TestRelay(t *testing.T) {
 		if len(registrations) != 1 || registrations[0].Name != "authz" || !registrations[0].Idempotent || !registrations[0].MustLand {
 			t.Fatalf("the worker holds %+v, want authz, idempotent and must land", registrations)
 		}
+		// The bound of a tuple that no relay can read is one hour, and no setting changes it (security review of PR
+		// #490, L2).
+		if bound := env.relay(t, &fakeRelationships{}).Destination().NotUnderstoodBound; bound != time.Hour {
+			t.Fatalf("the not-understood bound of authz is %s, want 1h", bound)
+		}
 		if relay := env.relay(t, &fakeRelationships{}); relay.Destination().StateHook == nil {
 			t.Fatal("the relay registers no state hook")
 		}
@@ -336,6 +341,27 @@ func TestRelay(t *testing.T) {
 			"the floor marker": {{ResourceType: DefaultMarker.Resource.Type, Name: DefaultMarker.Relation}}} {
 			if _, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: relations, Relationships: &fakeRelationships{}, DB: fakeDB(t), Schema: "public"}); err == nil {
 				t.Errorf("NewRelay took %s", name)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP06-LC06-T09 A filtered delete and a delete of a tenant of a later payload version are held, not refused for good", func(t *testing.T) {
+		env := newPG(t)
+		fake := &fakeRelationships{}
+		run(t, env.newWorker(t, env.relay(t, fake), nil))
+		revocation := `"revocation":"` + uuid.NewString() + `"`
+		relation := env.enqueueRaw(t, "t1", "document:v3", "authz.delete_relation", []byte(`{"v":3,"op":"delete_relation",`+revocation+
+			`,"tuple":{"resource_type":"document","resource_id":"`+qualify("t1", "v3")+`","relation":"viewer","subject_type":"","subject_id":""}}`), uuid.NewString())
+		retired := env.enqueueRaw(t, "t1", "document:", "authz.delete_tenant", []byte(`{"v":3,"op":"delete_tenant",`+revocation+
+			`,"tuple":{"resource_type":"document","resource_id":"`+TenantPrefix(mustTenant(t, "t1"))+`","relation":"","subject_type":"","subject_id":""}}`), uuid.NewString())
+		for _, id := range []uuid.UUID{relation, retired} {
+			waitFor(t, func() bool { return leftFor(t, env, id, NewerPayloadCode) })
+		}
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, batch := range fake.deletes {
+			if len(batch) > 0 {
+				t.Fatalf("the provider got the deletes %v of a payload of a later version", batch)
 			}
 		}
 	})

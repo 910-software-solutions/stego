@@ -240,8 +240,15 @@ func (r *Relay) AlertBound() time.Duration { return r.bound }
 // destination authz, idempotent and must land, with Deliver as its handler and Hook as its state hook.
 func (r *Relay) Destination() outbox.Destination {
 	rules := Rules()
-	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook}
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook,
+		NotUnderstoodBound: NotUnderstoodBound}
 }
+
+// NotUnderstoodBound is the not-understood bound of the destination authz, and no setting changes it: a tuple that
+// no relay can read within one hour of its enqueue is parked with the alert of a park. A held tuple is a write or a
+// revocation that SpiceDB does not have yet, and it holds the later tuples of its resource, so the bound stays at the
+// default of the outbox and never at the outbox maximum of seven days (security review of PR #490, L2).
+const NotUnderstoodBound = outbox.DefaultNotUnderstoodBound
 
 // Rules returns the declared rules of the destination authz, idempotent and must land, which the resolver of a
 // process that does not deliver applies (security review of PR #421, L3).
@@ -629,6 +636,12 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 	if decoder.More() {
 		return payload{}, errors.New("authz: the relay payload holds more than one value")
 	}
+	// A payload of a later version is of a newer release, whatever its operation: it is held for the relay of that
+	// release before the checks of each operation, so a later filtered delete or delete of a tenant is never refused for
+	// good (security review of PR #490, L1).
+	if message.Version > payloadVersion {
+		return payload{}, errNewerPayload
+	}
 	// A filtered delete exists only at version 2: a version 1 payload with it is refused before the upgrade, so no
 	// older writer's payload is read as one (ST-SUP-Q118, L2 of the security review of PR #272).
 	if message.Operation == OperationDeleteRelation && message.Version != payloadVersion {
@@ -637,9 +650,6 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 	// The delete of a retired tenant exists only at version 2 too (ST-SUP-RC27-OC15).
 	if message.Operation == OperationDeleteTenant && message.Version != payloadVersion {
 		return payload{}, errors.New("authz: the relay payload of a delete of a tenant is not of version 2")
-	}
-	if message.Version > payloadVersion {
-		return payload{}, errNewerPayload
 	}
 	written := message.Version
 	switch message.Version {

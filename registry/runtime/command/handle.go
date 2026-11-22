@@ -577,6 +577,10 @@ type Entity[T any] struct {
 	recheckAt atomic.Int64
 	// strayLogged is set once recheckSeal logged a clear column with no seal checkpoint.
 	strayLogged atomic.Bool
+	// uniqueNames holds the fields that uniqueFields gave for each table and index name, so the split of a name runs
+	// once (security review of PR #490, I3). It holds at most maxUniqueNames names.
+	uniqueNames sync.Map
+	uniqueCount atomic.Int64
 	// owner is the runtime that registered the entity in its Config.Entities; an entity registers with one runtime
 	// only.
 	owner *Runtime
@@ -1420,6 +1424,24 @@ func (e *Entity[T]) uniqueFields(table, index string) string {
 	if table == "" || len(index) >= 63 {
 		return ""
 	}
+	name := table + "\x00" + index
+	if fields, ok := e.uniqueNames.Load(name); ok {
+		return fields.(string)
+	}
+	fields := e.splitUnique(table, index)
+	// The names come from the catalog of the database, so they are few; the bound keeps the memo small also when
+	// they are not.
+	if e.uniqueCount.Add(1) <= maxUniqueNames {
+		e.uniqueNames.Store(name, fields)
+	}
+	return fields
+}
+
+// maxUniqueNames is the most index names that an entity keeps the fields of.
+const maxUniqueNames = 256
+
+// splitUnique is the split of uniqueFields, with no memo.
+func (e *Entity[T]) splitUnique(table, index string) string {
 	middle, ok := strings.CutPrefix(index, table+"_")
 	if !ok {
 		return ""

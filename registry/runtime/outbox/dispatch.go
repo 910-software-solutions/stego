@@ -686,6 +686,11 @@ const DefaultNotUnderstoodBound = time.Hour
 func (w *Worker) leave(ctx context.Context, d Delivery, reg Destination, code string) {
 	w.notUnderstood.Add(1)
 	w.metrics.left(ctx, d.Destination)
+	// The first hold of a message, whose last attempt did not end so, writes one WARN line, at most one a minute for
+	// each destination (security review of PR #490, L2).
+	if d.FailureCode != code {
+		w.metrics.heldFirst(ctx, d.Destination, code, w.now())
+	}
 	bound := reg.NotUnderstoodBound
 	if bound == 0 {
 		bound = DefaultNotUnderstoodBound
