@@ -1,14 +1,70 @@
 # Day-2 operations
 
 This guide tells an operator how to rotate the secrets and the keys of a
-running STEGO service, how to restore it from a backup, and which older
-release can run on a newer database. Each procedure gives its steps in order
+running STEGO service, how to restore it from a backup, which older release
+can run on a newer database, and how to read its logs. Each procedure gives its steps in order
 and the reason for the order. To move a service to a newer release, see [the
 upgrade guide](upgrade.md).
 
 A process of the service reads each Secret once, at start. A new value of a
 Secret reaches a process only when its pod restarts, also with the Component
 `secret-files` (see [Secrets as files](delivery.md#secrets-as-files)).
+
+## Read the logs
+
+Each process of a service writes one JSON object on each line. The telemetry
+runtime writes its lines on standard error, and the probe runtime writes the
+service and worker events on standard output; `kubectl logs` shows both. A
+line holds `timestamp`, `severity`, `event.name` and `message`, and fixed
+attributes. A line of the runtime holds its attributes under `attributes`,
+each with the prefix `stego.`.
+
+At the default level, `info`, a service writes these lines:
+
+| Event | When | Fields | Severity |
+|---|---|---|---|
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `duration_seconds`, `error.type` for a status of 500 or more | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
+| `command.refused` | A command that answers 400 to 499, such as a declared refusal | `action`, `resource_type`, `status`, `code` (such as `shipment.not_draft`, `denied` or `invalid`), `field` when the refusal names one | INFO |
+| `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `worker` | INFO |
+| `worker.run.failed` | A worker run that did not commit | `worker`, `outcome`, `cause` (a fixed class) | ERROR |
+| `migrate.job.started` | The migration Job starts | none | INFO |
+| `migrate.step.started` | A step of the migration Job starts | `step` | INFO |
+| `migrate.step.completed` | A step of the migration Job ends | `step`, `outcome` (`ok` or `failed`), `duration_seconds`, `cause` for a failed step that has a fixed class | INFO for `ok`, ERROR for `failed` |
+| `migrate.job.completed` | The migration Job ends with no failure | `outcome`, `duration_seconds` | INFO |
+
+A failed migration Job ends with the failure record of the process, which
+names the step. A start line with no end line names the step that waits, such
+as for a lock.
+
+Each database call writes `db.client.operation.completed`. A call that does
+not fail is DEBUG, so it shows only at the level `debug`. A call that fails is
+ERROR. A request makes several database calls, so the access line of the
+request is the INFO line.
+
+No line holds a value of a request: no path value, query, header, body,
+token, tenant, principal, resource ID or error text. The route is the
+template, never the path.
+
+### Lower or raise the volume
+
+`STEGO_LOG_LEVEL` sets the lowest severity of the lines on standard output
+and standard error: `debug`, `info`, `warn` or `error`. When it has no value,
+the level is `info`. Give it in the ConfigMap `<service>-config`, as the other
+optional settings. The service and the migration Job do not start with
+another value, and the error does not show the value.
+
+- `warn` keeps the access lines of the answers of 400 or more, the failed
+  worker runs, the failed steps and each other warning and error. It removes
+  the lines of the normal answers, of the refusals, of the worker runs that
+  committed and of the steps that end ok.
+- `error` keeps only the errors.
+- `debug` adds the database calls that do not fail.
+
+The service events, such as `service.ready` and `service.stopping`, are on
+the console at each level. The export to an OpenTelemetry collector does not
+change with the level: a collector filters the records by severity. Keep the
+migration Job at `info`, so its log shows each step.
 
 ## Where each secret is
 

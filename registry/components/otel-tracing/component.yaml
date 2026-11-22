@@ -87,7 +87,7 @@ environment:
     type: string
     required: false
     default: "info"
-    description: "The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the service writes the info lines and higher. The export to the collector does not change."
+    description: "The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info."
     secret: false
     example: "warn"
     allowed: {values: ["debug", "info", "warn", "error"]}

@@ -1666,6 +1666,27 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.191.0
+
+- New setting `STEGO_LOG_LEVEL` (`otel.LogLevelSetting`): `debug`, `info`,
+  `warn` or `error`, and `info` when it has no value. `otel.ParseLogLevel`
+  reads it, and `otel.NewSlogHandlerAt` gives the log/slog handler of a
+  level; `service.UseJSONLog` uses it. `probe.Start` and `service.Migrate`
+  refuse another value with fixed text. The console writes a built-in
+  worker event of the level or higher; the service events are on the
+  console at each level (recommendation of ST-SUP-Q210).
+- New built-in event `worker.run.completed` (INFO, the field `worker`) for a
+  run that committed, from `probe.Worker.RunCompleted`. The ticker and
+  `command.ObserveConsumer` send it through `command.CompletedObserver`.
+- `command.Runtime.RecordFailure` writes the INFO line `command.refused`
+  (`command.RefusedEvent`) for an answer of 400 to 499: the action, the
+  resource type, the status, the fixed code and the declared field. It holds
+  no tenant, principal, resource ID, request value or error text.
+- `service.Migrate` writes the lines `migrate.job.started`,
+  `migrate.step.started`, `migrate.step.completed` and
+  `migrate.job.completed` (`service.JobStartedEvent` and the others).
+- apidiff against v0.190.0: compatible.
+
 ### Release notes for runtime v0.190.0
 
 - New field `command.CounterSpec.Reset`: true when a command of the service
