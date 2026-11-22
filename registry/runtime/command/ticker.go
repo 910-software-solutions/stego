@@ -325,7 +325,12 @@ func (k *Ticker) runOne(ctx context.Context, due, next time.Time, t tenant.Tenan
 	}()
 	// A tenant that the gate holds as not active, such as one retired after the tick read the list, is skipped and
 	// is no failed run (security review of PR #337, L1).
-	if err == nil || errors.Is(err, errTenantNotActive) {
+	if err == nil {
+		// A run that committed is sent as worker.run.completed (decision on ST-SUP-Q210).
+		runCompleted(context.WithoutCancel(ctx), k.observe)
+		return
+	}
+	if errors.Is(err, errTenantNotActive) {
 		return
 	}
 	// The event carries the fixed cause class of the run's error, such as internal for a list that fails

@@ -923,8 +923,13 @@ func (e *notGrantedError) Is(target error) bool { return target == ErrNotGranted
 // for a run that the database refused for a missing privilege (decision on ST-SUP-Q141), and its fixed cause class
 // (ST-SUP-RC35-OC06). The generated destination handler of a consuming worker calls it.
 func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) error {
-	if observe == nil || err == nil {
+	if observe == nil {
 		return err
+	}
+	if err == nil {
+		// A run that committed is sent as worker.run.completed (decision on ST-SUP-Q210).
+		runCompleted(context.WithoutCancel(ctx), observe)
+		return nil
 	}
 	var failure *runFailure
 	if !errors.As(err, &failure) {
@@ -939,6 +944,19 @@ func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) err
 // observer that is not one gets RunFailed with the outcome only.
 type CauseObserver interface {
 	RunFailedCause(ctx context.Context, outcome probe.WorkerOutcome, cause string)
+}
+
+// CompletedObserver is a WorkerObserver that also takes a run that committed: probe.Worker is one. An observer that is
+// not one gets nothing for such a run (decision on ST-SUP-Q210).
+type CompletedObserver interface {
+	RunCompleted(ctx context.Context)
+}
+
+// runCompleted sends worker.run.completed when observe takes it.
+func runCompleted(ctx context.Context, observe WorkerObserver) {
+	if with, ok := observe.(CompletedObserver); ok {
+		with.RunCompleted(ctx)
+	}
 }
 
 // runFailed sends worker.run.failed with the outcome and, when observe takes it, the cause class.

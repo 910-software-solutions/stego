@@ -833,8 +833,16 @@ func (e *databaseError) CauseClass() string {
 // standard error, in the format of the console lines of the log provider, with the attributes under stego.
 // (otel.SlogHandler; ST-SUP-RP03-LC16, walkthrough 21, U-E). So the lines of the runtime that do not go through the
 // log provider, such as the lines of the seal jobs of the controller and the refused step of the migration job, are
-// JSON lines too. The generated code calls it first in NewService and in Migrate.
-func UseJSONLog() { slog.SetDefault(slog.New(otel.NewSlogHandler(os.Stderr))) }
+// JSON lines too. The generated code calls it first in NewService and in Migrate. The handler writes the lines of
+// the level of STEGO_LOG_LEVEL or higher, INFO when it has no value (decision on ST-SUP-Q210); a value that is not a
+// level gives INFO here, and the start of the service and the migration job refuse it (probe.Start, Migrate).
+func UseJSONLog() {
+	level, err := otel.ParseLogLevel(os.Getenv(logLevelSetting))
+	if err != nil {
+		level = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(otel.NewSlogHandlerAt(os.Stderr, level)))
+}
 
 // StartStage gives the stage of a start that ReadSettings or New refused, for the failure record of the process,
 // which holds no error text and no value (ST-SUP-RP14-LC05): service.start.setting.<component>.<variable> for a

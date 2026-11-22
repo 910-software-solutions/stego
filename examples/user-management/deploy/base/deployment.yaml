@@ -255,6 +255,12 @@ spec:
                   key: STEGO_HTTP_TLS_KEY
                   name: user-management-config
                   optional: true
+            - name: STEGO_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_LOG_LEVEL
+                  name: user-management-config
+                  optional: true
             - name: STEGO_OTEL_TOKEN_FILE
               valueFrom:
                 configMapKeyRef:

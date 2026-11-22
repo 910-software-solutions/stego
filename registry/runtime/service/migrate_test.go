@@ -7,8 +7,10 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -35,6 +37,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
@@ -3244,6 +3247,102 @@ func TestMigrateFaults(t *testing.T) {
 		}
 		if got := fault(err); got[0] != MigrateDatabaseFault || got[1] != "database" || got[2] == "" {
 			t.Fatalf("the job at the step open gave the fault %q", got)
+		}
+	})
+}
+
+// jobLines gives the event name and the attributes of each JSON line of the migration job in out.
+func jobLines(t *testing.T, out *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("a line of the job is not JSON: %v: %s", err, line)
+		}
+		lines = append(lines, record)
+	}
+	return lines
+}
+
+func TestMigrateLines(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T34 The job writes a line when it starts, when each step starts and ends, and when it ends, with no value", func(t *testing.T) {
+		var out bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(otel.NewSlogHandler(&out)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		attr := func(line map[string]any, key string) any {
+			a, _ := line["attributes"].(map[string]any)
+			return a["stego."+key]
+		}
+		// A job whose ledger check fails: the steps before it end ok, and its step ends failed, with no text of the
+		// cause and no line of the end of the job.
+		f := newFixture(t)
+		m := f.migration(nil)
+		m.LedgerCheck = func(context.Context, *sql.Conn) error {
+			return errors.New("the row of buyer@example.test is not of this release")
+		}
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: "127.0.0.1:1", Key: "k-private", InsecureLoopback: true}}
+		if err := Migrate(context.Background(), settings, m); Stage(err) != "migrate."+StepLedgerCheck {
+			t.Fatalf("the job gave the stage %s (%v), want migrate.%s", Stage(err), err, StepLedgerCheck)
+		}
+		var got []string
+		for _, line := range jobLines(t, &out) {
+			event, _ := line["event.name"].(string)
+			step, _ := attr(line, "step").(string)
+			outcome, _ := attr(line, "outcome").(string)
+			got = append(got, strings.TrimSpace(fmt.Sprintf("%s %s %s %s", line["severity"], event, step, outcome)))
+			if event == StepCompletedEvent && attr(line, "duration_seconds") == nil {
+				t.Fatalf("the line %v has no duration", line)
+			}
+		}
+		want := []string{"INFO migrate.job.started", "INFO migrate.step.started owner_role", "INFO migrate.step.completed owner_role ok",
+			"INFO migrate.step.started job_lock", "INFO migrate.step.completed job_lock ok", "INFO migrate.step.started ledger_check",
+			"ERROR migrate.step.completed ledger_check failed"}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("the job wrote the lines\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		for _, value := range []string{"buyer@", "k-private", f.database, rolePassword} {
+			if strings.Contains(out.String(), value) {
+				t.Fatalf("a line of the job holds %q: %s", value, out.String())
+			}
+		}
+		// A job that passes ends with migrate.job.completed, after the end of its last step.
+		out.Reset()
+		endpoint, key := startSpiceDB(t)
+		f = newFixture(t)
+		settings = MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatal(err)
+		}
+		lines := jobLines(t, &out)
+		started, completed := 0, 0
+		for _, line := range lines {
+			switch line["event.name"] {
+			case StepStartedEvent:
+				started++
+			case StepCompletedEvent:
+				if attr(line, "outcome") != "ok" || line["severity"] != "INFO" {
+					t.Fatalf("a step of a job that passes ended with %v", line)
+				}
+				completed++
+			}
+		}
+		last := lines[len(lines)-1]
+		if started == 0 || started != completed || last["event.name"] != JobCompletedEvent || attr(last, "outcome") != "ok" ||
+			attr(lines[len(lines)-2], "step") != StepReleaseIdentity {
+			t.Fatalf("a job that passes wrote %d starts, %d ends and last %v, want the same count and migrate.job.completed after release_identity", started, completed, last)
+		}
+		if strings.Contains(out.String(), key) || strings.Contains(out.String(), rolePassword) {
+			t.Fatalf("a line of the job holds the key or a password: %s", out.String())
+		}
+		// A value of STEGO_LOG_LEVEL that is not a level stops the job at the step settings, with no echo.
+		t.Setenv(otel.LogLevelSetting, "verbose-private")
+		if err := Migrate(context.Background(), settings, f.migration(nil)); Stage(err) != "migrate."+StepSettings || strings.Contains(err.Error(), "verbose-private") {
+			t.Fatalf("a bad STEGO_LOG_LEVEL gave %v, want the stage migrate.%s and no echo of the value", err, StepSettings)
 		}
 	})
 }

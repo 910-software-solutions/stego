@@ -51,6 +51,8 @@ func testDatabaseSignals(t *testing.T, provision bool, known ...string) {
 		t.Run(sample, func(t *testing.T) {
 			sink := collectorFixture(t, false)
 			t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
+			// A call that does not fail is a DEBUG line: the test reads each local line.
+			t.Setenv("STEGO_LOG_LEVEL", "debug")
 			var local bytes.Buffer
 			r, err := newRuntime(&local)
 			if err != nil {

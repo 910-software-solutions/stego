@@ -111,6 +111,21 @@ type observed struct {
 	skipped    int
 	unreached  int
 	tickFailed int
+	// completed is the count of worker.run.completed.
+	completed int
+}
+
+func (o *observed) RunCompleted(context.Context) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.completed++
+}
+
+// completions gives the count of worker.run.completed.
+func (o *observed) completions() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.completed
 }
 
 func (o *observed) TickFailed(context.Context) {
@@ -589,6 +604,37 @@ func TestTicker(t *testing.T) {
 		// The cause class is fixed and holds no text of the error (ST-SUP-RC35-OC06, ST-SUP-RC35-OC15).
 		if got := f.observe.causeList(0); strings.Join(got, ",") != "rolled_back/fill_error,panicked/panic,rolled_back/not_found" {
 			t.Fatalf("the failed runs sent %v", got)
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC09-T04 Each run that commits is one worker.run.completed, of a tick and of a consumed message", func(t *testing.T) {
+		clock := newFakeClock(aligned(interval))
+		var end atomic.Value
+		end.Store("nil")
+		f := startTicker(t, e, clock, interval, nil, []string{"t1"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
+			if end.Load() == "error" {
+				return errors.New("secret-7")
+			}
+			return nil
+		})
+		for i, next := range []string{"nil", "error", "nil"} {
+			end.Store(next)
+			f.waitArms(int64(i + 1))
+			clock.advance(interval)
+			f.next()
+			f.waitTickDone()
+		}
+		f.failedRuns(1)
+		if n := f.observe.completions(); n != 2 {
+			t.Fatalf("%d worker.run.completed after two runs that committed and one that did not, want 2", n)
+		}
+		// A consumed message: the generated handler gives the result of RunConsumer to ObserveConsumer.
+		consumer := &observed{}
+		if err := ObserveConsumer(context.Background(), consumer, nil); err != nil || consumer.completions() != 1 {
+			t.Fatalf("a consumer run that committed gave %v and %d worker.run.completed, want nil and 1", err, consumer.completions())
+		}
+		if err := ObserveConsumer(context.Background(), consumer, errors.New("secret-7")); err == nil || consumer.completions() != 1 {
+			t.Fatalf("a consumer run that did not commit gave %v and %d worker.run.completed, want its error and 1", err, consumer.completions())
 		}
 	})
 

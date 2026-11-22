@@ -18,6 +18,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -861,7 +862,7 @@ var undecidedLog = authz.NewCauseLog(nil)
 func undecided(ctx context.Context, entity string, err error) error {
 	cause, transient := authz.Cause(err), authz.Transient(err)
 	if ok, held := undecidedLog.Allow(cause); ok {
-		slog.WarnContext(ctx, "query: the authorization provider could not decide the read", "entity", entity, "cause", cause,
+		slog.WarnContext(otel.Security(ctx), "query: the authorization provider could not decide the read", "entity", entity, "cause", cause,
 			"transient", transient, "held_back", held)
 	}
 	return &undecidedError{transient: transient}
