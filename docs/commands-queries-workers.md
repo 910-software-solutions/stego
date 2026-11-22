@@ -889,6 +889,20 @@ member by either name, such as `insurance_number` or `insuranceNumber`. Thus
 the request validation of the document does not check the body of a command;
 the command runtime decodes it.
 
+A service with both commands and collections, such as a rest-crud service,
+answers in two forms. A client must read each answer in its own form:
+
+| | A command route | A collection route (rest-api) |
+| --- | --- | --- |
+| Member names | Lower camel case, such as `walletId` | The declared field name, in lower snake case, such as `wallet_id` |
+| A 64-bit integer (`int64`) | A JSON string, such as `"balance": "120"` | A JSON number, such as `"balance": 120` |
+| A member with the zero value, such as 0 or `""` | Not in the answer, as the protobuf JSON form gives it | In the answer, for a required field |
+| The status of a success | 201 when the last segment of the path is a plain word, else 200 (see [The route and the resource member](#the-route-and-the-resource-member)) | 201 for a create (`POST` to the collection), 200 for a read, a list and an update, and 204 for a delete |
+
+Thus a client of its own, such as a script with `curl` and `jq`, reads
+`.walletId // ""` and converts the string of a 64-bit integer in a command
+answer, and reads `.wallet_id` and a number in a collection answer.
+
 A service with no rest-api component, such as an rpc-service, has no such
 document; the command component writes the document of its command and query
 routes, in the same form, in `out/commands/openapi.json`.
