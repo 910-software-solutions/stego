@@ -185,6 +185,7 @@ func (e *safeExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 func (r *Runtime) ExportFailures() uint64 { return r.failures.Load() }
 func (r *Runtime) Close() {
 	r.once.Do(func() {
+		r.unwatchAccess()
 		r.service.mu.Lock()
 		r.closed.Store(true)
 		r.closeAccessWindows(true)

@@ -167,6 +167,14 @@ func statusToSlug(status int) string {
 		return "precondition-failed"
 	case http.StatusPreconditionRequired:
 		return "precondition-required"
+	case http.StatusMethodNotAllowed:
+		return "method-not-allowed"
+	case http.StatusRequestEntityTooLarge:
+		return "content-too-large"
+	case http.StatusUnprocessableEntity:
+		return "unprocessable-content"
+	case http.StatusServiceUnavailable:
+		return "service-unavailable"
 	default:
 		return "internal-error"
 	}

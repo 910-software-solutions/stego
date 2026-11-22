@@ -11,12 +11,14 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -158,7 +160,7 @@ func run() (stegoErr error) {
 	if httpTLS != nil {
 		listener = tls.NewListener(listener, httpTLS)
 	}
-	log.Printf("starting server on %s", listener.Addr())
+	slog.InfoContext(ctx, "the server listens", "event.name", "service.listening", "server", "http", "address", listener.Addr().String())
 	defer listener.Close()
 	stegoStage = "service.run"
 	return stegoRunTasks(ctx, []stegoTask{
@@ -226,6 +228,9 @@ func stegoWeakensTLS(value string) bool {
 	}
 	return false
 }
+
+// stegoServiceName is the declared name of the service, which the failure record and the HTTP diagnostics name.
+const stegoServiceName = "user-management"
 
 type stegoServiceFailure struct {
 	stage        string
@@ -406,25 +411,38 @@ func stegoReportFailure(output io.Writer, err error) {
 			remedy = text
 		}
 	}
-	record := struct {
-		Timestamp    string   `json:"timestamp"`
-		Severity     string   `json:"severity"`
-		Event        string   `json:"event.name"`
-		Message      string   `json:"message"`
-		Stage        string   `json:"stage"`
-		Tasks        []string `json:"tasks,omitempty"`
-		AbortedTasks []string `json:"aborted_tasks,omitempty"`
-		Modes        []string `json:"modes,omitempty"`
-		Fault        string   `json:"fault,omitempty"`
-		Object       string   `json:"object,omitempty"`
-		Remedy       string   `json:"remedy,omitempty"`
-		Cause        string   `json:"cause,omitempty"`
-		SQLState     string   `json:"sqlstate,omitempty"`
-	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, remedy, stegoCauseClass(err), stegoSQLState(err)}
+	// The record has the one form of each line of the runtime (walkthrough 25, L-1): the timestamp in UTC, the
+	// severity, the service name, the event name and the message, and its fields under attributes with the prefix
+	// stego.; a list is one text with its names joined by commas.
+	service := os.Getenv("OTEL_SERVICE_NAME")
+	if service == "" {
+		service = stegoServiceName
+	}
+	if service == "" {
+		service = "unknown_service"
+	}
+	text := func(b []byte, value string) []byte { encoded, _ := json.Marshal(value); return append(b, encoded...) }
+	line := append([]byte(`{"timestamp":`), text(nil, time.Now().UTC().Format(time.RFC3339Nano))...)
+	line = append(line, `,"severity":"ERROR","service.name":`...)
+	line = text(line, service)
+	line = append(line, `,"event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":`...)
+	line = text(line, stage)
+	for _, attr := range []struct{ key, value string }{{"stego.tasks", strings.Join(tasks, ",")}, {"stego.aborted_tasks", strings.Join(abortedTasks, ",")},
+		{"stego.modes", strings.Join(modes, ",")}, {"stego.fault", fault}, {"stego.object", object}, {"stego.remedy", remedy},
+		{"stego.cause", stegoCauseClass(err)}, {"stego.sqlstate", stegoSQLState(err)}} {
+		if attr.value == "" {
+			continue
+		}
+		line = append(line, ',')
+		line = text(line, attr.key)
+		line = append(line, ':')
+		line = text(line, attr.value)
+	}
+	line = append(line, "}}\n"...)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		json.NewEncoder(output).Encode(record)
+		_, _ = output.Write(line)
 	}()
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -572,15 +590,19 @@ func (d *stegoHTTPDiagnostics) Write(data []byte) (int, error) {
 		d.queue = make(chan time.Time, 256)
 		go func() {
 			defer close(d.done)
-			encoder := json.NewEncoder(d.output)
 			for timestamp := range d.queue {
-				record := struct {
-					Time     time.Time `json:"timestamp"`
-					Severity string    `json:"severity"`
-					Event    string    `json:"event.name"`
-					Message  string    `json:"message"`
-				}{timestamp, "ERROR", "http.server.diagnostic", "HTTP server reported a diagnostic"}
-				if err := encoder.Encode(record); err != nil {
+				// The one form of each line of the runtime (walkthrough 25, L-1).
+				service := os.Getenv("OTEL_SERVICE_NAME")
+				if service == "" {
+					service = stegoServiceName
+				}
+				if service == "" {
+					service = "unknown_service"
+				}
+				name, _ := json.Marshal(service)
+				stamp, _ := json.Marshal(timestamp.UTC().Format(time.RFC3339Nano))
+				line := append(append(append(append([]byte(`{"timestamp":`), stamp...), `,"severity":"ERROR","service.name":`...), name...), `,"event.name":"http.server.diagnostic","message":"HTTP server reported a diagnostic"}`+"\n"...)
+				if _, err := d.output.Write(line); err != nil {
 					d.failures.Add(1)
 				}
 			}
