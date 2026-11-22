@@ -347,6 +347,20 @@ A start of the service whose database pool did not open gives the stage `service
 such as `connection_closed` while the database server restarts. A pod that stops so starts again; when it does not
 pass, do what the remedy says.
 
+From runtime v0.192.0 two more refusals of a start give a fault, an object, a remedy and a cause in the record
+(walkthrough 24). Before, they gave the stage alone, such as `component.stego-runtime.constructor[0]`, and the reason
+was only on a separate log line:
+
+| Stage | Fault | Object | Cause | When |
+|---|---|---|---|---|
+| `service.start.spicedb` | `spicedb.connection` | `spicedb` | `unavailable`, `timeout` or another class of the gRPC status code, or `not_serving` | The start cannot reach SpiceDB in 10 s, or SpiceDB answers that it does not serve. The fault is the fault of the migration Job for the same cause. |
+| `service.start.spicedb` | `spicedb.settings` | `spicedb` | `invalid_setting` | `STEGO_SPICEDB_ENDPOINT` or `STEGO_SPICEDB_KEY_FILE` gives no value. |
+| `service.start.migration` | `migration.pending` | `migration_ledger` | `ledger_missing`, `ledger_not_granted` or `migration_missing` | The ledger is not there, the runtime role may not read it, or it does not hold a migration of the release. Run the migration Job of the release. |
+| `service.start.migration` | `migration.changed` | `migration_ledger` | `digest_changed` | The ledger holds another body of a migration of the release. |
+
+None of these fields holds an endpoint, a key, a migration name or a digest. The log line before the record still
+names the migration.
+
 For example, a Job whose SpiceDB refused the connection writes
 `{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","fault":"spicedb.connection","object":"spicedb","remedy":"the migration job cannot reach SpiceDB: ...","cause":"unavailable"}`
 (with its time and message).

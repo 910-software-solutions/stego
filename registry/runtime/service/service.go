@@ -277,7 +277,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		return nil, err
 	}
 	if svc.spice, err = DialSpiceDB(s.SpiceDB); err != nil {
-		return nil, err
+		return nil, &spiceDBError{err: err, settings: true}
 	}
 	if err := reach(ctx, svc.spice); err != nil {
 		return nil, err
@@ -437,22 +437,22 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 			return fmt.Errorf("service: read the migration ledger %s: %w", LedgerTable, err)
 		}
 	}
-	var state string
+	var state, cause string
 	switch {
 	case applied:
 		return checkDigests(ctx, db, release, digests, earlier)
 	case !present:
-		state = "is not in the database, so no migration Job has run on it"
+		state, cause = "is not in the database, so no migration Job has run on it", MigrationCauseNoLedger
 	case !readable:
-		state = "is not readable by the runtime role; the migration Job of this release grants SELECT on it"
+		state, cause = "is not readable by the runtime role; the migration Job of this release grants SELECT on it", MigrationCauseNotGranted
 	default:
-		state = "does not hold the migration " + release + ", the last migration of this release"
+		state, cause = "does not hold the migration "+release+", the last migration of this release", MigrationCauseMissing
 	}
 	text := fmt.Sprintf("the migration ledger %s %s. Run the migration Job of this release (the service binary with the argument migrate, "+
 		"in Kubernetes the Job %s-migrate-<release> of the base) and wait until it completes; this process stops, and it starts again until then",
 		LedgerTable, state, service)
 	slog.ErrorContext(ctx, "service: "+text, "migration", release, "ledger", LedgerTable, "stage", "service.start.migration")
-	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
+	return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationPending, text), cause: cause}
 }
 
 // ErrMigrationChanged is the refusal of a start on a database whose migration ledger holds another body of a
@@ -488,7 +488,7 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)
 			slog.ErrorContext(ctx, "service: "+text, "migration", name, "ledger", LedgerTable, "stage", "service.start.migration")
-			return fmt.Errorf("service: %w: %s", ErrMigrationChanged, text)
+			return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationChanged, text), cause: MigrationCauseDigest}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -508,8 +508,58 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 		"before the release migration %s. Run the migration Job of this release and wait until it completes; this process stops, and it starts again until then",
 		LedgerTable, strings.Join(missing, ", "), release)
 	slog.ErrorContext(ctx, "service: "+text, "migration", missing[0], "ledger", LedgerTable, "stage", "service.start.migration")
-	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
+	return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationPending, text), cause: MigrationCauseMissing}
 }
+
+// migrationError is a start that the check of the migration ledger refused (ST-SUP-RP14-LC07, ST-SUP-RP14-LC13): its
+// error is ErrMigrationPending or ErrMigrationChanged with the text of the log line. The failure record of the
+// process names its fault class, the ledger as its object, a fixed remedy and a cause class, so the record tells the
+// reason with no separate log line (walkthrough 24, D-l). None of them holds a migration name, a digest or a value.
+type migrationError struct {
+	err   error
+	cause string
+}
+
+func (e *migrationError) Error() string { return e.err.Error() }
+func (e *migrationError) Unwrap() error { return e.err }
+
+// The fault classes of a start that the check of the migration ledger refused: a migration of the release that the
+// ledger does not hold, and a migration whose ledger row holds another digest.
+const (
+	MigrationPendingFault = "migration.pending"
+	MigrationChangedFault = "migration.changed"
+)
+
+// The cause classes of a refused check of the migration ledger: no ledger, a ledger that the runtime role may not
+// read, a migration of the release that it does not hold, and another digest of a migration of the release.
+const (
+	MigrationCauseNoLedger   = "ledger_missing"
+	MigrationCauseNotGranted = "ledger_not_granted"
+	MigrationCauseMissing    = "migration_missing"
+	MigrationCauseDigest     = "digest_changed"
+)
+
+// FaultClass gives the fault class: pending or changed.
+func (e *migrationError) FaultClass() string {
+	if errors.Is(e.err, ErrMigrationChanged) {
+		return MigrationChangedFault
+	}
+	return MigrationPendingFault
+}
+
+// FaultObject gives the object of the fault, the migration ledger.
+func (e *migrationError) FaultObject() string { return "migration_ledger" }
+
+// FaultRemedy gives what to do, a fixed text for each fault class.
+func (e *migrationError) FaultRemedy() string {
+	if errors.Is(e.err, ErrMigrationChanged) {
+		return "the ledger holds another body of a migration of this release, and the body of an applied migration never changes: deploy the release that applied it, or a release that keeps its body and brings the change in a new schema step"
+	}
+	return "run the migration Job of this release (the service binary with the argument migrate, in Kubernetes the Job <service>-migrate-<release> of the base) and wait until it completes; this process starts again until then"
+}
+
+// CauseClass gives the class of the cause, a fixed name.
+func (e *migrationError) CauseClass() string { return e.cause }
 
 // MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own
 // line.
@@ -735,12 +785,78 @@ func reach(ctx context.Context, conn *grpc.ClientConn) error {
 	defer cancel()
 	answer, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
 	if err != nil {
-		return fmt.Errorf("service: SpiceDB at the setting %s cannot be reached", SpiceDBEndpointSetting)
+		return &spiceDBError{err: err}
 	}
 	if answer.GetStatus() != healthpb.HealthCheckResponse_SERVING {
-		return fmt.Errorf("service: SpiceDB at the setting %s is not serving", SpiceDBEndpointSetting)
+		return &spiceDBError{notServing: true}
 	}
 	return nil
+}
+
+// spiceDBError is a start whose SpiceDB the service cannot use: the settings of the connection are refused
+// (settings), SpiceDB does not answer its health check within ReachTimeout, or it answers that it does not serve
+// (notServing). The failure record of the process names the fault class, spicedb as its object, a fixed remedy and a
+// cause class, with no text of the cause, as the failure record of the migration job does for its SpiceDB steps
+// (walkthrough 24, D-m). Its error text names only the setting, never the endpoint, the key or the text of the cause.
+type spiceDBError struct {
+	err                  error
+	settings, notServing bool
+}
+
+func (e *spiceDBError) Error() string {
+	switch {
+	case e.settings:
+		return fmt.Sprintf("service: SpiceDB needs the settings %s and %s", SpiceDBEndpointSetting, SpiceDBKeyFileSetting)
+	case e.notServing:
+		return fmt.Sprintf("service: SpiceDB at the setting %s is not serving", SpiceDBEndpointSetting)
+	}
+	return fmt.Sprintf("service: SpiceDB at the setting %s cannot be reached", SpiceDBEndpointSetting)
+}
+
+// Unwrap gives the cause of the health check, so the failure record classes it; the error text never shows it.
+func (e *spiceDBError) Unwrap() error { return e.err }
+
+// The fault classes of a start whose SpiceDB the service cannot use: the connection, as the migration job names it
+// (MigrateSpiceDBFault), and the settings of the connection.
+const (
+	SpiceDBConnectionFault = MigrateSpiceDBFault
+	SpiceDBSettingsFault   = "spicedb.settings"
+)
+
+// FaultClass gives the fault class: the settings or the connection.
+func (e *spiceDBError) FaultClass() string {
+	if e.settings {
+		return SpiceDBSettingsFault
+	}
+	return SpiceDBConnectionFault
+}
+
+// FaultObject gives the object of the fault, the SpiceDB of the service.
+func (e *spiceDBError) FaultObject() string { return "spicedb" }
+
+// FaultRemedy gives what to do, a fixed text for each fault class.
+func (e *spiceDBError) FaultRemedy() string {
+	if e.settings {
+		return "the settings of SpiceDB are refused: set " + SpiceDBEndpointSetting + " and " + SpiceDBKeyFileSetting + ", then start the service again"
+	}
+	return "the service cannot reach SpiceDB or SpiceDB does not serve: the service starts again; when it does not pass, check that SpiceDB runs and serves, that " +
+		SpiceDBEndpointSetting + " names it and that " + SpiceDBKeyFileSetting + " holds its preshared key"
+}
+
+// CauseClass gives the class of the cause: invalid_setting for refused settings, not_serving for a health check that
+// answers that SpiceDB does not serve, the class of the gRPC status code of the health check, such as unavailable or
+// deadline_exceeded (authz.StatusClass), and else connection_failed. It never holds the text of the cause.
+func (e *spiceDBError) CauseClass() string {
+	switch {
+	case e.settings:
+		return "invalid_setting"
+	case e.notServing:
+		return "not_serving"
+	}
+	if class := authz.StatusClass(e.err); class != "" {
+		return class
+	}
+	return "connection_failed"
 }
 
 // DialSpiceDB connects to SpiceDB with its preshared key, over verified TLS 1.2 or later, or without TLS to a
@@ -844,18 +960,21 @@ func UseJSONLog() { slog.SetDefault(slog.New(otel.NewSlogHandler(os.Stderr))) }
 // which holds no error text and no value (ST-SUP-RP14-LC05): service.start.setting.<component>.<variable> for a
 // setting that ReadSettings refused, with the fixed name of the setting and the registry component that reads it,
 // such as service.start.setting.postgres-adapter.DATABASE_URL; service.start.database for a database pool that did
-// not open; service.start.authn.discovery for a discovery document that the key set refused,
+// not open; service.start.spicedb for a SpiceDB that the service cannot use; service.start.authn.discovery for a discovery document that the key set refused,
 // service.start.authn.keys for another key source that it refused, service.start.schema_manifest for a database that
 // does not hold the schema manifest (ST-SUP-RP14-LC06), service.start.migration for a database whose migration
 // ledger does not hold the last migration of the release (ST-SUP-RP14-LC07), and empty for every other failure.
 func StartStage(err error) string {
 	var setting *SettingError
 	var database *databaseError
+	var spice *spiceDBError
 	switch {
 	case errors.As(err, &setting) && setting.Component != "" && setting.Variable != "":
 		return "service.start.setting." + setting.Component + "." + setting.Variable
 	case errors.As(err, &database):
 		return "service.start.database"
+	case errors.As(err, &spice):
+		return "service.start.spicedb"
 	case errors.Is(err, manifest.ErrNotSatisfied):
 		return "service.start.schema_manifest"
 	case errors.Is(err, ErrMigrationPending) || errors.Is(err, ErrMigrationChanged):
