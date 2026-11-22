@@ -1118,7 +1118,9 @@ environment:
     read_by_mode: worker
   - name: STEGO_LOG_LEVEL
     read_by:
+      - domain-probe
       - otel-tracing
+      - postgres-adapter
     type: string
     required: false
     default: info
