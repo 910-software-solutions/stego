@@ -471,8 +471,9 @@ var errAnswered = errors.New("command: the idempotency key of the request answer
 // tenantOutcome maps an error of a Provision or Retire to its answer: a deny is 404 denied, as every operation
 // answers a deny (ST-SUP-RC29-OC02); a change that the tenant list refuses is 409 with its code; a permission that
 // the provider could not decide now is 503 undecided with Retry-After, as for each other command (ST-SUP-Q140;
-// security review of PR #453, INFO); any other error is 500 internal. Each is audited as denied or failed
-// (ST-SUP-RC27-OC10).
+// security review of PR #453, INFO); a database that cannot serve now (ErrUnavailable), such as a server in
+// recovery, is 503 unavailable with Retry-After, as OutcomeOf answers it (walkthrough 24, D-k); any other error is
+// 500 internal. Each is audited as denied or failed (ST-SUP-RC27-OC10).
 func tenantOutcome(err error) Outcome {
 	var state *errTenantState
 	switch {
@@ -482,6 +483,8 @@ func tenantOutcome(err error) Outcome {
 		return Outcome{Status: http.StatusConflict, Code: state.code, Audit: audit.OutcomeFailed}
 	case errors.Is(err, ErrUndecided):
 		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
+	case errors.Is(err, ErrUnavailable):
+		return Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
 }
@@ -758,6 +761,9 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 		rt.undeclaredReadFailed(ctx)
 	}
 	var result Result
+	// hooked is true once the hook ended with no error: an error of the change after it is one of the COMMIT, whose
+	// outcome may not be known.
+	hooked := false
 	hook := func(ctx context.Context, q tenant.Querier, t tenant.Tenant) error {
 		// The audit writer stages the row for the audit sink in the outbox of this transaction, which needs the
 		// transaction itself; the hook still neither commits nor rolls back.
@@ -837,6 +843,7 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 		if !wrapped.Commit {
 			return errAnswered
 		}
+		hooked = true
 		return nil
 	}
 	change := tenant.Provision
@@ -860,14 +867,28 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 		}
 		replayed, found, err := replayTenant(ctx, rt, target, keyRequest)
 		if err != nil {
+			if unavailableDB(err) {
+				return Result{}, made, unavailablef("the idempotency key of the request was not read")
+			}
 			return Result{}, made, internalf("the idempotency key of the request was not read")
 		}
 		if found {
 			return replayed, tenantRevocation{}, nil
 		}
 		return Result{}, made, &errTenantState{code: code}
+	case !hooked && unavailableDB(err):
+		// A database that cannot serve now, such as a server in recovery (SQLSTATE 57P03) or a lost connection, before
+		// the COMMIT: nothing committed, so the answer is 503 unavailable with Retry-After, and a retry under the same
+		// key may pass (walkthrough 24, D-k). An error of the COMMIT itself stays 500, as its outcome may not be known.
+		return Result{}, made, unavailablef("the tenant list was not changed")
 	}
 	return Result{}, made, internalf("the tenant list was not changed")
+}
+
+// unavailableDB tells whether err is of a database that cannot serve now: an error of the driver or the server
+// (tenant.Unavailable), or a step of the runtime that ended with ErrUnavailable.
+func unavailableDB(err error) bool {
+	return tenant.Unavailable(err) || errors.Is(err, ErrUnavailable)
 }
 
 // decideTenant decides the declared permission of the request on the service-level resource <resource type>:<service
