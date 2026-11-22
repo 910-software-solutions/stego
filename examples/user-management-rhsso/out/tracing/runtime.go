@@ -187,6 +187,7 @@ func (r *Runtime) Close() {
 	r.once.Do(func() {
 		r.service.mu.Lock()
 		r.closed.Store(true)
+		r.closeAccessWindows(true)
 		if r.service.lifecycle {
 			r.emitServiceEvent(context.Background(), RuntimeStopped)
 		}
@@ -376,8 +377,67 @@ func (r *Runtime) accessLine(ctx context.Context, start, end time.Time, method, 
 	}
 	r.service.mu.Lock()
 	defer r.service.mu.Unlock()
-	if !r.closed.Load() {
+	if !r.closed.Load() && r.admitAccess(accessBudget{event: local.Event, name: route, status: strconv.Itoa(status), severity: local.Severity}, end) {
 		r.service.local.enqueue(local)
+	}
+}
+
+// admitAccess closes the windows that ended and tells whether the budget of key
+// takes one more line. An INFO line is always taken. The caller holds service.mu.
+func (r *Runtime) admitAccess(key accessBudget, at time.Time) bool {
+	r.closeAccessWindows(false)
+	if key.severity == "INFO" {
+		return true
+	}
+	if r.service.windows == nil {
+		r.service.windows = map[accessBudget]*accessWindow{}
+	}
+	w := r.service.windows[key]
+	if w == nil {
+		if len(r.service.windows) >= accessBudgets {
+			r.service.local.dropped.Add(1)
+			return false
+		}
+		w = &accessWindow{start: r.accessNow()}
+		r.service.windows[key] = w
+	}
+	if w.written >= AccessLimit {
+		w.dropped++
+		return false
+	}
+	w.written++
+	return true
+}
+func (r *Runtime) accessNow() time.Time {
+	if r.service.now != nil {
+		return r.service.now()
+	}
+	return time.Now()
+}
+
+// closeAccessWindows ends each window that ended by the clock, or each window
+// when all is true, and queues one line with the count of the dropped lines of
+// each that dropped lines. The caller holds service.mu.
+func (r *Runtime) closeAccessWindows(all bool) {
+	if len(r.service.windows) == 0 || r.service.local == nil {
+		return
+	}
+	now := r.accessNow()
+	for key, w := range r.service.windows {
+		if !all && now.Sub(w.start) < AccessWindow {
+			continue
+		}
+		if w.dropped > 0 {
+			local := localRecord{Time: now, Service: r.service.service, Instance: r.instance, Severity: key.severity, Event: key.event, Message: "the local log dropped lines of this route or method and status in the last window", Dropped: w.dropped}
+			status, _ := strconv.Atoi(key.status)
+			if key.event == "rpc.server.call.completed" {
+				local.RPCMethod, local.RPCStatus = key.name, key.status
+			} else {
+				local.HTTPRoute, local.HTTPStatus = key.name, status
+			}
+			r.service.local.enqueue(local)
+		}
+		delete(r.service.windows, key)
 	}
 }
 
@@ -401,7 +461,7 @@ func (r *Runtime) rpcLine(ctx context.Context, start, end time.Time, method, val
 	}
 	r.service.mu.Lock()
 	defer r.service.mu.Unlock()
-	if !r.closed.Load() {
+	if !r.closed.Load() && r.admitAccess(accessBudget{event: local.Event, name: method, status: value, severity: local.Severity}, end) {
 		r.service.local.enqueue(local)
 	}
 }

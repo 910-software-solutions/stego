@@ -55,6 +55,29 @@ type serviceLogs struct {
 	logger    otellog.Logger
 	local     *localLogs
 	lifecycle bool
+	// windows are the budgets of the WARN and ERROR access lines, and now their clock, under mu.
+	windows map[accessBudget]*accessWindow
+	now     func() time.Time
+}
+
+// AccessLimit is the most WARN access lines, and in a budget of their own the most
+// ERROR access lines, of one route or method and status in one AccessWindow. A
+// line over it is counted, and one line with the count ends the window.
+const AccessLimit = 10
+const AccessWindow = time.Minute
+
+// accessBudgets is the most budgets that the runtime follows at one time.
+const accessBudgets = 64
+
+// LocalReserve is the places of the local queue that only the service events
+// and the ERROR records take, so a flood of other lines never drops them.
+const LocalReserve = 64
+
+type accessBudget struct{ event, name, status, severity string }
+type accessWindow struct {
+	start   time.Time
+	written int
+	dropped uint64
 }
 type localRecord struct {
 	Stage           string    `json:"startup.stage,omitempty"`
@@ -76,6 +99,7 @@ type localRecord struct {
 	Operation       string    `json:"operation,omitempty"`
 	Outcome         string    `json:"outcome,omitempty"`
 	Retry           bool      `json:"retry,omitempty"`
+	Dropped         uint64    `json:"dropped,omitempty"`
 	DurationSeconds *float64  `json:"duration_seconds,omitempty"`
 }
 type localLogs struct {
@@ -130,8 +154,16 @@ func newLocalLogs(writer io.Writer) *localLogs {
 }
 
 // enqueue writes a record of the level of STEGO_LOG_LEVEL or higher; put writes each record.
+// A record below ERROR never takes the last LocalReserve places of the queue.
 func (local *localLogs) enqueue(record localRecord) {
-	if severityRank(record.Severity) >= local.level {
+	rank := severityRank(record.Severity)
+	switch {
+	case rank < local.level:
+	case rank >= 3:
+		local.put(record)
+	case len(local.queue) >= cap(local.queue)-LocalReserve:
+		local.dropped.Add(1)
+	default:
 		local.put(record)
 	}
 }
