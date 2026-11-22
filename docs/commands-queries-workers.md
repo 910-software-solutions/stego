@@ -1666,6 +1666,19 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.193.0
+
+- A Provision or a Retire of a tenant (`command.ServeTenant`) whose change
+  of the tenant list fails before the COMMIT on a database that cannot
+  serve now (`tenant.Unavailable`, or `command.ErrUnavailable`), such as a
+  server in recovery that gives SQLSTATE 57P03, answers 503 with the code
+  `unavailable` and `Retry-After`, and its outcome row is `failed` with the
+  code `unavailable` (walkthrough 24, D-k). Before, it answered 500
+  `internal`. An error of the COMMIT itself stays 500, because its outcome
+  may not be known. A retry with the same `Idempotency-Key` gives the stored
+  answer when the first call committed.
+- apidiff against v0.191.0: compatible (no change of the exported API).
+
 ### Release notes for runtime v0.191.0
 
 - New setting `STEGO_LOG_LEVEL` (`otel.LogLevelSetting`): `debug`, `info`,
