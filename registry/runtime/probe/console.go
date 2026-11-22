@@ -39,6 +39,9 @@ type consoleSink struct {
 	// budget, both under mu.
 	now     func() time.Time
 	windows map[budget]*window
+	// level is the lowest severity of a built-in worker event that the console writes, from STEGO_LOG_LEVEL; the zero
+	// value writes each (decision on ST-SUP-Q210).
+	level Severity
 }
 
 // budget is the key of one rate limit of the built-in events: the event name, and whether it is of severity ERROR,
@@ -73,11 +76,27 @@ func newConsoleSink(out io.Writer, f format, service, instance string) *consoleS
 // a full queue of declared observations never drops one (ST-SUP-RP12-LC22).
 const BuiltinQueueLimit = 64
 
-// send queues the record when the console takes it: a built-in service or worker event in its own queue.
+// BuiltinReserve is the places of the queue of the built-in events that an INFO worker event does not take, so a
+// burst of runs that commit never drops a worker.run.failed or a service event.
+const BuiltinReserve = 16
+
+// send queues the record when the console takes it: a built-in service event, and a built-in worker event of the
+// level of the console or higher, in its own queue.
 func (s *consoleSink) send(r *record) {
 	switch {
-	case r.obs.class == serviceClass || r.obs.class == workerClass:
+	case r.obs.class == serviceClass:
 		s.builtins.put(r)
+	case r.obs.class == workerClass:
+		switch {
+		case r.obs.severity < s.level:
+		case r.obs.severity < Warn:
+			// An INFO worker event, such as worker.run.completed of each run that commits, never takes the last
+			// BuiltinReserve places, which stay for worker.run.failed and the service events (security review of
+			// PR #492, L1).
+			s.builtins.putBelow(r, BuiltinReserve)
+		default:
+			s.builtins.put(r)
+		}
 	case s.formatOf(r) != formatOff:
 		s.queue.put(r)
 	}

@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -37,6 +38,8 @@ type SlogHandler struct {
 	out    *lockedWriter
 	attrs  []slog.Attr
 	groups []string
+	// level is the lowest level that the handler writes; the zero value is slog.LevelInfo.
+	level slog.Level
 }
 
 // lockedWriter writes each line of all the handlers of one output in one call, one line at a time.
@@ -45,14 +48,55 @@ type lockedWriter struct {
 	out io.Writer
 }
 
-// NewSlogHandler gives the handler that writes its lines on out.
+// NewSlogHandler gives the handler that writes its lines of level INFO or higher on out.
 func NewSlogHandler(out io.Writer) *SlogHandler {
 	return &SlogHandler{out: &lockedWriter{out: out}}
 }
 
-// Enabled takes each record of level INFO or higher.
-func (h *SlogHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= slog.LevelInfo
+// NewSlogHandlerAt gives the handler that writes its lines of level or higher on out, such as the level of
+// STEGO_LOG_LEVEL that ParseLogLevel gives (decision on ST-SUP-Q210).
+func NewSlogHandlerAt(out io.Writer, level slog.Level) *SlogHandler {
+	return &SlogHandler{out: &lockedWriter{out: out}, level: level}
+}
+
+// Enabled takes each record of the level of the handler or higher: INFO or higher when no level is given; and each
+// record of INFO or higher of a context that Security marks, at each level.
+func (h *SlogHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level || (level >= slog.LevelInfo && ctx != nil && ctx.Value(securityKey{}) != nil)
+}
+
+type securityKey struct{}
+
+// Security marks ctx for a line of the security class, which the handler writes at each level of STEGO_LOG_LEVEL,
+// as the console writes the service events (security review of PR #492, L3): such as the line of another entry
+// under the ID of an audit entry, of a stored answer that does not open, of a decision that the authorization
+// provider could not make, and the seal and re-seal pass lines. docs/operations.md lists the class.
+func Security(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, securityKey{}, true)
+}
+
+// LogLevelSetting is the setting of the lowest severity of the log lines that a process of the runtime writes on its
+// standard output and standard error: debug, info, warn or error, and info when it has no value (decision on
+// ST-SUP-Q210). The records that go to OTLP do not depend on it, as a collector filters them by severity.
+const LogLevelSetting = "STEGO_LOG_LEVEL"
+
+// ParseLogLevel gives the level of a value of LogLevelSetting: debug, info, warn or error, and info for an empty
+// value. Any other value fails with fixed text, which does not hold the value.
+func ParseLogLevel(value string) (slog.Level, error) {
+	switch value {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return slog.LevelInfo, errors.New("otel: STEGO_LOG_LEVEL must be debug, info, warn or error")
 }
 
 // WithAttrs gives a handler that adds attrs to each line.

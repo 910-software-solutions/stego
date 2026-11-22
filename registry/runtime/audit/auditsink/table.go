@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
 // Schema and Table name the default sink: the table entries in the schema stego_audit_sink of the service database.
@@ -119,7 +120,7 @@ func (s *TableSink) store(ctx context.Context, entries []Entry) error {
 				return fmt.Errorf("auditsink: the default sink: %w", err)
 			}
 			if kind != e.Kind || tenantID != e.Tenant || !bytes.Equal(hash, e.Hash) || !bytes.Equal(body, e.Body) {
-				slog.WarnContext(ctx, "auditsink: the default sink holds another entry under the ID of an entry", "entry_id", e.ID)
+				slog.WarnContext(otel.Security(ctx), "auditsink: the default sink holds another entry under the ID of an entry", "entry_id", e.ID)
 				return ErrConflict
 			}
 			held++

@@ -172,6 +172,102 @@ func TestProbeBuiltins(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP12-LC21-T03 A run that committed is the Info worker.run.completed with the worker name, which the console writes from the level of STEGO_LOG_LEVEL", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			level                 string
+			completed, failed, ok int
+		}{{"", 1, 1, 1}, {"debug", 1, 1, 1}, {"warn", 0, 1, 1}, {"error", 0, 1, 1}} {
+			level, err := consoleLevel(c.level)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdout := &lines{}
+			r, err := start(newTelemetry(t), builtins, "off", stdout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.console.level = level
+			worker := r.Worker("ship-orders")
+			worker.RunCompleted(context.Background())
+			worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+			// A worker name that the Builtins do not hold is dropped.
+			r.Worker("t-0198a1b2-private").RunCompleted(context.Background())
+			r.Service(context.Background(), ServiceReady)
+			if err := r.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]int{}
+			for _, line := range stdout.everything() {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatal(err)
+				}
+				event, _ := record["event.name"].(string)
+				got[event]++
+				if event == "worker.run.completed" && (record["severity"] != "INFO" || !strings.Contains(line, `"ship-orders"`) || strings.Contains(line, "tenant")) {
+					t.Fatalf("the line of a run that committed is %s, want INFO with the worker name only", line)
+				}
+				if strings.Contains(line, "private") {
+					t.Fatalf("a console line holds a name that the Builtins do not hold: %s", line)
+				}
+			}
+			if got["worker.run.completed"] != c.completed || got["worker.run.failed"] != c.failed || got["service.ready"] != c.ok {
+				t.Fatalf("STEGO_LOG_LEVEL=%q gave the lines %v, want %d worker.run.completed, %d worker.run.failed and %d service.ready", c.level, got, c.completed, c.failed, c.ok)
+			}
+		}
+		t.Setenv("STEGO_LOG_LEVEL", "verbose-private")
+		if _, err := Start(newTelemetry(t), builtins); err == nil || strings.Contains(err.Error(), "verbose-private") {
+			t.Fatalf("Start with a value of STEGO_LOG_LEVEL that is not a level gave %v, want a refusal that does not hold the value", err)
+		}
+	})
+
+	t.Run("ST-SUP-RP12-LC21-T04 A burst of runs that commit leaves the places of worker.run.failed and the service events", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "off", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker := r.Worker("ship-orders")
+		release := stdout.hold()
+		worker.RunCompleted(context.Background())
+		stdout.waitEntered(t)
+		// The writer holds one line; the burst fills the queue but its reserve.
+		for range 2 * BuiltinQueueLimit {
+			worker.RunCompleted(context.Background())
+		}
+		worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		r.Service(context.Background(), ServiceFailed)
+		release()
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		completed, failed, service := 0, 0, 0
+		for _, line := range stdout.everything() {
+			switch {
+			case strings.Contains(line, `"event.name":"worker.run.completed"`):
+				completed++
+			case strings.Contains(line, `"event.name":"worker.run.failed"`):
+				failed++
+			case strings.Contains(line, `"event.name":"service.failed"`):
+				service++
+			}
+		}
+		if failed != 1 || service != 1 || completed != 1+BuiltinQueueLimit-BuiltinReserve || r.console.dropped() == 0 {
+			t.Fatalf("the burst gave %d worker.run.completed, %d worker.run.failed, %d service.failed and %d dropped, want %d, 1, 1 and the rest dropped",
+				completed, failed, service, r.console.dropped(), 1+BuiltinQueueLimit-BuiltinReserve)
+		}
+	})
+
 	t.Run("ST-SUP-RP12-LC21-T02 The console writes a built-in worker event at most at the rate limit, and counts the rest", func(t *testing.T) {
 		clearEnvironment(t)
 		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)

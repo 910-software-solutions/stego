@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand/v2"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,6 +31,22 @@ import (
 
 // StepRefusedEvent is the event name of the line that says why a step of the migration job is refused.
 const StepRefusedEvent = "migrate.step.refused"
+
+// logLevelSetting is otel.LogLevelSetting, the setting of the lowest level of the log lines (decision on
+// ST-SUP-Q210).
+const logLevelSetting = "STEGO_LOG_LEVEL"
+
+// The event names of the lines that the migration job writes with log/slog as it runs (decision on ST-SUP-Q210):
+// one line when the job starts, one when each step starts and one when it ends, with the step, the outcome ok or
+// failed, the duration and, for a failed step, the fixed cause class when the step has one; and one line when the
+// whole job ends with no failure, with its duration. A failed job ends with the failure record of the process, which
+// names the step. No line holds a value of a setting, a row value or an error text.
+const (
+	JobStartedEvent    = "migrate.job.started"
+	JobCompletedEvent  = "migrate.job.completed"
+	StepStartedEvent   = "migrate.step.started"
+	StepCompletedEvent = "migrate.step.completed"
+)
 
 // MigrationTimeout is the longest time that the migration job runs when Migration gives none.
 const MigrationTimeout = 10 * time.Minute
@@ -287,8 +304,24 @@ const (
 // it takes the job lock, which it holds until the backfill, so a second job of the database waits for it (StepJobLock); and
 // it runs the tenant list and each migration text under a lock timeout of 1 s, and again after a pause when a lock
 // wait ends at that timeout, at most 10 times, so no read or write of the running release queues long behind it. Each step runs again
-// on a database that it made, so the job runs on every release.
+// on a database that it made, so the job runs on every release. It writes the lines of JobStartedEvent,
+// StepStartedEvent, StepCompletedEvent and JobCompletedEvent with log/slog, and refuses a value of STEGO_LOG_LEVEL
+// that is not a level at the step settings (decision on ST-SUP-Q210).
 func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
+	start := time.Now()
+	if err := migrate(parent, s, m); err != nil {
+		return err
+	}
+	slog.InfoContext(parent, "the migration job completed", otel.SlogEventKey, JobCompletedEvent,
+		"outcome", "ok", "duration_seconds", time.Since(start).Seconds())
+	return nil
+}
+
+// migrate is Migrate with no line at its end.
+func migrate(parent context.Context, s MigrationSettings, m Migration) error {
+	if _, err := otel.ParseLogLevel(os.Getenv(logLevelSetting)); err != nil {
+		return failed(StepSettings, err)
+	}
 	if m.OwnerRole == "" || m.RuntimeRole == "" || m.WorkerRole == "" || m.PurgeRole == "" || m.OutboxRelayRole == "" || m.TenantConfig == nil || m.LedgerCheck == nil || m.Ledger == nil ||
 		m.WriteSchema == nil || len(m.Definitions) == 0 || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
 		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer with its definitions and the declared parts"))
@@ -317,6 +350,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	slog.InfoContext(ctx, "the migration job started", otel.SlogEventKey, JobStartedEvent)
 	config, err := m.TenantConfig(s.DatabaseURL)
 	if err != nil {
 		return failed(StepSettings, err)
@@ -339,7 +373,17 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		if stepped != nil {
 			stepped(name, conn)
 		}
+		// One line when the step starts and one when it ends, so a step that waits, such as for a lock, shows in the
+		// log of the job (decision on ST-SUP-Q210).
+		slog.InfoContext(ctx, "the step of the migration job started", otel.SlogEventKey, StepStartedEvent, "step", name)
+		begun := time.Now()
 		if err := run(); err != nil {
+			failure := &StepError{Step: name, Err: err}
+			attrs := []any{otel.SlogEventKey, StepCompletedEvent, "step", name, "outcome", "failed",
+				"duration_seconds", time.Since(begun).Seconds()}
+			if class := failure.CauseClass(); class != "" {
+				attrs = append(attrs, "cause", class)
+			}
 			// A refused step says why in a text that names the change or the table, counts and release labels and
 			// no row value, which the job logs in the message of the line, past the limit of the length of an attribute
 			// (ST-SUP-RC01-OC24, ST-SUP-Q124 (a); security review of PR #485, L2).
@@ -347,8 +391,11 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			if errors.As(err, &refused) {
 				slog.ErrorContext(ctx, "migrate: the step is refused: "+refused.Refusal(), otel.SlogEventKey, StepRefusedEvent, "step", name)
 			}
-			return failed(name, err)
+			slog.ErrorContext(ctx, "the step of the migration job failed", attrs...)
+			return failure
 		}
+		slog.InfoContext(ctx, "the step of the migration job completed", otel.SlogEventKey, StepCompletedEvent, "step", name,
+			"outcome", "ok", "duration_seconds", time.Since(begun).Seconds())
 		return nil
 	}
 	if err := step(StepOwnerRole, func() error { _, err := conn.ExecContext(ctx, asOwner); return err }); err != nil {

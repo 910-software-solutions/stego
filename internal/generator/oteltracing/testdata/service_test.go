@@ -6,14 +6,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	grpccodes "google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -235,4 +240,281 @@ func BenchmarkServiceLogs(b *testing.B) {
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(runtime.LocalLogDrops())/float64(b.N), "drops/op")
+}
+
+// localLines gives the local JSON lines of a closed runtime.
+func localLines(t *testing.T, output *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("a local line is not JSON: %v: %s", err, line)
+		}
+		lines = append(lines, record)
+	}
+	return lines
+}
+
+// linesOf gives the local lines of the event name.
+func linesOf(lines []map[string]any, event string) []map[string]any {
+	var out []map[string]any
+	for _, line := range lines {
+		if line["event.name"] == event {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// noRequestValue fails when the local output holds a value of the requests of the tests.
+func noRequestValue(t *testing.T, output []byte) {
+	t.Helper()
+	for _, value := range []string{"0198a1b2-7f3c", "q=secret", "tok-private", "pin-4711", "buyer@example.test", "Bearer"} {
+		if bytes.Contains(output, []byte(value)) {
+			t.Fatalf("the local output holds %q: %s", value, output)
+		}
+	}
+}
+
+func TestLocalAccessLines(t *testing.T) {
+	for _, mode := range []string{"local", "otlp"} {
+		t.Run("ST-SUP-RC17-OC20-T02 Each request and each RPC call writes one local access line with the route template and no value ("+mode+")", func(t *testing.T) {
+			if mode == "local" {
+				traceEnvironment(t)
+			} else {
+				collectorFixture(t, false)
+			}
+			t.Setenv("STEGO_LOG_LEVEL", "")
+			var output bytes.Buffer
+			runtime, err := newRuntime(&output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, r *http.Request) {
+				switch r.PathValue("id") {
+				case "0198a1b2-7f3c-missing":
+					w.WriteHeader(http.StatusNotFound)
+				case "0198a1b2-7f3c-broken":
+					w.WriteHeader(http.StatusInternalServerError)
+				default:
+					_, _ = w.Write([]byte("pin-4711"))
+				}
+			})
+			handler := runtime.Handler(runtime.Route(mux))
+			for _, id := range []string{"0198a1b2-7f3c-found", "0198a1b2-7f3c-missing", "0198a1b2-7f3c-broken"} {
+				request := httptest.NewRequest("GET", "/records/"+id+"?q=secret", strings.NewReader("buyer@example.test"))
+				request.Header.Set("Authorization", "Bearer tok-private")
+				handler.ServeHTTP(httptest.NewRecorder(), request)
+			}
+			_, finish := runtime.TraceRPC(context.Background(), "/sample.Records/Get")
+			finish(nil)
+			_, finish = runtime.TraceRPC(context.Background(), "/sample.Records/Get")
+			finish(status.Error(grpccodes.NotFound, "0198a1b2-7f3c buyer@example.test"))
+			_, finish = runtime.TraceRPC(context.Background(), "/sample.Records/Get")
+			finish(status.Error(grpccodes.Internal, "tok-private"))
+			runtime.Close()
+			lines := localLines(t, &output)
+			access := linesOf(lines, "http.server.request.completed")
+			if len(access) != 3 {
+				t.Fatalf("%d access lines, want 3: %s", len(access), output.Bytes())
+			}
+			for i, want := range []struct {
+				status   float64
+				severity string
+				errType  any
+			}{{200, "INFO", nil}, {404, "WARN", nil}, {500, "ERROR", "500"}} {
+				line := access[i]
+				if line["http.request.method"] != "GET" || line["http.route"] != "/records/{id}" || line["http.response.status_code"] != want.status ||
+					line["severity"] != want.severity || line["error.type"] != want.errType || line["duration_seconds"] == nil || line["service.instance.id"] != runtime.instance {
+					t.Fatalf("the access line %d is %v, want GET /records/{id} %v %s", i, line, want.status, want.severity)
+				}
+			}
+			calls := linesOf(lines, "rpc.server.call.completed")
+			if len(calls) != 3 || calls[0]["severity"] != "INFO" || calls[1]["severity"] != "WARN" || calls[2]["severity"] != "ERROR" ||
+				calls[1]["rpc.response.status_code"] != "NOT_FOUND" || calls[2]["error.type"] != "INTERNAL" || calls[0]["rpc.method"] != "sample.Records/Get" {
+				t.Fatalf("the RPC lines are %v", calls)
+			}
+			noRequestValue(t, output.Bytes())
+		})
+	}
+}
+
+func TestLocalLogLevel(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC23-T02 STEGO_LOG_LEVEL sets the lowest local line, a database call that does not fail is DEBUG, and a bad value is refused", func(t *testing.T) {
+		traceEnvironment(t)
+		run := func(level string) []map[string]any {
+			t.Helper()
+			t.Setenv("STEGO_LOG_LEVEL", level)
+			var output bytes.Buffer
+			runtime, err := newRuntime(&output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.LogServiceEvent(context.Background(), ServiceReady)
+			ok := runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+			missing := runtime.Handler(http.NotFoundHandler())
+			ok.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+			missing.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+			ctx := runtime.Context(context.Background())
+			_, done := TraceDatabase(ctx, "query")
+			done("success")
+			_, done = TraceDatabase(ctx, "query")
+			done("failure")
+			runtime.Close()
+			noRequestValue(t, output.Bytes())
+			return localLines(t, &output)
+		}
+		count := func(lines []map[string]any, event string, severity string) int {
+			n := 0
+			for _, line := range linesOf(lines, event) {
+				if line["severity"] == severity {
+					n++
+				}
+			}
+			return n
+		}
+		for _, c := range []struct {
+			level                           string
+			ready, ok, missing, dbOK, dbBad int
+		}{
+			{"", 1, 1, 1, 0, 1},
+			{"info", 1, 1, 1, 0, 1},
+			{"debug", 1, 1, 1, 1, 1},
+			{"warn", 1, 0, 1, 0, 1},
+			{"error", 1, 0, 0, 0, 1},
+		} {
+			lines := run(c.level)
+			got := [5]int{count(lines, "service.ready", "INFO"), count(lines, "http.server.request.completed", "INFO"),
+				count(lines, "http.server.request.completed", "WARN"), count(lines, "db.client.operation.completed", "DEBUG"),
+				count(lines, "db.client.operation.completed", "ERROR")}
+			if got != [5]int{c.ready, c.ok, c.missing, c.dbOK, c.dbBad} {
+				t.Fatalf("STEGO_LOG_LEVEL=%q gave the lines %v, want %v", c.level, got, [5]int{c.ready, c.ok, c.missing, c.dbOK, c.dbBad})
+			}
+		}
+		t.Setenv("STEGO_LOG_LEVEL", "verbose-private")
+		if _, err := newRuntime(io.Discard); err == nil || strings.Contains(err.Error(), "verbose-private") {
+			t.Fatalf("a bad STEGO_LOG_LEVEL gave %v, want a refusal that does not echo the value", err)
+		}
+	})
+}
+
+// heldWriter holds its first write until release, and keeps each line.
+type heldWriter struct {
+	entered, release chan struct{}
+	once             sync.Once
+	mu               sync.Mutex
+	out              bytes.Buffer
+}
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered); <-w.release })
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
+
+func TestLocalLogReserveAndBudget(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC23-T03 A flood of access lines leaves the places of the service events and the ERROR lines, and a WARN access line has a budget for each route and status", func(t *testing.T) {
+		traceEnvironment(t)
+		t.Setenv("STEGO_LOG_LEVEL", "")
+		writer := &heldWriter{entered: make(chan struct{}), release: make(chan struct{})}
+		runtime, err := newRuntime(writer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.LogServiceEvent(context.Background(), ServiceReady)
+		<-writer.entered
+		ok := runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+		for range 3 * QueueSize {
+			ok.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+		}
+		runtime.LogServiceEvent(context.Background(), ServiceFailed)
+		_, done := TraceDatabase(runtime.Context(context.Background()), "query")
+		done("failure")
+		close(writer.release)
+		runtime.Close()
+		lines := localLines(t, &writer.out)
+		if n := len(linesOf(lines, "service.failed")); n != 1 {
+			t.Fatalf("%d service.failed lines after a flood of access lines, want 1", n)
+		}
+		if n := len(linesOf(lines, "db.client.operation.completed")); n != 1 {
+			t.Fatalf("%d failed database lines after a flood of access lines, want 1", n)
+		}
+		if n := len(linesOf(lines, "http.server.request.completed")); n != QueueSize-LocalReserve {
+			t.Fatalf("%d access lines of the flood, want %d", n, QueueSize-LocalReserve)
+		}
+
+		// The budget: 25 answers 401 of one route and 25 answers 404 of another give AccessLimit lines each, and one
+		// line with the count of each at the end of the window.
+		var output bytes.Buffer
+		runtime, err = newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+		runtime.service.now = func() time.Time { return clock }
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+		mux.HandleFunc("GET /orders", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+		handler := runtime.Handler(runtime.Route(mux))
+		for range 25 {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/orders", nil))
+		}
+		// The window ends: the next line of the route writes the count first, and starts a new window.
+		clock = clock.Add(AccessWindow)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+		runtime.Close()
+		got := map[string]int{}
+		dropped := map[string]float64{}
+		for _, line := range linesOf(localLines(t, &output), "http.server.request.completed") {
+			key := fmt.Sprintf("%v %v", line["http.route"], line["http.response.status_code"])
+			if n, ok := line["dropped"].(float64); ok {
+				dropped[key] += n
+				continue
+			}
+			got[key]++
+		}
+		if got["/records 401"] != AccessLimit+1 || got["/orders 404"] != AccessLimit || dropped["/records 401"] != 25-AccessLimit || dropped["/orders 404"] != 25-AccessLimit {
+			t.Fatalf("the budget gave the lines %v and the counts %v, want %d and %d lines and %d dropped of each", got, dropped, AccessLimit+1, AccessLimit, 25-AccessLimit)
+		}
+	})
+}
+
+func TestLocalAccessLineEdges(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T03 An access line of a route that no pattern matches has no route, and a method out of the fixed set is _OTHER", func(t *testing.T) {
+		traceEnvironment(t)
+		var output bytes.Buffer
+		runtime, err := newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, _ *http.Request) {})
+		handler := runtime.Handler(runtime.Route(mux))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/0198a1b2-7f3c/unknown?q=secret", nil))
+		odd := httptest.NewRequest("GET", "/records/0198a1b2-7f3c", nil)
+		odd.Method = "G\x01T\nbuyer@example.test"
+		handler.ServeHTTP(httptest.NewRecorder(), odd)
+		runtime.Close()
+		access := linesOf(localLines(t, &output), "http.server.request.completed")
+		if len(access) != 2 {
+			t.Fatalf("%d access lines, want 2", len(access))
+		}
+		if _, ok := access[0]["http.route"]; ok || access[0]["http.response.status_code"] != float64(404) || access[0]["http.request.method"] != "GET" {
+			t.Fatalf("the line of an unmatched route is %v, want 404 and no route", access[0])
+		}
+		if access[1]["http.request.method"] != "_OTHER" {
+			t.Fatalf("the line of a method out of the set is %v, want _OTHER", access[1])
+		}
+		noRequestValue(t, output.Bytes())
+		if bytes.Contains(output.Bytes(), []byte("G\\u0001T")) {
+			t.Fatalf("the local output holds the method: %s", output.Bytes())
+		}
+	})
 }

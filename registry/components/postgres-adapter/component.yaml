@@ -44,7 +44,7 @@ name: postgres-adapter
 # Version 6.29.0 gives a refused unique step and a refused foreign key step the fault class
 # schema_change.unique_duplicates or schema_change.foreign_key_broken, the index or the key as the object, and a
 # fixed remedy (ST-SUP-RC01-OC38, ST-SUP-RC01-OC46; walkthrough 23, D-f).
-version: 6.29.0
+version: 6.30.0
 stage: ga
 output_namespace: internal/storage
 
@@ -90,6 +90,14 @@ architecture:
     storage-adapter: inbound
 
 environment:
+  - name: STEGO_LOG_LEVEL
+    type: string
+    required: false
+    default: "info"
+    description: "The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info."
+    secret: false
+    example: "warn"
+    allowed: {values: ["debug", "info", "warn", "error"]}
   - name: DATABASE_URL
     type: string
     required: false
