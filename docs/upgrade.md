@@ -873,6 +873,12 @@ schema_history:
   - {change: payout-tenant-relate, phase: expand}
 ```
 
+From rest-crud 3.260.0, `stego compat` and `stego plan` refuse a release
+that adds such a relation to an entity of the base with no relate step. The
+fault names the entity and the relation, and suggests the relate step at
+expand. The check reads the schema of the base at its commit: the schema file
+that the base declaration names must be in the service folder of the base.
+
 A relate of a field or a reference, such as `relation approver` from
 `approver_id`, grants access from the values that the rows hold now, which
 the release before wrote under its own rules. Before the release, check those
