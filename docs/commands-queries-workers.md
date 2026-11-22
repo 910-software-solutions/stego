@@ -1666,6 +1666,13 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.194.0
+
+- No change of the code. The tests of the relate job are now named for the
+  record of the relate job: ST-SUP-RP10-LC58-T01 and T02 (before,
+  ST-SUP-RP10-LC50-T06 and T07), so the sum of the module moves.
+- apidiff against v0.193.0: compatible (no change of the exported API).
+
 ### Release notes for runtime v0.193.0
 
 - A Provision or a Retire of a tenant (`command.ServeTenant`) whose change
