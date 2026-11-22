@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1551,6 +1552,8 @@ func resetWallets(t *testing.T, e *env, name, table, resourceType string, c *Cou
 		},
 		func(v lockedWallet) []any { return []any{v.ID, HashCountedOf(c, v.ID, v.PIN)} },
 		func(v lockedWallet) map[string]any { return map[string]any{"id": v.ID} })
+	// A locked list of the wallets takes at most 3 rows (ST-SUP-RP10-LC54-T22).
+	s.LockAtMost = 3
 	wallets, err := NewEntity(s)
 	if err != nil {
 		t.Fatal(err)
@@ -1646,6 +1649,67 @@ func TestAttemptResetChecksDecided(t *testing.T) {
 		})
 		if !errors.Is(lockErr, ErrNotFound) || err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
 			t.Fatalf("a check of a after its lock was denied gave %v (the lock %v) and charged %d checks, want ErrNotFound, an internal error and none", err, lockErr, charges.Load())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T22 A locked list that a second decision denies a row of records only the rows it keeps", func(t *testing.T) {
+		e := newEnv(t)
+		wallets, wallet := resetWallets(t, e, "GuardedWallet", "guarded_wallets", "guarded_wallet", guardedCounter, right, a, b)
+		all, err := NewList(wallets, ListSpec{Name: "all",
+			Read: `SELECT id, pin, version, authz_token FROM guarded_wallets WHERE tenant_id = $1 ORDER BY id LIMIT $2`,
+			Lock: `SELECT id, pin, version, authz_token FROM guarded_wallets WHERE tenant_id = $1 AND id = ANY($2) ORDER BY id FOR NO KEY UPDATE`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		var charges atomic.Int32
+		rt.charged = func(bool) { charges.Add(1) }
+		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource, s.Lists = "operate", wallet, []AnyList{all}
+		}, wallets)
+		view := relation(t, "user:u-8", "view", "t1", "guarded_wallet", a)
+		viewB := relation(t, "user:u-8", "view", "t1", "guarded_wallet", b)
+		operateB := relation(t, "user:u-8", "operate", "t1", "guarded_wallet", b)
+		e.decision.setRelations(view, viewB, relation(t, "user:u-8", "operate", "t1", "guarded_wallet", a), operateB)
+		// After the first decision of the list, operate on a goes and the token of a moves, so the lock decides a
+		// again and denies it.
+		resourceA := "guarded_wallet:" + a
+		var once sync.Once
+		e.decision.setAfter(func(ev evaluation) {
+			if ev.Resource != resourceA || ev.Action != "operate" {
+				return
+			}
+			once.Do(func() {
+				e.decision.setRelations(view, viewB, operateB)
+				e.exec(`UPDATE guarded_wallets SET authz_token = 'moved' WHERE id = '` + a + `'`)
+			})
+		})
+		defer e.decision.setAfter(nil)
+		req := e.request("t1", person(t, "user:u-8"), "list-moved-1", `{}`)
+		req.Resource = b
+		var listed []string
+		var listErr error
+		_, err = e.runOn(rt, withdraw, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, a)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			rows, err := r.ListForUpdate(ctx, all, nil)
+			listErr = err
+			for _, row := range rows {
+				listed = append(listed, row.Value().ID)
+			}
+			// The fill keeps the value of a from the read with no lock after the locked list left a out.
+			return ok, check(right, w)
+		})
+		if listErr != nil || !slices.Equal(listed, []string{b}) {
+			t.Fatalf("the locked list gave %v (%v), want only %s", listed, listErr, b)
+		}
+		if err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
+			t.Fatalf("a check of a after the locked list denied it gave %v and charged %d checks, want an internal error and none", err, charges.Load())
 		}
 	})
 	t.Run("ST-SUP-RP10-LC54-T21 A counter that a command resets is held with no Reset in its declaration", func(t *testing.T) {
