@@ -778,6 +778,15 @@ relate when:
 Generation refuses the relation `tenant` when `authz/schema.zed` does not give
 the resource type the relation `tenant` of the subject type `tenant`.
 
+A relate of a field or a reference grants access from the values that the
+rows hold now. The release before wrote those values under its own rules: it
+decided no permission of the new reference, and the head may let fewer
+callers write the field. `stego validate` warns of each such relate
+(`relate-stored-values`). Before the release, check the stored values, such
+as with a query of the rows whose field names a subject that must not get the
+relation, and correct them. A relate of `tenant` gets no warning: the tenant
+of a row is the tenant that wrote it.
+
 The expand migration of the relate changes no table. It makes the table of
 the release reports, the checkpoint row of the change in
 `stego_schema.seals` and the lease `stego.backfill.<change ID>`, as the expand
@@ -795,11 +804,19 @@ systems do for a new relation:
   logs that it waits.
 - For each row it stages the tuple through the authz outbox in a transaction
   of the tenant, which locks the rows `FOR SHARE` and moves the checkpoint.
+  For a field or a reference, it first stages the delete of each tuple of
+  the relation on the row, and then the touch of the subject that the row
+  holds now, or no touch when the row holds none. A pod of the release
+  before can change the field, such as during the rollout or after a roll
+  back, and it changes no tuple of the relation. Thus a former subject loses
+  its access after the pass.
   A delete or an update of a row waits for the batch, so its own tuple change
   comes after the tuple of the job. The relay writes each tuple with a touch,
   so a tuple that is there does not change, and a pass again is safe.
 - Each batch that stages tuples writes one audit row with the action
-  `backfill-relation` and the tenant as the resource.
+  `backfill-relation` and the tenant as the resource. Its after state names
+  the change, the resource type, the relation and the count of the tuples
+  that the batch touched (`tuples`).
 - Each run writes the info line `command.relate.pass` with the change, the
   entity, the relation, the rows read (`checked`), the tuples staged
   (`related`), and `completed` and `waits`.

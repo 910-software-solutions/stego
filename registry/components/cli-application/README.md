@@ -66,13 +66,15 @@ component writes (`<out>/commands/openapi.json`), in the package
   secret field of the document, also a required one or one that only the
   create takes, and names it, never its value, as not compared in the
   result: `secrets_not_compared` with `-o json`, else
-  `(secret fields not compared: pin)`. Thus you can apply one document
-  again, and the result is `unchanged` when each other field has the
-  stored value. To give a resource that exists a new value of a secret,
+  `(secret fields not compared; the stored value can differ: pin)`. Thus
+  you can apply one document again, and the result is `unchanged` when each
+  other field has the stored value. `unchanged` does not tell that the
+  stored secret is the secret of the document: it can differ. To give a resource that exists a new value of a secret,
   add `--set-secret <field>`, such as `--set-secret pin`, once for each
-  field; the field must be one that the patch takes, and the document must
-  come from a private file or a pipe. Apply refuses a `--set-secret` of
-  another field before any request (cli-application 1.30.0; before, a
+  field; the field must be one that the patch takes and that a document
+  holds, and the document must come from a private file or a pipe. Apply
+  refuses a `--set-secret` of another field, or of a field that no document
+  holds, before any request (cli-application 1.30.0; before, a
   second apply of a document with a secret that only the create takes
   failed, and a secret that the patch takes was sent again at each apply).
   A command that lacks a required field names its flag, such as

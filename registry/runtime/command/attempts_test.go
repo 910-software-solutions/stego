@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1368,6 +1369,8 @@ func TestAttemptResetsByID(t *testing.T) {
 			},
 			func(v lockedWallet) []any { return []any{v.ID, HashCountedOf(lockedCounter, v.ID, v.PIN)} },
 			func(v lockedWallet) map[string]any { return map[string]any{"id": v.ID} })
+		// The key of a wallet is a UUID.
+		s.ValidID = func(id string) bool { return len(id) == 36 }
 		wallets, err := NewEntity(s)
 		if err != nil {
 			t.Fatal(err)
@@ -1453,10 +1456,47 @@ func TestAttemptResetsByID(t *testing.T) {
 		if err := call(withdraw, "user:u-1", a, byID(a)); err == nil || count() != 2 {
 			t.Fatalf("a reset by ID in a command that declares none gave %v and left the count %d", err, count())
 		}
-		// A row that is not there and a row that the caller may not unlock give the same answer.
-		if err := call(unlock, "user:u-5", b, byID(missing)); !errors.Is(err, ErrNotFound) {
+		// A row that is not there and a row that the caller may not unlock give the same answer, decided at the same
+		// consistency, also when the row holds a token (security review of PR #493, L1). u-6 may unlock b and not a.
+		e.exec(`UPDATE locked_wallets SET authz_token = 'zed-token-1' WHERE id = '` + a + `'`)
+		e.decision.mu.Lock()
+		e.decision.relations[relation(t, "user:u-6", "unlock", "t1", "locked_wallet", b)] = true
+		e.decision.mu.Unlock()
+		consistency := func(target string) authz.Consistency {
+			t.Helper()
+			e.decision.mu.Lock()
+			defer e.decision.mu.Unlock()
+			for i := len(e.decision.calls) - 1; i >= 0; i-- {
+				if c := e.decision.calls[i]; c.Action == "unlock" && c.Resource == "locked_wallet:"+target {
+					return c.Consistency
+				}
+			}
+			t.Fatalf("no decision of unlock on %s", target)
+			return authz.Consistency{}
+		}
+		if err := call(unlock, "user:u-6", b, byID(missing)); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("the reset of a row that is not there gave %v, want ErrNotFound", err)
 		}
+		if err := call(unlock, "user:u-6", b, byID(a)); !errors.Is(err, ErrNotFound) || count() != 2 {
+			t.Fatalf("the reset of a row that the caller may not unlock gave %v, want ErrNotFound", err)
+		}
+		if got, want := consistency(a), consistency(missing); !reflect.DeepEqual(got, want) {
+			t.Fatalf("a denied row is decided at %+v and a missing row at %+v, want the same consistency", got, want)
+		}
+		// An ID that is no key is not found with no decision (security review of PR #493, I1).
+		e.decision.mu.Lock()
+		before := len(e.decision.calls)
+		e.decision.mu.Unlock()
+		if err := call(unlock, "user:u-6", b, byID("not-a-key")); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the reset of an ID that is no key gave %v, want ErrNotFound", err)
+		}
+		e.decision.mu.Lock()
+		for _, c := range e.decision.calls[before:] {
+			if c.Resource == "locked_wallet:not-a-key" {
+				t.Errorf("the reset of an ID that is no key was decided: %+v", c)
+			}
+		}
+		e.decision.mu.Unlock()
 		if err := call(unlock, "user:u-1", a, byID(a)); err == nil || count() != 2 || resets() != 0 {
 			t.Fatalf("the reset by the owner, who may not unlock, gave %v and left the count %d, want a deny and 2", err, count())
 		}

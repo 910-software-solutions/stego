@@ -735,9 +735,12 @@ func New() commands.UnlockPinFill {
 }
 ```
 
-- The helper `...ByID` reads only the key and the authorization token of
-  the row (runtime v0.192.0, rest-crud 3.258.0). It gives the fill no value
-  of the row. The runtime decides `unlock_pin` on the row of the ID that the
+- The helper `...ByID` reads only whether the row is there (runtime
+  v0.192.0, rest-crud 3.258.0). It reads no column, opens no secret and
+  gives the fill no value of the row. It decides a row that is there and a
+  row that is not at the same consistency, so the time of the answer does
+  not tell them apart. An ID that is not a key of the entity gets 404 with
+  no decision. The runtime decides `unlock_pin` on the row of the ID that the
   fill gives, also when it is not the wallet of the request, and not the
   read permission `view`. Thus a support agent who has only `unlock_pin`,
   as in the schema above, can reset a wallet that it cannot view. A caller

@@ -732,6 +732,8 @@ type RelateJobConfig struct {
 	// one audit row for each batch that stages tuples.
 	Authz *authz.Runtime
 	Audit *audit.Writer
+	// AuditSettings are the audit settings of the service; an empty level is change.
+	AuditSettings audit.Settings
 	// Service, ServiceVersion and DeclarationVersion name the service in the audit rows.
 	Service, ServiceVersion, DeclarationVersion string
 	Changes                                     []RelateChange
@@ -770,6 +772,9 @@ func NewRelateJob(cfg RelateJobConfig) (*RelateJob, error) {
 	principal, err := authz.System(ReconcilePrincipal)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.AuditSettings.Level == "" {
+		cfg.AuditSettings.Level = audit.LevelChange
 	}
 	db, schema := cfg.DB, cfg.Schema
 	return &RelateJob{cfg: cfg, principal: principal, pause: SealPause,
@@ -975,12 +980,21 @@ func (j *RelateJob) batch(ctx context.Context, held *lease.Held, t tenant.Tenant
 		if err != nil {
 			return 0, after, err
 		}
-		if !ok {
-			continue
-		}
 		resource, err := authz.NewResource(t, c.ResourceType, f.id)
 		if err != nil {
 			return 0, after, fmt.Errorf("command: the row of %s has a key that is not a resource key", c.Entity)
+		}
+		// A release before can have changed the subject of a field or a reference with no change of its tuple, as
+		// during the rollout or after a roll back: the batch first deletes every tuple of the relation on the row, and
+		// then touches the tuple of the subject that the row holds now, in this transaction under the row lock, so the
+		// relay writes them in this order and no former subject keeps its access (security review of PR #493, M1).
+		if c.Subject != RelateTenant {
+			if _, err := handle.UnrelateAll(ctx, resource, c.Relation); err != nil {
+				return 0, after, fmt.Errorf("command: the delete of the tuples of %s#%s was not staged: %w", c.ResourceType, c.Relation, err)
+			}
+		}
+		if !ok {
+			continue
 		}
 		if _, err := handle.Relate(ctx, authz.Tuple{Resource: resource, Relation: c.Relation, Subject: subject}); err != nil {
 			return 0, after, fmt.Errorf("command: the tuple of %s#%s was not staged: %w", c.ResourceType, c.Relation, err)
@@ -990,8 +1004,12 @@ func (j *RelateJob) batch(ctx context.Context, held *lease.Held, t tenant.Tenant
 	if err := lease.SealCheckpoint(ctx, tx, held, c.Change, t.ID(), last, related, checked, false); err != nil {
 		return 0, after, err
 	}
-	if related > result.Related {
-		if _, err := j.cfg.Audit.Record(ctx, tx, t, []audit.Event{j.event(ctx, t)}); err != nil {
+	if related > result.Related || c.Subject != RelateTenant {
+		event, err := j.event(ctx, t, c, related-result.Related)
+		if err != nil {
+			return 0, after, err
+		}
+		if _, err := j.cfg.Audit.Record(ctx, tx, t, []audit.Event{event}); err != nil {
 			return 0, after, err
 		}
 	}
@@ -1032,8 +1050,10 @@ func relateSubject(t tenant.Tenant, c RelateChange, value sql.NullString) (authz
 }
 
 // event is the audit row of one batch of the relate job that staged tuples: the action backfill-relation, the
-// controller's service account as the actor of the kind system, and the tenant as the resource.
-func (j *RelateJob) event(ctx context.Context, t tenant.Tenant) audit.Event {
+// controller's service account as the actor of the kind system, the tenant as the resource, and as the after state
+// the change, the resource type, the relation and the count of the tuples that the batch touched (security review
+// of PR #493, L3).
+func (j *RelateJob) event(ctx context.Context, t tenant.Tenant, c RelateChange, touched int64) (audit.Event, error) {
 	e := audit.Event{
 		TenantID: t.ID(), ActorID: j.principal.Subject().String(), ActorKind: audit.ActorSystem,
 		Action: RelateCommand, Operation: RelateCommand, ResourceType: TenantResourceType, ResourceID: t.ID(),
@@ -1043,5 +1063,9 @@ func (j *RelateJob) event(ctx context.Context, t tenant.Tenant) audit.Event {
 	if span := trace.SpanContextFromContext(ctx); span.IsValid() {
 		e.TraceID, e.SpanID = span.TraceID().String(), span.SpanID().String()
 	}
-	return e
+	after := map[string]any{"change": c.Change, "resource_type": c.ResourceType, "relation": c.Relation, "tuples": touched}
+	if err := e.SetStates(j.cfg.AuditSettings, nil, nil, after); err != nil {
+		return audit.Event{}, err
+	}
+	return e, nil
 }

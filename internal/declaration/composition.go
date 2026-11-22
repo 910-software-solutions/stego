@@ -60,6 +60,7 @@ func Warnings(service *types.ServiceDeclaration) []ValidationError {
 		}
 	}
 	warnings = append(warnings, AttemptsWarnings(service)...)
+	warnings = append(warnings, RelateWarnings(service)...)
 	return append(warnings, WithinWarnings(service)...)
 }
 

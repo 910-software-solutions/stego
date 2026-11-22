@@ -360,8 +360,9 @@ func ResetAttempts[P any](ctx context.Context, h *Handle[P], c *Counter, on Ref)
 }
 
 // ResetAttemptsByID is ResetAttempts for the row id of the entity of c, which the fill does not read: the runtime reads
-// only the key and the authorization token of the row, gives the fill no value of it, and decides the command's own
-// permission (the reset permission) on it, not the read permission of the entity. So a support desk that holds only
+// only whether the row is there, gives the fill no value of it, and decides the command's own
+// permission (the reset permission) on it at the revocation floor, also for a row that is not there, not the read
+// permission of the entity. An ID that is no key is not found before any decision. So a support desk that holds only
 // the reset permission can reset a row that it may not view, and learns nothing of the row: a row that is not there
 // and a deny both give ErrNotFound (decision ST-SUP-Q211 (a), walkthrough 24, U-R). The reset guards, the audit row
 // and the rule that the command does not check the field are those of ResetAttempts.
@@ -389,43 +390,43 @@ func ResetAttemptsByID[P any](ctx context.Context, h *Handle[P], c *Counter, id 
 	if rows == nil {
 		return ErrNoResource
 	}
-	meta, found, err := rows.resetRow(ctx, s, id)
+	if !rows.validID(id) {
+		// An ID that is no key of the entity names no row: 404 before any decision (security review of PR #493, I1).
+		return fmt.Errorf("%w: %s", ErrNotFound, c.spec.Entity)
+	}
+	found, err := rows.resetRow(ctx, s, id)
 	if err != nil {
 		return err
 	}
+	// A row that is there and a row that is not are decided alike, at the revocation floor with no row token, so a
+	// deny and a missing row give the same answer at the same consistency (security review of PR #493, L1).
 	if !found {
-		// A row that is not there is decided as one that is, so a deny and a missing row give the same answer, and a
-		// failed decision the same error.
 		if err := s.checkCommandOn(ctx, rows.resourceTypeName(), c.spec.Entity, id, ""); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		return fmt.Errorf("%w: %s", ErrNotFound, c.spec.Entity)
 	}
-	return s.resetOn(ctx, c, rows.resourceTypeName(), c.spec.Entity, meta.ID, meta.Token)
+	return s.resetOn(ctx, c, rows.resourceTypeName(), c.spec.Entity, id, "")
 }
 
-// resetRows is a written entity whose row a reset by ID reads: its resource type and the key and token of a row.
+// resetRows is a written entity whose row a reset by ID names: its resource type, its key check, and whether a row
+// of the tenant has the key.
 type resetRows interface {
 	resourceTypeName() string
-	resetRow(ctx context.Context, s *state, id string) (Meta, bool, error)
+	validID(id string) bool
+	resetRow(ctx context.Context, s *state, id string) (bool, error)
 }
 
-// resetRow reads the key and the authorization token of the row id in the transaction of s, with no lock, and drops
-// the value, which no fill gets. A row that the tenant does not hold is not found.
-func (e *Entity[T]) resetRow(ctx context.Context, s *state, id string) (Meta, bool, error) {
-	if !e.spec.ValidID(id) {
-		return Meta{}, false, nil
+func (e *Entity[T]) validID(id string) bool { return e.spec.ValidID(id) }
+
+// resetRow tells whether the tenant of s holds the row id, in the transaction of s, with no lock. The statement wraps
+// the row read in EXISTS, so no column comes back and no sealed value is opened (security review of PR #493, L1).
+func (e *Entity[T]) resetRow(ctx context.Context, s *state, id string) (bool, error) {
+	var found bool
+	if err := s.queryRow(ctx, "SELECT EXISTS ("+e.statements().selectRow+")", s.tenant.ID(), id).Scan(&found); err != nil {
+		return false, s.failOf(ctx, e, "read "+e.spec.Name, err)
 	}
-	st := e.statements()
-	_, meta, err := st.scan(s.opening(s.queryRow(ctx, st.selectRow, s.tenant.ID(), id)))
-	err = scanFailed(err)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Meta{}, false, nil
-	}
-	if err != nil {
-		return Meta{}, false, s.failOf(ctx, e, "read "+e.spec.Name, err)
-	}
-	return meta, true, nil
+	return found, nil
 }
 
 // resetOn decides the command's own permission and the reset guards on the row id of resourceType, and records the

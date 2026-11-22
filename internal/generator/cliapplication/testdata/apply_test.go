@@ -1032,7 +1032,7 @@ func TestApplyAgainWithSecret(t *testing.T) {
 				strings.Join(again[0].NotCompared, ",") != "pin,serial_ref") {
 				t.Fatal("the second apply did not report unchanged with the secret fields not compared", again)
 			}
-			if format == "" && !strings.Contains(output, "unchanged (secret fields not compared: pin, serial_ref)") {
+			if format == "" && !strings.Contains(output, "unchanged (secret fields not compared; the stored value can differ: pin, serial_ref)") {
 				t.Fatal("the text result does not name the secret fields not compared", output)
 			}
 		}
@@ -1063,6 +1063,13 @@ func TestApplyAgainWithSecret(t *testing.T) {
 			if err == nil || strings.Contains(err.Error()+output, "SECRET") || f.calls != calls {
 				t.Fatal("apply took --set-secret of a field that no patch takes as a secret", field, err, f.calls)
 			}
+		}
+		// --set-secret of a patch secret that the document does not hold is refused before any request: it would send
+		// nothing (security review of PR #493, L4).
+		nopin := applyFile(t, filepath.Join(f.directory, "nopin.yaml"), manifest("Asset", "first", `{"count":3,"serial_ref":"SERIAL-SECRET-1"}`))
+		if _, output, err := runApplyTest(t, app, "apply", "-f", nopin, "--set-secret", "pin"); err == nil || !strings.Contains(err.Error(), "--set-secret pin names a field that no apply document holds") ||
+			strings.Contains(err2text(err)+output, "SECRET") || f.calls != calls {
+			t.Fatal("apply took --set-secret of a field that the document does not hold", err, f.calls)
 		}
 		// --set-secret from a file that the group can read is refused before any request.
 		if err := os.Chmod(counted, 0o640); err != nil {

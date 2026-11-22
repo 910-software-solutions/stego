@@ -326,3 +326,22 @@ func TestRelateSchema(t *testing.T) {
 		}
 	})
 }
+
+func TestRelateWarnings(t *testing.T) {
+	t.Run("ST-DECL-INV58-T A relate of a reference warns that it grants from the stored values, and a relate of tenant does not", func(t *testing.T) {
+		decl := readTD03(t, withinService("{relation: sprint, permission: edit}", "{id: ticket-sprint-relate, kind: relate, entity: Ticket, relation: sprint}",
+			"{id: ticket-tenant-relate, kind: relate, entity: Ticket, relation: tenant}"))
+		warnings := RelateWarnings(decl)
+		if len(warnings) != 1 || warnings[0].Rule != "relate-stored-values" || !strings.Contains(warnings[0].Message, `"ticket-sprint-relate"`) ||
+			!strings.Contains(warnings[0].Message, "the reference sprint_id") || !strings.Contains(warnings[0].Message, "check those values before the release") {
+			t.Fatalf("want one warning of the relate of sprint, got %+v", warnings)
+		}
+		found := false
+		for _, w := range Warnings(decl) {
+			found = found || w.Rule == "relate-stored-values"
+		}
+		if !found {
+			t.Error("checking does not give the relate warning")
+		}
+	})
+}

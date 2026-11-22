@@ -38,7 +38,7 @@ type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omite
 // a second create of one name, so two clients that apply one new name at the same time can make two resources
 // (ST-SUP-RC04-OC36).
 // applySecretNote is the note of apply --help on a secret field, which the service never answers (ST-SUP-RC04-OC35).
-const applySecretNote="A secret field of a resource that exists is not sent and is reported as not compared; --set-secret FIELD sends it from a private file."
+const applySecretNote="A secret field of a resource that exists is not sent and is reported as not compared, as the stored value can differ; --set-secret FIELD sends it from a private file, and only a field that the document holds."
 // secretOptions refuses a --set-secret that names no secret field of the patch of an apply resource, before any
 // request.
 func secretOptions(app Application,setSecret map[string]bool)error{
@@ -183,6 +183,16 @@ func prepareApply(app Application,documents []map[string]json.RawMessage)([]appl
  }
  return plans,nil
 }
+// documentSecrets refuses, before any request, a --set-secret FIELD that no document of the apply holds: it would send
+// nothing, and the caller would take the secret as set (security review of PR #493, L4). It names the field and no
+// value.
+func documentSecrets(plans []applyPlan,setSecret map[string]bool)error{
+ for key:=range setSecret{
+  held:=false;for _,p:=range plans{if _,given:=p.body[key];given{held=true}}
+  if !held{return fmt.Errorf("--set-secret %s names a field that no apply document holds",key)}
+ }
+ return nil
+}
 // applyOptions reads the options of apply. Each --set-secret FIELD names a secret field that apply gives to a resource
 // that exists; the option can come more than once.
 func applyOptions(args []string)(filename,format,outputFile string,dry bool,setSecret map[string]bool,err error){
@@ -200,7 +210,7 @@ func applyOptions(args []string)(filename,format,outputFile string,dry bool,setS
 func writeApply(destination *reservedOutput,format string,results []ApplyResult)error{
  var data []byte
  if format=="json"{var err error;data,err=json.MarshalIndent(results,"","  ");if err!=nil{return err};data=append(data,'\n')}else{
-  var output bytes.Buffer;for _,r:=range results{fmt.Fprintf(&output,"%s/%q %s",r.Kind,r.Name,r.Status);if len(r.NotCompared)>0{fmt.Fprintf(&output," (secret fields not compared: %s)",strings.Join(r.NotCompared,", "))};output.WriteString("\n")};data=output.Bytes()
+  var output bytes.Buffer;for _,r:=range results{fmt.Fprintf(&output,"%s/%q %s",r.Kind,r.Name,r.Status);if len(r.NotCompared)>0{fmt.Fprintf(&output," (secret fields not compared; the stored value can differ: %s)",strings.Join(r.NotCompared,", "))};output.WriteString("\n")};data=output.Bytes()
  }
  return destination.write(data)
 }
@@ -213,6 +223,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  documents,private,err:=loadApply(ctx,filename);if err!=nil{return err}
  plans,err:=prepareApply(app,documents);if err!=nil{return err}
  if err:=privateSecrets(plans,private);err!=nil{return err}
+ if err:=documentSecrets(plans,setSecret);err!=nil{return err}
  destination,err:=reserveOutput(outputFile,output);if err!=nil{return err};defer destination.close()
  results:=make([]ApplyResult,len(plans));for i,p:=range plans{results[i]=ApplyResult{Kind:p.resource.Kind,Name:p.name,ID:p.id,Status:"not_attempted"}}
  if dry{for i:=range results{results[i].Status="validated"};return writeApply(destination,format,results)}

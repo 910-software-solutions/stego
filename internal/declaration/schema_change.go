@@ -943,3 +943,38 @@ func relateFault(service *types.ServiceDeclaration, entity types.Entity, relatio
 	}
 	return fmt.Sprintf("the entity declares no relationship with a field subject and no reference with the relation %s, and the relation is not tenant; a relate names a relation whose tuple the runtime writes for each row", relation)
 }
+
+// RelateWarnings warns of each relate of a field or a reference (security review of PR #493, L2): the relate job gives
+// each row the tuple of the value that the row holds now, which the release before wrote under its own rules, with
+// no decision of the permission of the reference and no check that the head lets a caller write the field. The
+// operator checks those values before the release. A relate of tenant gets no warning: the tenant of a row is the
+// tenant that wrote it.
+func RelateWarnings(service *types.ServiceDeclaration) []ValidationError {
+	var warnings []ValidationError
+	for i, change := range service.SchemaChanges {
+		if change.Kind != "relate" || change.Relation == "" {
+			continue
+		}
+		entity, ok := findEntity(service.Entities, change.Entity)
+		if !ok || relateFault(service, entity, change.Relation) != "" {
+			continue
+		}
+		source := ""
+		for _, r := range entity.Relationships {
+			if r.Relation == change.Relation {
+				source = "the field " + r.SubjectField
+			}
+		}
+		for field, ref := range entity.References {
+			if source == "" && ref.Relation == change.Relation {
+				source = "the reference " + field
+			}
+		}
+		if source == "" {
+			continue
+		}
+		warnings = append(warnings, ValidationError{Category: "schema-change", Rule: "relate-stored-values", Path: schemaChangePath(i), Found: change.ID,
+			Message: fmt.Sprintf("schema change %q grants %s#%s from %s of each row as it is stored now, which the release before wrote under its own rules: no decision of a reference permission and no check of who may write the field; check those values before the release", change.ID, entity.ResourceType, change.Relation, source)})
+	}
+	return warnings
+}

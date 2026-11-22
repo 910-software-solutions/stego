@@ -580,7 +580,7 @@ func (svc *Service) relateJob(holder string, settings lease.Settings) (*command.
 		return nil, errors.New("service: the relate job needs the schema of the tenant list, the authorization runtime and the audit writer")
 	}
 	return command.NewRelateJob(command.RelateJobConfig{DB: svc.pool, Schema: p.Workers.TenantSchema, Authz: svc.authz, Audit: svc.writer,
-		Service: p.Service, ServiceVersion: svc.version, DeclarationVersion: p.DeclarationVersion, Changes: p.Relate,
+		AuditSettings: p.AuditSettings, Service: p.Service, ServiceVersion: svc.version, DeclarationVersion: p.DeclarationVersion, Changes: p.Relate,
 		Holder: holder, Lease: settings})
 }
 
