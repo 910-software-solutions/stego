@@ -130,7 +130,7 @@ func TestKeySourceTelemetry(t *testing.T) {
 					if err := decoder.Decode(&record); err != nil {
 						t.Fatal("missing refresh completion", err)
 					}
-					if record["event.name"] != "auth.keys.refresh.completed" || record["operation"] != source || record["outcome"] != outcome {
+					if record["event.name"] != "auth.keys.refresh.completed" || lineAttr(record, "stego.operation") != source || lineAttr(record, "stego.outcome") != outcome {
 						t.Fatal("wrong refresh completion", record)
 					}
 				}
@@ -141,4 +141,11 @@ func TestKeySourceTelemetry(t *testing.T) {
 			})
 		})
 	}
+}
+
+// lineAttr gives the attribute key of a local line, in the one form of the lines of the runtime: the fields are
+// under attributes with the prefix stego. (walkthrough 25, L-1).
+func lineAttr(record map[string]any, key string) any {
+	attrs, _ := record["attributes"].(map[string]any)
+	return attrs[key]
 }

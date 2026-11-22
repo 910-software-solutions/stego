@@ -109,7 +109,7 @@ func TestSSOStartupTelemetry(t *testing.T) {
 			if i == 1 {
 				source = "https"
 			}
-			if record["event.name"] != "auth.keys.refresh.completed" || record["outcome"] != outcome || record["operation"] != source {
+			if record["event.name"] != "auth.keys.refresh.completed" || lineAttr(record, "stego.outcome") != outcome || lineAttr(record, "stego.operation") != source {
 				t.Fatal("wrong startup telemetry", record)
 			}
 		}
@@ -118,4 +118,11 @@ func TestSSOStartupTelemetry(t *testing.T) {
 			t.Fatal("unexpected startup telemetry", err)
 		}
 	})
+}
+
+// lineAttr gives the attribute key of a local line, in the one form of the lines of the runtime: the fields are
+// under attributes with the prefix stego. (walkthrough 25, L-1).
+func lineAttr(record map[string]any, key string) any {
+	attrs, _ := record["attributes"].(map[string]any)
+	return attrs[key]
 }

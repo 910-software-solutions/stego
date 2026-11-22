@@ -57,8 +57,8 @@ func (c *helperTelemetryCapture) workOutcomes(t *testing.T, operation string) []
 	t.Helper()
 	var outcomes []string
 	for _, record := range c.completedRecords(t) {
-		if record["operation"] == operation {
-			outcomes = append(outcomes, record["outcome"].(string))
+		if lineAttr(record, "stego.operation") == operation {
+			outcomes = append(outcomes, lineAttr(record, "stego.outcome").(string))
 		}
 	}
 	return outcomes
@@ -145,7 +145,7 @@ func TestHelperTelemetrySkipsInsideControllerWork(t *testing.T) {
 	closeTelemetry()
 
 	records := capture.completedRecords(t)
-	if len(records) != 1 || records[0]["operation"] != "scan" || records[0]["outcome"] != "success" {
+	if len(records) != 1 || lineAttr(records[0], "stego.operation") != "scan" || lineAttr(records[0], "stego.outcome") != "success" {
 		t.Fatal("nested helper recorded a duplicate operation", records)
 	}
 }
@@ -169,7 +169,7 @@ func TestHelperTelemetryRecordsOnceAcrossDelegation(t *testing.T) {
 	closeTelemetry()
 
 	records := capture.completedRecords(t)
-	if len(records) != 1 || records[0]["operation"] != "scan" {
+	if len(records) != 1 || lineAttr(records[0], "stego.operation") != "scan" {
 		t.Fatal("delegating helper recorded more than one operation", records)
 	}
 }

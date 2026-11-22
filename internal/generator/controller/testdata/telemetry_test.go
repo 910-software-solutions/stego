@@ -83,9 +83,9 @@ func TestControllerCleanupWorkTelemetry(t *testing.T) {
 				if err := json.Unmarshal(line, &record); err != nil {
 					t.Fatal(err)
 				}
-				if record["event.name"] == "controller.work.completed" && record["operation"] == "cleanup" {
-					outcomes[record["outcome"].(string)]++
-					if record["retry"] == true {
+				if record["event.name"] == "controller.work.completed" && lineAttr(record, "stego.operation") == "cleanup" {
+					outcomes[lineAttr(record, "stego.outcome").(string)]++
+					if lineAttr(record, "stego.retry") == true {
 						t.Fatal("cleanup sample changed retry counters")
 					}
 				}
@@ -139,7 +139,7 @@ func TestPendingResultTelemetryPreservesFailurePriority(t *testing.T) {
 			t.Fatal(err)
 		}
 		if record["event.name"] == "controller.work.completed" {
-			outcomes = append(outcomes, record["outcome"].(string))
+			outcomes = append(outcomes, lineAttr(record, "stego.outcome").(string))
 		}
 	}
 	if fmt.Sprint(outcomes) != "[pending failure timeout canceled]" {
@@ -236,7 +236,7 @@ func TestMonitorOwnsSetupAndCleanupTelemetry(t *testing.T) {
 				event, _ := record["event.name"].(string)
 				counts[event]++
 				if event == "postgres.database.completed" {
-					counts[event+"/"+record["operation"].(string)]++
+					counts[event+"/"+lineAttr(record, "stego.operation").(string)]++
 				}
 			}
 			if len(instances) != 1 || counts["telemetry.runtime.started"] != 1 || counts["telemetry.runtime.stopped"] != 1 || counts["controller.work.completed"] != 2 || counts["postgres.database.completed/server-identity"] != 1 || counts["postgres.database.completed/delete"] != 1 {
@@ -377,13 +377,15 @@ func TestSweepOwnsCommonTelemetryAndPreservesRetryPolicy(t *testing.T) {
 			counts := map[string]int{}
 			for _, line := range bytes.Split(data, []byte("\n")) {
 				var event struct {
-					Event     string `json:"event.name"`
-					Operation string `json:"operation"`
-					Outcome   string `json:"outcome"`
-					Retry     bool   `json:"retry"`
+					Event      string `json:"event.name"`
+					Attributes struct {
+						Operation string `json:"stego.operation"`
+						Outcome   string `json:"stego.outcome"`
+						Retry     bool   `json:"stego.retry"`
+					} `json:"attributes"`
 				}
 				if json.Unmarshal(line, &event) == nil && event.Event == "controller.work.completed" {
-					counts[fmt.Sprintf("%s/%s/%t", event.Operation, event.Outcome, event.Retry)]++
+					counts[fmt.Sprintf("%s/%s/%t", event.Attributes.Operation, event.Attributes.Outcome, event.Attributes.Retry)]++
 				}
 			}
 			if counts["scan/failure/true"] != 1 {
@@ -409,4 +411,11 @@ func TestSweepOwnsCommonTelemetryAndPreservesRetryPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lineAttr gives the attribute key of a local line, in the one form of the lines of the runtime: the fields are
+// under attributes with the prefix stego. (walkthrough 25, L-1).
+func lineAttr(record map[string]any, key string) any {
+	attrs, _ := record["attributes"].(map[string]any)
+	return attrs[key]
 }

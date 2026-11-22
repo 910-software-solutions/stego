@@ -148,14 +148,22 @@ func TestBrowserStartupDiagnostics(t *testing.T) {
 							outcome = "canceled"
 						}
 					}
-					if record["startup.stage"] != stages[i] || record["outcome"] != outcome {
+					if lineAttr(record, "stego.startup.stage") != stages[i] || lineAttr(record, "stego.outcome") != outcome {
 						t.Fatal("incorrect startup stage or outcome")
 					}
 					for key := range record {
 						switch key {
-						case "startup.stage", "error.type", "timestamp", "severity", "service.name", "service.instance.id", "event.name", "message", "outcome", "duration_seconds":
+						case "timestamp", "severity", "service.name", "service.instance.id", "event.name", "message", "attributes":
 						default:
 							t.Fatal("unexpected diagnostic field", key)
+						}
+					}
+					attrs, _ := record["attributes"].(map[string]any)
+					for key := range attrs {
+						switch key {
+						case "stego.startup.stage", "error.type", "stego.outcome", "stego.duration_seconds":
+						default:
+							t.Fatal("unexpected diagnostic attribute", key)
 						}
 					}
 				}
@@ -194,4 +202,11 @@ func TestBrowserStartupPreservesErrorsAndPanic(t *testing.T) {
 			t.Fatal("missing runtime was accepted")
 		}
 	})
+}
+
+// lineAttr gives the attribute key of a local line, in the one form of the lines of the runtime: the fields are
+// under attributes with the prefix stego. (walkthrough 25, L-1).
+func lineAttr(record map[string]any, key string) any {
+	attrs, _ := record["attributes"].(map[string]any)
+	return attrs[key]
 }
