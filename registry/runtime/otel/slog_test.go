@@ -68,6 +68,46 @@ func TestSlogHandler(t *testing.T) {
 			t.Errorf("the line of a bad event name is %s", text)
 		}
 	})
+	t.Run("ST-SUP-RP03-LC16-T06 STEGO_LOG_LEVEL sets the lowest level of the log/slog lines, and a value that is not a level is refused", func(t *testing.T) {
+		for _, c := range []struct {
+			value string
+			want  []string
+		}{
+			{"", []string{"INFO", "WARN", "ERROR"}},
+			{"info", []string{"INFO", "WARN", "ERROR"}},
+			{"debug", []string{"DEBUG", "INFO", "WARN", "ERROR"}},
+			{"warn", []string{"WARN", "ERROR"}},
+			{"error", []string{"ERROR"}},
+		} {
+			level, err := ParseLogLevel(c.value)
+			if err != nil {
+				t.Fatalf("the level %q gave %v", c.value, err)
+			}
+			var out bytes.Buffer
+			logger := slog.New(NewSlogHandlerAt(&out, level)).With("worker", "sync")
+			logger.Debug("a debug line")
+			logger.Info("an info line")
+			logger.Warn("a warn line")
+			logger.Error("an error line")
+			var got []string
+			for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+				if line == "" {
+					continue
+				}
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, record["severity"].(string))
+			}
+			if strings.Join(got, " ") != strings.Join(c.want, " ") {
+				t.Fatalf("STEGO_LOG_LEVEL=%q wrote %v, want %v", c.value, got, c.want)
+			}
+		}
+		if _, err := ParseLogLevel("verbose-private"); err == nil || strings.Contains(err.Error(), "verbose-private") {
+			t.Fatalf("a value that is not a level gave %v, want a refusal that does not hold the value", err)
+		}
+	})
 	t.Run("ST-SUP-RP03-LC16-T04 A log/slog line holds at most 12 attributes of at most 256 characters each", func(t *testing.T) {
 		var out bytes.Buffer
 		logger := slog.New(NewSlogHandler(&out))

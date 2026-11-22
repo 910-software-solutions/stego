@@ -108,6 +108,11 @@ func traceDatabaseCall(ctx context.Context,call string,provision bool)(context.C
 			failed := outcome != "success" && outcome != "canceled"
 			severity := otellog.SeverityInfo
 			text := "INFO"
+			if !provision {
+				// A database call that does not fail is DEBUG: a request makes several, and its access line
+				// is INFO (decision on ST-SUP-Q210).
+				severity, text = otellog.SeverityDebug, "DEBUG"
+			}
 			if failed {
 				attrs = append(attrs, attribute.String("error.type", outcome))
 				severity = otellog.SeverityError

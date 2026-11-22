@@ -96,9 +96,16 @@ func TestAllSignalsAndLocalLogsShareRuntimeIdentity(t *testing.T) {
 		runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
 		runtime.LogServiceEvent(context.Background(), ServiceReady)
 		runtime.Close()
-		var local localRecord
-		if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &local); err != nil || local.Instance != runtime.instance {
-			t.Fatal("local log identity differs", err)
+		// The access line of the request and the service event: each carries the identity.
+		lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n"))
+		if len(lines) != 2 {
+			t.Fatal("local log lines", len(lines))
+		}
+		for _, line := range lines {
+			var local localRecord
+			if err := json.Unmarshal(line, &local); err != nil || local.Instance != runtime.instance {
+				t.Fatal("local log identity differs", err)
+			}
 		}
 		var traces, logs, metrics bool
 		timer := time.NewTimer(time.Second)

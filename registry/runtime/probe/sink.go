@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -163,11 +164,40 @@ type Runtime struct {
 // names of SpanNames, or Start fails. It reads STEGO_PROBE_CONSOLE: json or
 // logfmt turns the console sink on for declared observations, and an absent, empty or off setting leaves it off for
 // them; any other value fails with fixed text (ST-SUP-RP12-LC16). The built-in service events are on the console in
-// every setting (ST-SUP-RP12-LC22). The OTLP sink is on when, and only when, the telemetry runtime has a collector
+// every setting (ST-SUP-RP12-LC22). It reads STEGO_LOG_LEVEL too: the console writes a built-in worker event of that
+// level or higher, info when it has no value, and any other value fails with fixed text (decision on ST-SUP-Q210). The OTLP sink is on when, and only when, the telemetry runtime has a collector
 // endpoint, and it uses the telemetry runtime's providers only (ST-SUP-RP12-LC06, ST-SUP-RP12-LC14). builtins may be
 // nil when the declaration has no worker and no open schema change.
 func Start(telemetry *otel.Runtime, builtins *Builtins) (*Runtime, error) {
-	return start(telemetry, builtins, os.Getenv(consoleSetting), os.Stdout)
+	level, err := consoleLevel(os.Getenv(otel.LogLevelSetting))
+	if err != nil {
+		return nil, err
+	}
+	r, err := start(telemetry, builtins, os.Getenv(consoleSetting), os.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	r.console.level = level
+	return r, nil
+}
+
+// consoleLevel gives the lowest severity of the built-in worker events on the console from a value of
+// STEGO_LOG_LEVEL (otel.ParseLogLevel), which fails with fixed text for a value that is not a level (decision on
+// ST-SUP-Q210).
+func consoleLevel(setting string) (Severity, error) {
+	level, err := otel.ParseLogLevel(setting)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case level >= slog.LevelError:
+		return Error, nil
+	case level >= slog.LevelWarn:
+		return Warn, nil
+	case level >= slog.LevelInfo:
+		return Info, nil
+	}
+	return Debug, nil
 }
 
 // start is Start with the setting and the writer of standard output given.

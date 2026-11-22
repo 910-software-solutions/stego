@@ -362,12 +362,34 @@ func BindIdentity(ctx context.Context, subjectType string) (Bound, error) {
 // type, the request's resource and the outcome and fixed code of o (ST-SUP-RC32-OC07, ST-SUP-RP10-LC34). It runs in
 // its own short transaction within OutcomeTimeout, which the end of ctx does not cancel, so the row is written also
 // when the request was cancelled or ran past its deadline. It gives the fixed code to the completion log of ctx
-// (ST-SUP-RP03-LC12).
+// (ST-SUP-RP03-LC12), and writes the INFO line command.refused for an answer of status 400 to 499, such as a
+// declared refusal (decision on ST-SUP-Q210).
 func (rt *Runtime) RecordFailure(ctx context.Context, req Request, action, resourceType string, o Outcome) error {
 	otel.SetErrorCode(ctx, o.AnswerCode())
+	logRefused(ctx, action, resourceType, o)
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), OutcomeTimeout)
 	defer cancel()
 	return rt.RecordOutcome(recordCtx, req, action, resourceType, req.Resource, o.Audit, o.Code)
+}
+
+// RefusedEvent is the event name of the INFO line of a command whose answer has a status of 400 to 499, such as a
+// declared refusal, a denial or an invalid request (decision on ST-SUP-Q210).
+const RefusedEvent = "command.refused"
+
+// logRefused writes the line RefusedEvent of the outcome o of a command with a status of 400 to 499: the action, the
+// resource type, the status, the fixed code and, when the outcome names one, the declared field. It holds no
+// tenant, principal, resource ID, request value or error text. An outcome of status 500 or higher has lines of its
+// own, such as command.fill.failed.
+func logRefused(ctx context.Context, action, resourceType string, o Outcome) {
+	if o.Status < 400 || o.Status > 499 {
+		return
+	}
+	attrs := []any{otel.SlogEventKey, RefusedEvent, "action", action, "resource_type", resourceType,
+		"status", o.Status, "code", o.AnswerCode()}
+	if o.Field != "" {
+		attrs = append(attrs, "field", o.Field)
+	}
+	slog.InfoContext(ctx, "the command was refused", attrs...)
 }
 
 // serveRun runs the command in Run and, when it ends in an error, writes the command's audit row in its own short

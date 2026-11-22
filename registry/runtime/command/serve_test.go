@@ -1,11 +1,13 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -422,6 +424,50 @@ func (c failingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grp
 }
 
 func TestOutcomeTransient(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC34-T03 RecordFailure writes one INFO line command.refused for an answer of 400 to 499, with the code and no value", func(t *testing.T) {
+		e := newEnv(t)
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(otel.NewSlogHandler(&logs)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		req := e.request("t1", u7(t), "k-refused", `{"note":"jane.doe@example.com"}`)
+		req.Resource = "0198a1b2-private-order"
+		declared := NewRefusal("reserve", "short_stock", http.StatusUnprocessableEntity, "reserve.short_stock")
+		for _, err := range []error{declared, &invalidError{field: "owner_id", reason: reasonCreateOnly}, ErrDenied,
+			errors.New("no stock for jane.doe@example.com")} {
+			if err := e.rt.RecordFailure(e.ctx, req, "reserve", "order", OutcomeOf(err, declared)); err != nil {
+				t.Fatalf("RecordFailure gave %v", err)
+			}
+		}
+		var got []string
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var record struct {
+				Severity   string         `json:"severity"`
+				Event      string         `json:"event.name"`
+				Attributes map[string]any `json:"attributes"`
+			}
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("a line is not JSON: %v: %s", err, line)
+			}
+			if record.Event != RefusedEvent {
+				continue
+			}
+			a := record.Attributes
+			if record.Severity != "INFO" || a["stego.action"] != "reserve" || a["stego.resource_type"] != "order" {
+				t.Fatalf("the line %s, want INFO with the action reserve and the resource type order", line)
+			}
+			got = append(got, fmt.Sprintf("%v/%v/%v", a["stego.status"], a["stego.code"], a["stego.field"]))
+			for _, value := range []string{"0198a1b2-private-order", "jane.doe", "u-7", "k-refused", `"t1"`} {
+				if strings.Contains(line, value) {
+					t.Fatalf("the line %s holds %q", line, value)
+				}
+			}
+		}
+		if want := "422/reserve.short_stock/<nil>,400/invalid/owner_id,404/denied/<nil>"; strings.Join(got, ",") != want {
+			t.Fatalf("the refused lines are %v, want %s and none for the 500", got, want)
+		}
+	})
+
 	t.Run("ST-SUP-RP10-LC34-T02 A decision that the provider cannot make now maps to 503 undecided, and a refusal of the provider stays 500", func(t *testing.T) {
 		notServed, err := status.New(codes.FailedPrecondition, "object definition `comment` not found").WithDetails(
 			&errdetails.ErrorInfo{Reason: v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), Domain: "authzed.com"})

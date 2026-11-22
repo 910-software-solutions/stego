@@ -65,6 +65,17 @@ must be a bounded regular file with no world access, group write, or execute
 permission. Group read is allowed for Kubernetes Secret mounts. The file can be
 replaced during rotation. Token values never belong in browser configuration.
 
+Version 1.20.0 writes one local access line for each HTTP request and each
+gRPC call, with and without a collector: `http.server.request.completed` with
+the method, the route template, the status and the duration, and
+`rpc.server.call.completed` with the method and the status code. INFO is a
+normal answer, WARN is a client error and ERROR is a server error. The line
+holds no path value, query, header, body or error text. A database call that
+does not fail is now a DEBUG line. `STEGO_LOG_LEVEL` (debug, info, warn or
+error; info when it has no value) sets the lowest local line; the service
+events are always written, and the export to the collector does not change.
+The runtime refuses another value. See docs/operations.md, "Read the logs".
+
 Runtime and deployment settings use the same validation. Collector endpoints
 require HTTPS and the gRPC protocol. CA files can contain certificate PEM only.
 Unsupported OTEL settings fail validation, including when export is disabled.

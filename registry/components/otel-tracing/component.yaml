@@ -1,6 +1,6 @@
 kind: component
 name: otel-tracing
-version: 1.19.0
+version: 1.20.0
 stage: ga
 output_namespace: tracing
 
@@ -83,6 +83,14 @@ environment:
     description: "The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token."
     secret: false
     example: "/etc/stego/otel/token"
+  - name: STEGO_LOG_LEVEL
+    type: string
+    required: false
+    default: "info"
+    description: "The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the service writes the info lines and higher. The export to the collector does not change."
+    secret: false
+    example: "warn"
+    allowed: {values: ["debug", "info", "warn", "error"]}
   - name: GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES
     type: string
     required: false
