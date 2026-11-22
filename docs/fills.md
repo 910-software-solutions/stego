@@ -689,7 +689,14 @@ A support desk can unlock a row before `unlock_after`. Declare a command with
   relation. Thus it refuses `unlock_pin = customer->edit` beside
   `operate = customer->edit`, `unlock_pin = owner + support` beside
   `edit = owner`, `unlock_pin = alias` with `alias = owner`, and
-  `operate = customer->edit + unlock_pin`.
+  `operate = customer->edit + unlock_pin`;
+- a command of another resource type writes the entity, such as a `payout`
+  command that writes `Wallet`, and its permission is the permission of the
+  reset, is not a permission or a relation of the resource type of the entity
+  in the schema, or shares a relation or an arrow with the permission of the
+  reset there. Such a command decides its own permission on each wallet that
+  it locks or writes, so it is a command that may check the PIN (rest-crud
+  3.256.0).
 
 The reset needs a permission of its own, so a caller who can check the PIN
 cannot also reset its count. In the schema above, only a support agent of the
@@ -698,6 +705,18 @@ holds each relation, so the runtime also checks each reset: a caller who has
 the permission of another command that writes the wallet, such as `operate` of
 `withdraw` or `edit` of `change-pin`, on that wallet gets 404 `denied`, and
 the count stays. Give the reset to people who do not operate the wallets.
+
+A field that a command resets is checked only on a row on which the command
+decided its own permission (runtime v0.190.0, rest-crud 3.256.0): the row of
+its `resource_member`, a row that it read with `GetForUpdate` or
+`GetForDelete`, or a row that it wrote. A `Matches` on another row, such as a
+wallet that a `payout` command or a command on another wallet read with `Get`,
+gives `false`, counts nothing and fails the call with 500. Thus each caller who
+may check a wallet holds on it the permission of its command, which the reset
+decides, and a support desk that may also operate another wallet cannot check
+this one and reset it after each check. Read such a row with `GetForUpdate`
+before `Matches`. A field with no reset command is checked as before. This is
+the recommendation (d) of the open question ST-SUP-Q209.
 
 The code of the command gets one helper for each field, such as
 `UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of

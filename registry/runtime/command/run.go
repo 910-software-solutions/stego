@@ -880,6 +880,9 @@ func (s *state) decideCommand(ctx context.Context, permission string, r *Resourc
 	if !allowed {
 		return ErrDenied
 	}
+	if r.Service == "" {
+		s.decide(r.Type, id)
+	}
 	return nil
 }
 

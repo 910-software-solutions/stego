@@ -237,6 +237,7 @@ func (s *state) decideCommandOn(ctx context.Context, resourceType, entity, id, t
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, entity)
 	}
+	s.decide(resourceType, id)
 	return nil
 }
 

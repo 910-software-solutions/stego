@@ -594,6 +594,9 @@ type Declared interface {
 
 func (e *Entity[T]) entityName() string { return e.spec.Name }
 
+// resourceTypeName is the resource type of the entity, or empty for one that takes its authorization from a parent.
+func (e *Entity[T]) resourceTypeName() string { return e.spec.ResourceType }
+
 // registerMu guards the owner of every entity.
 var registerMu sync.Mutex
 
@@ -1651,6 +1654,9 @@ type state struct {
 	resets map[string]bool
 	// resetGuards are the permissions that a caller of a reset may not hold on the row (CommandSpec.ResetGuards).
 	resetGuards []string
+	// decided holds each row, as <resource type> NUL <lower-case ID>, on which the command decided its own permission
+	// in this attempt: a check of a counter with Reset runs only on such a row (decision ST-SUP-Q209 (d)).
+	decided map[string]bool
 	// checks count the checks of each stored value of a counted row in this attempt, and charges are the checks that
 	// the attempts of the call charged, which a rerun does not charge again for the same stored value (security
 	// review of PR #451, second review, I1; of PR #479, L2).
@@ -2421,7 +2427,16 @@ func (r *Repository[T]) decideRows(ctx context.Context, rows []scanned[T], locke
 	if err != nil || !locked || s.mode != modeCommand || s.commandPermission == "" || r.entity.spec.ResourceType == "" {
 		return allowed, err
 	}
-	return s.batch(ctx, s.az, s.commandPermission, r.entity.spec.ResourceType, metas, allowed, allowed)
+	allowed, err = s.batch(ctx, s.az, s.commandPermission, r.entity.spec.ResourceType, metas, allowed, allowed)
+	if err != nil {
+		return nil, err
+	}
+	for i, ok := range allowed {
+		if ok {
+			s.decide(r.entity.spec.ResourceType, metas[i].ID)
+		}
+	}
+	return allowed, nil
 }
 
 // loadAll audits each read of an entity with a pii field and makes the loaded values.

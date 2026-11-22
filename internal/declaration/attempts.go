@@ -114,7 +114,8 @@ func validateResets(service *types.ServiceDeclaration) []ValidationError {
 }
 
 // sharedPermission names an operation other than the command at index self that checks permission on resourceType:
-// an operation of an entity of that resource type, a command, a query or a worker; or empty for none.
+// an operation of an entity of that resource type, a command, a query or a worker, or a command of another resource
+// type that writes an entity of the resets of the command at index self (resetWriters); or empty for none.
 func sharedPermission(service *types.ServiceDeclaration, self int, resourceType, permission string) string {
 	for _, e := range service.Entities {
 		if e.ResourceType != resourceType {
@@ -134,6 +135,11 @@ func sharedPermission(service *types.ServiceDeclaration, self int, resourceType,
 	for i, c := range service.Commands {
 		if i != self && c.ResourceType == resourceType && c.Permission == permission {
 			return "the command " + c.Name
+		}
+	}
+	for _, w := range resetWriters(service, self) {
+		if w.Permission == permission {
+			return "the command " + w.Name + ", which writes an entity of the reset from the resource type " + w.ResourceType + " and so decides it on the row,"
 		}
 	}
 	for _, q := range service.Queries {
@@ -192,6 +198,16 @@ func validateResetSchema(service *types.ServiceDeclaration, schema *AuthzSchema)
 		}
 		if _, ok := schema.PermissionRewrite(c.ResourceType, c.Permission); !ok {
 			continue
+		}
+		// A command of another resource type that writes the entity decides its own permission on the row of the
+		// entity, and the reset guards decide it there too: the schema must define it on this resource type, else
+		// that command can lock no row of the entity and the guard of each reset fails (decision ST-SUP-Q209 (d)).
+		for _, w := range resetWriters(service, i) {
+			definition := schema.definitions[c.ResourceType]
+			if _, relation := definition.relations[w.Permission]; !definition.permissions[w.Permission] && !relation {
+				faults = append(faults, ValidationError{Category: "command", Rule: "resets-attempts", Path: commandPath(i) + ".resets_attempts", Found: w.Name,
+					Message: fmt.Sprintf("the command %q resets attempts of an entity that the command %q of the resource type %s writes, whose permission %s the schema does not define on %s; such a command decides its permission on the row of the entity, and the reset is refused to a caller who holds it there: define %s on %s, or write the entity from a command on %s (ST-DECL-INV104)", c.Name, w.Name, w.ResourceType, w.Permission, c.ResourceType, w.Permission, c.ResourceType, c.ResourceType)})
+			}
 		}
 		own := schema.expandPermission(c.ResourceType, c.Permission)
 		for _, other := range checkingPermissions(service, i, c.ResourceType) {
@@ -296,8 +312,9 @@ func (s *AuthzSchema) expandPermission(typeName, permission string) expansion {
 }
 
 // checkingPermissions gives the permissions on resourceType that another operation than the command at index self
-// checks: the operations of each entity of that resource type, and each other command, query and worker on it, in
-// order and once each.
+// checks: the operations of each entity of that resource type, each other command, query and worker on it, and the
+// permission of each command of another resource type that writes an entity of its resets (resetWriters), in order
+// and once each.
 func checkingPermissions(service *types.ServiceDeclaration, self int, resourceType string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -333,6 +350,41 @@ func checkingPermissions(service *types.ServiceDeclaration, self int, resourceTy
 	for _, w := range service.Workers {
 		if w.ResourceType == resourceType {
 			add(w.Permission)
+		}
+	}
+	for _, c := range resetWriters(service, self) {
+		add(c.Permission)
+	}
+	return out
+}
+
+// resetWriters gives, in order, the commands other than the command at index self that write an entity of its
+// resets_attempts from another resource type, with a permission, on a row and not on the service-level resource
+// (decision ST-SUP-Q209 (d)): such a command decides its own permission on the row of the entity when it locks or
+// writes it (ST-SUP-RP10-LC05), and only on such a row may it check the counted field (ST-SUP-RP10-LC54), so that
+// permission is a permission of the resource type of the entity that the reset guards hold. A command on the
+// service-level resource reads the entity only with no lock, so it cannot check the field.
+func resetWriters(service *types.ServiceDeclaration, self int) []types.Command {
+	reset := service.Commands[self]
+	entities := map[string]bool{}
+	for _, r := range reset.ResetsAttempts {
+		name, _, _ := strings.Cut(r, ".")
+		entities[name] = true
+	}
+	serviceLevel := ""
+	if service.Tenancy != nil && service.Tenancy.Provisioning != nil {
+		serviceLevel = service.Tenancy.Provisioning.ResourceType
+	}
+	var out []types.Command
+	for i, c := range service.Commands {
+		if i == self || c.Permission == "" || c.ResourceType == "" || c.ResourceType == reset.ResourceType || c.ResourceType == serviceLevel {
+			continue
+		}
+		for _, w := range c.Writes {
+			if entities[w] {
+				out = append(out, c)
+				break
+			}
 		}
 	}
 	return out

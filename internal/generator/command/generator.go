@@ -190,8 +190,8 @@ type command struct {
 	// (ST-SUP-RC32-OC16).
 	lists []*commandList
 	// resets are the declared step-up resets of the attempts of counted fields (ST-SUP-RC32-OC24, ST-DECL-INV104), and
-	// resetGuards the permissions of the other commands on its resource type that write their entities, which a caller
-	// of the reset may not hold on the row (ST-SUP-RP10-LC54).
+	// resetGuards the permissions of the other commands that write their entities, of any resource type but the
+	// service-level resource, which a caller of the reset may not hold on the row (ST-SUP-RP10-LC54).
 	resets      []resetHelper
 	resetGuards []string
 }
@@ -467,9 +467,13 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 	return cmd, nil
 }
 
-// planResetGuards gives each command that declares a reset of attempts the permissions of the other commands on its
-// resource type that write an entity of its resets, and so may check the field: the runtime refuses the reset of a
-// caller who holds one on the row (security review of PR #489, second review, M2b).
+// planResetGuards gives each command that declares a reset of attempts the permissions of the other commands that
+// write an entity of its resets, and so may check the field: the runtime refuses the reset of a caller who holds one
+// on the row (security review of PR #489, second review, M2b). A command of another resource type counts too: it
+// checks the field only on a row on which it decided its own permission, which a locked read or a write of the row
+// decides on the resource type of the entity (decision ST-SUP-Q209 (d)). A command on the service-level resource
+// reads the entity only with no lock, so it cannot check the field. Each counted field of a reset is marked, so its
+// counter declares Reset (ST-SUP-RC32-OC24).
 func (m *model) planResetGuards() {
 	for _, c := range m.commands {
 		if len(c.resets) == 0 {
@@ -478,11 +482,12 @@ func (m *model) planResetGuards() {
 		reset := map[string]bool{}
 		for _, r := range c.resets {
 			reset[r.entity.decl.Name] = true
+			r.field.reset = true
 		}
 		seen := map[string]bool{}
 		for _, other := range m.commands {
 			p := other.decl.Permission
-			if other == c || p == "" || p == c.decl.Permission || other.decl.ResourceType != c.decl.ResourceType || seen[p] {
+			if other == c || p == "" || p == c.decl.Permission || other.service != "" || seen[p] {
 				continue
 			}
 			for _, e := range other.writes {

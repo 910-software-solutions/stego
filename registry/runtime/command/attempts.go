@@ -161,13 +161,18 @@ RETURNING a.checks`
 )
 
 // CounterSpec is the generated declaration of the limit of wrong attempts of one compare-only field
-// (ST-SUP-RC32-OC24): the entity, the field, the limit and the window of the decay of a count, UnlockAfter, which is
+// (ST-SUP-RC32-OC24): the entity, the field, the limit, the window of the decay of a count, UnlockAfter, which is
 // zero for a count that does not decay, as in the code of a generator before the decay (decisions ST-SUP-Q205 (c) and
-// ST-SUP-Q207 (a)).
+// ST-SUP-Q207 (a)), and Reset, whether a command may reset the count.
 type CounterSpec struct {
 	Entity, Field string
 	Limit         int
 	UnlockAfter   time.Duration
+	// Reset is true when a command of the service declares the reset of this counter (CommandSpec.Resets): a check
+	// of it then runs only on a row on which the command decided its own permission in the attempt, so each caller
+	// who may check the row holds a permission that the reset guards decide on that row (decision ST-SUP-Q209 (d)).
+	// The code of a generator before the field gives false.
+	Reset bool
 }
 
 // Counter is one checked counter declaration.
@@ -258,6 +263,14 @@ func (k *rowCounter) Charge() bool {
 		return false
 	}
 	open := !s.closed && s.mode == modeCommand
+	if open && k.key.counter.spec.Reset && !s.decidedRow(k.key.counter.spec.Entity, k.key.row) {
+		// A caller who reads the row with no lock, from a row of its own or from another resource type, holds no
+		// permission that the reset guards decide on this row, so it could check with no limit beside a reset: the
+		// check runs only on a row on which the command decided its own permission (decision ST-SUP-Q209 (d)).
+		_ = s.breakWith(internalf("the command checks %s on a row on which it did not decide its own permission; read the row with GetForUpdate first", k.key.counter.name()))
+		s.mu.Unlock()
+		return false
+	}
 	paid := chargeKey{attemptKey: k.key, stored: k.stored}
 	var n int
 	if open {
@@ -387,6 +400,34 @@ func checkResets(name, permission string, resource *Resource, resets, guards []s
 		out[r] = true
 	}
 	return out, nil
+}
+
+// decide records that the command decided its own permission on the row id of resourceType in this attempt: on its
+// resource, in a locked read or list, or for a write (decision ST-SUP-Q209 (d)). The caller holds the lock of the
+// state, or the attempt has not given the handle to the fill yet.
+func (s *state) decide(resourceType, id string) {
+	if resourceType == "" || id == "" {
+		return
+	}
+	if s.decided == nil {
+		s.decided = map[string]bool{}
+	}
+	s.decided[resourceType+"\x00"+strings.ToLower(id)] = true
+}
+
+// decidedRow tells whether the command decided its own permission on the row of the written entity named entity in
+// this attempt. An entity that the command does not write, or that has no resource type, has no such row. The caller
+// holds the lock of the state.
+func (s *state) decidedRow(entity, row string) bool {
+	for d := range s.writes {
+		if d.entityName() != entity {
+			continue
+		}
+		if t, ok := d.(interface{ resourceTypeName() string }); ok && t.resourceTypeName() != "" {
+			return s.decided[t.resourceTypeName()+"\x00"+strings.ToLower(row)]
+		}
+	}
+	return false
 }
 
 // resetAttempts records that the call resets the count of the row of key when it commits.

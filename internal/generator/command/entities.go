@@ -160,6 +160,10 @@ type entityField struct {
 	// unlockAfter the window of the decay of its count in seconds, or 0 for none (decisions ST-SUP-Q205 (c) and
 	// ST-SUP-Q207 (a)).
 	limit, unlockAfter int
+	// reset is set when a command declares the reset of the attempts of this field: its counter declares Reset, so
+	// the runtime lets a check of it run only on a row on which the command decided its own permission (decision
+	// ST-SUP-Q209 (d)).
+	reset bool
 }
 
 // goTypes are the Go types of the declared field types, as the PostgreSQL columns of ST-SUP-RC01-OC41 scan.
@@ -851,14 +855,20 @@ func counterVar(e *entity, f *entityField) string {
 // renderCounter writes the counter of the wrong attempts of the compare-only field f (ST-SUP-RC32-OC24): its entity,
 // its field and its limit; the runtime charges each check in its own table (ST-SUP-RP10-LC54).
 func renderCounter(w *writer, e *entity, f *entityField) {
+	reset := ""
+	if f.reset {
+		// A command resets the count: a check runs only on a row on which the command decided its own permission
+		// (decision ST-SUP-Q209 (d)).
+		reset = ", Reset: true"
+	}
 	if f.unlockAfter == 0 {
 		w.f("// %s is the limit of wrong attempts of %s.%s: %d checks (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
-		w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+		w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d%s}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, reset)
 		return
 	}
 	w.f("// %s is the limit of wrong attempts of %s.%s: %d checks, and a count decays %d s after its last charge\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, f.unlockAfter)
 	w.f("// (ST-SUP-RP10-LC54, decisions ST-SUP-Q205 (c) and ST-SUP-Q207 (a)).\n")
-	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d, UnlockAfter: %d * time.Second}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, f.unlockAfter)
+	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d, UnlockAfter: %d * time.Second%s}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, f.unlockAfter, reset)
 }
 
 // renderEventData writes EventData and EventVersion of an entity that declares event fields (ST-SUP-RC32-OC25): each
