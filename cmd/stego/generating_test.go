@@ -500,6 +500,9 @@ func TestStrictPlanRefusesPendingChanges(t *testing.T) {
 	})
 
 	t.Run("ST-GEN-UC05-R02-T04 plan --strict --show refuses a saved plan that no longer applies, and without --strict exits 0", func(t *testing.T) {
+		// The flags of plan are package variables: a run with --strict that ends early leaves --strict set for the
+		// tests after it.
+		t.Cleanup(func() { strictSecretSources = false })
 		generatingProject(t, generatingDeclaration)
 		mustRun(t, runApply)
 		dir, err := os.Getwd()
