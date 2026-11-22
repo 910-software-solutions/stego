@@ -1,14 +1,14 @@
 kind: archetype
 name: browser-service
 language: go
-version: 1.259.0
+version: 1.260.0
 # The runtime library that every service of this archetype imports (ST-SUP-INV10). It is the module in
 # registry/runtime, released with the common registry by the tag registry/runtime/<version>; sum is the go.sum hash
 # of that folder at the version. A new runtime version moves it in a new archetype version.
 runtime:
   module: github.com/jsell-rh/stego/registry/runtime
-  version: v0.193.0
-  sum: h1:KUl/umhHFyL5VCDuzBg9nzB++CZmc4n+MdKieuE5xyA=
+  version: v0.194.0
+  sum: h1:Pn6zFfO5ThbXVw2pegbEQIu+2Ydtba/vbxOnicySzAQ=
 components:
   - postgres-adapter
   - domain-probe
