@@ -100,7 +100,11 @@ var roles = []string{stegoruntime.RuntimeRole, stegoruntime.WorkerRole, stegorun
 
 // prepared makes a database of its own with the roles of the tenancy component, runs the migration job of v1 on
 // it as the owner role, and loads the rows of seed.sql (ST-GEN-TD04 prepare).
-func prepared(t *testing.T) *database {
+func prepared(t *testing.T) *database { return preparedWith(t, true) }
+
+// preparedWith is prepared, with the rows of seed.sql only when seed is true: the check of the relate step makes its
+// own rows, so it does not load the 10,000 users of the data set.
+func preparedWith(t *testing.T, seed bool) *database {
 	dsn, endpoint := os.Getenv("STEGO_TEST_POSTGRES_DSN"), os.Getenv("STEGO_TEST_SPICEDB")
 	if dsn == "" || endpoint == "" || os.Getenv("STEGO_TD04_V1") == "" || os.Getenv("STEGO_TD04_V2") == "" || os.Getenv("STEGO_TD04_V3") == "" || os.Getenv("STEGO_TD04_SEED") == "" {
 		t.Fatal("the check needs STEGO_TEST_POSTGRES_DSN, STEGO_TEST_SPICEDB, STEGO_TD04_V1, STEGO_TD04_V2, STEGO_TD04_V3 and STEGO_TD04_SEED: a missing result is not a pass")
@@ -152,9 +156,14 @@ func prepared(t *testing.T) *database {
 	if j := d.migrate("v1"); j.wait(time.Minute) != nil {
 		t.Fatalf("the migration job of v1 failed:\n%s", j.out)
 	}
-	seed, err := os.ReadFile(os.Getenv("STEGO_TD04_SEED"))
+	if !seed {
+		_, err = d.admin.Exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('t-00')`)
+		must(t, err)
+		return d
+	}
+	rows, err := os.ReadFile(os.Getenv("STEGO_TD04_SEED"))
 	must(t, err)
-	_, err = d.admin.Exec(string(seed))
+	_, err = d.admin.Exec(string(rows))
 	must(t, err)
 	return d
 }
@@ -1269,7 +1278,7 @@ func TestRelate(t *testing.T) {
 		if binary("v1r") == "" {
 			t.Fatal("the check needs STEGO_TD04_V1R: a missing result is not a pass")
 		}
-		d := prepared(t)
+		d := preparedWith(t, false)
 		owner, auditor := d.caller("u-owner", "t-00", "admin"), d.caller("u-auditor", "t-00")
 		create := func(a *api, name string) string {
 			t.Helper()
@@ -1280,7 +1289,10 @@ func TestRelate(t *testing.T) {
 			id, _ := r.object(t)["id"].(string)
 			return id
 		}
-		// The organization of the data set in t-00, and two that v1 makes before the release.
+		// An organization with the zero UUID, which the first page of a pass reads too, and two that v1 makes before
+		// the release.
+		_, err := d.admin.Exec(`INSERT INTO public.organizations (tenant_id, id, name) VALUES ('t-00', '00000000-0000-0000-0000-000000000000', 'org 0')`)
+		must(t, err)
 		rows := []string{"00000000-0000-0000-0000-000000000000"}
 		v1api := d.serve("v1")
 		rows = append(rows, create(v1api, "before-1"), create(v1api, "before-2"))
@@ -1322,7 +1334,7 @@ func TestRelate(t *testing.T) {
 		// and the controller starts again, which runs the relate job at its start.
 		v1api.stop()
 		controller.stop()
-		_, err := d.admin.Exec(`UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes' WHERE change_id = 'organization-tenant-relate'`)
+		_, err = d.admin.Exec(`UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes' WHERE change_id = 'organization-tenant-relate'`)
 		must(t, err)
 		_, err = d.admin.Exec(`UPDATE stego_schema.releases SET seen_at = seen_at - interval '1 minute' WHERE version = 'v1'`)
 		must(t, err)

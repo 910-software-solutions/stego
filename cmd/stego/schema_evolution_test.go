@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,33 @@ func newEvolution(t *testing.T) *evolution {
 	e.git(t, "commit", "-q", "-m", "v1")
 	e.git(t, "tag", "v1")
 	e.build(t, "v1", root)
+	// v1r is v1 with the relation tenant of organization and its relate step, a release beside v2 (decision
+	// ST-SUP-Q212 (a); walkthrough 24, P2-R2). Its build runs while v2 and v3 are made.
+	mainline := strings.TrimSpace(e.git(t, "rev-parse", "--abbrev-ref", "HEAD"))
+	e.git(t, "checkout", "-q", "-b", "relate", "v1")
+	for file, edit := range map[string][2]string{"service.yaml": evolutionV1R, filepath.Join("authz", "schema.zed"): evolutionV1RSchema} {
+		text, err := os.ReadFile(filepath.Join(e.repo, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(text), edit[0]) {
+			t.Fatalf("%s of v1 has no %q to edit for v1r", file, edit[0])
+		}
+		if err := os.WriteFile(filepath.Join(e.repo, file), []byte(strings.Replace(string(text), edit[0], edit[1], 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.plans["v1r plan"], e.plans["v1r plan error"] = e.stego(t, stego, "plan", "--base", "v1")
+	if out, failed := e.stego(t, stego, "apply", "--base", "v1"); failed != "" {
+		t.Fatalf("stego apply of v1r: %s\n%s", failed, out)
+	}
+	e.git(t, "add", "-A")
+	e.git(t, "commit", "-q", "-m", "v1r")
+	e.git(t, "tag", "v1r")
+	e.git(t, "checkout", "-q", mainline)
+	relateBuilt := make(chan error, 1)
+	goBin := pinnedGo(t)
+	go func() { relateBuilt <- e.buildWith(goBin, "v1r", root) }()
 	declaration, err := os.ReadFile(filepath.Join(e.repo, "service.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -182,30 +210,10 @@ func newEvolution(t *testing.T) *evolution {
 	e.plans["undeclared plan"], e.plans["undeclared plan error"] = e.stego(t, stego, "plan", "--base", "v1")
 	e.plans["undeclared status"] = e.git(t, "status", "--porcelain", "--untracked-files=all")
 	e.git(t, "checkout", "-q", "--", "service.yaml")
-	// v1r is v1 with the relation tenant of organization and its relate step, a release beside v2 (decision
-	// ST-SUP-Q212 (a); walkthrough 24, P2-R2).
-	e.git(t, "checkout", "-q", "-b", "relate", "v1")
-	for file, edit := range map[string][2]string{"service.yaml": evolutionV1R, filepath.Join("authz", "schema.zed"): evolutionV1RSchema} {
-		text, err := os.ReadFile(filepath.Join(e.repo, file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(text), edit[0]) {
-			t.Fatalf("%s of v1 has no %q to edit for v1r", file, edit[0])
-		}
-		if err := os.WriteFile(filepath.Join(e.repo, file), []byte(strings.Replace(string(text), edit[0], edit[1], 1)), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	// The build of v1r runs beside the builds of v2 and v3 (it takes the time of one build of the package).
+	if err := <-relateBuilt; err != nil {
+		t.Fatal(err)
 	}
-	e.plans["v1r plan"], e.plans["v1r plan error"] = e.stego(t, stego, "plan", "--base", "v1")
-	if out, failed := e.stego(t, stego, "apply", "--base", "v1"); failed != "" {
-		t.Fatalf("stego apply of v1r: %s\n%s", failed, out)
-	}
-	e.git(t, "add", "-A")
-	e.git(t, "commit", "-q", "-m", "v1r")
-	e.git(t, "tag", "v1r")
-	e.build(t, "v1r", root)
-	e.git(t, "checkout", "-q", "v3")
 	return e
 }
 
@@ -246,26 +254,39 @@ func (e *evolution) stego(t *testing.T, stego string, args ...string) (string, s
 // runtime module of this repository, as each commit of ST-GEN-TD04 uses the registry at the commit under test.
 func (e *evolution) build(t *testing.T, tag, root string) {
 	t.Helper()
+	if err := e.buildErr(t, tag, root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// buildErr is build, which gives its failure as an error, so it can run beside other steps.
+func (e *evolution) buildErr(t *testing.T, tag, root string) error {
+	return e.buildWith(pinnedGo(t), tag, root)
+}
+
+// buildWith is build with the Go binary goBin; it calls no method of a testing.T, so it can run in a goroutine.
+func (e *evolution) buildWith(goBin, tag, root string) error {
 	dir := filepath.Join(filepath.Dir(e.repo), "build-"+tag)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	archive := exec.Command("sh", "-c", `git archive "$1" | tar -x -C "$2"`, "sh", tag, dir)
 	archive.Dir, archive.Env = e.repo, e.env
 	if output, err := archive.CombinedOutput(); err != nil {
-		t.Fatalf("check out %s: %v\n%s", tag, err, output)
+		return fmt.Errorf("check out %s: %v\n%s", tag, err, output)
 	}
 	for _, args := range [][]string{
 		{"mod", "edit", "-replace", "github.com/jsell-rh/stego/registry/runtime=" + filepath.Join(root, "registry", "runtime")},
 		{"mod", "tidy"},
 		{"build", "-o", filepath.Join(e.bin, tag), "./out"},
 	} {
-		cmd := exec.Command(pinnedGo(t), args...)
+		cmd := exec.Command(goBin, args...)
 		cmd.Dir, cmd.Env = dir, e.env
 		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("go %s for %s: %v\n%s", strings.Join(args, " "), tag, err, output)
+			return fmt.Errorf("go %s for %s: %v\n%s", strings.Join(args, " "), tag, err, output)
 		}
 	}
+	return nil
 }
 
 // startEvolutionSpiceDB starts a local SpiceDB container, unprivileged, with the memory datastore, and gives its
