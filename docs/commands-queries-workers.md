@@ -1651,7 +1651,7 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 
 - In a rolling release, the relay of the release before no longer parks a
   message that only the new release can read (walkthrough 23, P2-R;
-  recommendation (a) of ST-SUP-Q207, open for the Product owner). New mark
+  recommendation (a) of ST-SUP-Q208, open for the Product owner). New mark
   `outbox.NotUnderstood`: the worker takes the attempt back, keeps the
   message pending with the wait of an unknown destination, so a worker of
   the new release delivers it in the order of its key, and parks it with the
