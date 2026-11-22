@@ -1132,16 +1132,21 @@ func TestResetEmission(t *testing.T) {
 		unlock := types.Command{Name: "unlock-pin", Writes: []string{"Order"}, ResourceType: "order", Permission: "unlock_pin",
 			ResourceMember: "orderId", Route: "POST /orders/{orderId}/pin:unlock", Fill: types.FillNames{"unlock-pin"},
 			ResetsAttempts: []string{"Order.pin"}}
-		svc.Commands = append(svc.Commands, unlock)
+		// release-hold is a command of another resource type that writes Order, so it may check the PIN on a row of
+		// Order that it locks (decision ST-SUP-Q209 (d)).
+		release := types.Command{Name: "release-hold", Writes: []string{"Hold", "Order"}, ResourceType: "hold", Permission: "release",
+			ResourceMember: "holdId", Route: "POST /holds/{holdId}/releases", Fill: types.FillNames{"release-hold"}}
+		svc.Commands = append(svc.Commands, unlock, release)
 		ctx := commandContext(t, svc, commandSlot)
-		ctx.Inputs["proto/orders.proto"] = []byte(ordersProto + "\nmessage UnlockPinRequest {\n  string order_id = 1;\n}\n\nmessage UnlockPinResponse {}\n")
+		ctx.Inputs["proto/orders.proto"] = []byte(ordersProto + "\nmessage UnlockPinRequest {\n  string order_id = 1;\n}\n\nmessage UnlockPinResponse {}\n" +
+			"\nmessage ReleaseHoldRequest {\n  string hold_id = 1;\n}\n\nmessage ReleaseHoldResponse {}\n")
 		var all strings.Builder
 		for _, data := range generated(t, ctx) {
 			all.Write(data)
 		}
 		text := all.String()
 		for _, want := range []string{
-			`var orderPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Order", Field: "pin", Limit: 3, UnlockAfter: 3600 * time.Second}))`,
+			`var orderPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Order", Field: "pin", Limit: 3, UnlockAfter: 3600 * time.Second, Reset: true}))`,
 			"func UnlockPinResetOrderPinAttempts(ctx context.Context, h *UnlockPinHandle, on LoadedOrder) error {",
 			"return command.ResetAttempts(ctx, h, orderPinCounter, on)",
 		} {
@@ -1149,8 +1154,8 @@ func TestResetEmission(t *testing.T) {
 				t.Errorf("the generated code does not hold %s", want)
 			}
 		}
-		if !regexp.MustCompile(`ResetGuards:\s+\[\]string\{"reserve"\},`).MatchString(text) {
-			t.Error("the declaration of unlock-pin does not give the permission reserve of reserve-and-charge, which writes Order, as its reset guard")
+		if !regexp.MustCompile(`ResetGuards:\s+\[\]string\{"release", "reserve"\},`).MatchString(text) {
+			t.Error("the declaration of unlock-pin does not give the permissions release of release-hold, of the resource type hold, and reserve of reserve-and-charge, which write Order, as its reset guards")
 		}
 		if n := len(regexp.MustCompile(`Resets:\s+\[\]string\{"Order.pin"\},`).FindAllString(text, -1)); n != 1 || strings.Count(text, "Resets:") != 1 || strings.Contains(text, "func ReserveAndChargeReset") {
 			t.Errorf("the generated code holds %d declarations of resets, or a reset helper of reserve-and-charge, want one and none", n)
@@ -1163,8 +1168,10 @@ func TestResetEmission(t *testing.T) {
 		// The fill of reserve-and-charge, which may check the PIN, cannot call the reset of unlock-pin.
 		wrong := fmt.Sprintf(head, "wrongreset") + "func Run(ctx context.Context, h *commands.ReserveAndChargeHandle, order commands.LoadedOrder) error {\n" +
 			"\treturn commands.UnlockPinResetOrderPinAttempts(ctx, h, order)\n}\n"
+		releaseFill := fmt.Sprintf(head, "releasehold") + "func New() commands.ReleaseHoldFill {\n\treturn func(ctx context.Context, req *commands.ReleaseHoldRequest, h *commands.ReleaseHoldHandle) (*commands.ReleaseHoldResponse, error) {\n" +
+			"\t\treturn &commands.ReleaseHoldResponse{}, nil\n\t}\n}\n"
 		p := newProject(t, ctx, map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill, "fills/unlock-pin/fill.go": []byte(reset),
-			"fills/wrongreset/fill.go": []byte(wrong)})
+			"fills/release-hold/fill.go": []byte(releaseFill), "fills/wrongreset/fill.go": []byte(wrong)})
 		if output, err := p.goCommand("build", "./out/...", "./fills/unlock-pin"); err != nil {
 			t.Errorf("the code with the reset does not build: %v\n%s", err, output)
 		}

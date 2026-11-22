@@ -229,6 +229,9 @@ func TestResetsAttempts(t *testing.T) {
 		{"with the permission of another command", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...) +
 			command("withdraw", "writes: [Todo]", "fill: withdraw", "route: POST /todos/{todoId}/withdrawals", "resource_type: todo", "resource_member: todo_id", "permission: unlock_pin"),
 			"the command withdraw"},
+		{"with the permission of a command of another resource type that writes Todo", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...) +
+			command("pay", "writes: [Todo]", "fill: pay", "route: POST /folders/{folderId}/payments", "resource_type: folder", "resource_member: folder_id", "permission: unlock_pin"),
+			"the command pay"},
 	}
 	for _, c := range refused {
 		t.Run("ST-DECL-INV104-T A reset "+c.name+" is refused", func(t *testing.T) {
@@ -334,6 +337,58 @@ func TestResetsAttemptsSchema(t *testing.T) {
 	} {
 		t.Run("ST-DECL-INV104-T A reset permission "+name+" is refused", func(t *testing.T) {
 			got := faults(t, c.operate, c.expression)
+			if len(got) != 1 || !strings.Contains(got[0].Message, c.names) || !strings.Contains(got[0].Message, `"unlock-pin"`) || !strings.Contains(got[0].Message, "ST-DECL-INV104") {
+				t.Fatalf("want one fault of resets-attempts that names %s, unlock-pin and the rule, got %+v", c.names, got)
+			}
+		})
+	}
+}
+
+// TestResetsAttemptsWriters proves the reset guards of a command of another resource type that writes the entity of a
+// reset (decision ST-SUP-Q209 (d)): its permission is decided on the row of the entity, so the schema must define it
+// there, apart from the reset permission.
+func TestResetsAttemptsWriters(t *testing.T) {
+	service, schema := td03Files(t)
+	service = change(t, service, "      - {name: owner_id, type: string}\n",
+		"      - {name: owner_id, type: string}\n      - {name: pin, type: string, sensitivity: secret, compare_only: true, attempts: {limit: 5}}\n")
+	unlock := command("unlock-pin", "writes: [Todo]", "fill: unlock-pin", "route: POST /todos/{todoId}/pin:unlock",
+		"resource_type: document", "resource_member: todoId", "permission: unlock_pin", "resets_attempts: [Todo.pin]")
+	pay := func(permission string) string {
+		return command("pay", "writes: [Todo]", "fill: pay", "route: POST /folders/{folderId}/payments",
+			"resource_type: folder", "resource_member: folderId", "permission: "+permission)
+	}
+	// create is a command on the service-level resource, which reads Todo only with no lock.
+	create := command("create-todo", "writes: [Todo]", "fill: create-todo", "route: POST /todos", "resource_type: service", "permission: create_todo")
+	schema = change(t, schema, "\tpermission edit = owner\n", "\tpermission edit = owner\n\trelation support: user\n\trelation parent: folder\n\tpermission unlock_pin = support\n%d")
+	schema = change(t, schema, "definition folder {\n\trelation viewer: user\n", "definition folder {\n\trelation viewer: user\n\tpermission pay = viewer\n\tpermission unlock_pin = viewer\n")
+	schema = change(t, schema, "\tpermission retire = operator\n", "\tpermission retire = operator\n\tpermission create_todo = operator\n")
+	faults := func(t *testing.T, commands, document string) []ValidationError {
+		t.Helper()
+		decl := readTD03(t, service+"commands:\n"+unlock+commands)
+		var out []ValidationError
+		for _, f := range CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(strings.Replace(schema, "%d", document, 1))}}) {
+			if f.Rule == "resets-attempts" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	for name, c := range map[string]struct{ commands, document string }{
+		"a command of another resource type whose permission the schema defines on the entity apart from the reset": {pay("pay"), "\tpermission pay = parent->viewer\n"},
+		"a command on the service-level resource": {create, ""},
+	} {
+		t.Run("ST-DECL-INV104-T A reset beside "+name+" is accepted", func(t *testing.T) {
+			if got := faults(t, c.commands, c.document); len(got) != 0 {
+				t.Fatalf("want no fault, got %+v", got)
+			}
+		})
+	}
+	for name, c := range map[string]struct{ commands, document, names string }{
+		"a command of another resource type whose permission the schema does not define on the entity": {pay("pay"), "", `the command "pay"`},
+		"a command of another resource type whose permission shares the relation of the reset":         {pay("pay"), "\tpermission pay = support\n", "document#support"},
+	} {
+		t.Run("ST-DECL-INV104-T A reset beside "+name+" is refused", func(t *testing.T) {
+			got := faults(t, c.commands, c.document)
 			if len(got) != 1 || !strings.Contains(got[0].Message, c.names) || !strings.Contains(got[0].Message, `"unlock-pin"`) || !strings.Contains(got[0].Message, "ST-DECL-INV104") {
 				t.Fatalf("want one fault of resets-attempts that names %s, unlock-pin and the rule, got %+v", c.names, got)
 			}

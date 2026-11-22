@@ -227,6 +227,17 @@ func (s *state) decideWrite(ctx context.Context, resourceType, entity, id, token
 // floor and the row's token, for a locked read or a write of a command (ST-SUP-RP10-LC05). A deny is ErrNotFound. A
 // command with no permission, a worker and an entity with no resource type decide nothing here.
 func (s *state) decideCommandOn(ctx context.Context, resourceType, entity, id, token string) error {
+	if err := s.checkCommandOn(ctx, resourceType, entity, id, token); err != nil {
+		return err
+	}
+	s.decide(resourceType, id)
+	return nil
+}
+
+// checkCommandOn is decideCommandOn with no record of the decision (state.decide): a locked read or list records the
+// row only once its lock holds, so a row that a second decision denies after its token moved is not recorded
+// (security review of PR #491, L2).
+func (s *state) checkCommandOn(ctx context.Context, resourceType, entity, id, token string) error {
 	if s.mode != modeCommand || s.commandPermission == "" || resourceType == "" {
 		return nil
 	}

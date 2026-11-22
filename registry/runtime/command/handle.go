@@ -598,6 +598,9 @@ type Declared interface {
 
 func (e *Entity[T]) entityName() string { return e.spec.Name }
 
+// resourceTypeName is the resource type of the entity, or empty for one that takes its authorization from a parent.
+func (e *Entity[T]) resourceTypeName() string { return e.spec.ResourceType }
+
 // registerMu guards the owner of every entity.
 var registerMu sync.Mutex
 
@@ -1726,6 +1729,12 @@ type state struct {
 	resets map[string]bool
 	// resetGuards are the permissions that a caller of a reset may not hold on the row (CommandSpec.ResetGuards).
 	resetGuards []string
+	// decided holds each row, as <resource type> NUL <lower-case ID>, on which the command decided its own permission
+	// in this attempt: a check of a counter with Reset runs only on such a row (decision ST-SUP-Q209 (d)).
+	decided map[string]bool
+	// serviceLevel is set for a command on the service-level resource, whose permission is no reset guard: it
+	// records no row in decided, also for an effect or a write (security review of PR #491, L1).
+	serviceLevel bool
 	// checks count the checks of each stored value of a counted row in this attempt, and charges are the checks that
 	// the attempts of the call charged, which a rerun does not charge again for the same stored value (security
 	// review of PR #451, second review, I1; of PR #479, L2).
@@ -2112,7 +2121,7 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 		return nil, err
 	}
 	if lock != lockNone {
-		if err := s.decideCommandOn(ctx, e.spec.ResourceType, e.spec.Name, meta.ID, meta.Token); err != nil {
+		if err := s.checkCommandOn(ctx, e.spec.ResourceType, e.spec.Name, meta.ID, meta.Token); err != nil {
 			return nil, err
 		}
 		if err := r.decideParents(ctx, "locked read", parents, value); err != nil {
@@ -2126,6 +2135,9 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 		if err != nil {
 			return nil, err
 		}
+		// The lock holds, at a token that the command's permission allows: a check of this row may run (decision
+		// ST-SUP-Q209 (d); security review of PR #491, L2).
+		s.decide(e.spec.ResourceType, meta.ID)
 	}
 	if err := s.auditRead(ctx, e.spec.PII, e.auditType(), meta.ID); err != nil {
 		return nil, err
@@ -2158,7 +2170,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 	if meta.Token != first.Token {
 		err := s.decideRead(ctx, e.spec.ResourceType, e.spec.ReadPermission, e.spec.Name, meta)
 		if err == nil {
-			err = s.decideCommandOn(ctx, e.spec.ResourceType, e.spec.Name, meta.ID, meta.Token)
+			err = s.checkCommandOn(ctx, e.spec.ResourceType, e.spec.Name, meta.ID, meta.Token)
 		}
 		if err != nil {
 			if _, rbErr := s.exec(ctx, "ROLLBACK TO SAVEPOINT stego_command_lock"); rbErr != nil {
@@ -2307,6 +2319,11 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 		if len(denied) == 0 {
 			if err := s.release(ctx, step); err != nil {
 				return nil, err
+			}
+			// Each locked row is allowed at its token and its lock holds: a check of it may run (decision ST-SUP-Q209
+			// (d)). A row that a second decision denied left the list before (security review of PR #491, L2).
+			for _, row := range locked {
+				s.decide(e.spec.ResourceType, row.meta.ID)
 			}
 			return r.loadAll(ctx, locked, lockUpdate)
 		}

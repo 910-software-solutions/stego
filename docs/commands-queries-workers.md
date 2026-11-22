@@ -889,6 +889,20 @@ member by either name, such as `insurance_number` or `insuranceNumber`. Thus
 the request validation of the document does not check the body of a command;
 the command runtime decodes it.
 
+A service with both commands and collections, such as a rest-crud service,
+answers in two forms. A client must read each answer in its own form:
+
+| | A command route | A collection route (rest-api) |
+| --- | --- | --- |
+| Member names | Lower camel case, such as `walletId` | The declared field name, in lower snake case, such as `wallet_id` |
+| A 64-bit integer (`int64`) | A JSON string, such as `"balance": "120"` | A JSON number, such as `"balance": 120` |
+| A member with the zero value, such as 0 or `""` | Not in the answer, as the protobuf JSON form gives it | In the answer, for a required field |
+| The status of a success | 201 when the last segment of the path is a plain word, else 200 (see [The route and the resource member](#the-route-and-the-resource-member)) | 201 for a create (`POST` to the collection), 200 for a read, a list and an update, and 204 for a delete |
+
+Thus a client of its own, such as a script with `curl` and `jq`, reads
+`.walletId // ""` and converts the string of a 64-bit integer in a command
+answer, and reads `.wallet_id` and a number in a collection answer.
+
 A service with no rest-api component, such as an rpc-service, has no such
 document; the command component writes the document of its command and query
 routes, in the same form, in `out/commands/openapi.json`.
@@ -1651,6 +1665,30 @@ when the revocation of the create completed, because the wait ends then. This
 is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
+
+### Release notes for runtime v0.190.0
+
+- New field `command.CounterSpec.Reset`: true when a command of the service
+  declares the reset of the counter (ST-SUP-RC32-OC24). `Matches` of a value
+  of such a counter checks it only when the command decided its own
+  permission on the row of the value in the same attempt: on its resource, in
+  a locked read or list (`GetForUpdate`, `GetForDelete`), or for a write of
+  the row. On any other row it gives `false`, charges nothing and fails the
+  call with an internal error that names the counter (ST-SUP-RP10-LC54;
+  decision ST-SUP-Q209 (d); the residual
+  sec-489c of the second security review of PR #489). Before, a caller who
+  held the reset and the permission of a command decided on another row or
+  another resource type could read the row with no lock and check it with no
+  bound, a reset after each limit. A counter with no `Reset`, as the code of
+  a generator before gives it, is held too when a command declares its
+  reset: `NewCommand` marks each counter that `CommandSpec.Resets` names. A
+  locked read or list counts for its row only once its lock holds, and a
+  command on the service-level resource counts for no row, also through an
+  effect or a write (security review of PR #491, L1, L2 and I1).
+- `command.CommandSpec.ResetGuards` can hold the permissions of commands of
+  another resource type that write the entity: the generator of command
+  1.26.0 gives them, and the runtime decides each on the row of the reset.
+- apidiff against v0.189.0: compatible.
 
 ### Release notes for runtime v0.189.0
 
