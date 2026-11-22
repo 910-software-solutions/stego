@@ -758,7 +758,7 @@ var payoutRelates = []RelateChange{
 }
 
 func TestRelateStep(t *testing.T) {
-	t.Run("ST-SUP-RP10-LC58-T01 The relate job gives each row the tuple of the new relation, also the rows of a release before during the rollout, and only after it stopped", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC50-T06 The relate job gives each row the tuple of the new relation, also the rows of a release before during the rollout, and only after it stopped", func(t *testing.T) {
 		e := newEnv(t)
 		releases, err := lease.Releases(e.roles[0])
 		if err != nil {
@@ -866,7 +866,7 @@ func TestRelateStep(t *testing.T) {
 			t.Fatalf("a run after the completed pass gave %+v, %v and staged more tuples", results, err)
 		}
 	})
-	t.Run("ST-SUP-RP10-LC58-T02 A pass during which a release before reported itself starts again, so a row that it made later gets the tuple", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC50-T07 A pass during which a release before reported itself starts again, so a row that it made later gets the tuple", func(t *testing.T) {
 		e := newEnv(t)
 		releases, err := lease.Releases(e.roles[0])
 		if err != nil {
