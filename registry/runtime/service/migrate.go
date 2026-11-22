@@ -32,6 +32,10 @@ import (
 // StepRefusedEvent is the event name of the line that says why a step of the migration job is refused.
 const StepRefusedEvent = "migrate.step.refused"
 
+// logLevelSetting is otel.LogLevelSetting, the setting of the lowest level of the log lines (decision on
+// ST-SUP-Q210).
+const logLevelSetting = "STEGO_LOG_LEVEL"
+
 // The event names of the lines that the migration job writes with log/slog as it runs (decision on ST-SUP-Q210):
 // one line when the job starts, one when each step starts and one when it ends, with the step, the outcome ok or
 // failed, the duration and, for a failed step, the fixed cause class when the step has one; and one line when the
@@ -315,7 +319,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 
 // migrate is Migrate with no line at its end.
 func migrate(parent context.Context, s MigrationSettings, m Migration) error {
-	if _, err := otel.ParseLogLevel(os.Getenv(otel.LogLevelSetting)); err != nil {
+	if _, err := otel.ParseLogLevel(os.Getenv(logLevelSetting)); err != nil {
 		return failed(StepSettings, err)
 	}
 	if m.OwnerRole == "" || m.RuntimeRole == "" || m.WorkerRole == "" || m.PurgeRole == "" || m.OutboxRelayRole == "" || m.TenantConfig == nil || m.LedgerCheck == nil || m.Ledger == nil ||

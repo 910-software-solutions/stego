@@ -837,7 +837,7 @@ func (e *databaseError) CauseClass() string {
 // the level of STEGO_LOG_LEVEL or higher, INFO when it has no value (decision on ST-SUP-Q210); a value that is not a
 // level gives INFO here, and the start of the service and the migration job refuse it (probe.Start, Migrate).
 func UseJSONLog() {
-	level, err := otel.ParseLogLevel(os.Getenv(otel.LogLevelSetting))
+	level, err := otel.ParseLogLevel(os.Getenv(logLevelSetting))
 	if err != nil {
 		level = slog.LevelInfo
 	}

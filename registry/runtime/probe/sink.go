@@ -21,6 +21,10 @@ const QueueLimit = 1024
 // consoleSetting is the one setting of the probe runtime (ST-SUP-RP12-LC16).
 const consoleSetting = "STEGO_PROBE_CONSOLE"
 
+// levelSetting is otel.LogLevelSetting, the setting of the lowest level of the console lines (decision on
+// ST-SUP-Q210).
+const levelSetting = "STEGO_LOG_LEVEL"
+
 // The sink names of the counters domain.probe.dropped and domain.probe.failed (ST-SUP-RP12-LC19). The probe counts
 // under its own name what it drops before any sink: values that do not match, emissions after the fill returned
 // or after Close, and emissions beyond HoldLimit.
@@ -169,7 +173,7 @@ type Runtime struct {
 // endpoint, and it uses the telemetry runtime's providers only (ST-SUP-RP12-LC06, ST-SUP-RP12-LC14). builtins may be
 // nil when the declaration has no worker and no open schema change.
 func Start(telemetry *otel.Runtime, builtins *Builtins) (*Runtime, error) {
-	level, err := consoleLevel(os.Getenv(otel.LogLevelSetting))
+	level, err := consoleLevel(os.Getenv(levelSetting))
 	if err != nil {
 		return nil, err
 	}

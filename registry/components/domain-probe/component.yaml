@@ -1,6 +1,6 @@
 kind: component
 name: domain-probe
-version: 1.0.1
+version: 1.1.0
 stage: ga
 output_namespace: probes
 
@@ -22,6 +22,14 @@ architecture:
     domain-probes: inbound
 
 environment:
+  - name: STEGO_LOG_LEVEL
+    type: string
+    required: false
+    default: "info"
+    description: "The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info."
+    secret: false
+    example: "warn"
+    allowed: {values: ["debug", "info", "warn", "error"]}
   - name: STEGO_PROBE_CONSOLE
     type: string
     required: false
