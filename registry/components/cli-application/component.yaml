@@ -1,3 +1,6 @@
+# Version 1.30.0 leaves each secret field of an apply document out of the write of a resource that exists and
+# names it as not compared, so a document with a required secret is applied again; --set-secret FIELD sends a
+# secret that the patch takes from a private file (ST-SUP-RC04-OC35; walkthrough 24, CLI-S).
 # Version 1.28.0 gives a secret member of the create and the patch of an apply resource as a field with no flag,
 # which apply takes only from a private file or a pipe on standard input, and refuses before any request from a file that the
 # group or other users can read (ST-SUP-RC04-OC32; follow-up of PR #460).
@@ -52,7 +55,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.28.0
+version: 1.30.0
 stage: ga
 output_namespace: cli
 config:

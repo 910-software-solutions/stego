@@ -62,9 +62,19 @@ component writes (`<out>/commands/openapi.json`), in the package
   that only you can read, or from a pipe on standard input. Apply refuses a
   file that holds a secret field when the group or other users have access
   to it, also a file on standard input, before any request. The service never answers a secret field, so apply
-  cannot compare it: each apply of a document with a secret field sends the
-  patch and reports `configured`. A secret field that only the create takes
-  cannot be in a document of a resource that exists (cli-application 1.28.0).
+  cannot compare it. For a resource that exists, apply does not send a
+  secret field of the document, also a required one or one that only the
+  create takes, and names it, never its value, as not compared in the
+  result: `secrets_not_compared` with `-o json`, else
+  `(secret fields not compared: pin)`. Thus you can apply one document
+  again, and the result is `unchanged` when each other field has the
+  stored value. To give a resource that exists a new value of a secret,
+  add `--set-secret <field>`, such as `--set-secret pin`, once for each
+  field; the field must be one that the patch takes, and the document must
+  come from a private file or a pipe. Apply refuses a `--set-secret` of
+  another field before any request (cli-application 1.30.0; before, a
+  second apply of a document with a secret that only the create takes
+  failed, and a secret that the patch takes was sent again at each apply).
 
 The fills of the service follow the STEGO gates: `stego validate` and `stego plan`
 also warn when the sign-off of a fill counts only because of a key that the

@@ -980,9 +980,9 @@ func TestApplySecretField(t *testing.T) {
 		if err != nil || len(first) != 1 || first[0].Status != "created" || f.writes != 1 || sent != "PIN-SECRET-1" || strings.Contains(output, "PIN-SECRET") {
 			t.Fatal("apply did not create with the secret field", first, err, sent)
 		}
-		// A new value in a private file: the answer does not give the field, so apply sends the patch with it.
+		// A new value in a private file with --set-secret pin: apply sends the patch with it.
 		changed := applyFile(t, filepath.Join(f.directory, "changed.yaml"), manifest("Record", "first", `{"pin":"PIN-SECRET-2"}`))
-		second, _, err := runApplyTest(t, app, "apply", "-f", changed, "-o", "json")
+		second, _, err := runApplyTest(t, app, "apply", "-f", changed, "--set-secret", "pin", "-o", "json")
 		f.mu.Lock()
 		sent = f.last["pin"]
 		f.mu.Unlock()
@@ -990,4 +990,93 @@ func TestApplySecretField(t *testing.T) {
 			t.Fatal("apply did not patch the secret field", second, err, sent)
 		}
 	})
+}
+
+func TestApplyAgainWithSecret(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC35-T03 An apply of a document with a required secret again sends no secret and reports unchanged with the field not compared, and only --set-secret sends a new value", func(t *testing.T) {
+		f := applySetup(t)
+		app := definition()
+		// serial_ref is a required secret that only the create takes; pin is a secret that the patch takes too.
+		create := []Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "count", Key: "count", Type: "integer"},
+			{Key: "serial_ref", Type: "string", Required: true}, {Key: "pin", Type: "string"}}
+		patch := []Field{{Flag: "name", Key: "name", Type: "string"}, {Flag: "count", Key: "count", Type: "integer"}, {Key: "pin", Type: "string"}}
+		app.Resources = append(app.Resources, ApplyResource{Kind: "Asset", APIVersion: "example/v1", Path: "/records", CreateFields: create, PatchFields: patch})
+		document := applyFile(t, filepath.Join(f.directory, "asset.yaml"), manifest("Asset", "first", `{"count":1,"serial_ref":"SERIAL-SECRET-1","pin":"PIN-SECRET-1"}`))
+		first, _, err := runApplyTest(t, app, "apply", "-f", document, "-o", "json")
+		f.mu.Lock()
+		// The service never answers a writeOnly member.
+		if len(first) == 1 {
+			delete(f.rows["/records/"+first[0].ID], "serial_ref")
+			delete(f.rows["/records/"+first[0].ID], "pin")
+		}
+		f.mu.Unlock()
+		if err != nil || len(first) != 1 || first[0].Status != "created" || f.writes != 1 {
+			t.Fatal("apply creation", first, err)
+		}
+		for _, format := range []string{"json", ""} {
+			args := []string{"apply", "-f", document}
+			if format != "" {
+				args = append(args, "-o", format)
+			}
+			var again []ApplyResult
+			var buffer bytes.Buffer
+			err := Run(context.Background(), app, args, &buffer)
+			output := buffer.String()
+			if format == "json" && json.Unmarshal(buffer.Bytes(), &again) != nil {
+				t.Fatalf("invalid apply result: %s", output)
+			}
+			if err != nil || f.writes != 1 || strings.Contains(err2text(err)+output, "SECRET") {
+				t.Fatal("a second apply of the same document with a secret wrote, failed or gave a value", err, output, f.writes)
+			}
+			if format == "json" && (len(again) != 1 || again[0].Status != "unchanged" || again[0].ID != first[0].ID ||
+				strings.Join(again[0].NotCompared, ",") != "pin,serial_ref") {
+				t.Fatal("the second apply did not report unchanged with the secret fields not compared", again)
+			}
+			if format == "" && !strings.Contains(output, "unchanged (secret fields not compared: pin, serial_ref)") {
+				t.Fatal("the text result does not name the secret fields not compared", output)
+			}
+		}
+		// Another count is patched with no secret.
+		counted := applyFile(t, filepath.Join(f.directory, "counted.yaml"), manifest("Asset", "first", `{"count":2,"serial_ref":"SERIAL-SECRET-1","pin":"PIN-SECRET-9"}`))
+		results, _, err := runApplyTest(t, app, "apply", "-f", counted, "-o", "json")
+		f.mu.Lock()
+		_, pinSent := f.last["pin"]
+		_, serialSent := f.last["serial_ref"]
+		f.mu.Unlock()
+		if err != nil || len(results) != 1 || results[0].Status != "configured" || f.writes != 2 || pinSent || serialSent {
+			t.Fatal("a patch of another field sent a secret, or did not patch", results, err, pinSent, serialSent)
+		}
+		// --set-secret pin sends the new pin, and only it.
+		results, _, err = runApplyTest(t, app, "apply", "-f", counted, "--set-secret", "pin", "-o", "json")
+		f.mu.Lock()
+		pin := f.last["pin"]
+		_, serialSent = f.last["serial_ref"]
+		f.mu.Unlock()
+		if err != nil || len(results) != 1 || results[0].Status != "configured" || f.writes != 3 || pin != "PIN-SECRET-9" || serialSent ||
+			strings.Join(results[0].NotCompared, ",") != "serial_ref" {
+			t.Fatal("--set-secret pin did not send the pin alone", results, err, pin, serialSent)
+		}
+		// A secret that only the create takes, and a field that is no secret, cannot be set: refused before any request.
+		calls := f.calls
+		for _, field := range []string{"serial_ref", "count", "BAD-name"} {
+			_, output, err := runApplyTest(t, app, "apply", "-f", counted, "--set-secret", field)
+			if err == nil || strings.Contains(err.Error()+output, "SECRET") || f.calls != calls {
+				t.Fatal("apply took --set-secret of a field that no patch takes as a secret", field, err, f.calls)
+			}
+		}
+		// --set-secret from a file that the group can read is refused before any request.
+		if err := os.Chmod(counted, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runApplyTest(t, app, "apply", "-f", counted, "--set-secret", "pin"); err == nil || !strings.Contains(err.Error(), "secret field must be your own file") || f.calls != calls {
+			t.Fatal("apply sent a secret from a shared file", err)
+		}
+	})
+}
+
+func err2text(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
