@@ -297,7 +297,7 @@ func TestSealEarlierDigests(t *testing.T) {
 	})
 }
 
-// relateService is the release of ST-SUP-RC01-OC49-T14: the owned Payout of the resource type payout with the field
+// relateService is the release of ST-SUP-RC01-OC52-T01: the owned Payout of the resource type payout with the field
 // approver_id, whose schema gives payout the relation tenant, a relationship approver from the field, and relate steps
 // of each, as release 2 of walkthrough 24 (P2-R2) adds them.
 func relateService(ns, tenancyNS string, relates ...types.SchemaChange) gen.Context {
@@ -318,7 +318,7 @@ func relateService(ns, tenancyNS string, relates ...types.SchemaChange) gen.Cont
 }
 
 func TestRelateSteps(t *testing.T) {
-	t.Run("ST-SUP-RC01-OC49-T14 The expand of a relate makes its checkpoint and changes no table, and the relate job reads each row with its subject", func(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC52-T01 The expand of a relate makes its checkpoint and changes no table, and the relate job reads each row with its subject", func(t *testing.T) {
 		base := relateService("relatebase", "relatebasetenancy")
 		head := relateService("relate", "relatetenancy",
 			types.SchemaChange{ID: "payout-tenant-relate", Kind: "relate", Entity: "Payout", Relation: "tenant"},

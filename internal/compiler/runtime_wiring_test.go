@@ -772,7 +772,7 @@ func TestUnmarkedSecretMembers(t *testing.T) {
 }
 
 func TestRelateWiring(t *testing.T) {
-	t.Run("ST-SUP-RC01-OC49-T15 The wiring of a relate step gives the relate job its changes and the migration job its lease", func(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC52-T02 The wiring of a relate step gives the relate job its changes and the migration job its lease", func(t *testing.T) {
 		svc := &types.ServiceDeclaration{
 			SchemaChanges: []types.SchemaChange{{ID: "payout-tenant-relate", Kind: "relate", Entity: "Payout", Relation: "tenant"},
 				{ID: "payout-note-add", Kind: "add", Entity: "Payout", Field: "note"}},
