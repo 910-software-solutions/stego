@@ -44,9 +44,12 @@
 # on which the command decided its own permission, and gives a reset the permissions of the commands of each resource
 # type but the service-level resource that write the entity as its reset guards (ST-SUP-RC32-OC24, decision ST-SUP-Q209
 # (d)).
+# Version 1.28.0 gives each declared reset of attempts the helper <Command>Reset<Entity><Field>AttemptsByID, which
+# resets the row of an ID with the reset permission alone (ST-SUP-RC32-OC24, decision ST-SUP-Q211 (a); walkthrough
+# 24, U-R).
 kind: component
 name: command
-version: 1.26.0
+version: 1.28.0
 stage: ga
 output_namespace: commands
 
