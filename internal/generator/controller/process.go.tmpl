@@ -36,10 +36,8 @@ func Main(run func(context.Context,*Metrics)error) {
  os.Exit(code)
 }
 
-// controllerService is the service name of the line of a failed process: OTEL_SERVICE_NAME, else the declared
-// name, else unknown_service.
+// controllerService is the service name of the line of a failed process: the declared name, else unknown_service.
 func controllerService()string{
- if name:=os.Getenv("OTEL_SERVICE_NAME");name!=""{return name}
  if name:={{printf "%q" .Service}};name!=""{return name}
  return "unknown_service"
 }

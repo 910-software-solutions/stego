@@ -614,9 +614,16 @@ func probeLines(output, name string) []map[string]any {
 		if json.Unmarshal([]byte(line), &document) != nil {
 			continue
 		}
+		// The fields of a line are under attributes with the prefix stego. (walkthrough 25, L-1): the checks read them
+		// by their names, such as change and value.
+		if attrs, _ := document["attributes"].(map[string]any); attrs != nil {
+			for key, value := range attrs {
+				document[strings.TrimPrefix(key, "stego.")] = value
+			}
+		}
 		// The tests of the backfill read the lines of the rename; the backfill of the retype of the same job reports
 		// under its own change.
-		if fields, _ := document["fields"].(map[string]any); fields != nil && fields["change"] != nil && fields["change"] != change {
+		if document["change"] != nil && document["change"] != change {
 			continue
 		}
 		lines = append(lines, document)

@@ -27,7 +27,7 @@ func(d *stegoHTTPDiagnostics)Write(data []byte)(int,error){
    defer close(d.done)
    for timestamp:=range d.queue {
     // The one form of each line of the runtime (walkthrough 25, L-1).
-    service:=os.Getenv("OTEL_SERVICE_NAME");if service==""{service=stegoServiceName};if service==""{service="unknown_service"}
+    service:=stegoServiceName;if service==""{service="unknown_service"}
     name,_:=json.Marshal(service)
     stamp,_:=json.Marshal(timestamp.UTC().Format(time.RFC3339Nano))
     line:=append(append(append(append([]byte(` + "`" + `{"timestamp":` + "`" + `),stamp...),` + "`" + `,"severity":"ERROR","service.name":` + "`" + `...),name...),` + "`" + `,"event.name":"http.server.diagnostic","message":"HTTP server reported a diagnostic"}` + "`" + `+"\n"...)
