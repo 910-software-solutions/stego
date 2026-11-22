@@ -432,10 +432,7 @@ func stegoReportFailure(output io.Writer, err error) {
 	// The record has the one form of each line of the runtime (walkthrough 25, L-1): the timestamp in UTC, the
 	// severity, the service name, the event name and the message, and its fields under attributes with the prefix
 	// stego.; a list is one text with its names joined by commas.
-	service := os.Getenv("OTEL_SERVICE_NAME")
-	if service == "" {
-		service = stegoServiceName
-	}
+	service := stegoServiceName
 	if service == "" {
 		service = "unknown_service"
 	}
@@ -460,7 +457,9 @@ func stegoReportFailure(output io.Writer, err error) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = output.Write(line)
+		if _, werr := output.Write(line); werr != nil {
+			return
+		}
 	}()
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -610,10 +609,7 @@ func (d *stegoHTTPDiagnostics) Write(data []byte) (int, error) {
 			defer close(d.done)
 			for timestamp := range d.queue {
 				// The one form of each line of the runtime (walkthrough 25, L-1).
-				service := os.Getenv("OTEL_SERVICE_NAME")
-				if service == "" {
-					service = stegoServiceName
-				}
+				service := stegoServiceName
 				if service == "" {
 					service = "unknown_service"
 				}
