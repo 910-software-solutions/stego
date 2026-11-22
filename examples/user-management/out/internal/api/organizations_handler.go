@@ -426,7 +426,7 @@ func (h *OrganizationsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if query.Transient(err) {
-		answerUndecided(w, r)
+		answerUndecided(w, r, unavailableDatabase(err))
 		return
 	}
 	if err != nil {
