@@ -20,9 +20,10 @@ The generated backend puts public deployment settings in the HTML head. The
 runtime uses these settings to enable traces, logs, and metrics. It uses the
 backend's trace sample ratio. Invalid or duplicate metadata disables export.
 An optional `sampleRatio` can reduce the deployment ratio. It cannot increase
-that ratio or enable a disabled signal. Without metadata, export is disabled
-unless the caller supplies `sampleRatio`. This explicit option enables all
-three signals for standalone use; the ratio must be between zero and one. `beginTrace` lets a domain workflow supply its
+that ratio or enable a disabled signal. Without metadata, export is disabled,
+also when the caller supplies `sampleRatio` (from 1.4.0): a page with no
+deployment setting counts as a deployment that disabled every signal. The
+ratio must be between zero and one. `beginTrace` lets a domain workflow supply its
 root trace ID. `RootTraceIdGenerator` uses the platform's cryptographic random
 source and rejects zero IDs. Domain code supplies event names and attributes.
 Do not put credentials or private user data in telemetry records.

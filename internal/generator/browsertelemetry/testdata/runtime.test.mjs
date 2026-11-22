@@ -3,9 +3,15 @@ import {test} from 'node:test';
 import {createBrowserTelemetry,RootTraceIdGenerator} from './telemetry/index.js';
 const csrf='c'.repeat(43);
 const parent='0af7651916cd43dd8448eb211c80319c';
+// deployment puts settings in the one meta element stego-runtime-config of the page; undefined leaves the page with none.
+function deployment(settings) {
+ globalThis.document.querySelectorAll=()=>settings===undefined?[]:[{getAttribute:()=>JSON.stringify(settings)}];
+}
 function setup(handler) {
  globalThis.location={href:'https://console.example/gateways'};
  globalThis.document=new EventTarget();
+ // The page of a generated backend: one valid deployment setting that enables every signal at the ratio 1.
+ deployment({version:1,traces:true,logs:true,metrics:true,sampleRatio:1});
  globalThis.window=new EventTarget();
  const calls=[];
  globalThis.fetch=async (url,options)=>{
@@ -200,5 +206,76 @@ test('ST-SUP-RC03-OC12-T01 Public deployment metadata controls each exporter',as
   const actual=[...new Set(calls.filter(c=>c.options.method==='POST').map(c=>new URL(c.url).pathname))].sort();
   const expected=settings?.sampleRatio===1&&settings.logs===false?['/telemetry/v1/metrics','/telemetry/v1/traces']:[];
   assert.deepEqual(actual,expected);
+ }
+});
+
+// spread gives n root trace IDs whose sampler value spreads evenly over the 32-bit range: the ratio sampler XORs the
+// four 32-bit words of a trace ID, so with the last three words zero the first word is the value, and exactly the IDs
+// whose value is at most ratio * 0xffffffff are sampled.
+function spread(n) {
+ return Array.from({length:n},(_,i)=>Math.floor((i+0.5)*0xffffffff/n).toString(16).padStart(8,'0')+'0'.repeat(24));
+}
+// exportedTraces starts one root span for each ID, flushes, and gives how many of the IDs an export body holds.
+async function exportedTraces(t, calls, ids) {
+ // The exporter has at most one export at a time, so each span is flushed before the next one starts.
+ for (const id of ids) {t.beginTrace(id);t.tracer.startSpan('sampled').end();await t.forceFlush();}
+ const bodies=calls.filter(c=>c.options.method==='POST'&&c.url.endsWith('/traces')).map(c=>Buffer.from(c.options.body));
+ return ids.filter(id=>bodies.some(b=>b.includes(Buffer.from(id,'hex')))).length;
+}
+// exportedPaths emits one record of each signal, flushes, and gives the paths of the export requests.
+async function exportedPaths(t, calls) {
+ t.tracer.startSpan('signal').end();t.logger.emit({body:'signal'});t.meter.createCounter('signal').add(1);
+ await t.forceFlush();
+ return [...new Set(calls.filter(c=>c.options.method==='POST').map(c=>new URL(c.url).pathname))].sort();
+}
+
+test('ST-SUP-RC03-OC13-T01 A lower option ratio reduces the deployment sample ratio',async()=>{
+ const calls=setup();deployment({version:1,traces:true,logs:true,metrics:true,sampleRatio:0.5});
+ const t=createBrowserTelemetry({sampleRatio:0.1});
+ try {
+  // At the ratio 0.1 exactly 100 of the 1,000 evenly spread IDs are sampled; at the deployment ratio 0.5 there would be 500.
+  assert.equal(await exportedTraces(t, calls, spread(1000)), 100);
+ } finally {await t.shutdown();}
+});
+
+test('ST-SUP-RC03-OC13-T02 A higher option ratio does not raise the deployment sample ratio',async()=>{
+ const calls=setup();deployment({version:1,traces:true,logs:true,metrics:true,sampleRatio:0.1});
+ const t=createBrowserTelemetry({sampleRatio:1});
+ try {
+  assert.equal(await exportedTraces(t, calls, spread(1000)), 100);
+ } finally {await t.shutdown();}
+ // The same IDs at the ratio 1 are all exported, so the count above is the ratio 0.1 and not a loss of spans.
+ const all=setup();deployment({version:1,traces:true,logs:true,metrics:true,sampleRatio:1});
+ const u=createBrowserTelemetry({sampleRatio:1});
+ try {
+  assert.equal(await exportedTraces(u, all, spread(200)), 200);
+ } finally {await u.shutdown();}
+});
+
+test('ST-SUP-RC03-OC13-T03 An option does not enable a signal that the deployment disabled',async()=>{
+ const signals=['logs','metrics','traces'];
+ for (const off of [signals, ...signals.map(s=>[s])]) {
+  const calls=setup();
+  const settings={version:1,traces:true,logs:true,metrics:true,sampleRatio:1};
+  for (const s of off) settings[s]=false;
+  if (off.length===signals.length) settings.sampleRatio=0;
+  deployment(settings);
+  const t=createBrowserTelemetry({sampleRatio:1});
+  try {
+   assert.deepEqual(await exportedPaths(t, calls), signals.filter(s=>!off.includes(s)).map(s=>'/telemetry/v1/'+s), 'disabled: '+off.join(','));
+  } finally {await t.shutdown();}
+ }
+});
+
+test('ST-SUP-RC03-OC13-T04 An option does not enable any signal when the page has no deployment setting',async()=>{
+ for (const settings of [undefined, 'malformed']) {
+  const calls=setup();
+  if (settings===undefined) deployment(undefined);
+  else globalThis.document.querySelectorAll=()=>[{getAttribute:()=>'{"version":1,'}];
+  const t=createBrowserTelemetry({sampleRatio:1});
+  try {
+   assert.deepEqual(await exportedPaths(t, calls), [], 'settings: '+String(settings));
+   assert.equal(await exportedTraces(t, calls, spread(10)), 0);
+  } finally {await t.shutdown();}
  }
 });

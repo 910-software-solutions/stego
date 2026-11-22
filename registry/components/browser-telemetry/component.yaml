@@ -1,6 +1,8 @@
+# Version 1.4.0 disables export on a page with no deployment setting also when the caller gives sampleRatio: an
+# option only reduces the deployment ratio and never enables a signal (ST-SUP-RC03-OC12, ST-SUP-RC03-OC13).
 kind: component
 name: browser-telemetry
-version: 1.3.0
+version: 1.4.0
 stage: ga
 output_namespace: browsertelemetry
 config:
