@@ -154,7 +154,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
   raw:=[]byte(value);if field.Type=="string"{raw,_=json.Marshal(value)}
   body[field.Key]=raw
  }
- allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return errors.New("required request field is missing")}}}
+ allowed:=map[string]Field{};for _,f:=range append(append([]Field(nil),c.Fields...),c.BodyFields...){allowed[f.Key]=f;if f.Required{if _,ok:=body[f.Key];!ok{return missingField(f)}}}
  // A refusal names the member, as printable ASCII text of at most 120 characters in double quotes, as a problem entry
  // of the service is given (ST-SUP-RC04-OC11; walkthrough 19, W19-P4: the CLI said invalid request field and did not
  // name it). The members are taken in sorted order, so the CLI names the same member at each run.
@@ -239,6 +239,13 @@ const keptHeader="Idempotency-Kept"
 // write that it did (ST-SUP-RC04-OC31, ST-SUP-RC04-OC34). retried tells that the second request was sent: its answer,
 // when it is not a success, leaves the outcome of the write unknown, as the first request can still be in its
 // transaction. No other request is sent again (ST-SUP-RC04-OC05).
+// missingField names a required field that the request lacks: the flag that gives it, or, for a secret member with
+// no flag, the member that --body FILE gives, and never a value (ST-SUP-RC04-OC11; walkthrough 24: create-sites said
+// required request field is missing and did not name the field).
+func missingField(f Field)error{
+ if f.Flag!=""{return fmt.Errorf("the required flag --%s is missing",f.Flag)}
+ return fmt.Errorf("the required request field %s is missing: give it in --body FILE",strconv.Quote(printableText(f.Key)))
+}
 func send(ctx context.Context,keeps bool,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
  if method!="POST"&&method!="PATCH"{response,err=transport.Do(ctx,method,route,headers,payload);return}
  key,err:=idempotencyKey();if err!=nil{return}

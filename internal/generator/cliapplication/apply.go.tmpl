@@ -30,11 +30,24 @@ import (
 // (ST-SUP-RC04-OC32).
 type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field;IdempotentWrites,ConditionalPatch bool}
 type applyPlan struct {resource ApplyResource;name,id,method,path,generation string;body map[string]json.RawMessage;payload []byte}
-type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`}
+// NotCompared names the secret fields that apply left out of the write of a resource that exists, and never a value
+// (ST-SUP-RC04-OC35).
+type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`;NotCompared []string `json:"secrets_not_compared,omitempty"`}
 
 // applyNameWarning is the warning of apply --help: a service that does not hold the name of a kind unique cannot refuse
 // a second create of one name, so two clients that apply one new name at the same time can make two resources
 // (ST-SUP-RC04-OC36).
+// applySecretNote is the note of apply --help on a secret field, which the service never answers (ST-SUP-RC04-OC35).
+const applySecretNote="A secret field of a resource that exists is not sent and is reported as not compared, as the stored value can differ; --set-secret FIELD sends it from a private file, and only a field that the document holds."
+// secretOptions refuses a --set-secret that names no secret field of the patch of an apply resource, before any
+// request.
+func secretOptions(app Application,setSecret map[string]bool)error{
+ for key:=range setSecret{
+  found:=false;for _,r:=range app.Resources{for _,f:=range r.PatchFields{if f.Key==key&&f.Flag==""{found=true}}}
+  if !found{return fmt.Errorf("--set-secret %s names no secret field that a patch of apply takes",key)}
+ }
+ return nil
+}
 const applyNameWarning="Two clients that apply one new name at the same time can make two resources, unless the service holds the name unique (unique: true on the field name)."
 func validateApply(resources []ApplyResource)error{
  if len(resources)>64{return errors.New("too many apply resource definitions")}
@@ -58,6 +71,24 @@ func applyFields(fields []Field,body map[string]json.RawMessage,required bool)er
  allowed:=map[string]Field{};for _,f:=range fields{allowed[f.Key]=f;if required&&f.Required{if _,ok:=body[f.Key];!ok{return fmt.Errorf("the required apply field %s is missing",f.Key)}}}
  for key,value:=range body{f,ok:=allowed[key];if !ok||!fieldValue(f,value){return errors.New("invalid apply field")}}
  return nil
+}
+// leaveSecrets leaves out of the write of a found resource each secret field of the document, a field with no flag,
+// and gives the names of those fields, sorted. The service never answers a secret field, so apply cannot compare it
+// with the stored value, and no read of the value is offered: apply thus never sends it again on its own, and a
+// document with a required secret is applied again with no change of the secret. A secret field that setSecret names
+// is kept in the patch, so the resource gets the value of the document; such a field that only the create takes is
+// refused before any write, with its name and no value (ST-SUP-RC04-OC35; walkthrough 24, CLI-S).
+func leaveSecrets(p *applyPlan,setSecret map[string]bool)([]string,error){
+ patch:=map[string]bool{};for _,f:=range p.resource.PatchFields{if f.Flag==""{patch[f.Key]=true}}
+ var left []string
+ for _,set:=range [][]Field{p.resource.CreateFields,p.resource.PatchFields}{
+  for _,f:=range set{
+   if _,given:=p.body[f.Key];f.Flag!=""||!given{continue}
+   if setSecret[f.Key]{if !patch[f.Key]{return nil,fmt.Errorf("apply cannot set the secret field %s of %s %q: only a create sets it, and the resource exists",f.Key,p.resource.Kind,p.name)};continue}
+   delete(p.body,f.Key);left=append(left,f.Key)
+  }
+ }
+ slices.Sort(left);return slices.Compact(left),nil
 }
 // keepCreateOnly leaves out of the patch of a found resource each field that only its create takes, such as a field
 // with writable create: a document that gives the stored value is applied again, as kubectl apply leaves out an
@@ -152,33 +183,47 @@ func prepareApply(app Application,documents []map[string]json.RawMessage)([]appl
  }
  return plans,nil
 }
-func applyOptions(args []string)(filename,format,outputFile string,dry bool,err error){
- seen:=map[string]bool{}
+// documentSecrets refuses, before any request, a --set-secret FIELD that no document of the apply holds: it would send
+// nothing, and the caller would take the secret as set (security review of PR #493, L4). It names the field and no
+// value.
+func documentSecrets(plans []applyPlan,setSecret map[string]bool)error{
+ for key:=range setSecret{
+  held:=false;for _,p:=range plans{if _,given:=p.body[key];given{held=true}}
+  if !held{return fmt.Errorf("--set-secret %s names a field that no apply document holds",key)}
+ }
+ return nil
+}
+// applyOptions reads the options of apply. Each --set-secret FIELD names a secret field that apply gives to a resource
+// that exists; the option can come more than once.
+func applyOptions(args []string)(filename,format,outputFile string,dry bool,setSecret map[string]bool,err error){
+ seen:=map[string]bool{};setSecret=map[string]bool{}
  for i:=0;i<len(args);i++{
   key,value,has:=strings.Cut(args[i],"=")
-  switch key{case "-f","--filename":key="filename";case "-o","--output":key="output";case "--output-file":key="output-file";case "--dry-run":key="dry-run";case "-k","--kustomize":return "","","",false,errors.New("kustomize input is not supported; supply rendered files with -f");default:return "","","",false,errArguments}
-  if seen[key]{return "","","",false,errArguments};seen[key]=true
-  if key=="dry-run"{if !has{value="true"};if value!="true"&&value!="false"{return "","","",false,errArguments};dry=value=="true";continue}
-  if !has{if i+1==len(args){return "","","",false,errArguments};i++;value=args[i]};if value==""{return "","","",false,errArguments}
-  switch key{case "filename":filename=value;case "output":format=value;case "output-file":outputFile=value}
+  switch key{case "-f","--filename":key="filename";case "-o","--output":key="output";case "--output-file":key="output-file";case "--dry-run":key="dry-run";case "--set-secret":key="set-secret";case "-k","--kustomize":return "","","",false,nil,errors.New("kustomize input is not supported; supply rendered files with -f");default:return "","","",false,nil,errArguments}
+  if seen[key]&&key!="set-secret"{return "","","",false,nil,errArguments};seen[key]=true
+  if key=="dry-run"{if !has{value="true"};if value!="true"&&value!="false"{return "","","",false,nil,errArguments};dry=value=="true";continue}
+  if !has{if i+1==len(args){return "","","",false,nil,errArguments};i++;value=args[i]};if value==""{return "","","",false,nil,errArguments}
+  switch key{case "set-secret":if !property.MatchString(value){return "","","",false,nil,errArguments};setSecret[value]=true;case "filename":filename=value;case "output":format=value;case "output-file":outputFile=value}
  }
- if filename==""||(format!=""&&format!="json"){return "","","",false,errArguments};return
+ if filename==""||(format!=""&&format!="json"){return "","","",false,nil,errArguments};return
 }
 func writeApply(destination *reservedOutput,format string,results []ApplyResult)error{
  var data []byte
  if format=="json"{var err error;data,err=json.MarshalIndent(results,"","  ");if err!=nil{return err};data=append(data,'\n')}else{
-  var output bytes.Buffer;for _,r:=range results{fmt.Fprintf(&output,"%s/%q %s\n",r.Kind,r.Name,r.Status)};data=output.Bytes()
+  var output bytes.Buffer;for _,r:=range results{fmt.Fprintf(&output,"%s/%q %s",r.Kind,r.Name,r.Status);if len(r.NotCompared)>0{fmt.Fprintf(&output," (secret fields not compared; the stored value can differ: %s)",strings.Join(r.NotCompared,", "))};output.WriteString("\n")};data=output.Bytes()
  }
  return destination.write(data)
 }
 func runApply(ctx context.Context,app Application,args []string,output io.Writer)error{
  ctx,cancel:=context.WithTimeout(ctx,5*time.Minute);defer cancel()
  if len(app.Resources)==0{return errors.New("apply is not configured")}
- if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]\n"+applyNameWarning);return err}
- filename,format,outputFile,dry,err:=applyOptions(args);if err!=nil{return err}
+ if len(args)==1&&args[0]=="--help"{_,err:=fmt.Fprintln(output,"apply -f FILE|DIRECTORY|- [--dry-run] [--set-secret FIELD]... [-o json] [--output-file FILE]\n"+applyNameWarning+"\n"+applySecretNote);return err}
+ filename,format,outputFile,dry,setSecret,err:=applyOptions(args);if err!=nil{return err}
+ if err:=secretOptions(app,setSecret);err!=nil{return err}
  documents,private,err:=loadApply(ctx,filename);if err!=nil{return err}
  plans,err:=prepareApply(app,documents);if err!=nil{return err}
  if err:=privateSecrets(plans,private);err!=nil{return err}
+ if err:=documentSecrets(plans,setSecret);err!=nil{return err}
  destination,err:=reserveOutput(outputFile,output);if err!=nil{return err};defer destination.close()
  results:=make([]ApplyResult,len(plans));for i,p:=range plans{results[i]=ApplyResult{Kind:p.resource.Kind,Name:p.name,ID:p.id,Status:"not_attempted"}}
  if dry{for i:=range results{results[i].Status="validated"};return writeApply(destination,format,results)}
@@ -198,6 +243,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
    p.path+="/"+url.PathEscape(p.id)
    if targets[p.path]{return errors.New("multiple apply documents select the same resource")};targets[p.path]=true
    p.method="PATCH";fields=p.resource.PatchFields
+   if len(p.resource.ImmutableIdentity)==0{if results[i].NotCompared,err=leaveSecrets(p,setSecret);err!=nil{return err}}
    if len(p.resource.ImmutableIdentity)>0{p.method="UNCHANGED";fields=p.resource.CreateFields}else if err:=keepCreateOnly(p,row);err!=nil{return err}else if storedPatch(p,row){p.method="UNCHANGED"}else if p.resource.ConditionalPatch{if err:=readGeneration(p,row);err!=nil{return err}}
   }
   if err:=applyFields(fields,p.body,true);err!=nil{return fmt.Errorf("%s %q: %w",p.resource.Kind,p.name,err)}

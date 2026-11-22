@@ -11,6 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
@@ -673,4 +677,395 @@ func (j *SealJob) batch(ctx context.Context, tx tenant.Querier, held *lease.Held
 	}
 	result.Sealed, result.Checked = sealedRows, checked
 	return len(all), last, nil
+}
+
+// The relate job of the relate steps (decision ST-SUP-Q212 (a); walkthrough 24, P2-R2). A release that gives the rows
+// of an entity a new relation that the runtime writes, such as the tenant relation or the relation of a reference,
+// writes its tuple only for the rows that it makes. The rows made before the release, and the rows that the release
+// before makes during the rollout, have no tuple of the new relation. The relate step of the change makes, at expand,
+// the checkpoint row of the change in stego_schema.seals and the lease stego.backfill.<change ID>, as the expand of a
+// seal does (ST-SUP-RP09-LC15), and the controller stages the tuple of each row through the authz outbox in passes: a
+// pass starts only while no process of a release before the step reports itself, and completes only when none
+// reported itself after its start, so each row of the release before is in a pass. A touch of a tuple that is there
+// changes nothing, so a pass again, as after a restore, is safe.
+
+// RelateEvent is the event name of the info line of each pass of the relate job.
+const RelateEvent = "command.relate.pass"
+
+// RelateCommand is the action of the audit row of each batch of the relate job that stages tuples.
+const RelateCommand = "backfill-relation"
+
+// The subjects of a relate change: the tenant of the row, the value of a field, or the row of a reference.
+const (
+	RelateTenant    = "tenant"
+	RelateField     = "field"
+	RelateReference = "reference"
+)
+
+// RelateChange is one relate step at expand: the change, the entity, the resource type of its rows, the relation
+// whose tuple each row gets, and its subject. Subject is RelateTenant, RelateField, with SubjectType the type of the
+// subject and Resource for a subject that is a resource of the tenant, or RelateReference, with SubjectType the
+// resource type of the referenced entity. Select reads the rows of the tenant $1 after the ID $2, or from the first
+// row when $2 is NULL, in ID order, at most $3, FOR SHARE, and gives for each its ID and the subject value: the field
+// or the reference, or NULL for the tenant.
+type RelateChange struct {
+	Change, Entity, ResourceType, Relation string
+	Subject, SubjectType                   string
+	Resource                               bool
+	Select                                 string
+}
+
+// RelateResult is what one run of the relate job did for one change: the rows of its pass that it read and the
+// tuples that it staged, whether the pass completed, and whether it waits for a release before the step to stop.
+type RelateResult struct {
+	Change           string
+	Checked, Related int64
+	Completed, Waits bool
+}
+
+// RelateJobConfig configures the relate job of a service.
+type RelateJobConfig struct {
+	// DB is a pool of the runtime role, Schema the schema of the tenant list.
+	DB     *sql.DB
+	Schema string
+	// Authz binds the authorization handle of each batch, which stages the tuples in the authz outbox; Audit writes
+	// one audit row for each batch that stages tuples.
+	Authz *authz.Runtime
+	Audit *audit.Writer
+	// AuditSettings are the audit settings of the service; an empty level is change.
+	AuditSettings audit.Settings
+	// Service, ServiceVersion and DeclarationVersion name the service in the audit rows.
+	Service, ServiceVersion, DeclarationVersion string
+	Changes                                     []RelateChange
+	Holder                                      string
+	Lease                                       lease.Settings
+}
+
+// RelateJob is the relate job of the relate steps of a service.
+type RelateJob struct {
+	cfg       RelateJobConfig
+	principal authz.Principal
+	tenants   func(ctx context.Context) ([]tenant.Tenant, error)
+	pause     time.Duration
+}
+
+// NewRelateJob makes the relate job. It refuses a change with no name, statement or relation, and a subject of
+// another kind.
+func NewRelateJob(cfg RelateJobConfig) (*RelateJob, error) {
+	switch {
+	case cfg.DB == nil || cfg.Authz == nil || cfg.Audit == nil:
+		return nil, errors.New("command: the relate job needs a pool, the authorization runtime and the audit writer")
+	case cfg.Schema == "" || cfg.Holder == "":
+		return nil, errors.New("command: the relate job needs the schema of the tenant list and a holder")
+	}
+	for _, c := range cfg.Changes {
+		if c.Change == "" || c.Entity == "" || c.ResourceType == "" || c.Relation == "" || c.Select == "" {
+			return nil, fmt.Errorf("command: the relate change %q lacks a name, a relation or a statement", c.Change)
+		}
+		switch {
+		case c.Subject == RelateTenant:
+		case (c.Subject == RelateField || c.Subject == RelateReference) && c.SubjectType != "":
+		default:
+			return nil, fmt.Errorf("command: the relate change %s has the subject %q", c.Change, c.Subject)
+		}
+	}
+	principal, err := authz.System(ReconcilePrincipal)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AuditSettings.Level == "" {
+		cfg.AuditSettings.Level = audit.LevelChange
+	}
+	db, schema := cfg.DB, cfg.Schema
+	return &RelateJob{cfg: cfg, principal: principal, pause: SealPause,
+		tenants: func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, db, schema) }}, nil
+}
+
+// Run runs the pass of each change under its lease until the pass ends, the lease ends or ctx ends, and logs, for
+// each change, the rows that it read, the tuples that it staged and whether the pass completed. A change whose pass
+// completed and is not stale has no work. A change with no checkpoint row or no lease row fails with the remedy:
+// run the migration job of this release.
+func (j *RelateJob) Run(ctx context.Context) ([]RelateResult, error) {
+	var results []RelateResult
+	var failed []error
+	for _, c := range j.cfg.Changes {
+		result := RelateResult{Change: c.Change}
+		if _, err := lease.ReadSeal(ctx, j.cfg.DB, c.Change); err != nil {
+			if errors.Is(err, lease.ErrNoSeal) {
+				slog.ErrorContext(ctx, "command: the relate step has no checkpoint, so the relate job cannot run; run the migration job of this release, which makes it",
+					"change", c.Change, "entity", c.Entity, "relation", c.Relation)
+			}
+			failed = append(failed, fmt.Errorf("command: the relate step %s: read the checkpoint: %w", c.Change, err))
+			results = append(results, result)
+			continue
+		}
+		var declared bool
+		if err := j.cfg.DB.QueryRowContext(ctx, leaseDeclared, SealLease(c.Change)).Scan(&declared); err != nil {
+			failed = append(failed, fmt.Errorf("command: the relate step %s: read the lease %s: %w", c.Change, SealLease(c.Change), err))
+			results = append(results, result)
+			continue
+		}
+		if !declared {
+			slog.ErrorContext(ctx, "command: the lease of the relate job is not in the lease table, so the relate job cannot run; run the migration job of this release, which makes it",
+				"change", c.Change, "lease", SealLease(c.Change))
+			failed = append(failed, fmt.Errorf("command: the relate step %s: %w: %s", c.Change, ErrSealLease, SealLease(c.Change)))
+			results = append(results, result)
+			continue
+		}
+		client, err := lease.New(j.cfg.DB, SealLease(c.Change), j.cfg.Holder, j.cfg.Lease)
+		if err != nil {
+			return results, err
+		}
+		err = client.Hold(ctx, func(ctx context.Context, held *lease.Held) error {
+			var err error
+			result, err = j.pass(ctx, held, c)
+			return err
+		})
+		results = append(results, result)
+		if err != nil {
+			failed = append(failed, fmt.Errorf("command: the relate step %s: %w", c.Change, err))
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		slog.InfoContext(ctx, "command: relate pass", otel.SlogEventKey, RelateEvent, "change", c.Change, "entity", c.Entity, "relation", c.Relation,
+			"checked", result.Checked, "related", result.Related, "completed", result.Completed, "waits", result.Waits)
+	}
+	return results, errors.Join(failed...)
+}
+
+// pass goes on with the pass of the change c from its checkpoint under held, as the pass of the seal job does
+// (SealJob.pass): a new pass starts when there is none, a release before the step ran during it, or it started in
+// another database instance. The checkpoint counts the rows read as checked and the tuples staged as sealed.
+func (j *RelateJob) pass(ctx context.Context, held *lease.Held, c RelateChange) (RelateResult, error) {
+	result := RelateResult{Change: c.Change}
+	var state lease.SealState
+	if err := inTx(ctx, held, func(tx *sql.Tx) error {
+		var err error
+		state, err = lease.ReadSeal(ctx, tx, c.Change)
+		return err
+	}); err != nil {
+		return result, err
+	}
+	if state.Completed && !state.Stale {
+		result.Related, result.Checked, result.Completed = state.Sealed, state.Checked, true
+		return result, nil
+	}
+	if !state.Started || state.Stale {
+		if state.Waiting {
+			result.Waits = true
+			return result, nil
+		}
+		err := inTx(ctx, held, func(tx *sql.Tx) error {
+			err := lease.SealCheckpoint(ctx, tx, held, c.Change, "", "", 0, 0, true)
+			if errors.Is(err, lease.ErrSealWaiting) {
+				result.Waits = true
+				return nil
+			}
+			return err
+		})
+		if err != nil || result.Waits {
+			return result, err
+		}
+		state = lease.SealState{Started: true}
+	}
+	tenants, err := j.tenants(ctx)
+	if err != nil {
+		return result, err
+	}
+	slices.SortFunc(tenants, func(a, b tenant.Tenant) int { return strings.Compare(a.ID(), b.ID()) })
+	result.Related, result.Checked = state.Sealed, state.Checked
+	for _, t := range tenants {
+		if state.LastTenant != "" && t.ID() < state.LastTenant {
+			continue
+		}
+		// The first page starts before every ID, also the zero UUID, so the statement takes NULL for it.
+		after := ""
+		if t.ID() == state.LastTenant && state.LastID != "" {
+			after = state.LastID
+		}
+		for {
+			read, last, err := j.batch(ctx, held, t, c, after, &result)
+			if err != nil {
+				return result, err
+			}
+			after = last
+			if read < SealBatch {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			case <-time.After(j.pause):
+			}
+		}
+	}
+	var stale error
+	err = inTx(ctx, held, func(tx *sql.Tx) error {
+		if stale = lease.SealComplete(ctx, tx, held, c.Change); errors.Is(stale, lease.ErrSealStale) {
+			return nil
+		}
+		return stale
+	})
+	if err == nil && stale != nil {
+		err = stale
+	}
+	if errors.Is(err, lease.ErrSealStale) {
+		// A release before the step ran during the pass and can have made a row with no tuple of the relation: the
+		// next run starts the pass again.
+		slog.WarnContext(ctx, "command: a release before the relate step ran during the pass; the pass starts again", "change", c.Change)
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	result.Completed = true
+	return result, nil
+}
+
+// batch stages the tuple of the relation of c for at most SealBatch rows of the tenant t after the ID after, in one
+// transaction of the tenant that locks the rows FOR SHARE, so a delete or an update of a row waits and its own tuple
+// changes come after; it moves the checkpoint and writes one audit row in the same transaction. It gives the rows
+// that it read and the last ID.
+func (j *RelateJob) batch(ctx context.Context, held *lease.Held, t tenant.Tenant, c RelateChange, after string, result *RelateResult) (int, string, error) {
+	tx, err := tenant.Begin(ctx, j.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return 0, after, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", sealLockTimeout, sealStatementTimeout); err != nil {
+		return 0, after, err
+	}
+	var from any
+	if after != "" {
+		from = after
+	}
+	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), from, SealBatch)
+	if err != nil {
+		return 0, after, err
+	}
+	type found struct {
+		id      string
+		subject sql.NullString
+	}
+	var all []found
+	for rows.Next() {
+		var f found
+		if err := rows.Scan(&f.id, &f.subject); err != nil {
+			rows.Close()
+			return 0, after, err
+		}
+		all = append(all, f)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, after, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, after, err
+	}
+	if len(all) == 0 {
+		return 0, after, nil
+	}
+	handle, err := j.cfg.Authz.Bind(tx, t, j.principal, []authz.Relation{{ResourceType: c.ResourceType, Name: c.Relation}})
+	if err != nil {
+		return 0, after, err
+	}
+	checked, related := result.Checked, result.Related
+	last := after
+	for _, f := range all {
+		last = f.id
+		checked++
+		subject, ok, err := relateSubject(t, c, f.subject)
+		if err != nil {
+			return 0, after, err
+		}
+		resource, err := authz.NewResource(t, c.ResourceType, f.id)
+		if err != nil {
+			return 0, after, fmt.Errorf("command: the row of %s has a key that is not a resource key", c.Entity)
+		}
+		// A release before can have changed the subject of a field or a reference with no change of its tuple, as
+		// during the rollout or after a roll back: the batch first deletes every tuple of the relation on the row, and
+		// then touches the tuple of the subject that the row holds now, in this transaction under the row lock, so the
+		// relay writes them in this order and no former subject keeps its access (security review of PR #493, M1).
+		if c.Subject != RelateTenant {
+			if _, err := handle.UnrelateAll(ctx, resource, c.Relation); err != nil {
+				return 0, after, fmt.Errorf("command: the delete of the tuples of %s#%s was not staged: %w", c.ResourceType, c.Relation, err)
+			}
+		}
+		if !ok {
+			continue
+		}
+		if _, err := handle.Relate(ctx, authz.Tuple{Resource: resource, Relation: c.Relation, Subject: subject}); err != nil {
+			return 0, after, fmt.Errorf("command: the tuple of %s#%s was not staged: %w", c.ResourceType, c.Relation, err)
+		}
+		related++
+	}
+	if err := lease.SealCheckpoint(ctx, tx, held, c.Change, t.ID(), last, related, checked, false); err != nil {
+		return 0, after, err
+	}
+	if related > result.Related || c.Subject != RelateTenant {
+		event, err := j.event(ctx, t, c, related-result.Related)
+		if err != nil {
+			return 0, after, err
+		}
+		if _, err := j.cfg.Audit.Record(ctx, tx, t, []audit.Event{event}); err != nil {
+			return 0, after, err
+		}
+	}
+	if err := tenant.Commit(ctx, tx, t); err != nil {
+		return 0, after, err
+	}
+	result.Checked, result.Related = checked, related
+	return len(all), last, nil
+}
+
+// relateSubject gives the subject of the tuple of one row: the tenant, or the value of the field or the reference,
+// which is no tuple when it is NULL or empty. A value that no tuple can hold is an error that names the change and no
+// value.
+func relateSubject(t tenant.Tenant, c RelateChange, value sql.NullString) (authz.Subject, bool, error) {
+	if c.Subject == RelateTenant {
+		resource, err := authz.TenantResource(t)
+		if err != nil {
+			return authz.Subject{}, false, err
+		}
+		return authz.Subject{Type: resource.Type, ID: resource.ID}, true, nil
+	}
+	if !value.Valid || value.String == "" {
+		return authz.Subject{}, false, nil
+	}
+	id := value.String
+	if c.Subject == RelateReference || c.Resource {
+		qualified, err := authz.ResourceID(t, id)
+		if err != nil {
+			return authz.Subject{}, false, fmt.Errorf("command: a subject of the relate step %s is not a resource key", c.Change)
+		}
+		id = qualified
+	}
+	subject := authz.Subject{Type: c.SubjectType, ID: id}
+	if err := authz.CheckSubject(t, subject); err != nil {
+		return authz.Subject{}, false, fmt.Errorf("command: a subject of the relate step %s cannot be the subject of a tuple", c.Change)
+	}
+	return subject, true, nil
+}
+
+// event is the audit row of one batch of the relate job that staged tuples: the action backfill-relation, the
+// controller's service account as the actor of the kind system, the tenant as the resource, and as the after state
+// the change, the resource type, the relation and the count of the tuples that the batch touched (security review
+// of PR #493, L3).
+func (j *RelateJob) event(ctx context.Context, t tenant.Tenant, c RelateChange, touched int64) (audit.Event, error) {
+	e := audit.Event{
+		TenantID: t.ID(), ActorID: j.principal.Subject().String(), ActorKind: audit.ActorSystem,
+		Action: RelateCommand, Operation: RelateCommand, ResourceType: TenantResourceType, ResourceID: t.ID(),
+		Outcome: audit.OutcomeOK,
+		Service: j.cfg.Service, ServiceVersion: j.cfg.ServiceVersion, DeclarationVersion: j.cfg.DeclarationVersion,
+	}
+	if span := trace.SpanContextFromContext(ctx); span.IsValid() {
+		e.TraceID, e.SpanID = span.TraceID().String(), span.SpanID().String()
+	}
+	after := map[string]any{"change": c.Change, "resource_type": c.ResourceType, "relation": c.Relation, "tuples": touched}
+	if err := e.SetStates(j.cfg.AuditSettings, nil, nil, after); err != nil {
+		return audit.Event{}, err
+	}
+	return e, nil
 }

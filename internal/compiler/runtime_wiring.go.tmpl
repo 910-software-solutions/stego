@@ -297,6 +297,10 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 		// The readable secret fields whose seal step is open, which the controller seals (ST-SUP-RP10-LC50).
 		Seal: svcstorage.SealColumns,
 {{- end}}
+{{- if .Relates}}
+		// The relate steps, whose tuples the controller gives to each row (decision ST-SUP-Q212 (a)).
+		Relate: svcstorage.RelateChanges,
+{{- end}}
 		// The declared rules of the destinations that the outbox worker registers, which the resolver of the api mode
 		// applies to a parked message (ST-SUP-RP14-LC10).
 		Destinations: destinations(),
@@ -678,9 +682,10 @@ func Migrate(ctx context.Context) error {
 		// The lease row of each single worker (ST-SUP-RC35-OC05).
 		WorkerLeases: workerrunners.Leases(),
 {{- end}}
-{{- if .Seals}}
-		// The backfill lease of each open seal change, under which the controller seals (ST-SUP-RP10-LC50).
-		SealLeases: []string{ {{- range $i, $c := .Seals}}{{if $i}}, {{end}}{{printf "%q" $c}}{{end -}} },
+{{- if .Leases}}
+		// The backfill lease of each open seal change and each relate step, under which the controller seals or
+		// relates (ST-SUP-RP10-LC50, decision ST-SUP-Q212 (a)).
+		SealLeases: []string{ {{- range $i, $c := .Leases}}{{if $i}}, {{end}}{{printf "%q" $c}}{{end -}} },
 {{- end}}
 	})
 }

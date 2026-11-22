@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -1338,6 +1339,178 @@ func TestAttemptResets(t *testing.T) {
 		}
 		if !check(right) {
 			t.Fatal("the right PIN gave no match after the reset")
+		}
+	})
+}
+
+// TestAttemptResetsByID proves the reset of a row by its ID, which decides only the reset permission on the row and
+// gives the fill no value of it (decision ST-SUP-Q211 (a), walkthrough 24, U-R).
+func TestAttemptResetsByID(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T23 A reset by ID needs only the reset permission on the row, and keeps the reset guards", func(t *testing.T) {
+		const a, b, missing, right = "0198a1b2-0000-7000-8000-0000000000a2", "0198a1b2-0000-7000-8000-0000000000b2", "0198a1b2-0000-7000-8000-0000000000c2", "4711"
+		e := newEnv(t)
+		e.exec(`CREATE TABLE locked_wallets (tenant_id text NOT NULL, id text NOT NULL, pin text, version bigint NOT NULL DEFAULT 1,
+  authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`, "GRANT SELECT, INSERT, UPDATE, DELETE ON locked_wallets TO "+e.roles[0])
+		hash, err := sealed.Hash(right)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{a, b} {
+			if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO locked_wallets (tenant_id, id, pin) VALUES ('t1', $1, $2)`, id, hash); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s := spec("LockedWallet", "locked_wallet", "locked_wallets", []string{"pin"},
+			func(row Scanner) (lockedWallet, Meta, error) {
+				var v lockedWallet
+				var m Meta
+				err := row.Scan(&v.ID, CountedAt(lockedCounter, &v.ID, &v.PIN), &m.Version, &m.Token)
+				m.ID = v.ID
+				return v, m, err
+			},
+			func(v lockedWallet) []any { return []any{v.ID, HashCountedOf(lockedCounter, v.ID, v.PIN)} },
+			func(v lockedWallet) map[string]any { return map[string]any{"id": v.ID} })
+		// The key of a wallet is a UUID.
+		s.ValidID = func(id string) bool { return len(id) == 36 }
+		wallets, err := NewEntity(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		resource := &Resource{Type: "locked_wallet", Token: `SELECT authz_token FROM locked_wallets WHERE tenant_id = $1 AND id = $2 FOR SHARE`,
+			ValidID: func(id string) bool { return id != "" }}
+		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "operate", resource }, wallets)
+		unlock := e.command("unlock", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", resource, []string{"LockedWallet.pin"}, []string{"operate"}
+		}, wallets)
+		// u-1 owns a. u-5 is the support desk: it may unlock a and b, and view neither. u-4 may unlock and operate a.
+		e.decision.setRelations(relation(t, "user:u-1", "operate", "t1", "locked_wallet", a), relation(t, "user:u-1", "view", "t1", "locked_wallet", a),
+			relation(t, "user:u-5", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-5", "unlock", "t1", "locked_wallet", b),
+			relation(t, "user:u-4", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-4", "operate", "t1", "locked_wallet", a))
+		n := 0
+		call := func(cmd *Command[testProbe], subject, on string, body func(ctx context.Context, h *Handle[testProbe]) error) error {
+			t.Helper()
+			n++
+			req := e.request("t1", person(t, subject), fmt.Sprintf("reset-by-id-%d", n), `{}`)
+			req.Resource = on
+			_, err := e.runOn(rt, cmd, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				return ok, body(ctx, h)
+			})
+			return err
+		}
+		errWrongPIN := errors.New("pin.wrong")
+		check := func(pin string) bool {
+			t.Helper()
+			matched := false
+			err := call(withdraw, "user:u-1", a, func(ctx context.Context, h *Handle[testProbe]) error {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return err
+				}
+				w, err := r.GetForUpdate(ctx, a)
+				if err != nil {
+					return err
+				}
+				if matched = w.Value().PIN.Matches(pin); !matched {
+					return errWrongPIN
+				}
+				return nil
+			})
+			if !matched && !errors.Is(err, errWrongPIN) || matched && err != nil {
+				t.Fatalf("the check of %q gave %v", pin, err)
+			}
+			return matched
+		}
+		count := func() int {
+			t.Helper()
+			return e.count(`SELECT coalesce(sum(checks), 0) FROM attempt_counts WHERE counter = 'LockedWallet.pin' AND row_id = $1`, a)
+		}
+		resets := func() int {
+			t.Helper()
+			return e.count(`SELECT count(*) FROM audit_event WHERE action = 'unlock' AND resource_id = $1 AND after::text LIKE '%attempts_reset%'`, a)
+		}
+		byID := func(id string) func(ctx context.Context, h *Handle[testProbe]) error {
+			return func(ctx context.Context, h *Handle[testProbe]) error {
+				return ResetAttemptsByID(ctx, h, lockedCounter, id)
+			}
+		}
+		check("0000")
+		check("0000")
+		if count() != 2 || check(right) {
+			t.Fatalf("two wrong PINs left the count %d, or the right PIN matched at the limit", count())
+		}
+		// The support desk may not view a: a read of a, as the reset of a loaded value needs, is not found.
+		if err := call(unlock, "user:u-5", a, func(ctx context.Context, h *Handle[testProbe]) error {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return err
+			}
+			w, err := r.Get(ctx, a)
+			if err != nil {
+				return err
+			}
+			return ResetAttempts(ctx, h, lockedCounter, w)
+		}); !errors.Is(err, ErrNotFound) || count() != 2 {
+			t.Fatalf("the reset of a loaded value by a caller who may not view it gave %v and left the count %d, want ErrNotFound and 2", err, count())
+		}
+		// A reset by ID in a command that declares none is refused.
+		if err := call(withdraw, "user:u-1", a, byID(a)); err == nil || count() != 2 {
+			t.Fatalf("a reset by ID in a command that declares none gave %v and left the count %d", err, count())
+		}
+		// A row that is not there and a row that the caller may not unlock give the same answer, decided at the same
+		// consistency, also when the row holds a token (security review of PR #493, L1). u-6 may unlock b and not a.
+		e.exec(`UPDATE locked_wallets SET authz_token = 'zed-token-1' WHERE id = '` + a + `'`)
+		e.decision.mu.Lock()
+		e.decision.relations[relation(t, "user:u-6", "unlock", "t1", "locked_wallet", b)] = true
+		e.decision.mu.Unlock()
+		consistency := func(target string) authz.Consistency {
+			t.Helper()
+			e.decision.mu.Lock()
+			defer e.decision.mu.Unlock()
+			for i := len(e.decision.calls) - 1; i >= 0; i-- {
+				if c := e.decision.calls[i]; c.Action == "unlock" && c.Resource == "locked_wallet:"+target {
+					return c.Consistency
+				}
+			}
+			t.Fatalf("no decision of unlock on %s", target)
+			return authz.Consistency{}
+		}
+		if err := call(unlock, "user:u-6", b, byID(missing)); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the reset of a row that is not there gave %v, want ErrNotFound", err)
+		}
+		if err := call(unlock, "user:u-6", b, byID(a)); !errors.Is(err, ErrNotFound) || count() != 2 {
+			t.Fatalf("the reset of a row that the caller may not unlock gave %v, want ErrNotFound", err)
+		}
+		if got, want := consistency(a), consistency(missing); !reflect.DeepEqual(got, want) {
+			t.Fatalf("a denied row is decided at %+v and a missing row at %+v, want the same consistency", got, want)
+		}
+		// An ID that is no key is not found with no decision (security review of PR #493, I1).
+		e.decision.mu.Lock()
+		before := len(e.decision.calls)
+		e.decision.mu.Unlock()
+		if err := call(unlock, "user:u-6", b, byID("not-a-key")); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the reset of an ID that is no key gave %v, want ErrNotFound", err)
+		}
+		e.decision.mu.Lock()
+		for _, c := range e.decision.calls[before:] {
+			if c.Resource == "locked_wallet:not-a-key" {
+				t.Errorf("the reset of an ID that is no key was decided: %+v", c)
+			}
+		}
+		e.decision.mu.Unlock()
+		if err := call(unlock, "user:u-1", a, byID(a)); err == nil || count() != 2 || resets() != 0 {
+			t.Fatalf("the reset by the owner, who may not unlock, gave %v and left the count %d, want a deny and 2", err, count())
+		}
+		// u-4 may also operate a, so it could check and reset: the reset guard refuses it.
+		if err := call(unlock, "user:u-4", a, byID(a)); !errors.Is(err, ErrDenied) || count() != 2 || resets() != 0 {
+			t.Fatalf("the reset by ID of a caller who may also operate a gave %v, left the count %d and wrote %d audit rows, want ErrDenied, 2 and none", err, count(), resets())
+		}
+		// The support desk resets a by its ID, with the resource of its command on b: the runtime decides unlock on a.
+		if err := call(unlock, "user:u-5", b, byID(a)); err != nil || count() != 0 || resets() != 1 {
+			t.Fatalf("the reset by ID of the support desk gave %v, left the count %d and wrote %d audit rows, want nil, 0 and 1", err, count(), resets())
+		}
+		if !check(right) {
+			t.Fatal("the right PIN gave no match after the reset by ID")
 		}
 	})
 }

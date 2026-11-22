@@ -195,7 +195,8 @@ func renderRelationHelper(w *writer, c *command, h relationHelper) {
 // renderResetHelper writes the typed helper of one declared reset of attempts (ST-SUP-RC32-OC24, ST-DECL-INV104): the
 // fill of the command sets the count of the field on the row of a loaded value to 0 through it, in the transaction of
 // the command. Only the command that declares the reset has the helper, and the runtime decides the command's own
-// permission on the row first (ST-SUP-RP10-LC54). The helper gives only an error: no value, no hash and no count.
+// permission on the row first (ST-SUP-RP10-LC54). The helper gives only an error: no value, no hash and no count. Its
+// variant ByID takes the ID of the row, which the fill does not read (decision ST-SUP-Q211 (a)).
 func renderResetHelper(w *writer, c *command, r resetHelper) {
 	w.f("// %s sets the count of the wrong attempts of %s.%s on the row of on to 0 when %s commits: the declared\n", r.name, r.entity.decl.Name, r.field.decl.Name, c.decl.Name)
 	w.f("// step-up reset of a locked row. on is a loaded %s of this handle; the runtime decides the permission of the command\n", r.entity.decl.Name)
@@ -203,6 +204,13 @@ func renderResetHelper(w *writer, c *command, r resetHelper) {
 	w.f("func %s(ctx context.Context, h *%sHandle, on Loaded%s) error {\n", r.name, c.goName, r.entity.goName)
 	w.f("\tif on == nil {\n\t\treturn command.ErrNoResource\n\t}\n")
 	w.f("\treturn command.ResetAttempts(ctx, h, %s, on)\n}\n\n", counterVar(r.entity, r.field))
+	// The reset by ID needs no read of the row, so its caller needs only the reset permission on it, not the read
+	// permission of the entity (decision ST-SUP-Q211 (a), walkthrough 24, U-R).
+	w.f("// %sByID sets the count of the wrong attempts of %s.%s on the row id to 0 when %s commits, as\n", r.name, r.entity.decl.Name, r.field.decl.Name, c.decl.Name)
+	w.f("// %s does, with no read of the row: the runtime decides only the permission of the command on the row,\n", r.name)
+	w.f("// not the read permission of %s, and gives no value. A row that is not there and a deny are both not found.\n", r.entity.decl.Name)
+	w.f("func %sByID(ctx context.Context, h *%sHandle, id string) error {\n", r.name, c.goName)
+	w.f("\treturn command.ResetAttemptsByID(ctx, h, %s, id)\n}\n\n", counterVar(r.entity, r.field))
 }
 
 // EntityFile gives a Go file of the package pkg that holds the repository declarations on the command runtime of the

@@ -44,7 +44,10 @@ name: postgres-adapter
 # Version 6.29.0 gives a refused unique step and a refused foreign key step the fault class
 # schema_change.unique_duplicates or schema_change.foreign_key_broken, the index or the key as the object, and a
 # fixed remedy (ST-SUP-RC01-OC38, ST-SUP-RC01-OC46; walkthrough 23, D-f).
-version: 6.30.0
+# Version 6.31.0 builds the schema change kind relate: its expand step makes the checkpoint of the relate job and
+# changes no table, and relate_changes.go gives the relate job each row with its subject (ST-SUP-RC01-OC52, decision
+# ST-SUP-Q212 (a); walkthrough 24, P2-R2).
+version: 6.31.0
 stage: ga
 output_namespace: internal/storage
 

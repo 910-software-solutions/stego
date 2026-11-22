@@ -278,6 +278,7 @@ archetype does not have the change.
 | 3.255.0 | 1.255.0 | 1.255.0 | Runtime v0.189.0, rest-api 4.36.0, postgres-adapter 6.29.0 and spicedb-authz 1.6.0. In a rolling release that adds a relation or a resource type to `authz/schema.zed`, the relay of the release before leaves each tuple that only the new release can read in pending (failure code `authz-relation-unknown`, `authz-payload-newer` or `authz-type-unknown`) for the relay of the new release, and parks it only after one hour, with the cause `not_understood` (recommendation (a) of ST-SUP-Q208, open for the Product owner); before, it parked such a tuple at once, and the row had no relation. The line and the metric `outbox.parked` name the cause, and the line names the failure code. The failure record of the migration Job names a fault, an object and a remedy for `migrate.open` (`database.connection`), the SpiceDB steps (`spicedb.connection`, `spicedb.schema_refused`, `spicedb.schema_not_served`) and a refused unique or foreign key step (`schema_change.unique_duplicates`, `schema_change.foreign_key_broken`); a refused key source of a start names `authn.keys.load`, `authn.keys.file`, `authn.keys.pem`, `authn.keys.document` or `authn.discovery`. A 409 of a unique index that a unique step of a newer release built names the field on a pod of the release before too. A write that waited with `Prefer: wait=N` answers `Preference-Applied`. `stego plan --strict` also refuses when `stego apply` would create, update or delete a generated file or change the record, or when the declaration needs add steps. | This upgrade is from a release before runtime v0.189.0, whose relay still parks such tuples: after the rollout of a release that adds a relation, resolve the parked messages of the destination `authz` (see [Resolve the parked messages of the destination authz](#resolve-the-parked-messages-of-the-destination-authz)). An alert on `outbox.parked` can read `cause`; add the alert on `outbox.not_understood` of that section; an alert on a failed Job or start can read `fault`. Add `stego drift` to the checks of a pull request, and run `stego apply` and commit before `stego plan --strict` (see [The checks of a pull request](../README.md#the-checks-of-a-pull-request)). |
 | 3.256.0 | 1.256.0 | 1.256.0 | Runtime v0.190.0 and command 1.26.0. A field with `attempts` that a command resets with `resets_attempts` is checked only on a row on which the command decided its own permission: the row of its `resource_member`, a row that it read with `GetForUpdate` or `GetForDelete`, or a row that it wrote. A `Matches` on another row, such as a row that a command of another resource type or a command on another row read with `Get`, gives `false`, counts nothing and fails the call with 500 (decision ST-SUP-Q209 (d)). Before, a caller who held the reset and the permission of such a command could check the row with no bound, a reset after each limit. The reset is also refused to a caller who holds, on the row, the permission of a command of another resource type that writes the entity, and `stego validate` refuses such a command whose permission is the reset permission, is not defined on the resource type of the entity, or shares a relation or an arrow with the reset permission there. A field with no reset command is checked as before. The runtime holds a reset field also in code that a generator before command 1.26.0 made. | In a fill that checks a field with a reset on a row other than the resource of its command, read the row with `GetForUpdate` before `Matches`. Run `stego validate`, and define the permission of each command of another resource type that writes the entity on the resource type of the entity, apart from the reset permission. |
 | 3.257.0 | 1.257.0 | 1.257.0 | Runtime v0.191.0, otel-tracing 1.20.0, domain-probe 1.1.0 and postgres-adapter 6.30.0. A service writes one access line for each HTTP request (`http.server.request.completed`: the method, the route template, the status and the duration) and each gRPC call (`rpc.server.call.completed`), with or without a collector; the line `command.refused` with the code of each command that answers 400 to 499; `worker.run.completed` for each worker run that committed; and the migration Job writes a line when it starts, when each step starts and ends, and when it ends. A database call that does not fail is now DEBUG, so `db.client.operation.completed` lines of a normal call go off the console. The new setting `STEGO_LOG_LEVEL` (`debug`, `info`, `warn` or `error`; `info` when it has no value) sets the lowest severity of the lines on standard output and standard error; another value stops the start. The WARN and the ERROR access lines of one route and status write at most 10 lines in a minute and then one line with the count of the dropped lines, and the lines of the security class are written at each level. | Nothing to do. To lower the volume of the logs, set `STEGO_LOG_LEVEL` to `warn` in `<service>-config`. A log query that reads `db.client.operation.completed` lines of normal calls needs `STEGO_LOG_LEVEL=debug`. See [Read the logs](operations.md#read-the-logs). |
+| 3.258.0 | 1.258.0 | 1.258.0 | Runtime v0.192.0, command 1.28.0, postgres-adapter 6.31.0, rest-api 4.38.0 and cli-application 1.30.0. A command with `resets_attempts` gets the helper `<Command>Reset<Entity><Field>AttemptsByID`, which takes the ID of the row: the runtime decides only the reset permission and the reset guards on the row, and gives the fill no value, so a caller with only the reset permission can reset (decision ST-SUP-Q211 (a)). The schema change kind `relate` gives each row the tuple of a relation that a release adds: the relate job of the controller stages the tuple of each row through the authz outbox after the last pod of the release before stops, and first deletes the tuples of a field or a reference relation on the row, so a former subject loses its access (decision ST-SUP-Q212 (a)). A start that cannot reach SpiceDB fails at the stage `service.start.spicedb` with the fault `spicedb.connection` or `spicedb.settings`, and a start whose ledger lacks a migration of the release names the fault `migration.pending` or `migration.changed`; before, the first gave the stage `component.stego-runtime.constructor[0]` alone. A 503 while the database cannot serve says that the database cannot serve, not the authorization provider. `apply` of the CLI leaves each secret field of a resource that exists out of the write and names it as not compared, as the stored value can differ, so a document with a required secret applies again; `--set-secret FIELD` sends a new value from a private file, only of a field that the document holds. A command of the CLI names the required field that it lacks. | In a release that adds a relation that the runtime writes for each row, declare a relate step, and for a field or a reference check the stored values first (see [Give the rows that are there a new relation](#give-the-rows-that-are-there-a-new-relation)); after an earlier release that added one, declare it in your next release. Use the helper `...ByID` in a reset fill whose caller has no read permission of the row. A script that relied on `apply` to send a secret again adds `--set-secret <field>`. An alert on a failed start can read the new faults. |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -768,7 +769,9 @@ A release can add a relation to `authz/schema.zed`, such as `relation tenant:
 tenant` on `payout` with `permission edit = owner + tenant->approver`. The
 migration Job writes the new schema to SpiceDB before the rollout. Then the
 pods of the new release write the tuples of the new relation for each row
-that they make.
+that they make. The rows that are there, and the rows that the pods of the
+release before make, get the tuple only from a relate step (see [Give the rows
+that are there a new relation](#give-the-rows-that-are-there-a-new-relation)).
 
 - From runtime v0.189.0, the relay of the release before does not write a
   tuple of a relation that its release does not know. It leaves the message in
@@ -847,6 +850,54 @@ stopped:
    Correct the cause, then send it again.
 5. Remove the grant of step 1 with `zed relationship delete` and the same
    three arguments, unless the operator keeps it.
+
+## Give the rows that are there a new relation
+
+A release that adds a relation that the runtime writes for each row, such as
+`relation tenant: tenant` on `payout`, writes its tuple only for the rows
+that its pods make. The rows that were there before the release, and the rows
+that the pods of the release before make during the rollout, have no tuple
+of the new relation. A check through it, such as `tenant->approver`, gives 404
+on those rows, also after the release before stopped (walkthrough 24, P2-R2).
+The steps of the section above do not change this: they send again only the
+messages that a relay parked.
+
+From runtime v0.192.0 (rest-crud 3.258.0), declare a relate step in the
+release that adds the relation (see [Relate steps](schema-changes.md#relate-steps)):
+
+```yaml
+schema_changes:
+  - {id: payout-tenant-relate, kind: relate, entity: Payout, relation: tenant}
+schema_history:
+  - {change: payout-tenant-relate, phase: expand}
+```
+
+A relate of a field or a reference, such as `relation approver` from
+`approver_id`, grants access from the values that the rows hold now, which
+the release before wrote under its own rules. Before the release, check those
+values and correct each one that must not grant the relation; `stego
+validate` warns of each such relate.
+
+Then do the procedure as for each release:
+
+1. Run `stego apply` and commit. The release gets the migration
+   `step_<position>_payout-tenant-relate_expand`, which changes no table.
+2. Roll out the release. The migration Job makes the checkpoint and the lease
+   of the relate job. The controller of the new release waits while a pod of
+   the release before runs, and logs `command.relate.pass` with `waits`
+   `true`.
+3. After the last pod of the release before stops, the next run of the
+   relate job, at most 10 minutes later, stages the tuple of each row in each
+   tenant through the authz outbox, and the relay writes it. The line
+   `command.relate.pass` then has `completed` `true`, `checked` the rows read
+   and `related` the tuples staged.
+4. Check a row that the release before made: the check through the new
+   relation now passes.
+
+A release before runtime v0.192.0 that added a relation left its rows with no
+tuple. To give them the tuple, declare a relate step of that relation in your
+next release: the relate job reads each row that is there, and a tuple that
+is there does not change.
 
 ## A Go build fails with "could not import log/slog"
 

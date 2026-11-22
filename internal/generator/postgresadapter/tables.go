@@ -897,6 +897,11 @@ func generateRuntimeData(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	} else if ok {
 		files = append(files, sealed)
 	}
+	if relate, ok, err := generateRelateChanges(ctx); err != nil {
+		return nil, nil, err
+	} else if ok {
+		files = append(files, relate)
+	}
 	// The migration job of the runtime wiring runs the ledger (service.Migrate), so the wiring has no call after
 	// the database opens.
 	wiring := &gen.Wiring{

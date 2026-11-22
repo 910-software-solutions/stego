@@ -571,3 +571,49 @@ func runRecordCreate(t *testing.T) (string, error) {
 	err := Run(context.Background(), definition(), []string{"create", "record", "--name", "sample"}, &output)
 	return output.String(), err
 }
+
+func TestMissingFieldNamed(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC11-T05 A create with no required field is refused before a request with the flag or the body member that it lacks, and no value", func(t *testing.T) {
+		dir := privateDir(t)
+		t.Setenv("TEST_CLI_CONFIG", filepath.Join(dir, "config.json"))
+		token := filepath.Join(dir, "token")
+		if err := os.WriteFile(token, []byte("private-token"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var calls atomic.Int32
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(201)
+			w.Write([]byte(`{}`))
+		}))
+		defer server.Close()
+		ca := filepath.Join(dir, "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		app := definition()
+		var output bytes.Buffer
+		if err := Run(context.Background(), app, []string{"login", "--url", server.URL, "--token-file", token, "--ca-file", ca}, &output); err != nil {
+			t.Fatal(err)
+		}
+		before := calls.Load()
+		if err := Run(context.Background(), app, []string{"create", "record", "--count", "7"}, &output); err == nil || err.Error() != "the required flag --name is missing" {
+			t.Fatalf("a create with no name gave %v, want the refusal that names --name", err)
+		}
+		for i := range app.Commands {
+			if strings.Join(app.Commands[i].Name, " ") == "create record" {
+				app.Commands[i].BodyFields = []Field{{Key: "pin", Type: "string", Required: true}}
+			}
+		}
+		file := filepath.Join(dir, "body.json")
+		if err := os.WriteFile(file, []byte(`{"name":"sample","count":7}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := Run(context.Background(), app, []string{"create", "record", "--body", file}, &output); err == nil || err.Error() != `the required request field "pin" is missing: give it in --body FILE` {
+			t.Fatalf("a create with no pin gave %v, want the refusal that names \"pin\"", err)
+		}
+		if calls.Load() != before {
+			t.Fatal("a refused create reached the server")
+		}
+	})
+}

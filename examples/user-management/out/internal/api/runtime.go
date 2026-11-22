@@ -313,7 +313,7 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		}
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
 	case http.StatusServiceUnavailable:
-		answerUndecided(w, r)
+		answerUndecided(w, r, o.Code == command.ErrorCodeUnavailable)
 	default:
 		handleError(w, r, InternalError("internal error"))
 	}
@@ -373,19 +373,28 @@ func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err err
 		return
 	}
 	if query.Transient(err) {
-		answerUndecided(w, r)
+		answerUndecided(w, r, unavailableDatabase(err))
 		return
 	}
 	handleError(w, r, InternalError("internal error"))
 }
 
-// answerUndecided answers a request whose permission the authorization provider could not decide now, such as for
-// some seconds after a schema write: 503 with Retry-After of 1 to 3 s, never a bare 500. The runtime logs the fixed cause
-// (walkthrough 3, G4; ST-SUP-Q140).
-func answerUndecided(w http.ResponseWriter, r *http.Request) {
+// answerUndecided answers a request that the service cannot serve now: 503 with Retry-After of 1 to 3 s, never a bare
+// 500. The runtime logs the fixed cause (walkthrough 3, G4; ST-SUP-Q140). The detail names the cause: the database of
+// the service, such as while its server restarts, when database is true, and else the authorization provider, such as
+// for some seconds after a schema write (walkthrough 24, small items).
+func answerUndecided(w http.ResponseWriter, r *http.Request, database bool) {
 	w.Header().Set("Retry-After", query.RetryAfter())
+	if database {
+		handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the database of the service cannot serve the request now; try again"))
+		return
+	}
 	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
+
+// unavailableDatabase tells whether a read that a retry may pass (query.Transient) failed at the database, and not at
+// the authorization provider.
+func unavailableDatabase(err error) bool { return !errors.Is(err, query.ErrUndecided) }
 
 // answerWaitFailure answers a wait for a revocation that failed: a database that cannot serve the wait now is 503
 // with Retry-After, as command.Serve answers it, and every other failure 500 (security review of PR #440, I1).

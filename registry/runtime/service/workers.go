@@ -49,6 +49,7 @@ const (
 	MaintainJobName  = "audit-maintain"
 	ResealJobName    = "reseal"
 	SealJobName      = "seal"
+	RelateJobName    = "relate"
 )
 
 // ResealInterval is the interval of the re-seal job of the secret fields in the controller mode (ST-SUP-RP14-LC12).
@@ -568,6 +569,21 @@ func (svc *Service) sealJob(holder string, settings lease.Settings) (*command.Se
 	return command.NewSealJob(svc.pool, p.Workers.TenantSchema, svc.ring, p.Seal, holder, settings)
 }
 
+// relateJob gives the relate job of the relate steps of the service, or nil for a service with none (decision
+// ST-SUP-Q212 (a)): it holds the backfill lease of each change for the holder of the controller.
+func (svc *Service) relateJob(holder string, settings lease.Settings) (*command.RelateJob, error) {
+	p := svc.parts
+	if len(p.Relate) == 0 {
+		return nil, nil
+	}
+	if p.Workers.TenantSchema == "" || svc.authz == nil || svc.writer == nil {
+		return nil, errors.New("service: the relate job needs the schema of the tenant list, the authorization runtime and the audit writer")
+	}
+	return command.NewRelateJob(command.RelateJobConfig{DB: svc.pool, Schema: p.Workers.TenantSchema, Authz: svc.authz, Audit: svc.writer,
+		AuditSettings: p.AuditSettings, Service: p.Service, ServiceVersion: svc.version, DeclarationVersion: p.DeclarationVersion, Changes: p.Relate,
+		Holder: holder, Lease: settings})
+}
+
 // startController builds the audit jobs, the reconcile of the worker tuples and the controller lease loop that runs
 // them.
 func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Component, error) {
@@ -588,7 +604,11 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	if err != nil {
 		return nil, err
 	}
-	if p.AuditJobs == nil && reconcile == nil && reseal == nil && seal == nil {
+	relate, err := svc.relateJob(holder, c.LeaseSettings)
+	if err != nil {
+		return nil, err
+	}
+	if p.AuditJobs == nil && reconcile == nil && reseal == nil && seal == nil && relate == nil {
 		return nil, nil
 	}
 	if p.AuditJobs != nil && (p.AnchorPeriod <= 0 || p.TenantSchema == "") {
@@ -646,6 +666,14 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 		// change (ST-SUP-RP10-LC50).
 		jobs = append(jobs, lease.Job{Name: SealJobName, Interval: ResealInterval, Run: func(ctx context.Context, _ *lease.Held) error {
 			_, err := seal.Run(ctx)
+			return err
+		}})
+	}
+	if relate != nil {
+		// The relate job stages the tuple of a new relation for each row of a relate step in passes, under the
+		// backfill lease of its change (decision ST-SUP-Q212 (a)).
+		jobs = append(jobs, lease.Job{Name: RelateJobName, Interval: ResealInterval, Run: func(ctx context.Context, _ *lease.Held) error {
+			_, err := relate.Run(ctx)
 			return err
 		}})
 	}
