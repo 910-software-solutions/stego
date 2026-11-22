@@ -23,8 +23,8 @@ func (s *startupStream) Header() (metadata.MD, error) { s.headers++; return s.he
 func (s *startupStream) Recv() (string, error)        { s.receives++; return "event", s.receiveErr }
 
 func TestStreamHeaderContract(t *testing.T) {
+	good := []rpc.StreamHeader{{Name: "sample-capability", Value: "v1"}, {Name: "sample-scope", Value: "all-v1"}}
 	t.Run("ST-SUP-RC07-OC10-T01 The emitted stream header helper checks its requirements before it reads the stream", func(t *testing.T) {
-		good := []rpc.StreamHeader{{Name: "sample-capability", Value: "v1"}, {Name: "sample-scope", Value: "all-v1"}}
 		for _, required := range [][]rpc.StreamHeader{
 			nil, {{Name: "", Value: "v1"}}, {{Name: "UPPER", Value: "v1"}}, {{Name: "with space", Value: "v1"}},
 			{{Name: "private", Value: ""}}, {{Name: "private", Value: "line\nbreak"}}, {{Name: "private", Value: "é"}},
@@ -60,6 +60,8 @@ func TestStreamHeaderContract(t *testing.T) {
 		if err := rpc.RequireStreamHeaders(stream, good...); err != nil || stream.headers != 1 || stream.receives != 0 {
 			t.Fatal("valid headers consumed event", err)
 		}
+	})
+	t.Run("ST-SUP-RC07-OC16-T01 The emitted helper keeps an early RPC error and refuses an empty stream", func(t *testing.T) {
 		failure, err := status.New(codes.Unavailable, "private message").WithDetails(wrapperspb.String("private detail"))
 		if err != nil {
 			t.Fatal(err)

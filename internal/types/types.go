@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -127,9 +128,21 @@ type Field struct {
 }
 
 // FieldAttempts is the limit of wrong checks of a compare-only secret field (ST-DECL-EN03 Attempts), from 1 to 100
-// (ST-DECL-INV104).
+// (ST-DECL-INV104), and UnlockAfter, the window after the last charge in which a count decays, so a row at its limit
+// opens again: a Go duration from 1m to 24h in whole seconds, or empty for no decay (decisions ST-SUP-Q205 (c) and
+// ST-SUP-Q207 (a)).
 type FieldAttempts struct {
-	Limit int `yaml:"limit" json:"Limit"`
+	Limit       int    `yaml:"limit" json:"Limit"`
+	UnlockAfter string `yaml:"unlock_after,omitempty" json:"UnlockAfter,omitempty"`
+}
+
+// UnlockAfterDuration gives the window of the decay: 0, no decay, when UnlockAfter is empty, and else its parsed value,
+// or an error for a text that is not a Go duration.
+func (a FieldAttempts) UnlockAfterDuration() (time.Duration, error) {
+	if a.UnlockAfter == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(a.UnlockAfter)
 }
 
 // EntityEvents is the event fields of an entity (ST-DECL-EN02 Events, ST-DECL-INV105, decision ST-SUP-Q184 (c)): the

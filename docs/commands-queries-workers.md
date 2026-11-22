@@ -1646,7 +1646,10 @@ revocation that the reader did not make, also after the wait, and the status
 route `/authz/revocations/<id>` answers 404 to each user but the maker. A
 revocation of another tenant is not found, and the request does not wait.
 Thus the location never reads data of another tenant and never tells that a
-row exists. Give it only to users who may know when the create completed.
+row exists. The length of the wait still tells the holder of the location
+when the revocation of the create completed, because the wait ends then. This
+is true in the same tenant only. Give the location only to users who may know
+when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
 ### Release notes for runtime v0.189.0
@@ -1685,6 +1688,37 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 - New `command.Runtime.AwaitRevocationOn`: as `AwaitRevocation`, and it sets
   `Preference-Applied` when a request with `Prefer: wait=N` waited. `Serve`
   calls it.
+
+### Release notes for runtime v0.188.0
+
+- A count of wrong attempts can decay (ST-SUP-RP10-LC54, decisions
+  ST-SUP-Q205 (c) and ST-SUP-Q207 (a)). New field
+  `command.CounterSpec.UnlockAfter`, zero for no decay, or from
+  `command.MinUnlockAfter` (1 minute) to `command.MaxUnlockAfter` (24 hours)
+  in whole seconds. The charge counts again from 1 when the last charge of the
+  row is the window or longer before on the clock of the database, and changes
+  nothing at the limit. New method `command.(*Counter).UnlockAfter`.
+- The checks of the windows before, `failures`, never decay: with the checks
+  of the window, they count the checks since the last match or new value,
+  also those of a pod of a release before. New function `command.FailureCap`: min(10 x limit, 100). At the cap
+  the row stays locked until a new value or a reset.
+- New function `command.ResetAttempts` and new field
+  `command.CommandSpec.Resets`: a command that declares the reset of a field
+  sets the counts of a row to 0 when it commits, after a decision of its own
+  permission on that row, and writes an audit row with the marker
+  `attempts_reset` (`command.AttemptsResetMarker`). It gives only an error.
+  `Matches` on that field in that command fails the call. New field
+  `command.CommandSpec.ResetGuards`: the permissions of the other commands
+  that write the entity; a caller who holds one of them on the row gets
+  `ErrDenied`, and the counts stay.
+- The migration of the key table adds the nullable columns `charged_at` and
+  `failures` to `attempt_counts`, only when the catalog does not hold them.
+  The manifest of a release before still holds the table. A charge gives a
+  count with no time the time of the charge.
+- A charge that waits for a slot counts the waiting charges of all the
+  tenants only for the line `command.attempts.pool_saturated` (security review
+  of PR #488, L2).
+- apidiff against v0.187.0: compatible.
 
 ### Release notes for runtime v0.187.0
 

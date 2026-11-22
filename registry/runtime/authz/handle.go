@@ -1022,9 +1022,11 @@ func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id 
 // Authz-Revocation-After is decided on the tuples of the write (decision ST-SUP-Q206 (a), recommended; walkthrough
 // 22, P3-A). The identity of the revocation is a random value that only the answer of the write gives, so it acts as
 // a capability to wait in its tenant, and gives nothing more: own tells whether p made the write, and a caller MUST
-// NOT give p the state of a revocation that is not its own. A revocation of another tenant is never read, and gives
-// ErrRevocationNotFound at once, as an identity that no write made does. The waiter limits are those of t and p, the
-// caller.
+// NOT give p the state of a revocation that is not its own. The length of the wait still shows a holder of the
+// identity when the revocation of another principal of t completes, as a wait ends then: the time of the create that
+// the identity names, in the same tenant only (security review of PR #488, L1). A revocation of another tenant is
+// never read, and gives ErrRevocationNotFound at once, as an identity that no write made does. The waiter limits are
+// those of t and p, the caller.
 func (r *Runtime) WaitInTenant(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, wait time.Duration) (status RevocationStatus, own bool, allowed time.Duration, err error) {
 	return r.waitFor(ctx, t, p, id, wait, true)
 }

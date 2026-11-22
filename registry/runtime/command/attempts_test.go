@@ -3,6 +3,7 @@ package command
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -34,10 +35,19 @@ type pinWallet struct {
 const pinWalletDDL = `CREATE TABLE pin_wallets (tenant_id text NOT NULL, id text NOT NULL, balance bigint NOT NULL, pin text,
   version bigint NOT NULL DEFAULT 1, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`
 
-// pinCounter is the counter of PinWallet.pin with the limit 3.
-var pinCounter = Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 3}))
+// pinCounter is the counter of PinWallet.pin with the limit 3 and a window of 15 minutes; fixedCounter has no window.
+var (
+	pinCounter   = Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 3, UnlockAfter: 15 * time.Minute}))
+	fixedCounter = Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 3}))
+)
 
 func pinWalletEntity(t *testing.T) *Entity[pinWallet] {
+	t.Helper()
+	return pinWalletEntityOf(t, pinCounter)
+}
+
+// pinWalletEntityOf is the PIN wallet entity whose PIN has the counter given.
+func pinWalletEntityOf(t *testing.T, pinCounter *Counter) *Entity[pinWallet] {
 	t.Helper()
 	s := spec("PinWallet", "", "pin_wallets", []string{"balance", "pin"},
 		func(row Scanner) (pinWallet, Meta, error) {
@@ -958,4 +968,421 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// decayWallet is a PIN wallet whose PIN has the counter given, in an env of its own: check runs withdraw with a PIN,
+// count and failures read the counts of the row, chargedAt the time of its last charge, and age moves that time back.
+type decayWallet struct {
+	e         *env
+	check     func(pin string) bool
+	count     func() int
+	failures  func() int
+	chargedAt func() string
+	age       func(interval string)
+}
+
+func newDecayWallet(t *testing.T, counter *Counter, walletID, right string) decayWallet {
+	t.Helper()
+	e := newEnv(t)
+	pinWallets(t, e, walletID, right)
+	wallets := pinWalletEntityOf(t, counter)
+	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+	cmd := e.command("withdraw", nil, wallets)
+	errWrongPIN := errors.New("pin.wrong")
+	n := 0
+	w := decayWallet{e: e}
+	w.check = func(pin string) bool {
+		t.Helper()
+		n++
+		var matched bool
+		_, err := e.runOn(rt, cmd, e.request("t1", u7(t), fmt.Sprintf("decay-%d", n), `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.GetForUpdate(ctx, walletID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if matched = w.Value().PIN.Matches(pin); !matched {
+				return idempotency.Response{}, errWrongPIN
+			}
+			return ok, nil
+		})
+		if !matched && !errors.Is(err, errWrongPIN) || matched && err != nil {
+			t.Fatalf("the check of %q gave %v", pin, err)
+		}
+		return matched
+	}
+	w.count = func() int {
+		t.Helper()
+		return e.count(`SELECT coalesce(sum(checks), 0) FROM attempt_counts WHERE counter = 'PinWallet.pin' AND row_id = $1`, walletID)
+	}
+	w.failures = func() int {
+		t.Helper()
+		// The checks since the last match or new value: the checks of the windows before and of this one.
+		return e.count(`SELECT coalesce(sum(coalesce(failures, 0) + checks), 0) FROM attempt_counts WHERE counter = 'PinWallet.pin' AND row_id = $1`, walletID)
+	}
+	w.chargedAt = func() string {
+		t.Helper()
+		var at sql.NullString
+		if err := e.admin.QueryRowContext(e.ctx, `SELECT charged_at::text FROM attempt_counts WHERE counter = 'PinWallet.pin' AND row_id = $1`, walletID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at.String
+	}
+	w.age = func(interval string) {
+		t.Helper()
+		e.exec(`UPDATE attempt_counts SET charged_at = pg_catalog.statement_timestamp() - interval '` + interval + `' WHERE row_id = '` + walletID + `'`)
+	}
+	return w
+}
+
+// TestAttemptDecay proves that a count decays after the window of its counter on the clock of the database, that no
+// check moves the end of the window of a row at its limit, that a counter with no window does not decay, and that the
+// failures of a row never decay (decisions ST-SUP-Q205 (c) and ST-SUP-Q207 (a)).
+func TestAttemptDecay(t *testing.T) {
+	const right = "4711"
+	t.Run("ST-SUP-RP10-LC54-T12 A row at its limit opens again only after the window of its last charge on the clock of the database", func(t *testing.T) {
+		for _, c := range []struct {
+			after time.Duration
+			ok    bool
+			want  time.Duration
+		}{{0, true, 0}, {time.Minute, true, time.Minute}, {24 * time.Hour, true, 24 * time.Hour},
+			{59 * time.Second, false, 0}, {25 * time.Hour, false, 0}, {90*time.Second + 500*time.Millisecond, false, 0}, {-time.Minute, false, 0}} {
+			counter, err := NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 3, UnlockAfter: c.after})
+			if c.ok != (err == nil) || (c.ok && counter.UnlockAfter() != c.want) {
+				t.Fatalf("NewCounter with the window %s gave %v, %v; want ok %v and the window %s", c.after, counter, err, c.ok, c.want)
+			}
+		}
+		const walletID = "0198a1b2-0000-7000-8000-000000000012"
+		w := newDecayWallet(t, pinCounter, walletID, right)
+		for range 3 {
+			w.check("0000")
+		}
+		at := w.chargedAt()
+		if w.count() != 3 || at == "" || w.check(right) {
+			t.Fatalf("three wrong PINs left the count %d and the time %q, and the right PIN matched; want 3, a time and no match", w.count(), at)
+		}
+		// A check at the limit charges nothing, so it does not move the end of the window.
+		if w.check(right); w.chargedAt() != at || w.count() != 3 {
+			t.Fatalf("a check at the limit moved the time of the last charge from %s to %s, or the count to %d", at, w.chargedAt(), w.count())
+		}
+		// 5 s before the end of the window of 15 minutes, the row is still at its limit.
+		w.age("14 minutes 55 seconds")
+		if w.check(right) || w.count() != 3 {
+			t.Fatalf("the right PIN matched 5 s before the end of the window, with the count %d", w.count())
+		}
+		// After the window, the count starts again at 1, the failures do not, and the right PIN matches and resets both.
+		w.age("15 minutes 1 second")
+		if w.check("0000") || w.count() != 1 || w.failures() != 4 {
+			t.Fatalf("a wrong PIN after the window left the count %d and the failures %d, want 1 and 4", w.count(), w.failures())
+		}
+		if !w.check(right) || w.count() != 0 || w.failures() != 0 {
+			t.Fatalf("the right PIN after the window gave no match or left the count %d and the failures %d", w.count(), w.failures())
+		}
+		// A count with no time, as a charge of a release before the decay leaves it, counts as charged now: the row at
+		// its limit stays locked, gets the time of the check, and opens one window after it (security review of PR
+		// #489, L1).
+		w.e.exec(`INSERT INTO attempt_counts (tenant_id, counter, row_id, checks) VALUES ('t1', 'PinWallet.pin', '` + walletID + `', 3)`)
+		if w.check(right) || w.count() != 3 || w.chargedAt() == "" {
+			t.Fatalf("the right PIN on a count of 3 with no time matched, or left the count %d and the time %q; want no match, 3 and a time", w.count(), w.chargedAt())
+		}
+		w.age("15 minutes 1 second")
+		if !w.check(right) {
+			t.Fatal("the right PIN one window after the stamp gave no match")
+		}
+		// A counter with no window does not decay: the row stays at its limit after a day.
+		fixed := newDecayWallet(t, fixedCounter, walletID, right)
+		for range 3 {
+			fixed.check("0000")
+		}
+		fixed.age("25 hours")
+		if fixed.check(right) || fixed.count() != 3 {
+			t.Fatalf("the right PIN of a counter with no window matched after a day, or left the count %d", fixed.count())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T16 At the cap of its failures a row stays locked after the window until a new value", func(t *testing.T) {
+		if FailureCap(2) != 20 || FailureCap(5) != 50 || FailureCap(10) != 100 || FailureCap(100) != 100 {
+			t.Fatalf("FailureCap gave %d, %d, %d and %d, want 20, 50, 100 and 100", FailureCap(2), FailureCap(5), FailureCap(10), FailureCap(100))
+		}
+		const walletID = "0198a1b2-0000-7000-8000-000000000016"
+		counter := Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 2, UnlockAfter: time.Minute}))
+		w := newDecayWallet(t, counter, walletID, right)
+		// Ten windows of two wrong PINs each reach the cap of 20 failures.
+		for i := range 10 {
+			w.check("0000")
+			w.check("0000")
+			if w.failures() != 2*(i+1) {
+				t.Fatalf("window %d left the failures %d, want %d", i+1, w.failures(), 2*(i+1))
+			}
+			w.age("61 seconds")
+		}
+		// Past the window and at the cap, the right PIN gives no match and charges nothing.
+		at := w.chargedAt()
+		if w.check(right) || w.failures() != 20 || w.chargedAt() != at {
+			t.Fatalf("the right PIN at the cap matched, or left the failures %d and the time %s (was %s)", w.failures(), w.chargedAt(), at)
+		}
+		w.age("25 hours")
+		if w.check(right) {
+			t.Fatal("the right PIN at the cap matched after a day")
+		}
+		// The delete of the count, which a new value and a reset command make at commit, opens the row.
+		w.e.exec(`DELETE FROM attempt_counts WHERE row_id = '` + walletID + `'`)
+		if !w.check(right) {
+			t.Fatal("the right PIN after the reset gave no match")
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T17 The checks that a pod of a release before adds count toward the cap of the failures", func(t *testing.T) {
+		const walletID = "0198a1b2-0000-7000-8000-000000000017"
+		counter := Must(NewCounter(CounterSpec{Entity: "PinWallet", Field: "pin", Limit: 2, UnlockAfter: time.Minute}))
+		w := newDecayWallet(t, counter, walletID, right)
+		// A row of failures 18 whose two checks of this window a pod of a release before charged, which raises only
+		// checks: 20 checks since the last match, the cap of the limit 2.
+		w.e.exec(`INSERT INTO attempt_counts (tenant_id, counter, row_id, checks, failures, charged_at) VALUES ('t1', 'PinWallet.pin', '` + walletID + `', 2, 18, pg_catalog.statement_timestamp() - interval '61 seconds')`)
+		if w.check(right) || w.failures() != 20 {
+			t.Fatalf("the right PIN after the window of a row at the cap matched, or left the checks %d, want no match and 20", w.failures())
+		}
+		// Below the cap, the decay keeps the checks of the window before in failures.
+		w.e.exec(`UPDATE attempt_counts SET failures = 10 WHERE row_id = '` + walletID + `'`)
+		w.age("61 seconds")
+		if w.check("0000") || w.failures() != 13 || w.count() != 1 {
+			t.Fatalf("a wrong PIN after the window left the checks %d and the count %d, want 13 and 1", w.failures(), w.count())
+		}
+	})
+}
+
+// lockedWallet is a test entity of the resource type locked_wallet with a counted PIN of limit 2, which the command
+// unlock may reset (ST-DECL-INV104).
+type lockedWallet struct {
+	ID  string
+	PIN sealed.Compared
+}
+
+var lockedCounter = Must(NewCounter(CounterSpec{Entity: "LockedWallet", Field: "pin", Limit: 2, UnlockAfter: time.Hour}))
+
+// TestAttemptResets proves the declared step-up reset of a locked row (decision ST-SUP-Q205 (c)).
+func TestAttemptResets(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T13 Only a command that declares the reset resets a count, on a row that its own permission allows, when it commits", func(t *testing.T) {
+		const a, b, right = "0198a1b2-0000-7000-8000-0000000000a1", "0198a1b2-0000-7000-8000-0000000000b1", "4711"
+		e := newEnv(t)
+		e.exec(`CREATE TABLE locked_wallets (tenant_id text NOT NULL, id text NOT NULL, pin text, version bigint NOT NULL DEFAULT 1,
+  authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`, "GRANT SELECT, INSERT, UPDATE, DELETE ON locked_wallets TO "+e.roles[0])
+		hash, err := sealed.Hash(right)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{a, b} {
+			if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO locked_wallets (tenant_id, id, pin) VALUES ('t1', $1, $2)`, id, hash); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s := spec("LockedWallet", "locked_wallet", "locked_wallets", []string{"pin"},
+			func(row Scanner) (lockedWallet, Meta, error) {
+				var v lockedWallet
+				var m Meta
+				err := row.Scan(&v.ID, CountedAt(lockedCounter, &v.ID, &v.PIN), &m.Version, &m.Token)
+				m.ID = v.ID
+				return v, m, err
+			},
+			func(v lockedWallet) []any { return []any{v.ID, HashCountedOf(lockedCounter, v.ID, v.PIN)} },
+			func(v lockedWallet) map[string]any { return map[string]any{"id": v.ID} })
+		wallets, err := NewEntity(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		var charges atomic.Int32
+		rt.charged = func(bool) { charges.Add(1) }
+		resource := &Resource{Type: "locked_wallet", Token: `SELECT authz_token FROM locked_wallets WHERE tenant_id = $1 AND id = $2 FOR SHARE`,
+			ValidID: func(id string) bool { return id != "" }}
+		for name, change := range map[string]func(*CommandSpec[testProbe]){
+			"no permission": func(s *CommandSpec[testProbe]) { s.Resets = []string{"LockedWallet.pin"} },
+			"an entity not written": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.Resets = "unlock", resource, []string{"PinWallet.pin"}
+			},
+			"no field": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.Resets = "unlock", resource, []string{"LockedWallet"}
+			},
+			"the service-level resource": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.Resets = "unlock", &Resource{Type: "service", Service: "wallets"}, []string{"LockedWallet.pin"}
+			},
+		} {
+			spec := CommandSpec[testProbe]{Name: "unlock", Writes: []Declared{wallets}, Probe: newTestProbe}
+			change(&spec)
+			if _, err := NewCommand(spec); err == nil {
+				t.Fatalf("NewCommand takes a reset with %s", name)
+			}
+		}
+		for name, change := range map[string]func(*CommandSpec[testProbe]){
+			"a guard with no reset": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.ResetGuards = "unlock", resource, []string{"operate"}
+			},
+			"its own permission as a guard": func(s *CommandSpec[testProbe]) {
+				s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", resource, []string{"LockedWallet.pin"}, []string{"unlock"}
+			},
+		} {
+			spec := CommandSpec[testProbe]{Name: "unlock", Writes: []Declared{wallets}, Probe: newTestProbe}
+			change(&spec)
+			if _, err := NewCommand(spec); err == nil {
+				t.Fatalf("NewCommand takes %s", name)
+			}
+		}
+		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "operate", resource }, wallets)
+		unlock := e.command("unlock", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", resource, []string{"LockedWallet.pin"}, []string{"operate"}
+		}, wallets)
+		// u-1 owns a; u-2 may unlock b and view a; u-3 is the support desk, which may unlock a.
+		e.decision.setRelations(relation(t, "user:u-1", "operate", "t1", "locked_wallet", a), relation(t, "user:u-1", "view", "t1", "locked_wallet", a),
+			relation(t, "user:u-2", "unlock", "t1", "locked_wallet", b), relation(t, "user:u-2", "view", "t1", "locked_wallet", a),
+			relation(t, "user:u-2", "view", "t1", "locked_wallet", b),
+			relation(t, "user:u-3", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-3", "view", "t1", "locked_wallet", a),
+			relation(t, "user:u-4", "unlock", "t1", "locked_wallet", a), relation(t, "user:u-4", "operate", "t1", "locked_wallet", a),
+			relation(t, "user:u-4", "view", "t1", "locked_wallet", a))
+		n := 0
+		errFill := errors.New("the fill fails")
+		// call runs cmd as subject on the resource, with a fill that reads the wallet a and then runs body.
+		call := func(cmd *Command[testProbe], subject, on string, body func(ctx context.Context, h *Handle[testProbe], w Loaded[lockedWallet]) error) error {
+			t.Helper()
+			n++
+			req := e.request("t1", person(t, subject), fmt.Sprintf("reset-%d", n), `{}`)
+			req.Resource = on
+			_, err := e.runOn(rt, cmd, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				r, err := Repo(h, wallets)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				w, err := r.Get(ctx, a)
+				if err != nil {
+					return idempotency.Response{}, err
+				}
+				return ok, body(ctx, h, w)
+			})
+			return err
+		}
+		errWrongPIN := errors.New("pin.wrong")
+		check := func(pin string) bool {
+			t.Helper()
+			matched := false
+			err := call(withdraw, "user:u-1", a, func(_ context.Context, _ *Handle[testProbe], w Loaded[lockedWallet]) error {
+				if matched = w.Value().PIN.Matches(pin); !matched {
+					return errWrongPIN
+				}
+				return nil
+			})
+			if !matched && !errors.Is(err, errWrongPIN) || matched && err != nil {
+				t.Fatalf("the check of %q gave %v", pin, err)
+			}
+			return matched
+		}
+		reset := func(ctx context.Context, h *Handle[testProbe], w Loaded[lockedWallet]) error {
+			return ResetAttempts(ctx, h, lockedCounter, w)
+		}
+		count := func() int {
+			t.Helper()
+			return e.count(`SELECT coalesce(sum(checks), 0) FROM attempt_counts WHERE counter = 'LockedWallet.pin' AND row_id = $1`, a)
+		}
+		check("0000")
+		check("0000")
+		if count() != 2 || check(right) {
+			t.Fatalf("two wrong PINs left the count %d, or the right PIN matched at the limit", count())
+		}
+		// The owner's command, which may check the PIN, declares no reset.
+		if err := call(withdraw, "user:u-1", a, reset); err == nil || count() != 2 {
+			t.Fatalf("a reset in a command that declares none gave %v and left the count %d, want an error and 2", err, count())
+		}
+		resets := func() int {
+			t.Helper()
+			return e.count(`SELECT count(*) FROM audit_event WHERE action = 'unlock' AND resource_id = $1`, a)
+		}
+		// u-2 may unlock b, and may only view a: the reset of a is decided with unlock on a, and denied.
+		if err := call(unlock, "user:u-2", b, reset); !errors.Is(err, ErrNotFound) || count() != 2 || resets() != 0 {
+			t.Fatalf("the reset of a by a caller who may unlock only b gave %v and left the count %d, want ErrNotFound and 2", err, count())
+		}
+		// u-4 may unlock a and also operate it, so it could check the PIN and reset it after each check: the reset is
+		// refused, whatever the schema (security review of PR #489, second review, M2b).
+		if err := call(unlock, "user:u-4", a, reset); !errors.Is(err, ErrDenied) || count() != 2 || resets() != 0 {
+			t.Fatalf("the reset of a caller who may also operate a gave %v, left the count %d and wrote %d audit rows, want ErrDenied, 2 and none", err, count(), resets())
+		}
+		// The reset of the support desk commits only with its command.
+		if err := call(unlock, "user:u-3", a, func(ctx context.Context, h *Handle[testProbe], w Loaded[lockedWallet]) error {
+			if err := reset(ctx, h, w); err != nil {
+				return err
+			}
+			return errFill
+		}); !errors.Is(err, errFill) || count() != 2 || resets() != 0 {
+			t.Fatalf("a reset whose command fails gave %v, left the count %d and wrote %d audit rows, want the error of the fill, 2 and none", err, count(), resets())
+		}
+		// The command that may reset the count does not check the PIN: the check gives no match, charges nothing and
+		// fails the call (security review of PR #489, I1).
+		before := charges.Load()
+		if err := call(unlock, "user:u-3", a, func(_ context.Context, _ *Handle[testProbe], w Loaded[lockedWallet]) error {
+			if w.Value().PIN.Matches(right) {
+				return errors.New("the check in the reset command matched")
+			}
+			return nil
+		}); err == nil || charges.Load() != before || count() != 2 {
+			t.Fatalf("a check in the reset command gave %v, charged %d checks and left the count %d, want an error, none and 2", err, charges.Load()-before, count())
+		}
+		if err := call(unlock, "user:u-3", a, reset); err != nil || count() != 0 || charges.Load() != before || resets() != 1 {
+			t.Fatalf("the reset of the support desk gave %v, left the count %d, charged %d checks and wrote %d audit rows, want nil, 0, none and 1", err, count(), charges.Load()-before, resets())
+		}
+		var marker string
+		if err := e.admin.QueryRowContext(e.ctx, `SELECT after::text FROM audit_event WHERE action = 'unlock' AND resource_id = $1`, a).Scan(&marker); err != nil || !strings.Contains(marker, `"attempts_reset": "LockedWallet.pin"`) || strings.Contains(marker, right) {
+			t.Fatalf("the audit row of the reset holds %q (%v), want the marker attempts_reset LockedWallet.pin and no PIN", marker, err)
+		}
+		// The answer of a reset is the same for a row with no count: it tells nothing of the secret.
+		if err := call(unlock, "user:u-3", a, reset); err != nil {
+			t.Fatalf("the reset of a row with no count gave %v, want nil", err)
+		}
+		if !check(right) {
+			t.Fatal("the right PIN gave no match after the reset")
+		}
+	})
+}
+
+// TestTenantSlotScans proves that a charge that waits for the limit of its own tenant reads the counts of the
+// waiting charges of all the tenants only for the log of a full pool (security review of PR #488, L2).
+func TestTenantSlotScans(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T14 A charge that waits with no report of a full pool does not count the waiting charges of all the tenants", func(t *testing.T) {
+		var s tenantSlots
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		reports := 0
+		full := func(int, int) { reports++ }
+		release, err := s.take(ctx, "t1", 1, 3, full)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			second, err := s.take(ctx, "t1", 1, 3, full)
+			if err == nil {
+				second()
+			}
+			done <- err
+		}()
+		for s.blocked("t1") == 0 {
+			runtime.Gosched()
+		}
+		// A slot of t2 comes and goes, which wakes the waiting charge of t1 again.
+		other, err := s.take(ctx, "t2", 1, 3, full)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other()
+		for s.blocked("t1") == 0 {
+			runtime.Gosched()
+		}
+		s.mu.Lock()
+		scans := s.scans
+		s.mu.Unlock()
+		if scans != 0 || reports != 0 {
+			t.Fatalf("the waits for the limit of t1 counted the waiting charges %d times and reported %d full pools, want 0 and 0", scans, reports)
+		}
+		release()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
 }

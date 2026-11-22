@@ -399,44 +399,46 @@ func TestRuntime(t *testing.T) {
 				t.Fatal("header contract hid RPC failure", code, err)
 			}
 		}
-		for _, request := range []string{"headers/wrong", "headers/duplicate", "headers/missing"} {
-			stream, err := outboundClient.Watch(calls, &pb.Request{Text: request})
+		t.Run("ST-SUP-RC07-OC16-T02 A failed header check leaves the first event on the real stream", func(t *testing.T) {
+			for _, request := range []string{"headers/wrong", "headers/duplicate", "headers/missing"} {
+				stream, err := outboundClient.Watch(calls, &pb.Request{Text: request})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := rpcclient.RequireStreamHeaders(stream, rpcclient.StreamHeader{Name: "sample-capability", Value: "v1"}); !errors.Is(err, rpcclient.ErrStreamContract) {
+					t.Fatal("invalid capability accepted", request, err)
+				}
+				if event, err := stream.Recv(); err != nil || event.GetText() != "event" {
+					t.Fatal("failed contract consumed an event", request, err)
+				}
+				if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+					t.Fatal(err)
+				}
+			}
+			withHeader, err := outboundClient.Watch(calls, &pb.Request{Text: "headers"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := rpcclient.RequireStreamHeaders(stream, rpcclient.StreamHeader{Name: "sample-capability", Value: "v1"}); !errors.Is(err, rpcclient.ErrStreamContract) {
-				t.Fatal("invalid capability accepted", request, err)
+			header, err := withHeader.Header()
+			if err != nil || len(header.Get("sample-capability")) != 1 || header.Get("sample-capability")[0] != "v1" {
+				t.Fatal("missing declared header", header, err)
 			}
-			if event, err := stream.Recv(); err != nil || event.GetText() != "event" {
-				t.Fatal("failed contract consumed an event", request, err)
+			header["sample-capability"][0] = "changed"
+			header["extra"] = []string{"caller"}
+			again, err := withHeader.Header()
+			if err != nil || len(again.Get("sample-capability")) != 1 || again.Get("sample-capability")[0] != "v1" || len(again.Get("extra")) != 0 {
+				t.Fatal("caller changed cached headers", again, err)
 			}
-			if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+			if err := rpcclient.RequireStreamHeaders(withHeader, rpcclient.StreamHeader{Name: "sample-capability", Value: "v1"}); err != nil {
 				t.Fatal(err)
 			}
-		}
-		withHeader, err := outboundClient.Watch(calls, &pb.Request{Text: "headers"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		header, err := withHeader.Header()
-		if err != nil || len(header.Get("sample-capability")) != 1 || header.Get("sample-capability")[0] != "v1" {
-			t.Fatal("missing declared header", header, err)
-		}
-		header["sample-capability"][0] = "changed"
-		header["extra"] = []string{"caller"}
-		again, err := withHeader.Header()
-		if err != nil || len(again.Get("sample-capability")) != 1 || again.Get("sample-capability")[0] != "v1" || len(again.Get("extra")) != 0 {
-			t.Fatal("caller changed cached headers", again, err)
-		}
-		if err := rpcclient.RequireStreamHeaders(withHeader, rpcclient.StreamHeader{Name: "sample-capability", Value: "v1"}); err != nil {
-			t.Fatal(err)
-		}
-		if response, err := withHeader.Recv(); err != nil || response.GetText() != "event" {
-			t.Fatal("header read consumed a message", err)
-		}
-		if _, err := withHeader.Recv(); !errors.Is(err, io.EOF) {
-			t.Fatal("header stream did not finish", err)
-		}
+			if response, err := withHeader.Recv(); err != nil || response.GetText() != "event" {
+				t.Fatal("header read consumed a message", err)
+			}
+			if _, err := withHeader.Recv(); !errors.Is(err, io.EOF) {
+				t.Fatal("header stream did not finish", err)
+			}
+		})
 		// Use a separate identity so that completion of earlier server streams
 		// cannot consume this test's per-identity capacity.
 		if err := os.WriteFile(tokenFile, []byte("user-client-capacity"), 0600); err != nil {

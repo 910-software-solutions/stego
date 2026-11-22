@@ -3,6 +3,7 @@ package declaration
 import (
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jsell-rh/stego/internal/parser"
 )
@@ -118,6 +119,12 @@ func TestAttemptsCounter(t *testing.T) {
 				t.Fatalf("limit %s: want no fault, got %v", limit, faults)
 			}
 		}
+		// The window of the decay, from 1 minute to 24 hours (decision ST-SUP-Q205 (c)).
+		for _, window := range []string{"1m", "15m", "90s", "24h"} {
+			if faults := entityRuleFaults(t, "attempts-limit", "", "", title, pin("sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: "+window+"}")); len(faults) != 0 {
+				t.Fatalf("unlock_after %s: want no fault, got %v", window, faults)
+			}
+		}
 	})
 	refused := map[string]string{
 		"a limit of 0":                  "sensitivity: secret, compare_only: true, attempts: {limit: 0}",
@@ -125,6 +132,10 @@ func TestAttemptsCounter(t *testing.T) {
 		"attempts on a readable secret": "sensitivity: secret, attempts: {limit: 5}",
 		"attempts on a public field":    "attempts: {limit: 5}",
 		"attempts on a pii field":       "sensitivity: pii, attempts: {limit: 5}",
+		"an unlock_after of 59s":        "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 59s}",
+		"an unlock_after of 25h":        "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 25h}",
+		"an unlock_after of 90.5s":      "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: 90.5s}",
+		"an unlock_after of soon":       "sensitivity: secret, compare_only: true, attempts: {limit: 5, unlock_after: soon}",
 	}
 	for name, settings := range refused {
 		t.Run("ST-DECL-INV104-T "+name+" is refused", func(t *testing.T) {
@@ -186,6 +197,145 @@ func TestEventFields(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("no fault names %s: %v", c.names, faults)
+			}
+		})
+	}
+}
+
+func TestResetsAttempts(t *testing.T) {
+	const title = "- {name: title, type: string}"
+	const pin = "- {name: pin, type: string, sensitivity: secret, compare_only: true, attempts: {limit: 5}}"
+	const code = "- {name: code, type: string, sensitivity: secret, compare_only: true}"
+	const entity = "resource_type: todo\n    permissions: {create: edit, read: view, update: edit, delete: edit, list: view}"
+	// unlock is a command on a row of Todo with the lines given.
+	unlock := func(lines ...string) string {
+		return "commands:\n" + command("unlock-pin", append([]string{"writes: [Todo]", "fill: unlock-pin", "route: POST /todos/{todoId}/pin:unlock"}, lines...)...)
+	}
+	row := []string{"resource_type: todo", "resource_member: todo_id"}
+	accepted := unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...)
+	t.Run("ST-DECL-INV104-T A reset of the attempts of a counted field with a permission of its own on a row is accepted", func(t *testing.T) {
+		if faults := entityRuleFaults(t, "resets-attempts", entity, accepted, title, pin, code); len(faults) != 0 {
+			t.Fatalf("want no fault, got %+v", faults)
+		}
+	})
+	refused := []struct{ name, tail, names string }{
+		{"of a field with no attempts", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.code]")...), "Todo.code"},
+		{"of a field that Todo does not declare", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.colour]")...), "Todo.colour"},
+		{"of an entity with no field", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo]")...), "Todo"},
+		{"of the same field twice", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin, Todo.pin]")...), "twice"},
+		{"with no permission", unlock("resource_type: todo", "resource_member: todo_id", "resets_attempts: [Todo.pin]"), "permission"},
+		{"with no resource member", unlock("resource_type: todo", "permission: unlock_pin", "resets_attempts: [Todo.pin]"), "resource_member"},
+		{"with the edit permission of the operations of Todo", unlock(append(row, "permission: edit", "resets_attempts: [Todo.pin]")...), "the create of Todo"},
+		{"with the permission of another command", unlock(append(row, "permission: unlock_pin", "resets_attempts: [Todo.pin]")...) +
+			command("withdraw", "writes: [Todo]", "fill: withdraw", "route: POST /todos/{todoId}/withdrawals", "resource_type: todo", "resource_member: todo_id", "permission: unlock_pin"),
+			"the command withdraw"},
+	}
+	for _, c := range refused {
+		t.Run("ST-DECL-INV104-T A reset "+c.name+" is refused", func(t *testing.T) {
+			faults := entityRuleFaults(t, "resets-attempts", entity, c.tail, title, pin, code)
+			if len(faults) == 0 {
+				t.Fatal("want a fault of resets-attempts, got none")
+			}
+			found := false
+			for _, fault := range faults {
+				if !strings.Contains(fault.Message, "ST-DECL-INV104") || !strings.Contains(fault.Message, `"unlock-pin"`) {
+					t.Errorf("the fault does not name the command and the rule: %s", fault.Message)
+				}
+				found = found || strings.Contains(fault.Message, c.names)
+			}
+			if !found {
+				t.Errorf("no fault names %s: %+v", c.names, faults)
+			}
+		})
+	}
+}
+
+func TestAttemptsWarnings(t *testing.T) {
+	warned := func(t *testing.T, field string) []ValidationError {
+		t.Helper()
+		data := strings.Replace(td02Fields, "%s", "      - {name: title, type: string}\n      "+field, 1)
+		service, _, err := parser.ReadServiceDeclaration([]byte(data), "service.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []ValidationError
+		for _, w := range Warnings(service) {
+			if w.Rule == "attempts-guessable" {
+				out = append(out, w)
+			}
+		}
+		return out
+	}
+	const pin = "- {name: pin, type: string, sensitivity: secret, compare_only: true, "
+	for name, c := range map[string]struct {
+		field string
+		warn  bool
+	}{
+		"a window of 15m on a PIN of at least 4":    {pin + "min_length: 4, attempts: {limit: 5, unlock_after: 15m}}", true},
+		"a window of 23h on a secret of no length":  {pin + "attempts: {limit: 5, unlock_after: 23h}}", true},
+		"a window of 24h on a PIN of at least 4":    {pin + "min_length: 4, attempts: {limit: 5, unlock_after: 24h}}", false},
+		"no window on a PIN of at least 4":          {pin + "min_length: 4, attempts: {limit: 5}}", false},
+		"a window of 15m on a secret of at least 7": {pin + "min_length: 7, attempts: {limit: 5, unlock_after: 15m}}", false},
+	} {
+		t.Run("ST-DECL-INV104-T The warning of a short secret with a short window: "+name, func(t *testing.T) {
+			got := warned(t, c.field)
+			if (len(got) == 1) != c.warn || len(got) > 1 {
+				t.Fatalf("want a warning %v, got %+v", c.warn, got)
+			}
+			if c.warn && (!strings.Contains(got[0].Message, `"pin"`) || !strings.Contains(got[0].Message, "ST-DECL-INV104")) {
+				t.Fatalf("the warning does not name pin and the rule: %s", got[0].Message)
+			}
+		})
+	}
+}
+
+func TestResetsAttemptsSchema(t *testing.T) {
+	service, schema := td03Files(t)
+	service = change(t, service, "      - {name: owner_id, type: string}\n",
+		"      - {name: owner_id, type: string}\n      - {name: pin, type: string, sensitivity: secret, compare_only: true, attempts: {limit: 5}}\n")
+	service += "commands:\n" + command("withdraw", "writes: [Todo]", "fill: withdraw", "route: POST /todos/{todoId}/withdrawals",
+		"resource_type: document", "resource_member: todoId", "permission: operate") +
+		command("unlock-pin", "writes: [Todo]", "fill: unlock-pin", "route: POST /todos/{todoId}/pin:unlock",
+			"resource_type: document", "resource_member: todoId", "permission: unlock_pin", "resets_attempts: [Todo.pin]")
+	schema = change(t, schema, "\tpermission edit = owner\n", "\tpermission edit = owner\n\trelation support: user\n\trelation parent: folder\n\tpermission operate = %o\n\tpermission unlock_pin = %s\n")
+	schema = change(t, schema, "definition folder {\n\trelation viewer: user\n", "definition folder {\n\trelation viewer: user\n\trelation helper: user\n\tpermission see = viewer\n\tpermission help = helper\n")
+	faults := func(t *testing.T, operate, expression string) []ValidationError {
+		t.Helper()
+		decl := readTD03(t, service)
+		text := strings.Replace(strings.Replace(schema, "%s", expression, 1), "%o", operate, 1)
+		var out []ValidationError
+		for _, f := range CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(text)}}) {
+			if f.Rule == "resets-attempts" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	for name, c := range map[string]struct{ operate, expression string }{
+		"a relation of its own":             {"parent->viewer", "support"},
+		"an arrow to a relation of its own": {"parent->viewer", "parent->help"},
+		"an alias of a relation of its own": {"parent->viewer", "alias\n\tpermission alias = support"},
+	} {
+		t.Run("ST-DECL-INV104-T A reset permission with "+name+" in the schema is accepted", func(t *testing.T) {
+			if got := faults(t, c.operate, c.expression); len(got) != 0 {
+				t.Fatalf("want no fault, got %+v", got)
+			}
+		})
+	}
+	for name, c := range map[string]struct{ operate, expression, names string }{
+		"that shares the relation owner with edit":                           {"parent->viewer", "owner + support", "document#owner"},
+		"that names the permission edit":                                     {"parent->viewer", "edit + support", "edit"},
+		"that shares the arrow parent->viewer with operate":                  {"parent->viewer", "parent->viewer", "document#parent->viewer"},
+		"that shares the relation viewer with view":                          {"parent->viewer", "viewer", "document#viewer"},
+		"that is an alias of the arrow of operate":                           {"parent->viewer", "alias\n\tpermission alias = parent->viewer", "document#parent->viewer"},
+		"that is an alias of the relation of edit":                           {"parent->viewer", "alias2\n\tpermission alias2 = owner", "document#owner"},
+		"that operate names":                                                 {"parent->viewer + unlock_pin", "support", "operate"},
+		"whose arrow reaches the relation that the arrow of operate reaches": {"parent->viewer", "parent->see", "folder#viewer"},
+	} {
+		t.Run("ST-DECL-INV104-T A reset permission "+name+" is refused", func(t *testing.T) {
+			got := faults(t, c.operate, c.expression)
+			if len(got) != 1 || !strings.Contains(got[0].Message, c.names) || !strings.Contains(got[0].Message, `"unlock-pin"`) || !strings.Contains(got[0].Message, "ST-DECL-INV104") {
+				t.Fatalf("want one fault of resets-attempts that names %s, unlock-pin and the rule, got %+v", c.names, got)
 			}
 		})
 	}

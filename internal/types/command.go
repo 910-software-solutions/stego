@@ -42,6 +42,10 @@ type Command struct {
 	// Lists are the declared lists that the fill reads through: the generator emits their statements from the entity
 	// of the release, so a fill gives no SQL text (ST-DECL-INV94, ST-SUP-RC32-OC16).
 	Lists []WorkerList `yaml:"lists,omitempty"`
+	// ResetsAttempts names the compare-only fields with a limit of wrong attempts, as <Entity>.<field>, whose count the
+	// fill may set to 0 on the row that the command is decided on: the step-up reset of a locked row, with a permission
+	// of its own (ST-DECL-INV104, decision ST-SUP-Q205 (c)).
+	ResetsAttempts []string `yaml:"resets_attempts,omitempty"`
 }
 
 // Effect is one effect that a command or a worker may stage: the outbox destination and the effect name, which is

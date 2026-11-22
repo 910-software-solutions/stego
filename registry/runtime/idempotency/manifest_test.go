@@ -2,7 +2,9 @@ package idempotency
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -156,6 +158,81 @@ func TestManifest(t *testing.T) {
 			func(context.Context, Tx) (Response, error) { return Response{Status: 500}, nil })
 		if err != nil || !again.Replayed || again.Response.Status != 201 || string(again.Response.Body) == "planted" {
 			t.Fatalf("Wrap = %+v, %v; want the replay of the stored 201", again, err)
+		}
+	})
+}
+
+func TestAttemptsDecayColumn(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC54-T15 The migration adds the time of the last charge to a table of the counts of a release before, with no lock when it is there, and both manifests hold the table", func(t *testing.T) {
+		ctx := context.Background()
+		db, admin := testDB(t)
+		var schema, owner string
+		if err := db.QueryRowContext(ctx, "SELECT current_schema(), pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'attempt_counts'::regclass").Scan(&schema, &owner); err != nil {
+			t.Fatal(err)
+		}
+		// The table of a release before the decay has no charged_at and no failures.
+		if _, err := db.ExecContext(ctx, `ALTER TABLE attempt_counts DROP COLUMN charged_at, DROP COLUMN failures`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO attempt_counts (tenant_id, counter, row_id, checks) VALUES ('t1', 'Wallet.pin', 'w1', 5)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, testMigration(t)); err != nil {
+			t.Fatalf("the migration on the table of a release before: %v", err)
+		}
+		var checks int
+		var at sql.NullTime
+		var failures sql.NullInt64
+		if err := db.QueryRowContext(ctx, `SELECT checks, charged_at, failures FROM attempt_counts WHERE row_id = 'w1'`).Scan(&checks, &at, &failures); err != nil {
+			t.Fatal(err)
+		}
+		if checks != 5 || at.Valid || failures.Valid {
+			t.Fatalf("the migration left the count %d, the time %v and the failures %v, want 5, no time and no failures", checks, at, failures)
+		}
+		const runtimeRole = "idem_test_runtime"
+		if _, err := db.ExecContext(ctx, "GRANT SELECT, INSERT, UPDATE ON idempotency_keys TO "+runtimeRole); err != nil {
+			t.Fatal(err)
+		}
+		m, err := Manifest(schema, testPurgeRole, runtimeRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Owner = owner
+		if err := manifest.Check(ctx, admin, m); err != nil {
+			t.Fatalf("the manifest refused the table with charged_at: %v", err)
+		}
+		// The manifest of a release before lists no charged_at and no failures, and still holds the table, so its pods
+		// start.
+		before := m
+		before.Tables = slices.Clone(m.Tables)
+		for i, table := range before.Tables {
+			if table.Name == AttemptsTable {
+				table.Columns = slices.DeleteFunc(slices.Clone(table.Columns), func(c manifest.Column) bool { return c.Name == "charged_at" || c.Name == "failures" })
+				before.Tables[i] = table
+			}
+		}
+		if err := manifest.Check(ctx, admin, before); err != nil {
+			t.Fatalf("the manifest of a release before refused the table with charged_at: %v", err)
+		}
+		// A run again, while a request of the running release holds the table, takes no lock that waits.
+		hold, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = hold.Rollback() }()
+		if _, err := hold.ExecContext(ctx, `SELECT count(*) FROM attempt_counts`); err != nil {
+			t.Fatal(err)
+		}
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, `SET lock_timeout = '500ms'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.ExecContext(ctx, testMigration(t)); err != nil {
+			t.Fatalf("the migration again, while a request holds the table of the counts: %v", err)
 		}
 	})
 }
