@@ -103,6 +103,16 @@ func (q *queue) put(r *record) {
 	}
 }
 
+// putBelow queues r only while the queue holds fewer than its capacity less reserve records, so the reserve stays
+// for the records that put queues; a record over it is dropped and counted (security review of PR #492, L1).
+func (q *queue) putBelow(r *record, reserve int) {
+	if len(q.records) >= cap(q.records)-reserve {
+		q.dropped.Add(1)
+		return
+	}
+	q.put(r)
+}
+
 // run writes each record. A write that fails or panics is counted, and a record left after the shutdown limit
 // ended is counted as dropped.
 func (q *queue) run(write func(*record) error) {

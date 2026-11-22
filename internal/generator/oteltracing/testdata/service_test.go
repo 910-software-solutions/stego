@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -398,6 +399,122 @@ func TestLocalLogLevel(t *testing.T) {
 		t.Setenv("STEGO_LOG_LEVEL", "verbose-private")
 		if _, err := newRuntime(io.Discard); err == nil || strings.Contains(err.Error(), "verbose-private") {
 			t.Fatalf("a bad STEGO_LOG_LEVEL gave %v, want a refusal that does not echo the value", err)
+		}
+	})
+}
+
+// heldWriter holds its first write until release, and keeps each line.
+type heldWriter struct {
+	entered, release chan struct{}
+	once             sync.Once
+	mu               sync.Mutex
+	out              bytes.Buffer
+}
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered); <-w.release })
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
+
+func TestLocalLogReserveAndBudget(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC23-T03 A flood of access lines leaves the places of the service events and the ERROR lines, and a WARN access line has a budget for each route and status", func(t *testing.T) {
+		traceEnvironment(t)
+		t.Setenv("STEGO_LOG_LEVEL", "")
+		writer := &heldWriter{entered: make(chan struct{}), release: make(chan struct{})}
+		runtime, err := newRuntime(writer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.LogServiceEvent(context.Background(), ServiceReady)
+		<-writer.entered
+		ok := runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+		for range 3 * QueueSize {
+			ok.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+		}
+		runtime.LogServiceEvent(context.Background(), ServiceFailed)
+		_, done := TraceDatabase(runtime.Context(context.Background()), "query")
+		done("failure")
+		close(writer.release)
+		runtime.Close()
+		lines := localLines(t, &writer.out)
+		if n := len(linesOf(lines, "service.failed")); n != 1 {
+			t.Fatalf("%d service.failed lines after a flood of access lines, want 1", n)
+		}
+		if n := len(linesOf(lines, "db.client.operation.completed")); n != 1 {
+			t.Fatalf("%d failed database lines after a flood of access lines, want 1", n)
+		}
+		if n := len(linesOf(lines, "http.server.request.completed")); n != QueueSize-LocalReserve {
+			t.Fatalf("%d access lines of the flood, want %d", n, QueueSize-LocalReserve)
+		}
+
+		// The budget: 25 answers 401 of one route and 25 answers 404 of another give AccessLimit lines each, and one
+		// line with the count of each at the end of the window.
+		var output bytes.Buffer
+		runtime, err = newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+		runtime.service.now = func() time.Time { return clock }
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+		mux.HandleFunc("GET /orders", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })
+		handler := runtime.Handler(runtime.Route(mux))
+		for range 25 {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/orders", nil))
+		}
+		// The window ends: the next line of the route writes the count first, and starts a new window.
+		clock = clock.Add(AccessWindow)
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+		runtime.Close()
+		got := map[string]int{}
+		dropped := map[string]float64{}
+		for _, line := range linesOf(localLines(t, &output), "http.server.request.completed") {
+			key := fmt.Sprintf("%v %v", line["http.route"], line["http.response.status_code"])
+			if n, ok := line["dropped"].(float64); ok {
+				dropped[key] += n
+				continue
+			}
+			got[key]++
+		}
+		if got["/records 401"] != AccessLimit+1 || got["/orders 404"] != AccessLimit || dropped["/records 401"] != 25-AccessLimit || dropped["/orders 404"] != 25-AccessLimit {
+			t.Fatalf("the budget gave the lines %v and the counts %v, want %d and %d lines and %d dropped of each", got, dropped, AccessLimit+1, AccessLimit, 25-AccessLimit)
+		}
+	})
+}
+
+func TestLocalAccessLineEdges(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T03 An access line of a route that no pattern matches has no route, and a method out of the fixed set is _OTHER", func(t *testing.T) {
+		traceEnvironment(t)
+		var output bytes.Buffer
+		runtime, err := newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, _ *http.Request) {})
+		handler := runtime.Handler(runtime.Route(mux))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/0198a1b2-7f3c/unknown?q=secret", nil))
+		odd := httptest.NewRequest("GET", "/records/0198a1b2-7f3c", nil)
+		odd.Method = "G\x01T\nbuyer@example.test"
+		handler.ServeHTTP(httptest.NewRecorder(), odd)
+		runtime.Close()
+		access := linesOf(localLines(t, &output), "http.server.request.completed")
+		if len(access) != 2 {
+			t.Fatalf("%d access lines, want 2", len(access))
+		}
+		if _, ok := access[0]["http.route"]; ok || access[0]["http.response.status_code"] != float64(404) || access[0]["http.request.method"] != "GET" {
+			t.Fatalf("the line of an unmatched route is %v, want 404 and no route", access[0])
+		}
+		if access[1]["http.request.method"] != "_OTHER" {
+			t.Fatalf("the line of a method out of the set is %v, want _OTHER", access[1])
+		}
+		noRequestValue(t, output.Bytes())
+		if bytes.Contains(output.Bytes(), []byte("G\\u0001T")) {
+			t.Fatalf("the local output holds the method: %s", output.Bytes())
 		}
 	})
 }

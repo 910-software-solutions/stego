@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
 // ErrNoResource is the error of an evaluation with no loaded value of the handle: every decision of a fill is on a
@@ -131,7 +132,7 @@ func (s *state) decisionError(ctx context.Context, step string, err error) error
 	// failed command is never an error that no log explains (walkthrough 3, G4; ST-SUP-Q140).
 	cause := authz.Cause(err)
 	if ok, held := decisionLog.Allow(cause); ok {
-		slog.WarnContext(ctx, "command: the authorization provider could not decide", "step", step, "cause", cause,
+		slog.WarnContext(otel.Security(ctx), "command: the authorization provider could not decide", "step", step, "cause", cause,
 			"transient", authz.Transient(err), "held_back", held)
 	}
 	if authz.Transient(err) {

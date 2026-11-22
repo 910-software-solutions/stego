@@ -44,7 +44,25 @@ request is the INFO line.
 
 No line holds a value of a request: no path value, query, header, body,
 token, tenant, principal, resource ID or error text. The route is the
-template, never the path.
+template, never the path. A line also holds no IP address and no user agent
+of the client, because these are personal data. To find the source of a
+request, such as of a flood of 401 answers, use the access log of the ingress
+or the router in front of the service.
+
+The access lines cannot push out the failure lines:
+
+- The WARN access lines of one route and status, and in a budget of their
+  own the ERROR access lines, write at most 10 lines in one minute. When the
+  minute ends with lines dropped, one line of the same event with the route,
+  the status and `dropped`, the count of the dropped lines, follows. The
+  same is true for the method and the status of a gRPC call.
+- The last 64 places of the local queue (of 256) take only the service events
+  and the ERROR lines.
+- `worker.run.completed` never takes the last 16 places of the queue of the
+  built-in events (of 64), which stay for `worker.run.failed` and the
+  service events.
+
+A line that the queue drops is counted, and the line is not written.
 
 ### Lower or raise the volume
 
@@ -62,7 +80,18 @@ another value, and the error does not show the value.
 - `debug` adds the database calls that do not fail.
 
 The service events, such as `service.ready` and `service.stopping`, are on
-the console at each level. The export to an OpenTelemetry collector does not
+the console at each level. The lines of the security class are written at
+each level too:
+
+- `auditsink: the default sink holds another entry under the ID of an entry`
+  (WARN): a row of the default audit sink changed.
+- `idempotency: a stored answer does not open` (WARN): a key of the key ring
+  was removed too early, or a row changed.
+- `command: the authorization provider could not decide` and `query: the
+  authorization provider could not decide the read` (WARN).
+- `command.seal.pass` and `command.reseal.pass` (INFO): a pass of the seal or
+  the re-seal of a secret column.
+ The export to an OpenTelemetry collector does not
 change with the level: a collector filters the records by severity. Keep the
 migration Job at `info`, so its log shows each step.
 

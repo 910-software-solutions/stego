@@ -59,9 +59,23 @@ func NewSlogHandlerAt(out io.Writer, level slog.Level) *SlogHandler {
 	return &SlogHandler{out: &lockedWriter{out: out}, level: level}
 }
 
-// Enabled takes each record of the level of the handler or higher: INFO or higher when no level is given.
-func (h *SlogHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.level
+// Enabled takes each record of the level of the handler or higher: INFO or higher when no level is given; and each
+// record of INFO or higher of a context that Security marks, at each level.
+func (h *SlogHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level || (level >= slog.LevelInfo && ctx != nil && ctx.Value(securityKey{}) != nil)
+}
+
+type securityKey struct{}
+
+// Security marks ctx for a line of the security class, which the handler writes at each level of STEGO_LOG_LEVEL,
+// as the console writes the service events (security review of PR #492, L3): such as the line of another entry
+// under the ID of an audit entry, of a stored answer that does not open, of a decision that the authorization
+// provider could not make, and the seal and re-seal pass lines. docs/operations.md lists the class.
+func Security(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, securityKey{}, true)
 }
 
 // LogLevelSetting is the setting of the lowest severity of the log lines that a process of the runtime writes on its

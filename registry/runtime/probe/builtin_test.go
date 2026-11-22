@@ -226,6 +226,48 @@ func TestProbeBuiltins(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP12-LC21-T04 A burst of runs that commit leaves the places of worker.run.failed and the service events", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "off", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker := r.Worker("ship-orders")
+		release := stdout.hold()
+		worker.RunCompleted(context.Background())
+		stdout.waitEntered(t)
+		// The writer holds one line; the burst fills the queue but its reserve.
+		for range 2 * BuiltinQueueLimit {
+			worker.RunCompleted(context.Background())
+		}
+		worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		r.Service(context.Background(), ServiceFailed)
+		release()
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		completed, failed, service := 0, 0, 0
+		for _, line := range stdout.everything() {
+			switch {
+			case strings.Contains(line, `"event.name":"worker.run.completed"`):
+				completed++
+			case strings.Contains(line, `"event.name":"worker.run.failed"`):
+				failed++
+			case strings.Contains(line, `"event.name":"service.failed"`):
+				service++
+			}
+		}
+		if failed != 1 || service != 1 || completed != 1+BuiltinQueueLimit-BuiltinReserve || r.console.dropped() == 0 {
+			t.Fatalf("the burst gave %d worker.run.completed, %d worker.run.failed, %d service.failed and %d dropped, want %d, 1, 1 and the rest dropped",
+				completed, failed, service, r.console.dropped(), 1+BuiltinQueueLimit-BuiltinReserve)
+		}
+	})
+
 	t.Run("ST-SUP-RP12-LC21-T02 The console writes a built-in worker event at most at the rate limit, and counts the rest", func(t *testing.T) {
 		clearEnvironment(t)
 		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)

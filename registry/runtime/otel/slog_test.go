@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,36 @@ func TestSlogHandler(t *testing.T) {
 		}
 		if _, err := ParseLogLevel("verbose-private"); err == nil || strings.Contains(err.Error(), "verbose-private") {
 			t.Fatalf("a value that is not a level gave %v, want a refusal that does not hold the value", err)
+		}
+	})
+	t.Run("ST-SUP-RP03-LC16-T07 A line of the security class is written at each level, and the runtime marks each line of the class", func(t *testing.T) {
+		var out bytes.Buffer
+		logger := slog.New(NewSlogHandlerAt(&out, slog.LevelError))
+		ctx := context.Background()
+		logger.WarnContext(ctx, "a warn line")
+		logger.WarnContext(Security(ctx), "a security warn line")
+		logger.InfoContext(Security(ctx), "a security info line")
+		logger.DebugContext(Security(ctx), "a security debug line")
+		got := out.String()
+		if strings.Contains(got, "a warn line") || !strings.Contains(got, "a security warn line") || !strings.Contains(got, "a security info line") || strings.Contains(got, "debug") {
+			t.Fatalf("STEGO_LOG_LEVEL=error wrote %s, want the security lines of INFO and WARN only", got)
+		}
+		// Each line of the class in the runtime logs with a context that Security marks.
+		for file, line := range map[string]string{
+			"../audit/auditsink/table.go": `slog.WarnContext(otel.Security(ctx), "auditsink: the default sink holds another entry`,
+			"../idempotency/wrap.go":      `slog.WarnContext(otel.Security(ctx), "idempotency: a stored answer does not open`,
+			"../command/authz.go":         `slog.WarnContext(otel.Security(ctx), "command: the authorization provider could not decide"`,
+			"../query/authz.go":           `slog.WarnContext(otel.Security(ctx), "query: the authorization provider could not decide the read"`,
+			"../command/seal_job.go":      `slog.InfoContext(otel.Security(ctx), "command: seal of a secret column"`,
+			"../command/sealed.go":        `slog.InfoContext(otel.Security(ctx), "command: re-seal of a secret column"`,
+		} {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), line) {
+				t.Errorf("%s does not write its line of the security class with otel.Security: %s", file, line)
+			}
 		}
 	})
 	t.Run("ST-SUP-RP03-LC16-T04 A log/slog line holds at most 12 attributes of at most 256 characters each", func(t *testing.T) {

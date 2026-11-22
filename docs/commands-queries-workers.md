@@ -1685,6 +1685,16 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 - `service.Migrate` writes the lines `migrate.job.started`,
   `migrate.step.started`, `migrate.step.completed` and
   `migrate.job.completed` (`service.JobStartedEvent` and the others).
+- New `otel.Security(ctx)`: the log/slog handler writes a line of INFO or
+  higher of a context that it marks at each level of `STEGO_LOG_LEVEL`. The
+  runtime marks the lines of the security class: another entry under the ID
+  of an audit entry, a stored answer that does not open, a decision that the
+  authorization provider could not make, and the seal and re-seal pass
+  lines (security review of PR #492, L3).
+- New `probe.BuiltinReserve`: an INFO worker event never takes the last 16
+  places of the queue of the built-in events, so a burst of
+  `worker.run.completed` never drops `worker.run.failed` or a service event
+  (security review of PR #492, L1).
 - apidiff against v0.190.0: compatible.
 
 ### Release notes for runtime v0.190.0
