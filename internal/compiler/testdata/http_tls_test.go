@@ -68,6 +68,30 @@ func TestGeneratedHTTPTLS(t *testing.T) {
 	defer func() { _ = server.Close(); <-done }()
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(certPEM)
+	t.Run("ST-SUP-RC10-OC28-T01 The emitted HTTP server serves TLS 1.3 with the configured pair", func(t *testing.T) {
+		testTLSClients(t, listener.Addr().String(), roots)
+	})
+	t.Run("ST-SUP-RC10-OC28-T03 The emitted HTTP server accepts only a private key file", func(t *testing.T) {
+		testKeyFiles(t, dir, private)
+	})
+	t.Run("ST-SUP-RC10-OC28-T02 The emitted HTTP server refuses missing TLS settings and an ambiguous switch", func(t *testing.T) {
+		t.Setenv("STEGO_HTTP_TLS_CERT", "")
+		t.Setenv("STEGO_HTTP_TLS_KEY", "")
+		if _, err := stegoHTTPTransport(); err == nil {
+			t.Fatal("missing TLS settings accepted")
+		}
+		t.Setenv("STEGO_HTTP_TLS_CERT", certificate)
+		t.Setenv("STEGO_HTTP_TLS_KEY", private)
+		t.Setenv("STEGO_HTTP_REQUIRE_TLS", "false")
+		if _, err := stegoHTTPTransport(); err == nil {
+			t.Fatal("ambiguous switch accepted")
+		}
+	})
+}
+
+// testTLSClients connects to the TLS server at address with a verifying TLS 1.3 client and three clients that must
+// fail.
+func testTLSClients(t *testing.T, address string, roots *x509.CertPool) {
 	for _, test := range []struct {
 		name string
 		tls  *tls.Config
@@ -82,7 +106,7 @@ func TestGeneratedHTTPTLS(t *testing.T) {
 			transport := &http.Transport{TLSClientConfig: test.tls}
 			defer transport.CloseIdleConnections()
 			client := &http.Client{Transport: transport, Timeout: time.Second}
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+listener.Addr().String(), nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+address, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,6 +119,11 @@ func TestGeneratedHTTPTLS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testKeyFiles refuses a key file that the group or others can read or write, takes one through a symbolic link, and
+// refuses a relative name, a directory and a missing file.
+func testKeyFiles(t *testing.T, dir, private string) {
 	for _, mode := range []os.FileMode{0644, 0460, 0540} {
 		if err := os.Chmod(private, mode); err != nil {
 			t.Fatal(err)
@@ -121,8 +150,4 @@ func TestGeneratedHTTPTLS(t *testing.T) {
 		}
 	}
 	t.Setenv("STEGO_HTTP_TLS_KEY", private)
-	t.Setenv("STEGO_HTTP_REQUIRE_TLS", "false")
-	if _, err := stegoHTTPTransport(); err == nil {
-		t.Fatal("ambiguous switch accepted")
-	}
 }

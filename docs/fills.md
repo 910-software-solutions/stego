@@ -14,8 +14,8 @@ make, test and sign a fill.
 The example is the service `wallets`. A customer has wallets, and each wallet
 has transactions. Each wallet has a readable secret `api_key` and a
 compare-only secret `pin`, with a limit of wrong PINs. The commands take
-money from a wallet, move money between two wallets, change the PIN, and start
-a campaign of the tenant. The worker `sum-balances` reads the wallets and
+money from a wallet, move money between two wallets, change the PIN, unlock
+a PIN after too many wrong PINs, and start a campaign of the tenant. The worker `sum-balances` reads the wallets and
 writes the daily total of the balances every hour. The change events of
 customers, wallets and transactions carry declared fields.
 
@@ -68,7 +68,7 @@ entities:
       - { name: label, type: string, min_length: 1, max_length: 80 }
       - { name: balance, type: int64, min: 0, default: 0, writable: never }
       - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 24h} }
     events:
       fields: [customer_id, label, balance]
   - name: Transaction
@@ -138,6 +138,14 @@ commands:
     route: POST /wallets/{wallet_id}/pin:change
     refusals:
       - {name: wrong_pin, code: pin.wrong, status: 403}
+  - name: unlock-pin
+    writes: [Wallet]
+    resource_type: wallet
+    permission: unlock_pin
+    resource_member: wallet_id
+    fill: unlock-pin
+    route: POST /wallets/{wallet_id}/pin:unlock
+    resets_attempts: [Wallet.pin]
   - name: start-campaign
     writes: [Campaign]
     resource_type: service
@@ -207,6 +215,7 @@ definition wallet {
 	permission view = customer->view
 	permission edit = customer->edit
 	permission operate = customer->edit
+	permission unlock_pin = tenant->support
 	permission record = tenant->worker_sum_balances
 }
 
@@ -231,8 +240,10 @@ definition service_account {}
 definition tenant {
 	relation service: service
 	relation auditor: user
+	relation support_agent: user
 	relation worker_sum_balances: service_account
 	permission audit = auditor + service->admin
+	permission support = support_agent + service->admin
 	permission record = worker_sum_balances
 }
 
@@ -284,6 +295,15 @@ message ChangePinResponse {
   string wallet_id = 1;
 }
 
+// UnlockPinRequest sets the count of the wrong PINs of a wallet to 0.
+message UnlockPinRequest {
+  string wallet_id = 1;
+}
+
+message UnlockPinResponse {
+  string wallet_id = 1;
+}
+
 // StartCampaignRequest starts a campaign of the tenant.
 message StartCampaignRequest {
   string title = 1;
@@ -320,7 +340,7 @@ Each field of an entity is one item of `fields`:
 | `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
-| `attempts` | For a compare-only secret only: `{limit: <1 to 100>}`, the limit of wrong checks. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
+| `attempts` | For a compare-only secret only: `{limit: <1 to 100>, unlock_after: <1m to 24h>}`, the limit of wrong checks and, when you give it, the time after which a locked row opens again. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
 
 An entity can also declare `events`, the fields that its change events carry.
 See [The fields of a change event](#the-fields-of-a-change-event).
@@ -534,12 +554,16 @@ example declares a limit of wrong PINs on the field (runtime v0.176.0):
 
 <!-- excerpt -->
 ```yaml
-      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5} }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create, attempts: {limit: 5, unlock_after: 24h} }
 ```
 
-Only a compare-only secret can have `attempts`. The limit is from 1 to 100, as
-NIST SP 800-63B (5.2.2) asks for each account. `stego validate` refuses each
-other limit.
+Only a compare-only secret can have `attempts`. The limit is from 1 to 100.
+`unlock_after` is optional (runtime v0.188.0). It is the time after which a
+row at its limit opens again: a duration in whole seconds from `1m` to `24h`.
+With no `unlock_after`, a row at its limit stays locked until a new value or
+a reset command, as before. `stego validate` refuses each other limit and
+each other duration. It warns when `unlock_after` is shorter than `24h` on a
+secret whose `min_length` is 6 or less, or that has no `min_length`.
 
 The fill does not change. The runtime binds each PIN that a read of the handle
 gives to the count of its row:
@@ -595,6 +619,21 @@ gives to the count of its row:
   the counts use the audit pool.
 - A `Matches` that matches in a command that commits sets the count to 0. A
   write of a new value of the field, such as a new PIN, also sets it to 0.
+- With `unlock_after`, the count decays (runtime v0.188.0). When the last
+  count of a row is `unlock_after` or longer ago, the next check counts as the
+  first again. Thus a row at its limit opens again `unlock_after` after its
+  last counted check, also when another user locked it. The time is the clock
+  of the database. A check at the limit counts nothing, so it does not make
+  the lock longer or shorter, and no request can make the time shorter.
+- A second count never decays: the checks since the last match or new value.
+  At 10 times the limit, and at most 100, the row stays locked until a new
+  value or a reset command, also after `unlock_after`. NIST SP 800-63B (5.2.2)
+  limits the consecutive failed attempts on one account to 100, and allows a
+  waiting time only as a further control. With `limit: 5` and
+  `unlock_after: 24h`, a guesser gets 5 checks a day and 50 in all.
+- A count that a release before v0.188.0 wrote has no time. Its next check
+  gives it the time of that check, so a row that was locked at the upgrade
+  stays locked for one more window.
 - In a worker, `Matches` gives `false` and counts nothing.
 - The count is not a field of the entity: the runtime keeps it in a table of
   its own, `attempt_counts`, which the migration job makes. A count never
@@ -617,16 +656,92 @@ Read the row through the handle, such as with `GetForUpdate`, before you call
 caller who may not operate the wallet cannot use its checks. Then check the PIN
 before any other rule, as `Withdraw` does.
 
-To unlock a wallet, write a command that sets a new PIN, such as with a
-permission that only an admin has:
+### Unlock a row at once
+
+A support desk can unlock a row before `unlock_after`. Declare a command with
+`resets_attempts`, which names each field that it resets as
+`<Entity>.<field>`, as `unlock-pin` does:
+
+<!-- excerpt -->
+```yaml
+  - name: unlock-pin
+    writes: [Wallet]
+    resource_type: wallet
+    permission: unlock_pin
+    resource_member: wallet_id
+    fill: unlock-pin
+    route: POST /wallets/{wallet_id}/pin:unlock
+    resets_attempts: [Wallet.pin]
+```
+
+`stego validate` refuses the command (ST-DECL-INV104) when:
+
+- a field that it names has no `attempts`, or the command does not write its
+  entity;
+- the command is not decided on a row of that entity, with a
+  `resource_type`, a `permission` and a `resource_member`;
+- its permission is also the permission of an operation of the entity, or of
+  another command, query or worker on the resource type, such as `operate` of
+  `withdraw`;
+- in the schema, its permission and such a permission share a relation or an
+  arrow, or one names the other. Validate expands each permission that an
+  expression names, and follows each arrow one level into the types of its
+  relation. Thus it refuses `unlock_pin = customer->edit` beside
+  `operate = customer->edit`, `unlock_pin = owner + support` beside
+  `edit = owner`, `unlock_pin = alias` with `alias = owner`, and
+  `operate = customer->edit + unlock_pin`.
+
+The reset needs a permission of its own, so a caller who can check the PIN
+cannot also reset its count. In the schema above, only a support agent of the
+tenant or an admin has `unlock_pin`. Validate compares the expressions, not who
+holds each relation, so the runtime also checks each reset: a caller who has
+the permission of another command that writes the wallet, such as `operate` of
+`withdraw` or `edit` of `change-pin`, on that wallet gets 404 `denied`, and
+the count stays. Give the reset to people who do not operate the wallets.
+
+The code of the command gets one helper for each field, such as
+`UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of
+`unlock-pin` reads the wallet and calls it:
 
 ```go
-		v := wallet.Value()
-		v.Pin = sealed.ComparedOf(req.NewPin)
-		if _, err := wallets.Update(ctx, wallet, v); err != nil {
+// New gives the fill of the command unlock-pin.
+func New() commands.UnlockPinFill {
+	return func(ctx context.Context, req *commands.UnlockPinRequest, h *commands.UnlockPinHandle) (*commands.UnlockPinResponse, error) {
+		wallets, err := commands.WalletRepository(h)
+		if err != nil {
 			return nil, err
 		}
+		wallet, err := wallets.Get(ctx, req.WalletId)
+		if err != nil {
+			return nil, err
+		}
+		if err := commands.UnlockPinResetWalletPinAttempts(ctx, h, wallet); err != nil {
+			return nil, err
+		}
+		return &commands.UnlockPinResponse{WalletId: wallet.ID()}, nil
+	}
+}
 ```
+
+- The runtime decides `unlock_pin` on the row of the wallet that the fill
+  gives, also when it is not the wallet of the request. A caller who does not
+  have it on that row gets 404.
+- The count goes to 0 when the command commits. When the fill returns an
+  error, the count stays.
+- The reset gives only an error. It gives no PIN, no hash and no count, and the
+  answer is the same for a locked and for an open wallet.
+- Each reset that commits writes one audit row: the action is the command,
+  the resource is the wallet, and the only state is
+  `{"attempts_reset": "Wallet.pin"}`. A reset that is denied or that rolls
+  back writes none. A reset writes no change event. With `audit.level:
+  metadata`, the row has no state, and the action still names the command.
+- The command that resets a field does not check it: `Matches` on that field
+  gives `false`, counts nothing, and the command answers 500. Else a holder of
+  the reset permission could check the PIN with no limit.
+
+To set a new PIN instead, write a command that gives a new value with
+`sealed.ComparedOf`, as `change-pin` does below. A new value also sets the
+count to 0.
 
 Use a longer PIN where you can.
 
@@ -879,8 +994,10 @@ permission `audit` gives the rows to these admins and to each `auditor`:
 definition tenant {
 	relation service: service
 	relation auditor: user
+	relation support_agent: user
 	relation worker_sum_balances: service_account
 	permission audit = auditor + service->admin
+	permission support = support_agent + service->admin
 	permission record = worker_sum_balances
 }
 ```

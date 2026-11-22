@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	authzschema "github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
@@ -155,8 +156,10 @@ type entityField struct {
 	// sealed is a readable secret, of the Go type sealed.Secret, and compared a compare-only secret, of the Go type
 	// sealed.Compared (ST-SUP-RC32-OC20).
 	sealed, compared bool
-	// limit is the limit of wrong attempts of this compare-only field, or 0 for none (ST-SUP-RC32-OC24).
-	limit int
+	// limit is the limit of wrong attempts of this compare-only field, or 0 for none (ST-SUP-RC32-OC24), and
+	// unlockAfter the window of the decay of its count in seconds, or 0 for none (decisions ST-SUP-Q205 (c) and
+	// ST-SUP-Q207 (a)).
+	limit, unlockAfter int
 }
 
 // goTypes are the Go types of the declared field types, as the PostgreSQL columns of ST-SUP-RC01-OC41 scan.
@@ -330,7 +333,11 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 			if !f.compared || a.Limit < 1 || a.Limit > 100 {
 				return nil, fmt.Errorf("the field %s has a limit of wrong attempts and is not a compare-only secret with a limit from 1 to 100 (ST-DECL-INV104)", f.decl.Name)
 			}
-			f.limit = a.Limit
+			u, err := a.UnlockAfterDuration()
+			if err != nil || (u != 0 && (u < time.Minute || u > 24*time.Hour || u%time.Second != 0)) {
+				return nil, fmt.Errorf("the field %s has the attempts unlock_after %q, which is not whole seconds from 1m to 24h (ST-DECL-INV104)", f.decl.Name, a.UnlockAfter)
+			}
+			f.limit, f.unlockAfter = a.Limit, int(u/time.Second)
 		}
 	}
 	if ev := e.Events; ev != nil {
@@ -844,8 +851,14 @@ func counterVar(e *entity, f *entityField) string {
 // renderCounter writes the counter of the wrong attempts of the compare-only field f (ST-SUP-RC32-OC24): its entity,
 // its field and its limit; the runtime charges each check in its own table (ST-SUP-RP10-LC54).
 func renderCounter(w *writer, e *entity, f *entityField) {
-	w.f("// %s is the limit of wrong attempts of %s.%s: %d checks (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
-	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+	if f.unlockAfter == 0 {
+		w.f("// %s is the limit of wrong attempts of %s.%s: %d checks (ST-SUP-RP10-LC54).\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+		w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit)
+		return
+	}
+	w.f("// %s is the limit of wrong attempts of %s.%s: %d checks, and a count decays %d s after its last charge\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, f.unlockAfter)
+	w.f("// (ST-SUP-RP10-LC54, decisions ST-SUP-Q205 (c) and ST-SUP-Q207 (a)).\n")
+	w.f("var %s = command.Must(command.NewCounter(command.CounterSpec{Entity: %q, Field: %q, Limit: %d, UnlockAfter: %d * time.Second}))\n\n", counterVar(e, f), e.decl.Name, f.decl.Name, f.limit, f.unlockAfter)
 }
 
 // renderEventData writes EventData and EventVersion of an entity that declares event fields (ST-SUP-RC32-OC25): each
