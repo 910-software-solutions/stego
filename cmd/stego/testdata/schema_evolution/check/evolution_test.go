@@ -241,18 +241,26 @@ func freePort(t *testing.T) string {
 }
 
 // serve starts an api replica of the release on the database until it answers /livez.
-func (d *database) serve(release string) *api {
+func (d *database) serve(release string) *api { return d.start(release, "api") }
+
+// start starts a process of the release in the mode on the database until it answers /livez.
+func (d *database) start(release, mode string) *api {
 	t := d.t
 	port := freePort(t)
 	cursor := make([]byte, 32)
 	_, _ = rand.Read(cursor)
 	a := &api{base: "http://127.0.0.1:" + port, release: release, log: &buffer{}}
 	process := exec.Command(binary(release))
-	process.Env = append(append(os.Environ(), d.env...), "STEGO_MODE=api", "PORT="+port, "DATABASE_URL="+d.as(stegoruntime.RuntimeRole),
+	process.Env = append(append(os.Environ(), d.env...), "STEGO_MODE="+mode, "PORT="+port, "DATABASE_URL="+d.as(stegoruntime.RuntimeRole),
 		"STEGO_WORKER_DATABASE_URL="+d.as(stegoruntime.WorkerRole), "STEGO_RELAY_DATABASE_URL="+d.as(stegoruntime.RelayRole),
 		"STEGO_AUTHN_KEYS_FILE="+writeFile(t, "keys.json", authntest.Document(d.key.JWK())),
 		"STEGO_AUTHN_ISSUER="+issuer, "STEGO_AUTHN_AUDIENCE="+audience,
 		"STEGO_QUERY_CURSOR_KEY_FILE="+writeFile(t, "cursor.key", cursor), "STEGO_SERVICE_VERSION="+release)
+	if mode == "worker" {
+		// The worker of the example also produces to Kafka; the check gives it a broker that does not answer, as its
+		// relay of the destination authz does not need one.
+		process.Env = append(process.Env, "STEGO_KAFKA_TOPIC=td04", "STEGO_KAFKA_BROKERS=127.0.0.1:1", "STEGO_KAFKA_INSECURE_LOOPBACK=1")
+	}
 	process.Stdout, process.Stderr = a.log, a.log
 	must(t, process.Start())
 	exited := make(chan struct{})
@@ -1250,5 +1258,89 @@ func TestContract(t *testing.T) {
 		until(t, 10*time.Second, "v1 alerts the schema mismatch", func() bool {
 			return strings.Contains(late.log.String(), "does not satisfy the schema manifest")
 		})
+	})
+}
+
+// TestRelate runs the relate step of v1r, which gives Organization the relation tenant (decision ST-SUP-Q212 (a);
+// walkthrough 24, P2-R2), in a rolling deploy from v1: the rows of the data set and the rows that v1 makes before and
+// during the rollout must all get the tuple of the relation in SpiceDB, so the auditor of the tenant sees each.
+func TestRelate(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC58-T03 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
+		if binary("v1r") == "" {
+			t.Fatal("the check needs STEGO_TD04_V1R: a missing result is not a pass")
+		}
+		d := prepared(t)
+		owner, auditor := d.caller("u-owner", "t-00", "admin"), d.caller("u-auditor", "t-00")
+		create := func(a *api, name string) string {
+			t.Helper()
+			r := d.send(a, owner, http.MethodPost, "/organizations", `{"name":"`+name+`"}`)
+			if r.status != http.StatusCreated {
+				t.Fatalf("a create of %s through %s answered %d %s, want 201", name, a.release, r.status, r.body)
+			}
+			id, _ := r.object(t)["id"].(string)
+			return id
+		}
+		// The organization of the data set in t-00, and two that v1 makes before the release.
+		rows := []string{"00000000-0000-0000-0000-000000000000"}
+		v1api := d.serve("v1")
+		rows = append(rows, create(v1api, "before-1"), create(v1api, "before-2"))
+		if j := d.migrate("v1r"); j.wait(time.Minute) != nil {
+			t.Fatalf("the migration job of v1r failed:\n%s", j.out)
+		}
+		// The rollout: v1 still serves and makes two more organizations; the pods of v1r start.
+		rows = append(rows, create(v1api, "during-1"), create(v1api, "during-2"))
+		v1rapi, worker := d.serve("v1r"), d.start("v1r", "worker")
+		_ = worker
+		rows = append(rows, create(v1rapi, "after-1"))
+		controller := d.start("v1r", "controller")
+		passLine := func(log *buffer, field string) bool {
+			for _, line := range strings.Split(log.String(), "\n") {
+				if strings.Contains(line, "command.relate.pass") && strings.Contains(line, "organization-tenant-relate") && strings.Contains(line, `"stego.`+field+`":true`) {
+					return true
+				}
+			}
+			return false
+		}
+		// While v1 reports itself, the relate job waits.
+		for !passLine(controller.log, "waits") {
+			time.Sleep(200 * time.Millisecond)
+		}
+		// The auditor of t-00 sees an organization only through the relation tenant.
+		d.relate(auditor, "tenant", "t-00", "auditor")
+		sees := func(id string) bool {
+			t.Helper()
+			resource, err := authz.ResourceID(auditor.tenant, id)
+			must(t, err)
+			r, err := v1.NewPermissionsServiceClient(d.spice).CheckPermission(context.Background(), &v1.CheckPermissionRequest{
+				Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+				Resource:    &v1.ObjectReference{ObjectType: "organization", ObjectId: resource}, Permission: "view",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: auditor.subject}}})
+			must(t, err)
+			return r.Permissionship == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+		}
+		// v1 stops. Its last report and the row of the step are made old, as after their windows of 30 s and 3 minutes,
+		// and the controller starts again, which runs the relate job at its start.
+		v1api.stop()
+		controller.stop()
+		_, err := d.admin.Exec(`UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes' WHERE change_id = 'organization-tenant-relate'`)
+		must(t, err)
+		_, err = d.admin.Exec(`UPDATE stego_schema.releases SET seen_at = seen_at - interval '1 minute' WHERE version = 'v1'`)
+		must(t, err)
+		controller = d.start("v1r", "controller")
+		for !passLine(controller.log, "completed") {
+			time.Sleep(200 * time.Millisecond)
+		}
+		// The relay of v1r writes the staged tuples; then each row is seen.
+		for d.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND state <> 'done'`) != 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		for _, id := range rows {
+			if !sees(id) {
+				t.Errorf("the auditor of t-00 does not see the organization %s through the relation tenant", id)
+			}
+		}
+		if n := d.count(`SELECT count(*) FROM audit_event WHERE action = 'backfill-relation'`); n == 0 {
+			t.Error("the relate job wrote no audit row")
+		}
 	})
 }

@@ -3,6 +3,7 @@ package command
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -741,4 +742,177 @@ func (n *noteEnv) noSecretOutside(value string) {
 		}
 		_ = rows.Close()
 	}
+}
+
+// payoutChange is the relate step of the test: release 2 gives each payout the relation tenant (walkthrough 24,
+// P2-R2), and the relation approver from the field approver_id.
+const payoutChange, approverChange = "relate-payout-tenant", "relate-payout-approver"
+
+// payoutRelates are the relate changes of the payouts, as the PostgreSQL adapter gives them; the test table keeps the
+// ID as text.
+var payoutRelates = []RelateChange{
+	{Change: payoutChange, Entity: "Payout", ResourceType: "payout", Relation: "tenant", Subject: RelateTenant,
+		Select: "SELECT id, NULL::text FROM payouts WHERE tenant_id = $1 AND ($2::text IS NULL OR id > $2) ORDER BY id LIMIT $3 FOR SHARE"},
+	{Change: approverChange, Entity: "Payout", ResourceType: "payout", Relation: "approver", Subject: RelateField, SubjectType: "user",
+		Select: "SELECT id, approver_id FROM payouts WHERE tenant_id = $1 AND ($2::text IS NULL OR id > $2) ORDER BY id LIMIT $3 FOR SHARE"},
+}
+
+func TestRelateStep(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC58-T01 The relate job gives each row the tuple of the new relation, also the rows of a release before during the rollout, and only after it stopped", func(t *testing.T) {
+		e := newEnv(t)
+		releases, err := lease.Releases(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		seals, err := lease.SealsText(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(`CREATE TABLE payouts (tenant_id text NOT NULL, id text NOT NULL, approver_id text, PRIMARY KEY (tenant_id, id))`,
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON payouts TO "+e.roles[0],
+			"ALTER TABLE payouts ENABLE ROW LEVEL SECURITY", "ALTER TABLE payouts FORCE ROW LEVEL SECURITY",
+			"CREATE POLICY payouts_tenant ON payouts USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+			"CREATE SCHEMA IF NOT EXISTS stego_schema", releases, seals)
+		// The expand migrations of the two relate steps of release 2, as the PostgreSQL adapter gives them.
+		for _, c := range payoutRelates {
+			e.exec("INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+c.Change+"', 'step_0002_"+c.Change+"_expand', clock_timestamp() - interval '10 minutes')",
+				"INSERT INTO leases (name) VALUES ('"+SealLease(c.Change)+"')")
+		}
+		insert := func(tenantID string, n int, approver bool) []string {
+			t.Helper()
+			var ids []string
+			for range n {
+				id := uuid.NewString()
+				value := "NULL"
+				if approver {
+					value = "'amir'"
+				}
+				e.exec(fmt.Sprintf(`INSERT INTO payouts (tenant_id, id, approver_id) VALUES ('%s', '%s', %s)`, tenantID, id, value))
+				ids = append(ids, id)
+			}
+			return ids
+		}
+		// Rows of the release before the step, made before the release, the first with the zero UUID.
+		e.exec(`INSERT INTO payouts (tenant_id, id, approver_id) VALUES ('t1', '00000000-0000-0000-0000-000000000000', 'amir')`)
+		before := append([]string{"00000000-0000-0000-0000-000000000000"}, append(insert("t1", 3, true), insert("t2", 2, false)...)...)
+		job, err := NewRelateJob(RelateJobConfig{DB: e.pool, Schema: "unused", Authz: e.authz, Audit: e.writer, Service: "payouts",
+			Changes: payoutRelates, Holder: "holder-" + uuid.NewString(), Lease: lease.Settings{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.tenants = func(context.Context) ([]tenant.Tenant, error) {
+			return []tenant.Tenant{mustTenant(t, "t2"), mustTenant(t, "t1")}, nil
+		}
+		job.pause = 0
+		staged := func(relation string) map[string]string {
+			t.Helper()
+			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->'tuple'->>'resource_id', p->'tuple'->>'subject_type', p->'tuple'->>'subject_id'
+ FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p FROM stego_outbox.messages WHERE destination = 'authz') m
+ WHERE p->>'op' = 'touch' AND p->'tuple'->>'resource_type' = 'payout' AND p->'tuple'->>'relation' = $1`, relation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			out := map[string]string{}
+			for rows.Next() {
+				var resource, subjectType, subject string
+				if err := rows.Scan(&resource, &subjectType, &subject); err != nil {
+					t.Fatal(err)
+				}
+				_, key, _ := strings.Cut(resource, "/")
+				raw, err := base64.RawURLEncoding.DecodeString(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out[string(raw)] = subjectType
+			}
+			return out
+		}
+		// The rollout: a process of release 1 reports itself, so the job waits and stages nothing.
+		e.exec(`INSERT INTO stego_schema.releases VALUES ('old', 'step_0001_x_expand', 'v1', 10000, clock_timestamp())`)
+		results, err := job.Run(e.ctx)
+		if err != nil || len(results) != 2 || !results[0].Waits || !results[1].Waits || len(staged("tenant")) != 0 {
+			t.Fatalf("the job while release 1 runs gave %+v, %v and staged %d tuples, want it to wait", results, err, len(staged("tenant")))
+		}
+		// Release 1 makes rows during the rollout, and then stops: its report goes stale.
+		during := insert("t1", 2, true)
+		e.exec(`UPDATE stego_schema.releases SET seen_at = clock_timestamp() - interval '1 minute'`)
+		// The approver of a payout is a field subject; a row with no approver gets no tuple.
+		results, err = job.Run(e.ctx)
+		if err != nil || len(results) != 2 || !results[0].Completed || results[0].Checked != 8 || results[0].Related != 8 ||
+			!results[1].Completed || results[1].Checked != 8 || results[1].Related != 6 {
+			t.Fatalf("the job after release 1 stopped gave %+v, %v, want 8 rows read and 8 tenant and 6 approver tuples staged", results, err)
+		}
+		tenants, approvers := staged("tenant"), staged("approver")
+		for _, id := range append(before, during...) {
+			if tenants[id] != "tenant" {
+				t.Errorf("the row %s has no staged tuple of the relation tenant", id)
+			}
+		}
+		for _, id := range append(before[:4], during...) {
+			if approvers[id] != "user" {
+				t.Errorf("the row %s has no staged tuple of the relation approver", id)
+			}
+		}
+		if len(tenants) != 8 || len(approvers) != 6 {
+			t.Fatalf("the job staged %d tenant and %d approver tuples, want 8 and 6", len(tenants), len(approvers))
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE action = 'backfill-relation'`); n != 3 {
+			t.Fatalf("the job wrote %d audit rows, want one for each tenant and change that staged tuples: t1 and t2 of tenant and t1 of approver", n)
+		}
+		// A completed pass has no work: a run again stages nothing.
+		messages := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz'`)
+		if results, err := job.Run(e.ctx); err != nil || !results[0].Completed || e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz'`) != messages {
+			t.Fatalf("a run after the completed pass gave %+v, %v and staged more tuples", results, err)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC58-T02 A pass during which a release before reported itself starts again, so a row that it made later gets the tuple", func(t *testing.T) {
+		e := newEnv(t)
+		releases, err := lease.Releases(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		seals, err := lease.SealsText(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(`CREATE TABLE payouts (tenant_id text NOT NULL, id text NOT NULL, approver_id text, PRIMARY KEY (tenant_id, id))`,
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON payouts TO "+e.roles[0],
+			"CREATE SCHEMA IF NOT EXISTS stego_schema", releases, seals,
+			"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+payoutChange+"', 'step_0002_"+payoutChange+"_expand', clock_timestamp() - interval '10 minutes')",
+			"INSERT INTO leases (name) VALUES ('"+SealLease(payoutChange)+"')")
+		e.exec(fmt.Sprintf(`INSERT INTO payouts (tenant_id, id) VALUES ('t1', '%s')`, uuid.NewString()))
+		job, err := NewRelateJob(RelateJobConfig{DB: e.pool, Schema: "unused", Authz: e.authz, Audit: e.writer, Service: "payouts",
+			Changes: payoutRelates[:1], Holder: "holder-" + uuid.NewString(), Lease: lease.Settings{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.tenants = func(context.Context) ([]tenant.Tenant, error) { return []tenant.Tenant{mustTenant(t, "t1")}, nil }
+		job.pause = 0
+		late := uuid.NewString()
+		// A release before restarts after the pass started, as at a roll back: its report is later than the start.
+		ran := false
+		job.tenants = func(context.Context) ([]tenant.Tenant, error) {
+			if !ran {
+				ran = true
+				e.exec(`INSERT INTO stego_schema.releases VALUES ('old', 'step_0001_x_expand', 'v1', 10000, clock_timestamp())`)
+			}
+			return []tenant.Tenant{mustTenant(t, "t1")}, nil
+		}
+		results, err := job.Run(e.ctx)
+		if err != nil || results[0].Completed {
+			t.Fatalf("the pass during which a release before reported itself gave %+v, %v, want it not completed", results, err)
+		}
+		// It makes a row with no tuple, and stops.
+		e.exec(fmt.Sprintf(`INSERT INTO payouts (tenant_id, id) VALUES ('t1', '%s')`, late),
+			`UPDATE stego_schema.releases SET seen_at = clock_timestamp() - interval '1 minute'`)
+		results, err = job.Run(e.ctx)
+		if err != nil || !results[0].Completed || results[0].Related != 2 {
+			t.Fatalf("the pass again gave %+v, %v, want it completed with 2 tuples", results, err)
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND convert_from(payload, 'UTF8')::jsonb->'tuple'->>'resource_id' LIKE '%' || $1`,
+			base64.RawURLEncoding.EncodeToString([]byte(late))); n == 0 {
+			t.Fatal("the row that the release before made during the pass has no staged tuple")
+		}
+	})
 }

@@ -1426,7 +1426,9 @@ func TestAttemptResetsByID(t *testing.T) {
 			return e.count(`SELECT count(*) FROM audit_event WHERE action = 'unlock' AND resource_id = $1 AND after::text LIKE '%attempts_reset%'`, a)
 		}
 		byID := func(id string) func(ctx context.Context, h *Handle[testProbe]) error {
-			return func(ctx context.Context, h *Handle[testProbe]) error { return ResetAttemptsByID(ctx, h, lockedCounter, id) }
+			return func(ctx context.Context, h *Handle[testProbe]) error {
+				return ResetAttemptsByID(ctx, h, lockedCounter, id)
+			}
 		}
 		check("0000")
 		check("0000")

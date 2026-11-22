@@ -3,6 +3,7 @@ package postgresadapter_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -292,6 +293,91 @@ func TestSealEarlierDigests(t *testing.T) {
 		}
 		if strings.Count(migrate, "\tRegisterEarlierDigests(") != len(want) {
 			t.Errorf("migrate.go registers earlier digests for %d migrations, want %d", strings.Count(migrate, "\tRegisterEarlierDigests("), len(want))
+		}
+	})
+}
+
+// relateService is the release of ST-SUP-RC01-OC52-T01: the owned Payout of the resource type payout with the field
+// approver_id, whose schema gives payout the relation tenant, a relationship approver from the field, and relate steps
+// of each, as release 2 of walkthrough 24 (P2-R2) adds them.
+func relateService(ns, tenancyNS string, relates ...types.SchemaChange) gen.Context {
+	ctx := runtimeService(ns, tenancyNS, []types.Entity{{Name: "Payout",
+		EntityAuthorization: types.EntityAuthorization{ResourceType: "payout", Relationships: []types.Relationship{
+			{Relation: "approver", SubjectSource: types.SubjectSourceField, SubjectField: "approver_id", SubjectType: "user"},
+			{Relation: "owner", SubjectSource: types.SubjectSourceCaller, SubjectType: "user"}}},
+		Fields: []types.Field{{Name: "amount", Type: types.FieldTypeInt64}, {Name: "approver_id", Type: types.FieldTypeString, Optional: true}}}},
+		[]types.Collection{{Name: "payouts", Entity: "Payout", Operations: []types.Operation{types.OpCreate, types.OpRead}}})
+	ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "relate_runtime", "owner_role": "relate_owner"}}
+	ctx.Authorization = &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed"}
+	ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte("definition user {}\n\ndefinition tenant {\n\trelation approver: user\n}\n\ndefinition payout {\n\trelation tenant: tenant\n\trelation approver: user\n\trelation owner: user\n\tpermission view = owner + approver + tenant->approver\n}\n")}
+	ctx.SchemaChanges = relates
+	for _, change := range relates {
+		ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: change.ID, Phase: "expand"})
+	}
+	return ctx
+}
+
+func TestRelateSteps(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC52-T01 The expand of a relate makes its checkpoint and changes no table, and the relate job reads each row with its subject", func(t *testing.T) {
+		base := relateService("relatebase", "relatebasetenancy")
+		head := relateService("relate", "relatetenancy",
+			types.SchemaChange{ID: "payout-tenant-relate", Kind: "relate", Entity: "Payout", Relation: "tenant"},
+			types.SchemaChange{ID: "payout-approver-relate", Kind: "relate", Entity: "Payout", Relation: "approver"})
+		var files [2][]gen.File
+		for i, ctx := range []gen.Context{base, head} {
+			out, _, err := new(postgresadapter.Generator).Generate(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[i] = out
+		}
+		if got, want := generated(t, files[1], "relate/migrations/001_initial.sql"), generated(t, files[0], "relatebase/migrations/001_initial.sql"); got != want {
+			t.Errorf("the 001_initial of the release of the relates is not the one of the release before:\n%s", got)
+		}
+		// Apart from the name of the release, which is its last migration, the manifest is the one of the release before.
+		release := regexp.MustCompile(`(?m)^const SchemaRelease = .*$`)
+		if got, want := release.ReplaceAllString(generated(t, files[1], "relate/schema_manifest.go"), ""), release.ReplaceAllString(strings.ReplaceAll(generated(t, files[0], "relatebase/schema_manifest.go"), "relatebase", "relate"), ""); got != want {
+			t.Errorf("the manifest of the release of the relates is not the one of the release before:\n%s", got)
+		}
+		tenant := generated(t, files[1], "relate/migrations/step_0001_payout-tenant-relate_expand.sql")
+		for _, want := range []string{
+			"CREATE TABLE IF NOT EXISTS stego_schema.releases",
+			"CREATE TABLE IF NOT EXISTS stego_schema.seals",
+			"INSERT INTO stego_schema.seals (change_id, expand) VALUES ('payout-tenant-relate', 'step_0001_payout-tenant-relate_expand') ON CONFLICT (change_id) DO NOTHING;",
+		} {
+			if !strings.Contains(tenant, want) {
+				t.Errorf("the expand of the relate of tenant does not hold %s:\n%s", want, tenant)
+			}
+		}
+		if strings.Contains(tenant, "ALTER TABLE public.") || strings.Contains(tenant, "FUNCTION stego_schema.seal_") {
+			t.Errorf("the expand of the relate changes a table or holds a function of the seal checkpoints:\n%s", tenant)
+		}
+		migrate := generated(t, files[1], "relate/migrate.go")
+		for _, want := range []string{`RegisterSealStep("step_0001_payout-tenant-relate_expand",`, `RegisterSealStep("step_0002_payout-approver-relate_expand",`, "RegisterSealCheckpoints("} {
+			if !strings.Contains(migrate, want) {
+				t.Errorf("migrate.go of the release of the relates does not hold %s", want)
+			}
+		}
+		relates := generated(t, files[1], "relate/relate_changes.go")
+		for _, want := range []string{
+			`{Change: "payout-tenant-relate", Entity: "Payout", ResourceType: "payout", Relation: "tenant", Subject: command.RelateTenant, SubjectType: "", Resource: false,`,
+			`Select: "SELECT \"id\"::text, NULL::text FROM public.\"payouts\" WHERE \"tenant_id\" = $1 AND ($2::uuid IS NULL OR \"id\" > $2::uuid) ORDER BY \"id\" LIMIT $3 FOR SHARE"`,
+			`{Change: "payout-approver-relate", Entity: "Payout", ResourceType: "payout", Relation: "approver", Subject: command.RelateField, SubjectType: "user", Resource: false,`,
+			`Select: "SELECT \"id\"::text, \"approver_id\"::text FROM public.\"payouts\" WHERE \"tenant_id\" = $1 AND ($2::uuid IS NULL OR \"id\" > $2::uuid) ORDER BY \"id\" LIMIT $3 FOR SHARE"`,
+		} {
+			if !strings.Contains(relates, want) {
+				t.Errorf("relate_changes.go does not hold %s:\n%s", want, relates)
+			}
+		}
+		if slices.ContainsFunc(files[0], func(f gen.File) bool { return strings.HasSuffix(f.Path, "relate_changes.go") }) {
+			t.Error("the release with no relate step has a relate_changes.go")
+		}
+		// A relationship whose subject is the caller, and a relation that the runtime does not write, are refused.
+		for relation, want := range map[string]string{"owner": "caller of the create", "auditor": "writes no tuple of the relation auditor"} {
+			bad := relateService("relatebad", "relatebadtenancy", types.SchemaChange{ID: "payout-bad-relate", Kind: "relate", Entity: "Payout", Relation: relation})
+			if _, _, err := new(postgresadapter.Generator).Generate(bad); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("a relate of %s gave %v, want a refusal that says %q", relation, err, want)
+			}
 		}
 	})
 }

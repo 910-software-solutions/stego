@@ -334,10 +334,11 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" && change.Kind != "seal" && !change.UniqueOfField(c.Entities) {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" && change.Kind != "seal" && change.Kind != "relate" && !change.UniqueOfField(c.Entities) {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
-		if at >= steps {
+		// A relate changes no table: the stored shape is the same before and after its step (decision ST-SUP-Q212 (a)).
+		if at >= steps && change.Kind != "relate" {
 			undo = append(undo, change)
 		}
 	}

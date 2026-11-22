@@ -267,3 +267,62 @@ func TestWithinSchemaChange(t *testing.T) {
 		wantFault(t, kept(t, service, "schema-step"), "within has an expand step only")
 	})
 }
+
+func TestRelateSchemaChange(t *testing.T) {
+	kept := func(t *testing.T, service string, rules ...string) []ValidationError {
+		t.Helper()
+		return compositionFaults(t, service, Facts{}, rules...)
+	}
+	held := "{relation: sprint, permission: edit}"
+	for _, change := range []string{"{id: ticket-sprint-relate, kind: relate, entity: Ticket, relation: sprint}",
+		"{id: ticket-tenant-relate, kind: relate, entity: Ticket, relation: tenant}"} {
+		t.Run("ST-DECL-INV57-T A relate of a relation that the runtime writes, with its expand step, is accepted", func(t *testing.T) {
+			wantNoFault(t, kept(t, withinService(held, change), "schema-change-kind", "schema-change-entity", "schema-step", "schema-change-mode"))
+		})
+	}
+	for _, c := range []struct{ name, change, names string }{
+		{"a relate with no relation", "{id: ticket-sprint-relate, kind: relate, entity: Ticket}", "no relation"},
+		{"a relate with a field", "{id: ticket-sprint-relate, kind: relate, entity: Ticket, relation: sprint, field: sprint_id}", "field"},
+		{"a relation on another kind", "{id: ticket-sprint-within, kind: within, entity: Ticket, field: sprint_id, relation: sprint}", "relation"},
+	} {
+		t.Run("ST-DECL-INV57-T A schema change with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, kept(t, withinService("{relation: sprint, permission: edit, within: project_id}", c.change), "schema-change-kind"), c.names)
+		})
+	}
+	for _, c := range []struct{ name, change, names string }{
+		{"a relation that the runtime does not write", "{id: ticket-watcher-relate, kind: relate, entity: Ticket, relation: watcher}", "no relationship with a field subject"},
+		{"an entity with no resource type", "{id: label-tenant-relate, kind: relate, entity: Label, relation: tenant}", "no resource type"},
+	} {
+		t.Run("ST-DECL-INV58-T A relate of "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, kept(t, withinService(held, c.change), "schema-change-entity"), c.names)
+		})
+	}
+	t.Run("ST-DECL-INV59-T A relate with a contract step is refused", func(t *testing.T) {
+		service := withinService(held, "{id: ticket-sprint-relate, kind: relate, entity: Ticket, relation: sprint}") + "  - {change: ticket-sprint-relate, phase: contract}\n"
+		wantFault(t, kept(t, service, "schema-step"), "relate has an expand step only")
+	})
+	t.Run("ST-DECL-INV61-T A relate in a service that does not run the controller is refused", func(t *testing.T) {
+		service := withinService(held, "{id: ticket-sprint-relate, kind: relate, entity: Ticket, relation: sprint}") + "modes: [api]\n"
+		wantFault(t, kept(t, service, "schema-change-mode"), "ticket-sprint-relate", "controller")
+	})
+}
+
+func TestRelateSchema(t *testing.T) {
+	t.Run("ST-DECL-INV58-T A relate of tenant needs the relation tenant of the subject type tenant in the schema", func(t *testing.T) {
+		decl := readTD03(t, withinService("{relation: sprint, permission: edit}", "{id: ticket-tenant-relate, kind: relate, entity: Ticket, relation: tenant}"))
+		for schema, refused := range map[string]bool{
+			"definition user {}\ndefinition tenant {}\ndefinition ticket {\n\trelation tenant: tenant\n}\n": false,
+			"definition user {}\ndefinition tenant {}\ndefinition ticket {\n\trelation owner: user\n}\n":    true,
+			"definition user {}\ndefinition tenant {}\ndefinition ticket {\n\trelation tenant: user\n}\n":   true,
+		} {
+			compiled, err := CompileAuthzSchema("authz/schema.zed", []byte(schema))
+			if err != nil {
+				t.Fatal(err)
+			}
+			faults := relateSchema(decl, compiled)
+			if refused != (len(faults) == 1 && strings.Contains(faults[0].Message, "ticket#tenant")) || (!refused && len(faults) != 0) {
+				t.Errorf("the relate of tenant with the schema\n%s\ngave %+v, want refused %v", schema, faults, refused)
+			}
+		}
+	})
+}

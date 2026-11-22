@@ -90,7 +90,7 @@ func MissingAddSteps(base BaseSource, head *types.ServiceDeclaration) ([]types.S
 // for the release before at its expand step and drops it at its contract step (ST-SUP-RC01-OC34, ST-SUP-RC01-OC47). A
 // seal adds the sealed column of a field in clear at its expand step, which the controller seals, and drops the clear
 // column at its contract step (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50).
-var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true, "relax": true, "within": true, "drop": true, "seal": true}
+var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true, "relax": true, "within": true, "drop": true, "seal": true, "relate": true}
 
 // unbuiltSchemaChanges refuses a declaration with a schema change of a kind that generation does not carry out
 // yet, naming the change and its kind. Checking still accepts it (stego validate), so the author can declare it.

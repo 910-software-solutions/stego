@@ -770,3 +770,31 @@ func TestUnmarkedSecretMembers(t *testing.T) {
 		}
 	})
 }
+
+func TestRelateWiring(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC52-T02 The wiring of a relate step gives the relate job its changes and the migration job its lease", func(t *testing.T) {
+		svc := &types.ServiceDeclaration{
+			SchemaChanges: []types.SchemaChange{{ID: "payout-tenant-relate", Kind: "relate", Entity: "Payout", Relation: "tenant"},
+				{ID: "payout-note-add", Kind: "add", Entity: "Payout", Field: "note"}},
+			SchemaHistory: []types.SchemaStep{{Change: "payout-note-add", Phase: "expand"}, {Change: "payout-tenant-relate", Phase: "expand"}}}
+		if got := relating(svc); !slices.Equal(got, []string{"payout-tenant-relate"}) {
+			t.Fatalf("the relate steps of the declaration are %v, want payout-tenant-relate alone", got)
+		}
+		wiring, err := renderRuntimeWiring(runtimeWiringData{Seals: []string{"member-email-seal"}, Relates: relating(svc)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Relate: svcstorage.RelateChanges", `SealLeases: []string{"member-email-seal", "payout-tenant-relate"}`} {
+			if !strings.Contains(string(wiring), want) {
+				t.Errorf("the wiring of a service with a relate step does not hold %s", want)
+			}
+		}
+		none, err := renderRuntimeWiring(runtimeWiringData{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(none), "RelateChanges") || strings.Contains(string(none), "SealLeases") {
+			t.Error("the wiring of a service with no relate step and no seal names the relate job or a backfill lease")
+		}
+	})
+}

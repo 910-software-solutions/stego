@@ -129,6 +129,10 @@ type Parts struct {
 	// under the backfill lease of each change (ST-SUP-RP10-LC50, ST-SUP-RP14-LC12). A service with one needs the key
 	// ring.
 	Seal []command.SealColumn
+	// Relate are the relate steps at expand: the relate job of the controller mode stages the tuple of the new
+	// relation of each row of the entity through the authz outbox under the backfill lease of each change, in passes
+	// that complete only after the releases before the step stopped (decision ST-SUP-Q212 (a)).
+	Relate []command.RelateChange
 	// KeyRing tells that an entity of the service has a secret field, readable or compare-only, or a pii field: the
 	// key ring keys the idempotency fingerprints, which a request body with a secret or pii field needs, and seals
 	// the stored answers, so New refuses to start without it (ST-SUP-RP14-LC12; security review of PR #444, M1).

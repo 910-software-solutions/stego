@@ -182,8 +182,41 @@ func newEvolution(t *testing.T) *evolution {
 	e.plans["undeclared plan"], e.plans["undeclared plan error"] = e.stego(t, stego, "plan", "--base", "v1")
 	e.plans["undeclared status"] = e.git(t, "status", "--porcelain", "--untracked-files=all")
 	e.git(t, "checkout", "-q", "--", "service.yaml")
+	// v1r is v1 with the relation tenant of organization and its relate step, a release beside v2 (decision
+	// ST-SUP-Q212 (a); walkthrough 24, P2-R2).
+	e.git(t, "checkout", "-q", "-b", "relate", "v1")
+	for file, edit := range map[string][2]string{"service.yaml": evolutionV1R, filepath.Join("authz", "schema.zed"): evolutionV1RSchema} {
+		text, err := os.ReadFile(filepath.Join(e.repo, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(text), edit[0]) {
+			t.Fatalf("%s of v1 has no %q to edit for v1r", file, edit[0])
+		}
+		if err := os.WriteFile(filepath.Join(e.repo, file), []byte(strings.Replace(string(text), edit[0], edit[1], 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.plans["v1r plan"], e.plans["v1r plan error"] = e.stego(t, stego, "plan", "--base", "v1")
+	if out, failed := e.stego(t, stego, "apply", "--base", "v1"); failed != "" {
+		t.Fatalf("stego apply of v1r: %s\n%s", failed, out)
+	}
+	e.git(t, "add", "-A")
+	e.git(t, "commit", "-q", "-m", "v1r")
+	e.git(t, "tag", "v1r")
+	e.build(t, "v1r", root)
+	e.git(t, "checkout", "-q", "v3")
 	return e
 }
+
+// The edits of v1r of ST-GEN-TD04: the relate step of the relation tenant of Organization, and the relation in the
+// schema, through which the auditor of a tenant views each organization of the tenant.
+var (
+	evolutionV1R = [2]string{"\ncollections:\n", "\nschema_changes:\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
+		"schema_history:\n  - {change: organization-tenant-relate, phase: expand}\n\ncollections:\n"}
+	evolutionV1RSchema = [2]string{"definition organization {\n\trelation owner: user\n\trelation viewer: user\n\tpermission view = owner + viewer\n",
+		"definition tenant {\n\trelation auditor: user\n}\n\ndefinition organization {\n\trelation owner: user\n\trelation viewer: user\n\trelation tenant: tenant\n\tpermission view = owner + viewer + tenant->auditor\n"}
+)
 
 // git runs git in the repository and gives its output.
 func (e *evolution) git(t *testing.T, args ...string) string {
@@ -314,7 +347,8 @@ func TestSchemaEvolution(t *testing.T) {
 	run := exec.Command(pinnedGo(t), append(args, "./out/evolutioncheck")...)
 	run.Dir = dir
 	run.Env = append(e.env, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_TD04_SEED="+seed,
-		"STEGO_TD04_V1="+filepath.Join(e.bin, "v1"), "STEGO_TD04_V2="+filepath.Join(e.bin, "v2"), "STEGO_TD04_V3="+filepath.Join(e.bin, "v3"))
+		"STEGO_TD04_V1="+filepath.Join(e.bin, "v1"), "STEGO_TD04_V2="+filepath.Join(e.bin, "v2"), "STEGO_TD04_V3="+filepath.Join(e.bin, "v3"),
+		"STEGO_TD04_V1R="+filepath.Join(e.bin, "v1r"))
 	var output bytes.Buffer
 	run.Stdout, run.Stderr = &output, &output
 	runErr := run.Run()
@@ -403,6 +437,12 @@ func TestSchemaEvolution(t *testing.T) {
 	})
 	t.Run("ST-GEN-UC15-R02-T01 After contract the old column and the trigger are gone and the contract release does not need them", func(t *testing.T) {
 		result(t, "ST-GEN-UC15-R02-T01")
+	})
+	t.Run("ST-SUP-RP10-LC58-T03 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
+		if plan := e.plans["v1r plan"]; e.plans["v1r plan error"] != "" || !strings.Contains(plan, "organization-tenant-relate: relate Organization#tenant at expand; migration internal/storage/migrations/step_0001_organization-tenant-relate_expand.sql; trigger none; backfill the relate job of the controller under the lease stego.backfill.organization-tenant-relate") {
+			t.Fatalf("stego plan --base v1 of v1r (%s) does not list the relate step:\n%s", e.plans["v1r plan error"], plan)
+		}
+		result(t, "ST-SUP-RP10-LC58-T03")
 	})
 	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
 		plan := e.plans["v3 plan"]

@@ -17,7 +17,7 @@ func schemaChangePath(i int) string { return fmt.Sprintf("schema_changes[%d]", i
 func schemaStepPath(i int) string   { return fmt.Sprintf("schema_history[%d]", i) }
 
 // schemaChangeKinds are the kinds of schema change, in the order the specification gives them.
-var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "within", "seal"}
+var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "within", "seal", "relate"}
 
 // backfillKinds are the kinds of schema change whose expand step starts a backfill, which runs only in controller
 // mode.
@@ -46,6 +46,7 @@ var schemaValues = map[string]map[string]schemaValue{
 	"inverse_conversion": {"retype": valueRequired},
 	"fill_value":         {"require": valueRequired, "retype": valueOptional, "drop": valueOptional},
 	"definition":         {"drop": valueRequired, "retype": valueOptional, "relax": valueRequired},
+	"relation":           {"relate": valueRequired},
 }
 
 func schemaValueOf(change types.SchemaChange, value string) bool {
@@ -62,6 +63,8 @@ func schemaValueOf(change types.SchemaChange, value string) bool {
 		return change.FillValue != nil
 	case "definition":
 		return change.Definition != ""
+	case "relation":
+		return change.Relation != ""
 	}
 	return false
 }
@@ -81,10 +84,10 @@ func validateSchemaChangeKind(changes []types.SchemaChange) []ValidationError {
 		}
 		seen[change.ID] = true
 		if !contains(schemaChangeKinds, change.Kind) {
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique, relax, within or seal", change.ID, change.Kind)})
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique, relax, within, seal or relate", change.ID, change.Kind)})
 			continue
 		}
-		for _, value := range []string{"field", "from", "conversion", "inverse_conversion", "fill_value", "definition"} {
+		for _, value := range []string{"field", "from", "conversion", "inverse_conversion", "fill_value", "definition", "relation"} {
 			takes, has := schemaValues[value][change.Kind], schemaValueOf(change, value)
 			if change.Kind == "drop" && change.Field == "" && (value == "definition" || value == "fill_value") {
 				// A drop of a whole entity takes no Definition and no fill value: the entity stays declared with
@@ -117,6 +120,8 @@ func schemaValueText(change types.SchemaChange, value string) string {
 		return change.InverseConversion
 	case "fill_value":
 		return fmt.Sprint(change.FillValue)
+	case "relation":
+		return change.Relation
 	}
 	return change.Definition
 }
@@ -242,7 +247,7 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 	shape.step = schemaStepPath(at)
 	var later []types.SchemaChange
 	for _, other := range service.SchemaChanges {
-		if position, ok := first[other.ID]; ok && other.Entity == change.Entity && position > at && other.Kind != "unique" && other.Kind != "within" {
+		if position, ok := first[other.ID]; ok && other.Entity == change.Entity && position > at && other.Kind != "unique" && other.Kind != "within" && other.Kind != "relate" {
 			later = append(later, other)
 		}
 	}
@@ -371,7 +376,7 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 		if shape.reason != "" {
 			continue
 		}
-		if change.Kind != "unique" && change.Kind != "within" {
+		if change.Kind != "unique" && change.Kind != "within" && change.Kind != "relate" {
 			// A column that STEGO adds to each table itself is no declared field, and no schema change may name it
 			// (security review of PR #423, L1).
 			for _, name := range []string{change.Field, change.From} {
@@ -428,6 +433,13 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 				fault(".field", "the entity does not declare the field that the seal moves to its sealed column")
 			case !field.Secret() || field.CompareOnly:
 				fault(".field", "the field is not a readable secret; a seal moves a field of sensitivity secret that is not compare_only, which the base stores in clear")
+			}
+		case "relate":
+			// A relate gives each row the tuple of a relation that the runtime writes for the rows of the entity: the
+			// tenant relation, the relation of a relationship whose subject is a field, or the relation of a reference
+			// (decision ST-SUP-Q212 (a)).
+			if reason := relateFault(service, entity, change.Relation); reason != "" {
+				fault(".relation", reason)
 			}
 		case "within":
 			// The reference of a within holds its key within a field (ST-DECL-INV58, ST-DECL-Q42).
@@ -502,7 +514,7 @@ func openSchemaChanges(service *types.ServiceDeclaration) []types.SchemaChange {
 	var open []types.SchemaChange
 	for _, change := range service.SchemaChanges {
 		// A unique of a field finishes at its expand step too, which builds its unique index (ST-GEN-Q48).
-		if change.Kind == "relax" || change.Kind == "within" || change.UniqueOfField(service.Entities) {
+		if change.Kind == "relax" || change.Kind == "within" || change.Kind == "relate" || change.UniqueOfField(service.Entities) {
 			continue
 		}
 		if steps := phases[change.ID]; len(steps) > 0 && steps[len(steps)-1] == "expand" {
@@ -549,6 +561,8 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 			fault("a change of kind relax has an expand step only, which finishes it in place")
 		case len(steps) == 2 && change.Kind == "within":
 			fault("a change of kind within has an expand step only, which adds and validates the key")
+		case len(steps) == 2 && change.Kind == "relate":
+			fault("a change of kind relate has an expand step only; the relate job of the controller gives each row the tuple")
 		case len(steps) == 2 && change.UniqueOfField(service.Entities):
 			fault("a unique of a field has an expand step only, which builds the unique index and finishes the change")
 		}
@@ -600,8 +614,15 @@ func validateSchemaChangeMode(service *types.ServiceDeclaration) []ValidationErr
 		return nil
 	}
 	var faults []ValidationError
-	for _, change := range openSchemaChanges(service) {
-		if backfillKinds[change.Kind] {
+	changes := openSchemaChanges(service)
+	for _, change := range service.SchemaChanges {
+		// A relate is never open, and its job runs in the controller mode at each release (decision ST-SUP-Q212 (a)).
+		if change.Kind == "relate" {
+			changes = append(changes, change)
+		}
+	}
+	for _, change := range changes {
+		if backfillKinds[change.Kind] || change.Kind == "relate" {
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-mode", Path: "modes", Found: strings.Join(service.Modes, ", "), Allowed: []string{"controller"}, Message: fmt.Sprintf("schema change %q is at expand and its backfill runs only in the mode controller, which the modes %s do not hold; add controller to modes, or leave modes out to run all", change.ID, strings.Join(service.Modes, ", "))})
 		}
 	}
@@ -886,4 +907,39 @@ func validateSealChanges(service *types.ServiceDeclaration) []ValidationError {
 		}
 	}
 	return faults
+}
+
+// relateFault gives why the entity cannot take a relate of the relation, or empty (decision ST-SUP-Q212 (a)): the
+// entity needs a resource type and a tenant that owns its rows, and the relation is one whose tuple the runtime writes
+// for each row from what the row holds: tenant, which the schema gives the subject type tenant, the relation of a
+// relationship whose subject is a field, or the relation of a reference to an entity with a resource type. A
+// relationship whose subject is the caller of the create cannot be given to the rows that are there, as no row holds
+// its subject.
+func relateFault(service *types.ServiceDeclaration, entity types.Entity, relation string) string {
+	if entity.ResourceType == "" {
+		return "the entity has no resource type, so no tuple names its rows; a relate gives a relation of the resource type of the entity"
+	}
+	if entity.Tenant != "" && entity.Tenant != "owned" {
+		return "a tenant does not own the rows of the entity; the relate job reads the rows of each tenant"
+	}
+	for _, r := range entity.Relationships {
+		if r.Relation != relation {
+			continue
+		}
+		if r.SubjectSource != types.SubjectSourceField {
+			return fmt.Sprintf("the relationship %s takes its subject from the caller of the create, which no row holds, so the rows that are there cannot get its tuple", relation)
+		}
+		return ""
+	}
+	for field, ref := range entity.References {
+		if ref.Relation == relation {
+			if f, ok := findField(entity, field); ok && f.Type == types.FieldTypeRef {
+				return ""
+			}
+		}
+	}
+	if relation == "tenant" {
+		return ""
+	}
+	return fmt.Sprintf("the entity declares no relationship with a field subject and no reference with the relation %s, and the relation is not tenant; a relate names a relation whose tuple the runtime writes for each row", relation)
 }

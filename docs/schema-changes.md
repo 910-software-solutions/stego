@@ -9,7 +9,7 @@ release.
 
 A schema change has an ID, a kind and the entity and the field it changes.
 The kinds are `add`, `rename`, `retype`, `require`, `drop`, `unique`,
-`relax`, `within` and `seal`. The
+`relax`, `within`, `seal` and `relate`. The
 schema history puts the steps of the changes in order. A step moves one change
 to `expand` or to `contract`.
 
@@ -741,6 +741,73 @@ take it through the steps again:
 A backup from after the contract step holds no clear column, and the
 migration Job of the release that runs now applies the later steps with no
 wait.
+
+## Relate steps
+
+A release can give the rows of an entity a new relation that the runtime
+writes for each row. Examples are `relation tenant: tenant` on the resource
+type of the entity in `authz/schema.zed`, a new relationship whose subject is
+a field, and a new reference with a relation. The pods of the new release
+write the tuple of the relation for each row that they make. The rows that
+are there before the release, and the rows that the pods of the release
+before make during the rollout, do not get it. Thus a permission through the
+new relation, such as `permission edit = owner + tenant->approver`, is not
+true on those rows, and a check gives 404 (walkthrough 24, P2-R2).
+
+Declare a relate step in the same release as the new relation (runtime
+v0.192.0, postgres-adapter 6.31.0, rest-crud 3.258.0). Name the entity and the
+relation:
+
+```yaml
+schema_changes:
+  - {id: payout-tenant-relate, kind: relate, entity: Payout, relation: tenant}
+schema_history:
+  - {change: payout-tenant-relate, phase: expand}
+```
+
+A relate has an expand step only, and no field. `stego validate` refuses a
+relate when:
+
+- the entity has no resource type, or a tenant does not own its rows;
+- the relation is not `tenant`, the relation of a relationship whose subject
+  is a field, or the relation of a reference. A relationship whose subject is
+  the caller of the create cannot be given to the rows that are there, because
+  no row holds the caller;
+- the declaration does not run the controller mode.
+
+Generation refuses the relation `tenant` when `authz/schema.zed` does not give
+the resource type the relation `tenant` of the subject type `tenant`.
+
+The expand migration of the relate changes no table. It makes the table of
+the release reports, the checkpoint row of the change in
+`stego_schema.seals` and the lease `stego.backfill.<change ID>`, as the expand
+of a seal does. The relate job of the controller then gives each row the
+tuple, as SpiceDB bulk imports and the backfill jobs of Zanzibar-style
+systems do for a new relation:
+
+- It runs at start and each 10 minutes, under the lease of the change, in
+  passes over the tenants in ID order and the rows of each tenant in ID
+  order, 100 rows at a time.
+- A pass starts only while no process of a release before the step reports
+  itself, and completes only when none reported itself after its start. Thus
+  the pass comes after the last pod of the release before stops, and each
+  row that such a pod made is in it. While the release before runs, the job
+  logs that it waits.
+- For each row it stages the tuple through the authz outbox in a transaction
+  of the tenant, which locks the rows `FOR SHARE` and moves the checkpoint.
+  A delete or an update of a row waits for the batch, so its own tuple change
+  comes after the tuple of the job. The relay writes each tuple with a touch,
+  so a tuple that is there does not change, and a pass again is safe.
+- Each batch that stages tuples writes one audit row with the action
+  `backfill-relation` and the tenant as the resource.
+- Each run writes the info line `command.relate.pass` with the change, the
+  entity, the relation, the rows read (`checked`), the tuples staged
+  (`related`), and `completed` and `waits`.
+- After a restore, or a restart of the database server, the next pass runs
+  again, as for a seal.
+
+A completed relate has no more work. Keep the relate step in the
+declaration: the schema history keeps each step.
 
 ## The migrations of the steps
 
