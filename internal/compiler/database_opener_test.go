@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
 	"go/parser"
 	"go/token"
 	"os"
@@ -219,4 +220,105 @@ func TestDatabaseOpenerWithIndependentConsumer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDatabasePingFaultRecord proves that a start whose database refuses the login names the fault, the object, the
+// remedy and the cause in the failure record, as the start of an api names them (walkthrough 25, P3-11).
+func TestDatabasePingFaultRecord(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC57-T05 A start whose database refuses the ping names the fault database.connection, the object, the remedy and the cause", func(t *testing.T) {
+		w := databaseOpenerFixture()
+		w.Imports = []string{"internal/postgres"}
+		w.Constructors = []string{"postgres.NewStore(db)"}
+		w.DatabaseOpener.Namespace = "internal/postgres"
+		w.Routes = []string{`mux.Handle("/",store)`}
+		files, err := Assemble(AssemblerInput{ModuleName: "example.com/pingfault", GoVersion: "1.26.11", Wirings: []ComponentWiring{{Name: "store", Wiring: w}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		storeSource := `package postgres
+import("context";"database/sql";"database/sql/driver";"errors";"net/http")
+type Store struct{}
+func NewStore(*sql.DB)*Store{return &Store{}}
+func(*Store)ServeHTTP(http.ResponseWriter,*http.Request){}
+func OpenDatabase(dsn string)(*sql.DB,error){if dsn!="private-database-url"{return nil,errors.New("wrong configuration source")};return sql.OpenDB(connector{}),nil}
+type connector struct{}
+func(connector)Connect(context.Context)(driver.Conn,error){return connection{},nil}
+func(connector)Driver()driver.Driver{return drv{}}
+type drv struct{}
+func(drv)Open(string)(driver.Conn,error){return connection{},nil}
+type connection struct{}
+func(connection)Prepare(string)(driver.Stmt,error){return nil,errors.New("unused")}
+func(connection)Begin()(driver.Tx,error){return nil,errors.New("unused")}
+func(connection)Close()error{return nil}
+// refused is the error of a server that refuses the password, as pgconn.PgError gives it.
+type refused struct{}
+func(refused)Error()string{return "private-password-authentication-failed"}
+func(refused)SQLState()string{return "28P01"}
+func(connection)Ping(context.Context)error{return refused{}}
+`
+		files = append(files, gen.File{Path: "internal/postgres/store.go", Content: []byte(storeSource)})
+		project := t.TempDir()
+		for _, file := range files {
+			name := filepath.Join(project, file.Path)
+			if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(name, file.Bytes(), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		binary := filepath.Join(project, "service")
+		for _, args := range [][]string{{"mod", "tidy"}, {"build", "-o", binary, "."}} {
+			command := exec.Command("go", args...)
+			command.Dir = project
+			command.Env = append(os.Environ(), "GOWORK=off")
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("ping assembly: %v %s", err, output)
+			}
+		}
+		command := exec.Command(binary)
+		command.Env = append(os.Environ(), "DATABASE_URL=private-database-url", "DATABASE_URL_FILE=")
+		output, err := command.CombinedOutput()
+		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+			t.Fatalf("a refused ping did not stop the process: %v", err)
+		}
+		if strings.Contains(string(output), "private-") {
+			t.Fatalf("the failure record holds the text of the cause: %s", output)
+		}
+		record := failureRecordOf(t, output)
+		for key, want := range map[string]string{"stage": "database.ping", "fault": "database.connection", "object": "database",
+			"cause": "authentication_failed", "sqlstate": "28P01"} {
+			if got := record(key); got != want {
+				t.Fatalf("the failure record gives %s %q, want %q: %s", key, got, want, output)
+			}
+		}
+		if !strings.Contains(record("remedy"), "DATABASE_URL") {
+			t.Fatalf("the failure record gives no remedy that names DATABASE_URL: %s", output)
+		}
+	})
+}
+
+// failureRecordOf gives the reader of the fields of the line service.failed in output: a field at the top level of
+// the line, or under attributes with the prefix stego..
+func failureRecordOf(t *testing.T, output []byte) func(string) string {
+	t.Helper()
+	for _, line := range strings.Split(string(output), "\n") {
+		var fields map[string]any
+		if json.Unmarshal([]byte(line), &fields) != nil || fields["event.name"] != "service.failed" {
+			continue
+		}
+		return func(key string) string {
+			if value, ok := fields[key].(string); ok {
+				return value
+			}
+			if attributes, ok := fields["attributes"].(map[string]any); ok {
+				if value, ok := attributes["stego."+key].(string); ok {
+					return value
+				}
+			}
+			return ""
+		}
+	}
+	t.Fatalf("no line service.failed in %s", output)
+	return nil
 }

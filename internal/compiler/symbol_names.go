@@ -9,6 +9,7 @@ func reservedImportNames() map[string]bool {
 	names := make(map[string]bool)
 	names["stegoDatabaseURL"] = true
 	names["stegoDatabaseStage"] = true
+	names["stegoDatabaseFault"] = true
 	names["stegoModes"] = true
 	for _, name := range []string{"stegoHTTPTransport", "stegoHTTPReadTLSFile", "stegoHTTPOpenTLSFile"} {
 		names[name] = true

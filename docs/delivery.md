@@ -378,6 +378,18 @@ was only on a separate log line:
 None of these fields holds an endpoint, a key, a migration name or a digest. The log line before the record still
 names the migration.
 
+From browser-backend 4.15.0 (browser-service 1.261.0) (walkthrough 25, P3-11) the failure record of a browser service gives a fault, an
+object, a remedy and a cause, as the record of an api does:
+
+| Stage | Fault | Object | Cause | When |
+|---|---|---|---|---|
+| `database.access` (migration Job) | `database.connection` | `database` | the class of the SQLSTATE, such as `authentication_failed` with `stego.sqlstate` `28P01`, or of the network, such as `connection_refused`; else `connection_failed` | The Job cannot open the owner connection of `STEGO_MIGRATION_DATABASE_URL`, or cannot read the owner login. |
+| `service.start.setting.browser-backend.<variable>` (migration Job) | `database.settings` | `database` | `invalid_setting` | `STEGO_MIGRATION_DATABASE_URL`, its `_FILE` form or `STEGO_RUNTIME_DATABASE_ROLE` is refused. |
+| `database.open`, `database.ping` (pod) | `database.connection` | `database` | the class of the SQLSTATE or of the network, else `connection_failed` | The pool of the pod does not open, or the database does not answer the ping. |
+
+The remedy is a fixed text. No field holds a connection string, a password, a login name or the text of the error.
+A refused schema check keeps the stage `database.schema` and its fault class, such as `table` or `grant`.
+
 For example, a Job whose SpiceDB refused the connection writes
 `{"timestamp":"2026-11-22T07:20:01.000000000Z","severity":"ERROR","service.name":"orders","event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":"migrate.authorization_schema","stego.fault":"spicedb.connection","stego.object":"spicedb","stego.remedy":"the migration job cannot reach SpiceDB: ...","stego.cause":"unavailable"}}`.
 

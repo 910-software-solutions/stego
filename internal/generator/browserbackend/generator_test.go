@@ -292,7 +292,7 @@ func TestGeneratedManagedBrowserSchema(t *testing.T) {
 // TestGeneratedBrowserSchemaMigrate runs the mode migrate, the fault classes of the schema check and the role move of
 // the upgrade guide against the local PostgreSQL server (ST-SUP-RC02-OC56, ST-SUP-RC02-OC57).
 func TestGeneratedBrowserSchemaMigrate(t *testing.T) {
-	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass|ReadmeDatabaseSetup|UpgradeRoleMove|ManagedAdminLayout)$")
+	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass|BrowserSchemaAccessFault|ReadmeDatabaseSetup|UpgradeRoleMove|ManagedAdminLayout)$")
 }
 
 func TestGeneratedSchemaInputs(t *testing.T) {

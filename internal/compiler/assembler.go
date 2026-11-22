@@ -565,7 +565,7 @@ func writeDBSetup(buf *bytes.Buffer, opener, component, parent string) {
 	}
 	fmt.Fprintf(buf, "\tdb, err := %s\n", opener)
 	buf.WriteString("\tif err != nil {\n")
-	buf.WriteString("\t\treturn err\n")
+	buf.WriteString("\t\treturn &stegoDatabaseFault{cause: err}\n")
 	buf.WriteString("\t}\n")
 	buf.WriteString("\tdefer db.Close()\n\n")
 	writeDatabasePing(buf, "db", parent)
@@ -575,7 +575,7 @@ func writeDatabasePing(buf *bytes.Buffer, handle, parent string) {
 	buf.WriteString("\tstegoStage = \"database.ping\"\n")
 	fmt.Fprintf(buf, "\t{\n\t\tctx, cancel := context.WithTimeout(%s, 5*time.Second)\n", parent)
 	fmt.Fprintf(buf, "\t\terr := %s.PingContext(ctx)\n", handle)
-	buf.WriteString("\t\tcancel()\n\t\tif err != nil { return err }\n\t}\n")
+	buf.WriteString("\t\tcancel()\n\t\tif err != nil { return &stegoDatabaseFault{cause: err} }\n\t}\n")
 }
 
 // writePostDBCalls emits post-database-setup calls from consumed component
