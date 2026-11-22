@@ -8,7 +8,7 @@ version: 1.261.0
 runtime:
   module: github.com/jsell-rh/stego/registry/runtime
   version: v0.195.0
-  sum: h1:rE7AQ1g97yOQlZUZjFbniB1o/oW/OUXa/7iLTxTRGRQ=
+  sum: h1:djlgfEQQtGnWJiMHDD6o9/pkkk49ccuUhoQyAjQ3Lwk=
 components:
   - postgres-adapter
   - domain-probe
