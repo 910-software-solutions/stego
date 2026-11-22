@@ -716,7 +716,7 @@ may check a wallet holds on it the permission of its command, which the reset
 decides, and a support desk that may also operate another wallet cannot check
 this one and reset it after each check. Read such a row with `GetForUpdate`
 before `Matches`. A field with no reset command is checked as before. This is
-the recommendation (d) of the open question ST-SUP-Q209.
+the decision ST-SUP-Q209 (d).
 
 The code of the command gets one helper for each field, such as
 `UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of

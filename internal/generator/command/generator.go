@@ -471,8 +471,9 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 // write an entity of its resets, and so may check the field: the runtime refuses the reset of a caller who holds one
 // on the row (security review of PR #489, second review, M2b). A command of another resource type counts too: it
 // checks the field only on a row on which it decided its own permission, which a locked read or a write of the row
-// decides on the resource type of the entity (decision ST-SUP-Q209 (d)). A command on the service-level resource
-// reads the entity only with no lock, so it cannot check the field. Each counted field of a reset is marked, so its
+// decides on the resource type of the entity (decision ST-SUP-Q209 (d)). A command on the service-level resource is
+// no reset guard: the runtime records no row on which it decided its permission, also for an effect or a write, so
+// it cannot check the field (security review of PR #491, L1). Each counted field of a reset is marked, so its
 // counter declares Reset (ST-SUP-RC32-OC24).
 func (m *model) planResetGuards() {
 	for _, c := range m.commands {

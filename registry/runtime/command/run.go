@@ -425,6 +425,9 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	for r := range resets {
+		resetCounters.Store(r, true)
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own,
 		changeEvents: changeEvents, lists: lists, resets: resets}, nil
@@ -691,6 +694,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	s.commandPermission = cmd.spec.Permission
 	s.resets = cmd.resets
 	s.resetGuards = cmd.spec.ResetGuards
+	s.serviceLevel = cmd.spec.Resource != nil && cmd.spec.Resource.Service != ""
 	s.lockTimeout = cmd.spec.LockTimeout
 	if s.lockTimeout == 0 {
 		s.lockTimeout = DefaultLockTimeout

@@ -1651,12 +1651,16 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   a locked read or list (`GetForUpdate`, `GetForDelete`), or for a write of
   the row. On any other row it gives `false`, charges nothing and fails the
   call with an internal error that names the counter (ST-SUP-RP10-LC54;
-  recommendation (d) of ST-SUP-Q209, open for the Product owner; the residual
+  decision ST-SUP-Q209 (d); the residual
   sec-489c of the second security review of PR #489). Before, a caller who
   held the reset and the permission of a command decided on another row or
   another resource type could read the row with no lock and check it with no
   bound, a reset after each limit. A counter with no `Reset`, as the code of
-  a generator before gives it, is checked as before.
+  a generator before gives it, is held too when a command declares its
+  reset: `NewCommand` marks each counter that `CommandSpec.Resets` names. A
+  locked read or list counts for its row only once its lock holds, and a
+  command on the service-level resource counts for no row, also through an
+  effect or a write (security review of PR #491, L1, L2 and I1).
 - `command.CommandSpec.ResetGuards` can hold the permissions of commands of
   another resource type that write the entity: the generator of command
   1.26.0 gives them, and the runtime decides each on the row of the reset.

@@ -171,7 +171,8 @@ type CounterSpec struct {
 	// Reset is true when a command of the service declares the reset of this counter (CommandSpec.Resets): a check
 	// of it then runs only on a row on which the command decided its own permission in the attempt, so each caller
 	// who may check the row holds a permission that the reset guards decide on that row (decision ST-SUP-Q209 (d)).
-	// The code of a generator before the field gives false.
+	// The code of a generator before the field gives false; NewCommand then marks the counter from the Resets of a
+	// command (Counter.resettable).
 	Reset bool
 }
 
@@ -199,6 +200,21 @@ func (c *Counter) UnlockAfter() time.Duration { return c.spec.UnlockAfter }
 
 // name is the counter as the table of the counts holds it.
 func (c *Counter) name() string { return c.spec.Entity + "." + c.spec.Field }
+
+// resetCounters holds each counter, as <entity>.<field>, that the CommandSpec.Resets of a command that NewCommand
+// took names. The generated commands are package variables, so each is known before the first call.
+var resetCounters sync.Map
+
+// resettable tells whether a command may reset the counter: its CounterSpec.Reset, or a command that NewCommand took
+// names it in Resets, so the code of a generator before command 1.26.0, which gives no Reset, is held too (security
+// review of PR #491, I1).
+func (c *Counter) resettable() bool {
+	if c.spec.Reset {
+		return true
+	}
+	_, ok := resetCounters.Load(c.name())
+	return ok
+}
 
 // countedTarget is the scan target of a counted compare-only field: its stored hash, which the handle binds to the
 // counter of its row after the scan.
@@ -263,7 +279,7 @@ func (k *rowCounter) Charge() bool {
 		return false
 	}
 	open := !s.closed && s.mode == modeCommand
-	if open && k.key.counter.spec.Reset && !s.decidedRow(k.key.counter.spec.Entity, k.key.row) {
+	if open && k.key.counter.resettable() && !s.decidedRow(k.key.counter.spec.Entity, k.key.row) {
 		// A caller who reads the row with no lock, from a row of its own or from another resource type, holds no
 		// permission that the reset guards decide on this row, so it could check with no limit beside a reset: the
 		// check runs only on a row on which the command decided its own permission (decision ST-SUP-Q209 (d)).
@@ -403,10 +419,12 @@ func checkResets(name, permission string, resource *Resource, resets, guards []s
 }
 
 // decide records that the command decided its own permission on the row id of resourceType in this attempt: on its
-// resource, in a locked read or list, or for a write (decision ST-SUP-Q209 (d)). The caller holds the lock of the
-// state, or the attempt has not given the handle to the fill yet.
+// resource, in a locked read or list once the lock holds, or for a write, an effect or a relation (decision
+// ST-SUP-Q209 (d)). A command on the service-level resource records nothing: its permission is no reset guard
+// (security review of PR #491, L1). The caller holds the lock of the state, or the attempt has not given the handle
+// to the fill yet.
 func (s *state) decide(resourceType, id string) {
-	if resourceType == "" || id == "" {
+	if resourceType == "" || id == "" || s.serviceLevel {
 		return
 	}
 	if s.decided == nil {

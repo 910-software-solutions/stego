@@ -1522,3 +1522,159 @@ func TestAttemptResetChecks(t *testing.T) {
 		}
 	})
 }
+
+// legacyCounter is a counter of a generator before command 1.26.0, with no Reset, whose field a command resets.
+var legacyCounter = Must(NewCounter(CounterSpec{Entity: "LegacyWallet", Field: "pin", Limit: 3}))
+
+// resetWallets makes the table of the entity name with the wallets a and b, whose PIN is right, and gives the entity
+// with the counted PIN of counter c, on the resource type of table, and the resource of a command on a wallet.
+func resetWallets(t *testing.T, e *env, name, table, resourceType string, c *Counter, right string, ids ...string) (*Entity[lockedWallet], *Resource) {
+	t.Helper()
+	e.exec(`CREATE TABLE `+table+` (tenant_id text NOT NULL, id text NOT NULL, pin text, version bigint NOT NULL DEFAULT 1,
+  authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`, "GRANT SELECT, INSERT, UPDATE, DELETE ON "+table+" TO "+e.roles[0])
+	hash, err := sealed.Hash(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO `+table+` (tenant_id, id, pin) VALUES ('t1', $1, $2)`, id, hash); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := spec(name, resourceType, table, []string{"pin"},
+		func(row Scanner) (lockedWallet, Meta, error) {
+			var v lockedWallet
+			var m Meta
+			err := row.Scan(&v.ID, CountedAt(c, &v.ID, &v.PIN), &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v lockedWallet) []any { return []any{v.ID, HashCountedOf(c, v.ID, v.PIN)} },
+		func(v lockedWallet) map[string]any { return map[string]any{"id": v.ID} })
+	wallets, err := NewEntity(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wallets, &Resource{Type: resourceType, Token: `SELECT authz_token FROM ` + table + ` WHERE tenant_id = $1 AND id = $2 FOR SHARE`,
+		ValidID: func(id string) bool { return id != "" }}
+}
+
+// TestAttemptResetChecksDecided proves the findings of the security review of PR #491 on the rows that a check of a
+// counter with a reset needs (decision ST-SUP-Q209 (d)).
+func TestAttemptResetChecksDecided(t *testing.T) {
+	const a, b, right = "0198a1b2-0000-7000-8000-0000000000a3", "0198a1b2-0000-7000-8000-0000000000b3", "4711"
+	errWrongPIN := errors.New("pin.wrong")
+	check := func(pin string, w Loaded[lockedWallet]) error {
+		if !w.Value().PIN.Matches(pin) {
+			return errWrongPIN
+		}
+		return nil
+	}
+	t.Run("ST-SUP-RP10-LC54-T19 A command on the service-level resource records no row, also through an effect", func(t *testing.T) {
+		e := newEnv(t)
+		wallets, _ := resetWallets(t, e, "GuardedWallet", "guarded_wallets", "guarded_wallet", guardedCounter, right, a)
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		var charges atomic.Int32
+		rt.charged = func(bool) { charges.Add(1) }
+		// open-payment is decided on service:wallets; the schema also gives open_payment on the wallet a, so its
+		// effect for a decides it there.
+		open := e.command("open-payment", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource = "open_payment", &Resource{Type: "service", Service: "wallets"}
+		}, wallets)
+		e.decision.setRelations(relation(t, "user:u-9", "open_payment", "t1", "service", "wallets"),
+			relation(t, "user:u-9", "open_payment", "t1", "guarded_wallet", a), relation(t, "user:u-9", "view", "t1", "guarded_wallet", a))
+		req := e.request("t1", person(t, "user:u-9"), "open-1", `{}`)
+		staged := false
+		_, err := e.runOn(rt, open, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, a)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if err := h.Effects().Stage(ctx, "billing", "charge-requested", w, []byte(`{"amount":100}`)); err != nil {
+				return idempotency.Response{}, err
+			}
+			staged = true
+			return ok, check(right, w)
+		})
+		if !staged || err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
+			t.Fatalf("a check of a after an effect of a command on the service-level resource gave %v (staged %v) and charged %d checks, want an internal error and none", err, staged, charges.Load())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T20 A locked read that a second decision denies records no row", func(t *testing.T) {
+		e := newEnv(t)
+		wallets, wallet := resetWallets(t, e, "GuardedWallet", "guarded_wallets", "guarded_wallet", guardedCounter, right, a, b)
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		var charges atomic.Int32
+		rt.charged = func(bool) { charges.Add(1) }
+		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "operate", wallet }, wallets)
+		view := relation(t, "user:u-8", "view", "t1", "guarded_wallet", a)
+		operateA := relation(t, "user:u-8", "operate", "t1", "guarded_wallet", a)
+		operateB := relation(t, "user:u-8", "operate", "t1", "guarded_wallet", b)
+		e.decision.setRelations(view, operateA, operateB, relation(t, "user:u-8", "view", "t1", "guarded_wallet", b))
+		// Between the read and the lock of a, operate on a goes and the token of a moves.
+		resourceA := "guarded_wallet:" + a
+		var once sync.Once
+		e.decision.setAfter(func(ev evaluation) {
+			if ev.Resource != resourceA || ev.Action != "operate" {
+				return
+			}
+			once.Do(func() {
+				e.decision.setRelations(view, operateB)
+				e.exec(`UPDATE guarded_wallets SET authz_token = 'moved' WHERE id = '` + a + `'`)
+			})
+		})
+		defer e.decision.setAfter(nil)
+		req := e.request("t1", person(t, "user:u-8"), "moved-1", `{}`)
+		req.Resource = b
+		var lockErr error
+		_, err := e.runOn(rt, withdraw, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, a)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			// The fill keeps the value of the read with no lock after the lock was denied.
+			_, lockErr = r.GetForUpdate(ctx, a)
+			return ok, check(right, w)
+		})
+		if !errors.Is(lockErr, ErrNotFound) || err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
+			t.Fatalf("a check of a after its lock was denied gave %v (the lock %v) and charged %d checks, want ErrNotFound, an internal error and none", err, lockErr, charges.Load())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC54-T21 A counter that a command resets is held with no Reset in its declaration", func(t *testing.T) {
+		e := newEnv(t)
+		wallets, wallet := resetWallets(t, e, "LegacyWallet", "legacy_wallets", "legacy_wallet", legacyCounter, right, a, b)
+		rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+		var charges atomic.Int32
+		rt.charged = func(bool) { charges.Add(1) }
+		withdraw := e.command("withdraw", func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "operate", wallet }, wallets)
+		e.command("unlock", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource, s.Resets, s.ResetGuards = "unlock", wallet, []string{"LegacyWallet.pin"}, []string{"operate"}
+		}, wallets)
+		e.decision.setRelations(relation(t, "user:u-5", "view", "t1", "legacy_wallet", a),
+			relation(t, "user:u-5", "operate", "t1", "legacy_wallet", b), relation(t, "user:u-5", "view", "t1", "legacy_wallet", b))
+		req := e.request("t1", person(t, "user:u-5"), "legacy-1", `{}`)
+		req.Resource = b
+		_, err := e.runOn(rt, withdraw, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.Get(ctx, a)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			return ok, check(right, w)
+		})
+		if err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
+			t.Fatalf("a check of a from b with a counter of no Reset that unlock resets gave %v and charged %d checks, want an internal error and none", err, charges.Load())
+		}
+	})
+}

@@ -363,7 +363,8 @@ func checkingPermissions(service *types.ServiceDeclaration, self int, resourceTy
 // (decision ST-SUP-Q209 (d)): such a command decides its own permission on the row of the entity when it locks or
 // writes it (ST-SUP-RP10-LC05), and only on such a row may it check the counted field (ST-SUP-RP10-LC54), so that
 // permission is a permission of the resource type of the entity that the reset guards hold. A command on the
-// service-level resource reads the entity only with no lock, so it cannot check the field.
+// service-level resource is no reset guard: the runtime records no row on which it decided its permission, also for
+// an effect or a write, so it cannot check the field (security review of PR #491, L1).
 func resetWriters(service *types.ServiceDeclaration, self int) []types.Command {
 	reset := service.Commands[self]
 	entities := map[string]bool{}
