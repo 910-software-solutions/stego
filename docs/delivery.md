@@ -475,6 +475,47 @@ manifest of the Job with the kustomize library. To run the migration of a servic
 `migrate` and the variables of the Job, for example
 `STEGO_MIGRATION_DATABASE_URL=... STEGO_SPICEDB_ENDPOINT=... STEGO_SPICEDB_KEY_FILE=... ./service migrate`.
 
+## Size the PostgreSQL server
+
+Each process of a service keeps pools of database connections of its own.
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` (16 when it has no value) bounds each
+pool that reads the setting. At the defaults, one process can open at most:
+
+| Process | Pools | Most connections |
+|---|---|---|
+| api pod (`--mode=api`) | the main pool (16), the audit pool (16) and the pool of the charges of counted values (4) | 36 |
+| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role (16, and at least the concurrency of the outbox worker + 2) and the pool of the relay role (16) | 68 |
+| migration Job | the owner connection and the connections of its steps | a few |
+
+A pool opens a connection only when it needs one, so an idle service holds
+fewer. But a burst, a slow database or a restart of many pods at the same
+time can fill each pool. A PostgreSQL server that cannot take a connection
+refuses it with SQLSTATE 53300 (`too_many_connections`). A server that has
+too little memory for its connections can be stopped by the kernel: in
+walkthrough 25, a PostgreSQL with a limit of 768 MiB was killed three times
+when 34 to 38 processes of STEGO started, with about 86 connections.
+
+Size the server for the most connections, not for the mean:
+
+1. Add the most connections of each pod of each service that uses the
+   server, at the replicas of the rollout (the old and the new pods run
+   together), and add the migration Jobs and your own tools. For example, 3
+   services with 2 api pods and 1 worker pod each: 3 x (2 x 36 + 68) = 420.
+2. Set `max_connections` of PostgreSQL to that sum plus
+   `superuser_reserved_connections` (3 by default). Or lower
+   `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` in `<service>-config` until the sum
+   fits the server. A pool of 4 to 8 is enough for a small service; the pool
+   of the worker role keeps at least the concurrency of the outbox worker
+   + 2.
+3. Give the server memory for `shared_buffers` and for each connection.
+   Each connection is one server process, which takes some MiB when it is
+   idle and up to `work_mem` for each sort or hash of a statement. A start
+   value: `shared_buffers` 25% of the memory of the server, and about 10 MiB
+   for each connection of `max_connections`. For the 86 connections of
+   walkthrough 25 that is about 1 GiB, more than the 768 MiB of its limit.
+4. Watch the count of connections (`pg_stat_activity`) and the 53300
+   refusals while you change the replicas.
+
 ## Secrets as files
 
 The Component `deploy/components/secret-files/` gives each secret to the service as a file, in place of an

@@ -179,6 +179,16 @@ runtime v0.165.0, except for the cases below.
   release. Until then, run an apply of a new document only once, and use
   `get` to see the resource before you apply the document again. A service
   that holds the name unique refuses the second create with 409.
+  A CLI before cli-application 1.30.0 (rest-crud 3.258.0) still fails a
+  second apply of a document that holds a secret field, such as with
+  `apply cannot change the field serial_ref`: it compares the secret field,
+  whose stored value can differ from the document, and puts it in the
+  write. The new release of the service does not change this, as the fault
+  is in the CLI.
+  In walkthrough 25, a CLI of the release before failed in this way against
+  the new release. Build the CLI again from the new release: from 1.30.0,
+  `apply` leaves each secret field of a resource that exists out of the
+  patch, and `--set-secret FIELD` sends a new value.
 - **An entity that a drop removes.** From the expand step of the drop, the
   new release serves no route of the entity and its collections, so a
   request to such a route gets 404. The release before still serves them
