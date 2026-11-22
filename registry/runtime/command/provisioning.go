@@ -989,7 +989,7 @@ func logTenantDecision(ctx context.Context, d tenantLogKey, err error) {
 	if authz.Transient(err) && run >= LongUndecided {
 		level, message = slog.LevelError, long
 	}
-	slog.Log(ctx, level, message, "step", d.step, "permission", d.permission, "cause", cause,
+	slog.Log(ctx, level, message, otel.SlogEventKey, "command.provisioning.undecided", "step", d.step, "permission", d.permission, "cause", cause,
 		"transient", authz.Transient(err), "held_back", held, "run_seconds", int64(run/time.Second))
 }
 

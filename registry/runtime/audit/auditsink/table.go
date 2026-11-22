@@ -120,7 +120,7 @@ func (s *TableSink) store(ctx context.Context, entries []Entry) error {
 				return fmt.Errorf("auditsink: the default sink: %w", err)
 			}
 			if kind != e.Kind || tenantID != e.Tenant || !bytes.Equal(hash, e.Hash) || !bytes.Equal(body, e.Body) {
-				slog.WarnContext(otel.Security(ctx), "auditsink: the default sink holds another entry under the ID of an entry", "entry_id", e.ID)
+				slog.WarnContext(otel.Security(ctx), "auditsink: the default sink holds another entry under the ID of an entry", otel.SlogEventKey, "audit.sink.entry_conflict", "entry_id", e.ID)
 				return ErrConflict
 			}
 			held++

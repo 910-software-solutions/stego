@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -255,13 +256,14 @@ func TestHTTPSignalStopsService(t *testing.T) {
 	}
 	t.Cleanup(func() { cmd.Process.Kill() })
 	address := make(chan string, 1)
+	listening := regexp.MustCompile(`service\.listening.*address[=":]+([^"\s]+)`)
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			const prefix = "starting server on "
-			if index := strings.Index(line, prefix); index >= 0 {
-				address <- line[index+len(prefix):]
+			// The line service.listening names the address, as JSON or as the text of the default handler.
+			if match := listening.FindStringSubmatch(line); match != nil {
+				address <- match[1]
 			}
 		}
 	}()

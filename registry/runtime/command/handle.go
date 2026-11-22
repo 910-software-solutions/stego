@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/internal/loaded"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -1559,7 +1560,7 @@ func (r *Repository[T]) failConstraint(err error) error {
 		return nil
 	}
 	if ok, held := statementLog.Allow(r.st.action + "/invalid/" + code[:2]); ok {
-		slog.Warn("command: a statement refused a value of a field", "action", r.st.action, "entity", r.entity.spec.Name,
+		slog.Warn("command: a statement refused a value of a field", otel.SlogEventKey, "command.statement.value_refused", "action", r.st.action, "entity", r.entity.spec.Name,
 			"field", field, "cause", causeData, "sqlstate_class", code[:2], "held_back", held)
 	}
 	return &invalidError{field: field, reason: reasonConstraint}
@@ -1834,7 +1835,7 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 	cause, class := statementCause(err, code)
 	s.logged = true
 	if ok, held := statementLog.Allow(s.action + "/" + cause + "/" + class); ok {
-		slog.ErrorContext(ctx, "command: a statement failed", "action", s.action, "step", step, "cause", cause,
+		slog.ErrorContext(ctx, "command: a statement failed", otel.SlogEventKey, "command.statement.failed", "action", s.action, "step", step, "cause", cause,
 			"sqlstate_class", class, "held_back", held)
 	}
 	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: !data, data: data,
@@ -1915,7 +1916,7 @@ func (s *state) breakWith(err error) error {
 			// A sealed value that does not open keeps its class: Run logs it as sealed (ST-SUP-RP10-LC51).
 			s.logged = s.logged || !sealedFault(err)
 			if ok, held := statementLog.Allow(s.action + "/internal/" + internal.text); ok {
-				slog.Error("command: the call has an internal error", "action", s.action, "cause", "internal",
+				slog.Error("command: the call has an internal error", otel.SlogEventKey, "command.call.internal", "action", s.action, "cause", "internal",
 					"reason", internal.text, "held_back", held)
 			}
 		}
@@ -2557,7 +2558,7 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 		for _, ref := range refs {
 			if ref.resourceType != "" {
 				if ok, held := statementLog.Allow(s.action + "/create_without_parent/" + e.spec.Name); ok {
-					slog.WarnContext(ctx, "command: a worker's create sets a reference and gives no parent to decide on", "action", s.action,
+					slog.WarnContext(ctx, "command: a worker's create sets a reference and gives no parent to decide on", otel.SlogEventKey, "command.worker.create_without_parent", "action", s.action,
 						"entity", e.spec.Name, "cause", "create_without_parent", "held_back", held)
 				}
 				return nil, &noParentError{entity: e.spec.Name}

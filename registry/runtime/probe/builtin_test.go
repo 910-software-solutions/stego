@@ -3,8 +3,10 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,7 +42,7 @@ func TestProbeBuiltins(t *testing.T) {
 				t.Fatal(err)
 			}
 			name, _ := decoded["event.name"].(string)
-			if want[name] == "" || decoded["severity"] != want[name] || decoded["fields"] != nil {
+			if want[name] == "" || decoded["severity"] != want[name] || decoded["attributes"] != nil {
 				t.Fatalf("the console line is %q", line)
 			}
 		}
@@ -137,7 +139,7 @@ func TestProbeBuiltins(t *testing.T) {
 			if form == nil {
 				form = keys
 			}
-			if !slices.Equal(keys, form) || !slices.Equal(keys, []string{"event.name", "service.instance.id", "service.name", "severity", "span_id", "timestamp", "trace_id"}) {
+			if !slices.Equal(keys, form) || !slices.Equal(keys, []string{"event.name", "message", "service.instance.id", "service.name", "severity", "span_id", "timestamp", "trace_id"}) {
 				t.Fatalf("%v: the line has the keys %v, want the fixed form %v", settings, keys, form)
 			}
 			if decoded["event.name"] != "service.ready" || decoded["trace_id"] != sc.TraceID().String() {
@@ -286,7 +288,7 @@ func TestProbeBuiltins(t *testing.T) {
 		count := func(event string) (lines, dropped int) {
 			for _, line := range stdout.everything() {
 				if strings.Contains(line, `"event.name":"`+event+`"`) {
-					if strings.Contains(line, `"dropped":`) {
+					if strings.Contains(line, `"stego.dropped":`) {
 						dropped++
 					} else {
 						lines++
@@ -324,13 +326,13 @@ func TestProbeBuiltins(t *testing.T) {
 		wait("worker.run.failed", otel.ConsoleLimit+1)
 		var countLine map[string]any
 		for _, line := range stdout.everything() {
-			if strings.Contains(line, `"dropped":`) {
+			if strings.Contains(line, `"stego.dropped":`) {
 				if err := json.Unmarshal([]byte(line), &countLine); err != nil {
 					t.Fatal(err)
 				}
 			}
 		}
-		if countLine["event.name"] != "worker.run.failed" || countLine["dropped"] != float64(burst-otel.ConsoleLimit) || countLine["severity"] != "ERROR" {
+		if countLine["event.name"] != "worker.run.failed" || countLine["attributes"].(map[string]any)["stego.dropped"] != float64(burst-otel.ConsoleLimit) || countLine["severity"] != "ERROR" {
 			t.Fatalf("the count line is %v, want worker.run.failed, ERROR and %d dropped", countLine, burst-otel.ConsoleLimit)
 		}
 		// The stop ends each window: a burst after it is counted before the last line.
@@ -343,6 +345,114 @@ func TestProbeBuiltins(t *testing.T) {
 		got := stdout.everything()
 		if n, dropped := count("worker.run.failed"); n != 2*otel.ConsoleLimit || dropped != 2 || !strings.Contains(got[len(got)-1], `"event.name":"telemetry.runtime.stopped"`) {
 			t.Fatalf("after the stop the console holds %d lines and %d count lines of worker.run.failed, want %d and 2 before telemetry.runtime.stopped", n, dropped, 2*otel.ConsoleLimit)
+		}
+	})
+
+	t.Run("ST-SUP-RP12-LC21-T05 The count line of a window comes at the end of the window with no later line of its event name", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "off", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := &handClock{at: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)}
+		r.console.mu.Lock()
+		r.console.now = clock.now
+		r.console.mu.Unlock()
+		// The test gives the ticks of the watch itself, so no wall clock bounds it.
+		r.console.unwatch()
+		ticks := make(chan time.Time)
+		r.console.watch(ticks, nil)
+		worker := r.Worker("ship-orders")
+		const burst = otel.ConsoleLimit + 4
+		for range burst {
+			worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		}
+		r.Service(context.Background(), ServiceReady)
+		for !slices.ContainsFunc(stdout.everything(), func(line string) bool { return strings.Contains(line, `"service.ready"`) }) {
+			runtime.Gosched()
+		}
+		counted := func() string {
+			for _, line := range stdout.everything() {
+				if strings.Contains(line, `"stego.dropped":`) {
+					return line
+				}
+			}
+			return ""
+		}
+		// A tick in the window writes no count line; a tick after its end writes it, with no later line of
+		// worker.run.failed (walkthrough 25, L-2).
+		ticks <- clock.now()
+		ticks <- clock.now()
+		if line := counted(); line != "" {
+			t.Fatalf("a tick in the window wrote the count line %q", line)
+		}
+		clock.move(otel.ConsoleWindow)
+		ticks <- clock.now()
+		ticks <- clock.now()
+		line := counted()
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("after the window the console holds no count line: %v", stdout.everything())
+		}
+		attrs, _ := decoded["attributes"].(map[string]any)
+		if decoded["event.name"] != "worker.run.failed" || decoded["severity"] != "ERROR" || attrs["stego.dropped"] != float64(burst-otel.ConsoleLimit) {
+			t.Fatalf("the count line is %q, want worker.run.failed, ERROR and %d dropped", line, burst-otel.ConsoleLimit)
+		}
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("ST-SUP-RP12-LC21-T06 A run that waits for the relations of a row is a WARN worker.run.failed, and each other failed run an ERROR", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"record-jobs"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := startCollector(t)
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "off", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker := r.Worker("record-jobs")
+		worker.RunFailedCause(context.Background(), WorkerUndecided, RelationsPendingCause)
+		worker.RunFailedCause(context.Background(), WorkerUndecided, "undecided")
+		worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{RelationsPendingCause: "WARN", "undecided": "ERROR", "fill_error": "ERROR"}
+		got := map[string]string{}
+		for _, line := range stdout.everything() {
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(line), &decoded); err != nil || decoded["event.name"] != "worker.run.failed" {
+				continue
+			}
+			attrs, _ := decoded["attributes"].(map[string]any)
+			cause, _ := attrs["stego.cause"].(string)
+			got[cause], _ = decoded["severity"].(string)
+		}
+		if !maps.Equal(got, want) {
+			t.Fatalf("the console lines of worker.run.failed have the severities %v, want %v", got, want)
+		}
+		otlp := map[string]string{}
+		for _, record := range c.logRecords() {
+			if record.EventName == "worker.run.failed" {
+				for _, kv := range record.Attributes {
+					if kv.Key == "cause" {
+						otlp[kv.Value.GetStringValue()] = record.SeverityText
+					}
+				}
+			}
+		}
+		if !maps.Equal(otlp, want) {
+			t.Fatalf("the OTLP records of worker.run.failed have the severities %v, want %v", otlp, want)
 		}
 	})
 

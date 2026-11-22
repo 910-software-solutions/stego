@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"bytes"
 	_ "embed"
 	"os"
 	"os/exec"
@@ -44,6 +45,17 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "failure_test.go"), serviceFailureTests, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// The one form of the lines of the runtime: the checks read each record with a copy of its Check
+	// (registry/runtime/internal/logline; walkthrough 25, L-1).
+	form, err := os.ReadFile(filepath.Join("..", "..", "registry", "runtime", "internal", "logline", "logline.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	form = bytes.Replace(form, []byte("\npackage logline\n"), []byte("\npackage main\n"), 1)
+	form = bytes.Replace(form, []byte("\nfunc Check(line []byte) error {"), []byte("\nfunc CheckLine(line []byte) error {"), 1)
+	if err := os.WriteFile(filepath.Join(project, "logline_test.go"), form, 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "diagnostics_test.go"), httpDiagnosticsTests, 0644); err != nil {

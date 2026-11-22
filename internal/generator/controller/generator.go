@@ -101,7 +101,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 			return nil, nil, err
 		}
 		var output bytes.Buffer
-		if err := tmpl.Execute(&output, struct{ Package, Tracing string }{path.Base(ctx.OutputNamespace), tracing}); err != nil {
+		if err := tmpl.Execute(&output, struct{ Package, Tracing, Service string }{path.Base(ctx.OutputNamespace), tracing, ctx.ServiceName}); err != nil {
 			return nil, nil, err
 		}
 		code, err := format.Source(output.Bytes())

@@ -325,7 +325,10 @@ The image of the Job is the image of the base, so the `images` entry of the over
 ### When the Job fails
 
 A Job that fails writes one failure record, a JSON line with the event `service.failed`, to its error output. The
-record never holds the error text. It gives:
+record never holds the error text. From runtime v0.195.0 (rest-crud 3.261.0, rpc-service and browser-service
+1.261.0) the record has the one form of the lines of the runtime (see [Read the logs](operations.md#read-the-logs)):
+its fields are under `attributes`, each with the prefix `stego.`, such as `stego.stage`, and a list, such as the
+modes, is one string with its names joined by commas. Before, the fields were at the top level. It gives:
 
 - `stage`: the step that failed, such as `migrate.ledger_check` or `migrate.authorization_schema`.
 - `cause`: a fixed class of the cause, when the Job knows one. For the database, the class of its SQLSTATE, such as
@@ -376,8 +379,7 @@ None of these fields holds an endpoint, a key, a migration name or a digest. The
 names the migration.
 
 For example, a Job whose SpiceDB refused the connection writes
-`{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","fault":"spicedb.connection","object":"spicedb","remedy":"the migration job cannot reach SpiceDB: ...","cause":"unavailable"}`
-(with its time and message).
+`{"timestamp":"2026-11-22T07:20:01.000000000Z","severity":"ERROR","service.name":"orders","event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":"migrate.authorization_schema","stego.fault":"spicedb.connection","stego.object":"spicedb","stego.remedy":"the migration job cannot reach SpiceDB: ...","stego.cause":"unavailable"}}`.
 
 A start whose key source the key set refused gives the stage
 `service.start.authn.keys`, or `service.start.authn.discovery` for the

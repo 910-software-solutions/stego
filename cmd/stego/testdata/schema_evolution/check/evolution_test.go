@@ -1260,7 +1260,7 @@ func TestContract(t *testing.T) {
 		// v1 can no longer start: its migration job refuses the ledger, and an api replica alerts the schema
 		// mismatch, as the start of a pod alerts and does not refuse (decision on finding F10, owner, 2026-11-13).
 		j := d.migrate("v1")
-		if err := j.wait(time.Minute); err == nil || !strings.Contains(j.out.String(), `"stage":"migrate.ledger_check"`) {
+		if err := j.wait(time.Minute); err == nil || !strings.Contains(j.out.String(), `"stego.stage":"migrate.ledger_check"`) {
 			t.Errorf("the migration job of v1 after the contract ends with %v:\n%s\nwant a refusal at its ledger check", err, j.out)
 		}
 		late := d.serve("v1")

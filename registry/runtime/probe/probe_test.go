@@ -189,7 +189,7 @@ func TestProbeBinding(t *testing.T) {
 				t.Fatalf("a record holds the claim %q", private)
 			}
 		}
-		if !strings.Contains(text, `"tenant":"t1","principal":"user:u-7","operation":"reserve-and-charge"`) || !strings.Contains(text, `"trace_id":"`+bound.TraceID().String()+`"`) {
+		if !strings.Contains(text, `"stego.tenant":"t1","stego.principal":"user:u-7","stego.operation":"reserve-and-charge"`) || !strings.Contains(text, `"trace_id":"`+bound.TraceID().String()+`"`) {
 			t.Fatalf("the console lines are %q, want the tenant, the principal, the operation and the trace ID", text)
 		}
 	})

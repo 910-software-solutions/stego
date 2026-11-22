@@ -25,15 +25,13 @@ func(d *stegoHTTPDiagnostics)Write(data []byte)(int,error){
   d.queue=make(chan time.Time,256)
   go func(){
    defer close(d.done)
-   encoder:=json.NewEncoder(d.output)
    for timestamp:=range d.queue {
-    record:=struct{
-     Time time.Time ` + "`json:\"timestamp\"`" + `
-     Severity string ` + "`json:\"severity\"`" + `
-     Event string ` + "`json:\"event.name\"`" + `
-     Message string ` + "`json:\"message\"`" + `
-    }{timestamp,"ERROR","http.server.diagnostic","HTTP server reported a diagnostic"}
-    if err:=encoder.Encode(record);err!=nil{d.failures.Add(1)}
+    // The one form of each line of the runtime (walkthrough 25, L-1).
+    service:=os.Getenv("OTEL_SERVICE_NAME");if service==""{service=stegoServiceName};if service==""{service="unknown_service"}
+    name,_:=json.Marshal(service)
+    stamp,_:=json.Marshal(timestamp.UTC().Format(time.RFC3339Nano))
+    line:=append(append(append(append([]byte(` + "`" + `{"timestamp":` + "`" + `),stamp...),` + "`" + `,"severity":"ERROR","service.name":` + "`" + `...),name...),` + "`" + `,"event.name":"http.server.diagnostic","message":"HTTP server reported a diagnostic"}` + "`" + `+"\n"...)
+    if _,err:=d.output.Write(line);err!=nil{d.failures.Add(1)}
    }
   }()
  }

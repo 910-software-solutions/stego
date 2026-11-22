@@ -88,7 +88,7 @@ func TestAllSignalsAndLocalLogsShareRuntimeIdentity(t *testing.T) {
 	t.Run("ST-SUP-RC17-OC20-T01 Every signal and the local log of the emitted runtime share its identity", func(t *testing.T) {
 		sink := collectorFixture(t, false)
 		var output bytes.Buffer
-		runtime, err := newRuntime(&output)
+		runtime, err := newRuntime(formOf(&output))
 		if err != nil {
 			t.Fatal(err)
 		}

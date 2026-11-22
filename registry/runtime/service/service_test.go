@@ -382,8 +382,8 @@ func TestNew(t *testing.T) {
 					if json.Unmarshal([]byte(line), &record) != nil || record["event.name"] != "schema.manifest.mismatch" {
 						continue
 					}
-					fields, _ := record["fields"].(map[string]any)
-					if record["severity"] == "ERROR" && fields["class"] == class {
+					attrs, _ := record["attributes"].(map[string]any)
+					if record["severity"] == "ERROR" && attrs["stego.class"] == class {
 						alert = true
 					}
 				}

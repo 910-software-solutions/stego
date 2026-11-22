@@ -71,7 +71,7 @@ func testHTTPDiagnosticsWithoutTelemetry(t *testing.T) {
 		if err := json.Unmarshal(output.Bytes(), &record); err != nil {
 			t.Fatal(err)
 		}
-		if len(record) != 4 || record["event.name"] != "http.server.diagnostic" || record["severity"] != "ERROR" {
+		if CheckLine(output.Bytes()) != nil || len(record) != 5 || record["service.name"] != "unknown_service" || record["event.name"] != "http.server.diagnostic" || record["severity"] != "ERROR" {
 			t.Fatal("invalid fallback diagnostic", record)
 		}
 	}

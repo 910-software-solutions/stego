@@ -54,7 +54,7 @@ func testDatabaseSignals(t *testing.T, provision bool, known ...string) {
 			// A call that does not fail is a DEBUG line: the test reads each local line.
 			t.Setenv("STEGO_LOG_LEVEL", "debug")
 			var local bytes.Buffer
-			r, err := newRuntime(&local)
+			r, err := newRuntime(formOf(&local))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func testDatabaseSignals(t *testing.T, provision bool, known ...string) {
 func TestPostgresOperationLocalAndCollectorFailure(t *testing.T) {
 	traceEnvironment(t)
 	var local bytes.Buffer
-	r, err := newRuntime(&local)
+	r, err := newRuntime(formOf(&local))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestPostgresOperationLocalAndCollectorFailure(t *testing.T) {
 func TestAuthKeyRefreshLocalAndCollectorFailure(t *testing.T) {
 	traceEnvironment(t)
 	var local bytes.Buffer
-	r, err := newRuntime(&local)
+	r, err := newRuntime(formOf(&local))
 	if err != nil {
 		t.Fatal(err)
 	}

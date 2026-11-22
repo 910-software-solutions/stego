@@ -12,7 +12,7 @@ import (
 // builtin makes the descriptor of one built-in observation. Its fields are enums whose values the Builtins of the
 // runtime hold, and it has no emitter: only the runtime's own methods send it.
 func builtin(name string, kind Kind, severity Severity, c class, fields ...string) *Observation {
-	o := &Observation{name: name, signal: name, kind: kind, severity: severity, counts: CountsCommitted, class: c}
+	o := &Observation{name: name, signal: name, message: builtinMessages[name], kind: kind, severity: severity, counts: CountsCommitted, class: c}
 	for _, f := range fields {
 		o.fields = append(o.fields, field{name: f, typ: FieldEnum})
 	}
@@ -35,6 +35,10 @@ var (
 	// workerRunFailed has the fixed cause class of the run's error besides its outcome (ST-SUP-RC35-OC06, decision on
 	// ST-SUP-Q159).
 	workerRunFailed = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome", "cause")
+	// workerRunWaiting is worker.run.failed of a run that waits for the relations of a row (the cause
+	// relations_pending), a WARN: the outbox dispatches the message again, and a run past the bound of the wait has
+	// another cause and is an Error (walkthrough 25, L-3).
+	workerRunWaiting = builtin("worker.run.failed", Event, Warn, workerClass, "worker", "outcome", "cause")
 	// workerRunCompleted is a run that committed, an Info with the worker name only (decision on ST-SUP-Q210).
 	workerRunCompleted = builtin("worker.run.completed", Event, Info, workerClass, "worker")
 	workerTickSkipped  = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
@@ -50,6 +54,28 @@ var (
 	backfillStalled    = builtin("schema.backfill.stalled", Event, Error, backfillClass, "change")
 	backfillThrottled  = builtin("schema.backfill.throttled", Counter, Warn, backfillClass, "change", "reason")
 )
+
+// builtinMessages are the fixed messages of the console lines of the built-in observations (walkthrough 25, L-1).
+var builtinMessages = map[string]string{
+	"telemetry.runtime.started":        "Telemetry runtime started",
+	"telemetry.runtime.stopped":        "Telemetry runtime stopped",
+	"service.ready":                    "Service is ready",
+	"service.stopping":                 "Service is stopping",
+	"service.failed":                   "Service failed",
+	"http.server.diagnostic":           "HTTP server reported a diagnostic",
+	"schema.manifest.mismatch":         "The database does not satisfy the schema manifest",
+	"worker.run.failed":                "A worker run did not commit",
+	"worker.run.completed":             "A worker run committed",
+	"worker.tick.skipped":              "A worker tick was skipped",
+	"worker.tick.failed":               "A worker tick did not read the tenant list",
+	"worker.tenant.unreached":          "A worker tick did not reach a tenant",
+	"schema.backfill.rows":             "A backfill moved rows",
+	"schema.backfill.failed_rows":      "Rows of a backfill failed the conversion",
+	"schema.backfill.duplicate_groups": "A backfill found duplicate groups",
+	"schema.backfill.completed":        "A backfill completed",
+	"schema.backfill.stalled":          "A backfill stalled",
+	"schema.backfill.throttled":        "A backfill was throttled",
+}
 
 // builtinObservations are the built-in observations, whose names no declared observation may take.
 var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerRunCompleted, workerTickFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
@@ -222,6 +248,9 @@ func (c *core) builtin(ctx context.Context, o *Observation, count int64, values 
 			ok = slices.Contains(workerOutcomes, WorkerOutcome(v))
 		case "cause":
 			ok = slices.Contains(WorkerCauses, v)
+		case "reason":
+			// The reasons of schema.backfill.throttled (walkthrough 25: the field had no check, so each was dropped).
+			ok = slices.Contains(BackfillThrottleReasons, v)
 		}
 		if !ok {
 			c.dropped.Add(1)
@@ -264,9 +293,19 @@ func (w Worker) RunFailed(ctx context.Context, outcome WorkerOutcome) {
 
 // RunFailedCause sends worker.run.failed for a run that did not commit, with the worker name, the outcome and the
 // fixed cause class of its error, one of WorkerCauses, and nothing else (ST-SUP-RC35-OC06).
+// A run of the cause RelationsPendingCause is a WARN, as the outbox dispatches its message again; each other run is
+// an ERROR (walkthrough 25, L-3).
 func (w Worker) RunFailedCause(ctx context.Context, outcome WorkerOutcome, cause string) {
-	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome), cause)
+	o := workerRunFailed
+	if cause == RelationsPendingCause {
+		o = workerRunWaiting
+	}
+	w.core.builtin(ctx, o, 1, w.name, string(outcome), cause)
 }
+
+// RelationsPendingCause is the cause class of a consumer run that waits for the relations of a row that the relay
+// has not written yet: its worker.run.failed is a WARN (walkthrough 25, L-3).
+const RelationsPendingCause = "relations_pending"
 
 // RunCompleted sends worker.run.completed, an Info, for a run that committed, with the worker name and nothing else
 // (decision on ST-SUP-Q210). The console writes it when STEGO_LOG_LEVEL is info or debug.
@@ -319,6 +358,9 @@ func (b Backfill) BackfillCompleted(change string) {
 func (b Backfill) BackfillStalled(change string) {
 	b.core.builtin(context.Background(), backfillStalled, 1, change)
 }
+
+// BackfillThrottleReasons are the values of the field reason of schema.backfill.throttled.
+var BackfillThrottleReasons = []string{"replica_lag", "batch_time"}
 
 // BackfillThrottled adds one to schema.backfill.throttled, with the reason: replica_lag or batch_time.
 func (b Backfill) BackfillThrottled(change, reason string) {

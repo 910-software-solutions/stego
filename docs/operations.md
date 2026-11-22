@@ -13,29 +13,81 @@ Secret reaches a process only when its pod restarts, also with the Component
 ## Read the logs
 
 Each process of a service writes one JSON object on each line. The telemetry
-runtime writes its lines on standard error, and the probe runtime writes the
-service and worker events on standard output; `kubectl logs` shows both. A
-line holds `timestamp`, `severity`, `event.name` and `message`, and fixed
-attributes. A line of the runtime holds its attributes under `attributes`,
-each with the prefix `stego.`.
+runtime and the failure record of the process write on standard error. The
+probe runtime and the console of the log provider write on standard output.
+`kubectl logs` shows both.
 
-At the default level, `info`, a service writes these lines:
+From runtime v0.195.0 (rest-crud 3.261.0, rpc-service and browser-service
+1.261.0), each line of the runtime has one form. A query that reads one
+member reads it on each line. A line holds these members, in this order:
+
+| Member | Value | On each line |
+|---|---|---|
+| `timestamp` | The time in UTC, in RFC 3339 with nanoseconds, such as `2026-11-22T07:29:43.822602285Z`. | Yes |
+| `severity` | `DEBUG`, `INFO`, `WARN`, `ERROR` or `FATAL`. | Yes |
+| `service.name` | The name of the service: `OTEL_SERVICE_NAME`, else the declared name. A line before the start knows the name gives `unknown_service`. | Yes |
+| `service.instance.id` | The identity of the writer in the process. The HTTP telemetry of a service and its runtime each have an identity, so the lines of one process can show two. The failure record has none. | No |
+| `event.name` | The name of the event, such as `worker.run.failed`. | Yes |
+| `message` | A fixed text. | Yes |
+| `trace_id`, `span_id` | The trace and the span of the line, when it has them. | No |
+| `attributes` | The fields of the event, when it has fields. | No |
+
+Each key under `attributes` has the prefix `stego.`, such as
+`stego.worker`, or it is a name of the OpenTelemetry semantic conventions for
+HTTP and RPC: `http.request.method`, `http.route`,
+`http.response.status_code`, `rpc.method`, `rpc.response.status_code` and
+`error.type`. A value is a string, a number or a bool. A list, such as the
+modes of a failure record, is one string with its names joined by commas.
+
+A line of other code, such as of a fill, has the event name `stego.log`, so
+that it cannot pass as an event of the runtime. Each line of the runtime has
+an event name of its own.
+
+A sample of each kind of line:
+
+```json
+{"timestamp":"2026-11-22T07:54:43.322614534Z","severity":"WARN","service.name":"companies","service.instance.id":"e3dd9d43-92f9-41df-b603-3e1f0f44fc6a","event.name":"http.server.request.completed","message":"HTTP request completed","trace_id":"7ce09775ddd4461b3c5bc81023e6b6ff","span_id":"4ea5b0b83ebc6dcc","attributes":{"http.request.method":"GET","http.route":"/companies/{id}","http.response.status_code":404,"stego.duration_seconds":0.000057969}}
+{"timestamp":"2026-11-22T07:54:44.100000000Z","severity":"WARN","service.name":"companies","service.instance.id":"e3dd9d43-92f9-41df-b603-3e1f0f44fc6a","event.name":"rpc.server.call.completed","message":"RPC call completed","attributes":{"rpc.method":"/companies.v1.Companies/Get","rpc.response.status_code":"NOT_FOUND","stego.duration_seconds":0.0012}}
+{"timestamp":"2026-11-22T07:55:43.000000000Z","severity":"WARN","service.name":"companies","service.instance.id":"e3dd9d43-92f9-41df-b603-3e1f0f44fc6a","event.name":"http.server.request.completed","message":"the local log dropped lines of this route or method and status in the last window","attributes":{"http.route":"/companies","http.response.status_code":401,"stego.dropped":140}}
+{"timestamp":"2026-11-22T07:29:43.822602285Z","severity":"ERROR","service.name":"procurement","service.instance.id":"bf92e4a3-cf54-426b-85c5-f53949eea54f","event.name":"worker.run.failed","message":"A worker run did not commit","attributes":{"stego.worker":"record-jobs","stego.outcome":"rolled_back","stego.cause":"fill_error"}}
+{"timestamp":"2026-11-22T07:29:43.823000000Z","severity":"WARN","service.name":"procurement","service.instance.id":"bf92e4a3-cf54-426b-85c5-f53949eea54f","event.name":"command.consumer.run_failed","message":"a consuming worker's run did not commit: record-jobs rolled_back fill_error","attributes":{"stego.worker":"record-jobs","stego.destination":"procurement","stego.event_id":"0190a1b2-0000-7000-8000-000000000001","stego.attempt":3,"stego.outcome":"rolled_back","stego.cause":"fill_error"}}
+{"timestamp":"2026-11-22T07:27:14.240366648Z","severity":"INFO","service.name":"procurement","service.instance.id":"bf92e4a3-cf54-426b-85c5-f53949eea54f","event.name":"migrate.step.completed","message":"the step of the migration job completed","attributes":{"stego.step":"tables","stego.outcome":"ok","stego.duration_seconds":0.41}}
+{"timestamp":"2026-11-22T07:27:13.205904421Z","severity":"INFO","service.name":"procurement","event.name":"service.listening","message":"the server listens","attributes":{"stego.server":"http","stego.address":"[::]:8080"}}
+{"timestamp":"2026-11-22T07:20:01.000000000Z","severity":"ERROR","service.name":"procurement","event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":"service.start.database","stego.modes":"api","stego.fault":"database.connection","stego.object":"database","stego.remedy":"...","stego.cause":"authentication_failed","stego.sqlstate":"28P01"}}
+{"timestamp":"2026-11-22T07:29:50.000000000Z","severity":"INFO","service.name":"procurement","service.instance.id":"bf92e4a3-cf54-426b-85c5-f53949eea54f","event.name":"stego.log","message":"a line of a fill"}
+```
+
+The lines in order: an access line, the line of a gRPC call, the count line
+of dropped access lines, a built-in worker event of the probe, a warning
+record of the log provider, a line of the runtime through `log/slog`, the
+line of a listener, the failure record of a process, and a line of a fill.
+
+At the default level, `info`, a service writes these lines. The fields are
+the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `duration_seconds`, `error.type` for a status of 500 or more | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
-| `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
-| `command.refused` | A command that answers 400 to 499, such as a declared refusal | `action`, `resource_type`, `status`, `code` (such as `shipment.not_draft`, `denied` or `invalid`), `field` when the refusal names one | INFO |
-| `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `worker` | INFO |
-| `worker.run.failed` | A worker run that did not commit | `worker`, `outcome`, `cause` (a fixed class) | ERROR |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
+| `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
+| `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
+| `worker.run.failed` | A worker run that did not commit | `stego.worker`, `stego.outcome`, `stego.cause` (a fixed class) | WARN for the cause `relations_pending`, ERROR for each other cause |
+| `service.listening` | The HTTP or the gRPC server listens | `stego.server` (`http` or `grpc`), `stego.address` | INFO |
 | `migrate.job.started` | The migration Job starts | none | INFO |
-| `migrate.step.started` | A step of the migration Job starts | `step` | INFO |
-| `migrate.step.completed` | A step of the migration Job ends | `step`, `outcome` (`ok` or `failed`), `duration_seconds`, `cause` for a failed step that has a fixed class | INFO for `ok`, ERROR for `failed` |
-| `migrate.job.completed` | The migration Job ends with no failure | `outcome`, `duration_seconds` | INFO |
+| `migrate.step.started` | A step of the migration Job starts | `stego.step` | INFO |
+| `migrate.step.completed` | A step of the migration Job ends | `stego.step`, `stego.outcome` (`ok` or `failed`), `stego.duration_seconds`, `stego.cause` for a failed step that has a fixed class | INFO for `ok`, ERROR for `failed` |
+| `migrate.job.completed` | The migration Job ends with no failure | `stego.outcome`, `stego.duration_seconds` | INFO |
+
+A consuming run with the cause `relations_pending` waits for the relations
+of a row that the relay did not write yet, such as the row that the message
+before made. The outbox dispatches the message again, and a later run
+commits, so the line is a WARN and not an alert. A run that waits past the
+bound of the wait (10 attempts or 5 minutes) has another cause, such as
+`fill_error`, and is an ERROR, as is each run whose message is parked.
 
 A failed migration Job ends with the failure record of the process, which
-names the step. A start line with no end line names the step that waits, such
-as for a lock.
+names the step in `stego.stage`. A start line with no end line names the
+step that waits, such as for a lock.
 
 Each database call writes `db.client.operation.completed`. A call that does
 not fail is DEBUG, so it shows only at the level `debug`. A call that fails is
@@ -54,8 +106,12 @@ The access lines cannot push out the failure lines:
 - The WARN access lines of one route and status, and in a budget of their
   own the ERROR access lines, write at most 10 lines in one minute. When the
   minute ends with lines dropped, one line of the same event with the route,
-  the status and `dropped`, the count of the dropped lines, follows. The
-  same is true for the method and the status of a gRPC call.
+  the status and `stego.dropped`, the count of the dropped lines, follows at
+  the end of the minute, also when no later request of that route and status
+  comes (from runtime v0.195.0; before, the line came only with the next
+  request of the same route and status). The same is true for the method and
+  the status of a gRPC call, and for the WARN and ERROR lines of one event
+  name on the console of the log provider and of the probe.
 - The last 64 places of the local queue (of 256) take only the service events
   and the ERROR lines.
 - `worker.run.completed` never takes the last 16 places of the queue of the
@@ -83,12 +139,14 @@ The service events, such as `service.ready` and `service.stopping`, are on
 the console at each level. The lines of the security class are written at
 each level too:
 
-- `auditsink: the default sink holds another entry under the ID of an entry`
-  (WARN): a row of the default audit sink changed.
-- `idempotency: a stored answer does not open` (WARN): a key of the key ring
-  was removed too early, or a row changed.
-- `command: the authorization provider could not decide` and `query: the
-  authorization provider could not decide the read` (WARN).
+- `audit.sink.entry_conflict` (WARN, `auditsink: the default sink holds
+  another entry under the ID of an entry`): a row of the default audit sink
+  changed.
+- `idempotency.answer.unopened` (WARN, `idempotency: a stored answer does not
+  open`): a key of the key ring was removed too early, or a row changed.
+- `command.authz.undecided` and `query.authz.undecided` (WARN, `command: the
+  authorization provider could not decide` and `query: the authorization
+  provider could not decide the read`).
 - `command.seal.pass` and `command.reseal.pass` (INFO): a pass of the seal or
   the re-seal of a secret column.
  The export to an OpenTelemetry collector does not

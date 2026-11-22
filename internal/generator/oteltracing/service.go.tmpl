@@ -6,6 +6,8 @@ import (
  "errors"
  "io"
  "log"
+ "math"
+ "strconv"
  "sync"
  "sync/atomic"
  "time"
@@ -46,6 +48,9 @@ type serviceLogs struct {
  // windows are the budgets of the WARN and ERROR access lines, and now their clock, under mu.
  windows map[accessBudget]*accessWindow
  now func()time.Time
+ // stopWatch ends the watch of the windows, and watched is closed when it ended.
+ stopWatch,watched chan struct{}
+ unwatchOnce sync.Once
 }
 // AccessLimit is the most WARN access lines, and in a budget of their own the most
 // ERROR access lines, of one route or method and status in one AccessWindow. A
@@ -105,10 +110,38 @@ func newLocalLogs(writer io.Writer)*localLogs {
  local:=&localLogs{queue:make(chan localRecord,QueueSize),done:make(chan struct{})}
  go func(){
   defer close(local.done)
-  encoder:=json.NewEncoder(writer)
-  for record:=range local.queue {if err:=encoder.Encode(record);err!=nil{local.failures.Add(1)}}
+  var line []byte
+  for record:=range local.queue {line=record.appendLine(line[:0]);if _,err:=writer.Write(line);err!=nil{local.failures.Add(1)}}
  }()
  return local
+}
+// appendLine appends the one JSON line of record in the form of each line of the
+// runtime (walkthrough 25, L-1): timestamp (UTC, RFC 3339 with nanoseconds),
+// severity, service.name, service.instance.id, event.name, message, trace_id and
+// span_id when the record has a span, and attributes: the names of the semantic
+// conventions for HTTP and RPC, and each other field with the prefix stego.
+func(record localRecord)appendLine(b []byte)[]byte{
+ text:=func(b []byte,value string)[]byte{encoded,_:=json.Marshal(value);return append(b,encoded...)}
+ service:=record.Service;if service==""{service="unknown_service"}
+ b=append(b,`{"timestamp":`...);b=text(b,record.Time.UTC().Format(time.RFC3339Nano))
+ b=append(b,`,"severity":`...);b=text(b,record.Severity)
+ b=append(b,`,"service.name":`...);b=text(b,service)
+ if record.Instance!=""{b=append(b,`,"service.instance.id":`...);b=text(b,record.Instance)}
+ b=append(b,`,"event.name":`...);b=text(b,record.Event)
+ b=append(b,`,"message":`...);b=text(b,record.Message)
+ if record.TraceID!=""&&record.SpanID!=""{b=append(b,`,"trace_id":`...);b=text(b,record.TraceID);b=append(b,`,"span_id":`...);b=text(b,record.SpanID)}
+ n:=0
+ key:=func(name string){if n==0{b=append(b,`,"attributes":{`...)}else{b=append(b,',')};n++;b=text(b,name);b=append(b,':')}
+ str:=func(name,value string){if value!=""{key(name);b=text(b,value)}}
+ str("http.request.method",record.HTTPMethod);str("http.route",record.HTTPRoute)
+ if record.HTTPStatus!=0{key("http.response.status_code");b=strconv.AppendInt(b,int64(record.HTTPStatus),10)}
+ str("error.type",record.ErrorType);str("rpc.method",record.RPCMethod);str("rpc.response.status_code",record.RPCStatus)
+ str("stego.startup.stage",record.Stage);str("stego.db.call",record.DatabaseCall);str("stego.operation",record.Operation);str("stego.outcome",record.Outcome)
+ if record.Retry{key("stego.retry");b=append(b,"true"...)}
+ if record.Dropped!=0{key("stego.dropped");b=strconv.AppendUint(b,record.Dropped,10)}
+ if d:=record.DurationSeconds;d!=nil&&!math.IsNaN(*d)&&!math.IsInf(*d,0){key("stego.duration_seconds");b=strconv.AppendFloat(b,*d,'g',-1,64)}
+ if n>0{b=append(b,'}')}
+ return append(b,'}','\n')
 }
 // enqueue writes a record of the level of STEGO_LOG_LEVEL or higher; put writes each record.
 // A record below ERROR never takes the last LocalReserve places of the queue.
@@ -121,7 +154,28 @@ func(r *Runtime)initServiceLogs(service string,writer io.Writer,level int){
  r.service.service=service
  r.service.local=newLocalLogs(writer)
  r.service.local.level=level
+ ticker:=time.NewTicker(AccessWindow/6)
+ r.watchAccess(ticker.C,ticker.Stop)
  if r.signals.logs!=nil{r.service.logger=r.signals.logs.Logger("stego/service")}
+}
+// watchAccess closes the access windows that ended at each tick, so the line with
+// the count of the dropped lines of a window comes at the end of the window also
+// when no later request of its route and status comes (walkthrough 25, L-2). stop
+// runs when the watch ends, at Close or unwatchAccess.
+func(r *Runtime)watchAccess(ticks <-chan time.Time,stop func()){
+ r.service.stopWatch,r.service.watched,r.service.unwatchOnce=make(chan struct{}),make(chan struct{}),sync.Once{}
+ stopWatch,watched:=r.service.stopWatch,r.service.watched
+ go func(){
+  defer close(watched)
+  if stop!=nil{defer stop()}
+  for{select{case <-ticks:r.service.mu.Lock();if !r.closed.Load(){r.closeAccessWindows(false)};r.service.mu.Unlock();case <-stopWatch:return}}
+ }()
+}
+// unwatchAccess ends the watch of the access windows and waits for it.
+func(r *Runtime)unwatchAccess(){
+ if r.service.stopWatch==nil{return}
+ r.service.unwatchOnce.Do(func(){close(r.service.stopWatch)})
+ <-r.service.watched
 }
 // LogServiceEvent queues a declared event for local JSON output and OTLP export.
 // False means the event is unknown or the runtime is closed. True does not

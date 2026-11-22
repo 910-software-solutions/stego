@@ -41,9 +41,12 @@ func TestAssembledHealthBypassesOnlyProbeAuthentication(t *testing.T) {
 		address := ""
 		for scanner.Scan() {
 			line := scanner.Text()
-			if _, port, ok := strings.Cut(line, "starting server on [::]:"); ok {
-				address = "http://127.0.0.1:" + port
-				break
+			// The line service.listening names the address, as JSON or as the text of the default handler.
+			if strings.Contains(line, "service.listening") {
+				if _, port, ok := strings.Cut(line, "[::]:"); ok {
+					address = "http://127.0.0.1:" + strings.TrimRight(port, "\"} ")
+					break
+				}
 			}
 		}
 		if address == "" {

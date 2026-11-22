@@ -293,6 +293,10 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 	if hasDB {
 		buf.WriteString(databaseConfigSource)
 	}
+	if fallible || hasRoutes {
+		// The service name of the failure record and of the diagnostics of the HTTP server (walkthrough 25, L-1).
+		fmt.Fprintf(&buf, "\n// stegoServiceName is the declared name of the service, which the failure record and the HTTP diagnostics name.\nconst stegoServiceName = %q\n", input.ServiceName)
+	}
 	if fallible {
 		buf.WriteString(serviceFailureSource)
 	}
@@ -362,7 +366,7 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 
 	// Failure output also applies to services with only a fallible constructor.
 	if fallible {
-		for _, pkg := range []string{"context", "crypto/x509", "encoding/json", "errors", "io", "io/fs", "net", "os", "syscall", "time"} {
+		for _, pkg := range []string{"context", "crypto/x509", "encoding/json", "errors", "io", "io/fs", "net", "os", "strings", "syscall", "time"} {
 			extraStdlib[pkg] = true
 		}
 	}
@@ -379,7 +383,7 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 	// log reports the HTTP listener.
 	if hasRoutes {
 		stdlibNeeded["log"] = true
-		for _, pkg := range []string{"crypto/tls", "path/filepath", "io"} {
+		for _, pkg := range []string{"crypto/tls", "path/filepath", "io", "log/slog"} {
 			extraStdlib[pkg] = true
 		}
 	}
@@ -630,7 +634,7 @@ func collectAllSlotVarNames(bindings []types.SlotDeclaration, hasSlots bool) map
 // variable disambiguation must reserve all of these to prevent collisions.
 func assemblerInternalVars(hasDB, hasRoutes, hasDiscovery, hasTasks bool) map[string]bool {
 	vars := make(map[string]bool)
-	for _, name := range []string{"stegoStage", "stegoErr", "stegoServiceFailure", "stegoReportFailure"} {
+	for _, name := range []string{"stegoStage", "stegoErr", "stegoServiceFailure", "stegoServiceName", "stegoReportFailure"} {
 		vars[name] = true
 	}
 	if hasDB {
@@ -1511,7 +1515,8 @@ func writeServerStart(buf *bytes.Buffer, input AssemblerInput, wiringRenames map
 	buf.WriteString("\tstegoStage = \"http.listen\"\n")
 	buf.WriteString("\tlistener, err := net.Listen(\"tcp\", addr)\n\tif err != nil { return err }\n")
 	buf.WriteString("\tif httpTLS != nil { listener = tls.NewListener(listener, httpTLS) }\n")
-	buf.WriteString("\tlog.Printf(\"starting server on %s\", listener.Addr())\n")
+	// The line of the listener has an event name of its own (otel.GeneratedEvents; walkthrough 25, L-1).
+	buf.WriteString("\tslog.InfoContext(ctx, \"the server listens\", \"event.name\", \"service.listening\", \"server\", \"http\", \"address\", listener.Addr().String())\n")
 	if hasBackgroundTasks(input) {
 		buf.WriteString("\tdefer listener.Close()\n")
 		writeBackgroundStart(buf, input, wiringRenames, handlerExpr)

@@ -384,7 +384,7 @@ func (r *Reseal) tenantColumn(ctx context.Context, t tenant.Tenant, c ResealColu
 		last = p.last
 	}
 	if failed > maxFailedLogs {
-		slog.WarnContext(ctx, "command: re-seal leaves values that do not open", "entity", c.Entity, "column", c.Column,
+		slog.WarnContext(ctx, "command: re-seal leaves values that do not open", otel.SlogEventKey, "command.reseal.unopened", "entity", c.Entity, "column", c.Column,
 			"tenant", t.ID(), "failed", failed)
 	}
 	err = tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
@@ -440,7 +440,7 @@ func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, 
 		if err != nil {
 			// The error names the column and the row, never a value.
 			if failedBefore+p.skipped < maxFailedLogs {
-				slog.WarnContext(ctx, "command: re-seal skips a value that does not open", "entity", c.Entity, "error", err.Error())
+				slog.WarnContext(ctx, "command: re-seal skips a value that does not open", otel.SlogEventKey, "command.reseal.skipped", "entity", c.Entity, "error", err.Error())
 			}
 			p.skipped++
 			continue

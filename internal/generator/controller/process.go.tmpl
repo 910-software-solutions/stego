@@ -9,6 +9,7 @@ import (
  "net/http"
  "os"
  "os/signal"
+ "strconv"
  "syscall"
  "time"
 )
@@ -27,10 +28,20 @@ func Main(run func(context.Context,*Metrics)error) {
   // Do not print domain errors, arguments, addresses, or credential values.
   // A blocked log destination cannot prevent process exit.
   written:=make(chan struct{})
-  go func(){_,_=io.WriteString(os.Stderr,"{\"severity\":\"ERROR\",\"event.name\":\"controller.process.failed\",\"message\":\"Controller process failed\"}\n");close(written)}()
+  // The one form of each line of the runtime (walkthrough 25, L-1).
+  line:="{\"timestamp\":\""+time.Now().UTC().Format(time.RFC3339Nano)+"\",\"severity\":\"ERROR\",\"service.name\":"+strconv.Quote(controllerService())+",\"event.name\":\"controller.process.failed\",\"message\":\"Controller process failed\"}\n"
+  go func(){_,_=io.WriteString(os.Stderr,line);close(written)}()
   select{case <-written:case <-time.After(100*time.Millisecond):}
  }
  os.Exit(code)
+}
+
+// controllerService is the service name of the line of a failed process: OTEL_SERVICE_NAME, else the declared
+// name, else unknown_service.
+func controllerService()string{
+ if name:=os.Getenv("OTEL_SERVICE_NAME");name!=""{return name}
+ if name:={{printf "%q" .Service}};name!=""{return name}
+ return "unknown_service"
 }
 
 func controllerProcess(ctx context.Context,args []string,address string,run func(context.Context,*Metrics)error)int {

@@ -63,7 +63,7 @@ func TestProbeValues(t *testing.T) {
 			}
 		}
 		for _, line := range stdout.all() {
-			if !strings.Contains(line, `"sku":"`) || strings.Contains(line, strings.Repeat("€", 86)) {
+			if !strings.Contains(line, `"stego.field.sku":"`) || strings.Contains(line, strings.Repeat("€", 86)) {
 				t.Fatalf("the console line %q does not hold the cut sku", line)
 			}
 		}

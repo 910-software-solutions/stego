@@ -30,7 +30,7 @@ func TestClientSignalsPreserveContextAndExcludePrivateData(t *testing.T) {
 				sink := collectorFixture(t, false)
 				t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
 				var output bytes.Buffer
-				runtime, err := newRuntime(&output)
+				runtime, err := newRuntime(formOf(&output))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -158,7 +158,7 @@ func TestClientSignalsPreserveContextAndExcludePrivateData(t *testing.T) {
 func TestClientLocalLogsAndUnavailableRuntime(t *testing.T) {
 	traceEnvironment(t)
 	var output bytes.Buffer
-	runtime, err := newRuntime(&output)
+	runtime, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func HTTPClientTestRuntime(t *testing.T) (*Runtime, *tracetest.SpanRecorder, *by
 	t.Helper()
 	traceEnvironment(t)
 	output := new(bytes.Buffer)
-	r, err := newRuntime(output)
+	r, err := newRuntime(formOf(output))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestHTTPClientSignals(t *testing.T) {
 				sink := collectorFixture(t, false)
 				t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
 				var output bytes.Buffer
-				r, err := newRuntime(&output)
+				r, err := newRuntime(formOf(&output))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -235,7 +235,7 @@ func BenchmarkHTTPClientSignals(b *testing.B) {
 func TestHTTPClientLocalAndUnavailableRuntime(t *testing.T) {
 	traceEnvironment(t)
 	var output bytes.Buffer
-	r, err := newRuntime(&output)
+	r, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}

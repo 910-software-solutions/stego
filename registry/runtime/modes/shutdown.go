@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
 // Pinger is the part of *sql.DB that the readiness of the worker and controller modes reads.
@@ -126,7 +128,7 @@ func (r *Readiness) Ready(ctx context.Context, m Mode) error {
 		if err := r.db.PingContext(ctx); err != nil {
 			// The readiness answers network callers, so it gives a fixed reason; the error, which can name the host,
 			// the user or the database, goes only to the log (security review of PR #457, L3).
-			slog.WarnContext(ctx, "modes: the database is not reachable", "mode", string(m), "error", err)
+			slog.WarnContext(ctx, "modes: the database is not reachable", otel.SlogEventKey, "modes.database.unreachable", "mode", string(m), "error", err)
 			return fmt.Errorf("%s: %w: %s", m, ErrNotReady, DatabaseUnreachable)
 		}
 		if m == Controller {

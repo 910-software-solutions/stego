@@ -14,7 +14,7 @@ import (
 func TestHTTPDiagnosticLoggerUsesSafeServiceEvents(t *testing.T) {
 	collector := collectorFixture(t, false)
 	var output bytes.Buffer
-	runtime, err := newRuntime(&output)
+	runtime, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}
