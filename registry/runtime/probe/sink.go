@@ -236,7 +236,7 @@ func start(telemetry *otel.Runtime, builtins *Builtins, setting string, stdout i
 	if telemetry.CollectorSet() {
 		otlp, err := newOTLPSink(telemetry, r.core, r.console)
 		if err != nil {
-			r.console.unwatch()
+			r.console.unwatch(context.Background())
 			r.console.queue.drain(context.Background())
 			r.console.builtins.drain(context.Background())
 			return nil, err

@@ -8,9 +8,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 )
 
 func TestSlogHandler(t *testing.T) {
@@ -178,6 +184,61 @@ func TestSlogHandler(t *testing.T) {
 			if !strings.Contains(line, `"event.name":"stego.log"`) || !strings.Contains(line, `"stego.event.name":"command.attempts.failed"`) {
 				t.Errorf("a line of code outside the runtime names an event of the runtime: %s", line)
 			}
+		}
+	})
+}
+
+func TestGeneratedEventSource(t *testing.T) {
+	t.Run("ST-SUP-RP03-LC16-T09 A generated event is named only from its generated package, and a line holds each key once", func(t *testing.T) {
+		for _, c := range []struct {
+			function, event string
+			want            bool
+		}{
+			{"main.run", "service.listening", true},
+			{"main.run.func1", "service.listening", true},
+			{"github.com/example/service/out/records/transport.(*Runtime).Run", "service.listening", true},
+			{"github.com/example/service/out/internal/stegoruntime.(*Runtime).Run", "service.audit_sink.selected", true},
+			{"github.com/example/service/out/internal/stegoruntime.(*Runtime).Run", "service.listening", false},
+			{"main.run", "service.audit_sink.selected", false},
+			{"github.com/example/service/fills/orders.Ship", "service.listening", false},
+			{"github.com/example/service/fills/transport.Ship", "service.listening", false},
+			{"github.com/example/service/fills/internal/stegoruntime.Run", "service.audit_sink.selected", false},
+			{"github.com/example/service/out/internal/stegoruntime.(*Runtime).Run", "command.seal.pass", false},
+		} {
+			if got := generatedSource(c.function, c.event); got != c.want {
+				t.Errorf("generatedSource(%q, %q) = %v, want %v", c.function, c.event, got, c.want)
+			}
+		}
+		if !GeneratedEvent("service.listening") || GeneratedEvent("command.seal.pass") {
+			t.Error("GeneratedEvent does not give the fixed set")
+		}
+		// A record of a function of another package, as of a fill, keeps stego.log for a generated event.
+		var out bytes.Buffer
+		h := NewSlogHandler(&out)
+		pc := reflect.ValueOf(strings.ToUpper).Pointer() + 1
+		forged := slog.NewRecord(time.Now(), slog.LevelInfo, "the server listens", pc)
+		forged.AddAttrs(slog.String(SlogEventKey, "service.listening"), slog.String("worker", "a"), slog.String("stego.worker", "b"))
+		if err := h.Handle(context.Background(), forged); err != nil {
+			t.Fatal(err)
+		}
+		line := out.String()
+		if !strings.Contains(line, `"event.name":"stego.log"`) || strings.Count(line, `"stego.worker"`) != 1 || !strings.Contains(line, `"stego.worker":"a"`) {
+			t.Fatalf("the line of another package is %s, want stego.log and one stego.worker", line)
+		}
+		if err := logline.Check([]byte(line)); err != nil {
+			t.Fatal(err)
+		}
+		// The console of the log provider writes a key once too.
+		console := &lockedBuffer{}
+		r := consoleRuntime(t, console, &consoleClock{now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)})
+		emitRecord(r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/command"), otellog.SeverityWarn,
+			"command.consumer.run_failed", "a run did not commit", attribute.String("worker", "a"), attribute.String("stego.worker", "b"))
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		text := console.text()
+		if len(text) != 1 || strings.Count(text[0], `"stego.worker"`) != 1 || logline.Check([]byte(text[0])) != nil {
+			t.Fatalf("the console line is %q, want one stego.worker", text)
 		}
 	})
 }

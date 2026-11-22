@@ -9,7 +9,7 @@ import (
  "net/http"
  "os"
  "os/signal"
- "strconv"
+ "encoding/json"
  "syscall"
  "time"
 )
@@ -29,12 +29,15 @@ func Main(run func(context.Context,*Metrics)error) {
   // A blocked log destination cannot prevent process exit.
   written:=make(chan struct{})
   // The one form of each line of the runtime (walkthrough 25, L-1).
-  line:="{\"timestamp\":\""+time.Now().UTC().Format(time.RFC3339Nano)+"\",\"severity\":\"ERROR\",\"service.name\":"+strconv.Quote(controllerService())+",\"event.name\":\"controller.process.failed\",\"message\":\"Controller process failed\"}\n"
+  line:="{\"timestamp\":\""+time.Now().UTC().Format(time.RFC3339Nano)+"\",\"severity\":\"ERROR\",\"service.name\":"+controllerJSONText(controllerService())+",\"event.name\":\"controller.process.failed\",\"message\":\"Controller process failed\"}\n"
   go func(){_,_=io.WriteString(os.Stderr,line);close(written)}()
   select{case <-written:case <-time.After(100*time.Millisecond):}
  }
  os.Exit(code)
 }
+
+// controllerJSONText is text as a JSON string (security review of PR #496, I4).
+func controllerJSONText(text string)string{encoded,_:=json.Marshal(text);return string(encoded)}
 
 // controllerService is the service name of the line of a failed process: the declared name, else unknown_service.
 func controllerService()string{

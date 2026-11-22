@@ -73,13 +73,32 @@ func (s *consoleSink) watch(ticks <-chan time.Time, stop func()) {
 	}()
 }
 
-// unwatch ends the watch and waits for its goroutine.
-func (s *consoleSink) unwatch() {
-	if s.stopWatch == nil {
-		return
+// stopWatching tells the watch to end, once; it does not wait.
+func (s *consoleSink) stopWatching() {
+	if s.stopWatch != nil {
+		s.unwatchOnce.Do(func() { close(s.stopWatch) })
 	}
-	s.unwatchOnce.Do(func() { close(s.stopWatch) })
-	<-s.watched
+}
+
+// unwatched waits until the goroutine of the watch ended, or until ctx ends, and tells whether it ended. The
+// goroutine can wait in a write of a count line on a blocked standard output, so the wait is bounded by ctx, the
+// shutdown limit (ST-SUP-RP12-LC12; security review of PR #496, M1).
+func (s *consoleSink) unwatched(ctx context.Context) bool {
+	if s.watched == nil {
+		return true
+	}
+	select {
+	case <-s.watched:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// unwatch ends the watch and waits for its goroutine until ctx ends.
+func (s *consoleSink) unwatch(ctx context.Context) bool {
+	s.stopWatching()
+	return s.unwatched(ctx)
 }
 
 // budget is the key of one rate limit of the built-in events: the event name, and whether it is of severity ERROR,
@@ -146,14 +165,16 @@ func (s *consoleSink) failed() uint64  { return s.queue.failed.Load() + s.builti
 // drain writes what both queues hold, then the line of telemetry.runtime.stopped, all until ctx ends. It tells
 // whether it wrote everything.
 func (s *consoleSink) drain(ctx context.Context, stopped *record) bool {
+	// The watch ends on each path of drain, also when a queue does not drain in time, so its ticker does not
+	// outlive the stop (security review of PR #496, L1).
+	s.stopWatching()
 	ok := s.queue.drain(ctx)
 	if !s.builtins.drain(ctx) {
 		ok = false
 	}
-	if !ok {
+	if !ok || !s.unwatched(ctx) {
 		return false
 	}
-	s.unwatch()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

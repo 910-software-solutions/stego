@@ -364,7 +364,7 @@ func TestProbeBuiltins(t *testing.T) {
 		r.console.now = clock.now
 		r.console.mu.Unlock()
 		// The test gives the ticks of the watch itself, so no wall clock bounds it.
-		r.console.unwatch()
+		r.console.unwatch(context.Background())
 		ticks := make(chan time.Time)
 		r.console.watch(ticks, nil)
 		worker := r.Worker("ship-orders")

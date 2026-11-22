@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -226,6 +229,74 @@ func TestProbeLineForm(t *testing.T) {
 			if !events[want] {
 				t.Fatalf("the console has no line of %s: %v", want, events)
 			}
+		}
+	})
+}
+
+// blockedOut is a standard output that blocks each write until release closes, and tells when a write entered.
+type blockedOut struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *blockedOut) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return len(p), nil
+}
+
+// endsAtThirdWait is a context whose Done channel closes at its third call: the drains of the two queues of the
+// console see it open, and the wait for the watch sees it closed, so the test needs no clock.
+type endsAtThirdWait struct {
+	context.Context
+	calls atomic.Int32
+	once  sync.Once
+	done  chan struct{}
+}
+
+func (c *endsAtThirdWait) Done() <-chan struct{} {
+	if c.calls.Add(1) >= 3 {
+		c.once.Do(func() { close(c.done) })
+	}
+	return c.done
+}
+
+func (c *endsAtThirdWait) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func TestProbeDrainBound(t *testing.T) {
+	t.Run("ST-SUP-RP12-LC12-T02 The stop does not wait past its limit for a watch that a blocked standard output holds", func(t *testing.T) {
+		out := &blockedOut{entered: make(chan struct{}, 1), release: make(chan struct{})}
+		defer close(out.release)
+		s := newConsoleSink(out, formatJSON, "orders", "instance-1")
+		clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+		s.mu.Lock()
+		s.now = func() time.Time { return clock }
+		s.windows[budget{event: "worker.run.failed", errors: true}] = &window{start: clock, dropped: 3}
+		s.mu.Unlock()
+		ticks := make(chan time.Time)
+		s.watch(ticks, nil)
+		s.mu.Lock()
+		clock = clock.Add(otel.ConsoleWindow)
+		s.mu.Unlock()
+		// The tick closes the window, and the watch blocks in the write of its count line, holding the lock.
+		ticks <- clock
+		<-out.entered
+		ctx := &endsAtThirdWait{Context: context.Background(), done: make(chan struct{})}
+		if s.drain(ctx, &record{obs: telemetryStopped, count: 1, time: clock}) {
+			t.Fatal("the drain wrote each line although standard output blocks")
+		}
+		if ctx.calls.Load() < 3 {
+			t.Fatalf("the drain ended after %d waits, before the wait for the watch", ctx.calls.Load())
 		}
 	})
 }

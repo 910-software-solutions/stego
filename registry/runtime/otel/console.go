@@ -299,11 +299,20 @@ func (c *console) write(line []byte) {
 func (c *console) recordLine(b []byte, line consoleLine) []byte {
 	b = logline.AppendHead(b, logline.Head{Time: line.at, Severity: consoleSeverity(line.severity), Service: c.service,
 		Instance: c.instance, Event: line.event, Message: line.message, TraceID: line.trace, SpanID: line.span})
-	for i, kv := range line.attrs {
-		b = logline.AppendKey(b, i, string(kv.Key))
+	// A key that the line has already, such as stego.x after x, is not written twice (security review of PR #496,
+	// I3): the first value stays.
+	n, seen := 0, make(map[string]bool, len(line.attrs))
+	for _, kv := range line.attrs {
+		key := logline.Key(string(kv.Key))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		b = logline.AppendKey(b, n, key)
 		b = appendJSONValue(b, kv.Value)
+		n++
 	}
-	return logline.AppendEnd(b, len(line.attrs))
+	return logline.AppendEnd(b, n)
 }
 
 // droppedLine is the line of the lines of one event name and budget that the rate limit dropped in one window: the

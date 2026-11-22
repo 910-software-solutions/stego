@@ -1685,7 +1685,10 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   the start and the migration job call), and each log/slog line of the
   runtime names an event of its own, such as `command.database.unavailable`
   or `lease.release_report.failed` in place of `stego.log`. A line of code
-  outside the runtime may name only an event of `otel.GeneratedEvents`.
+  outside the runtime may name only an event that `otel.GeneratedEvent`
+  gives, and only from the generated package that writes it: main or the
+  gRPC transport for `service.listening`, the runtime wiring for
+  `service.audit_sink.selected`. A line names each key once.
 - The probe console closes the windows of its rate limit at a tick, so the
   count line of the dropped lines of a window comes at the end of the
   window also when no later event of its name comes (walkthrough 25, L-2).
@@ -1695,7 +1698,7 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 - `schema.backfill.throttled` is sent with its reason
   (`probe.BackfillThrottleReasons`). Before, each was dropped and counted.
 - apidiff against v0.193.0: compatible (added `otel.SlogHandler.SetIdentity`,
-  `otel.GeneratedEvents`, `probe.RelationsPendingCause` and
+  `otel.GeneratedEvent`, `probe.RelationsPendingCause` and
   `probe.BackfillThrottleReasons`).
 
 ### Release notes for runtime v0.193.0

@@ -985,6 +985,9 @@ func (l *localLog) drain(ctx context.Context) {
 	}
 }
 
+// localKeys are the keys of the attributes of a controller log that its local line holds.
+var localKeys = map[string]bool{"operation": true, "outcome": true, "retry": true}
+
 // write queues the line of one controller log in the form of the lines of the runtime (internal/logline; walkthrough
 // 25, L-1): the timestamp in UTC, the severity, the service name and the instance identity of the telemetry runtime,
 // the event name, the message, the trace and span of ctx, and the attributes of the log with the prefix stego., such
@@ -997,6 +1000,10 @@ func (l *localLog) write(ctx context.Context, now time.Time, event, message stri
 	line := logline.AppendHead(make([]byte, 0, 256), head)
 	n := 0
 	for _, kv := range attrs {
+		// Only the fixed keys of a controller log reach standard error, as before (security review of PR #496, I2).
+		if !localKeys[string(kv.Key)] {
+			continue
+		}
 		switch kv.Value.Type() {
 		case attribute.STRING:
 			line = logline.AppendKey(line, n, string(kv.Key))

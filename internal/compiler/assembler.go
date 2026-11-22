@@ -1515,7 +1515,7 @@ func writeServerStart(buf *bytes.Buffer, input AssemblerInput, wiringRenames map
 	buf.WriteString("\tstegoStage = \"http.listen\"\n")
 	buf.WriteString("\tlistener, err := net.Listen(\"tcp\", addr)\n\tif err != nil { return err }\n")
 	buf.WriteString("\tif httpTLS != nil { listener = tls.NewListener(listener, httpTLS) }\n")
-	// The line of the listener has an event name of its own (otel.GeneratedEvents; walkthrough 25, L-1).
+	// The line of the listener has an event name of its own (otel.GeneratedEvent; walkthrough 25, L-1).
 	buf.WriteString("\tslog.InfoContext(ctx, \"the server listens\", \"event.name\", \"service.listening\", \"server\", \"http\", \"address\", listener.Addr().String())\n")
 	if hasBackgroundTasks(input) {
 		buf.WriteString("\tdefer listener.Close()\n")
