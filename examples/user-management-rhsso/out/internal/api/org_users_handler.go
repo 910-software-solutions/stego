@@ -285,7 +285,7 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted User
-	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+	if err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, command.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return
@@ -494,7 +494,7 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)
 	var persisted User
-	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+	if err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, command.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return
@@ -611,7 +611,7 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)
-	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+	if err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, command.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return
@@ -864,7 +864,7 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)
 	var persisted User
-	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+	if err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, command.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return

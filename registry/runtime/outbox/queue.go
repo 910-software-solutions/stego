@@ -1309,6 +1309,24 @@ func (q *Queue) claim(ctx context.Context, destination string, limit int, lease 
 	return deliveries, nil
 }
 
+// age gives the time from the enqueue of the claimed message d to now, on the clock of the queue, read in a short
+// transaction of its tenant (ST-SUP-RP01-LC40).
+func (q *Queue) age(ctx context.Context, d Delivery) (time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
+	defer cancel()
+	tx, err := tenant.Begin(ctx, q.db, d.Tenant, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var seconds float64
+	if err := tx.QueryRowContext(ctx, `WITH `+nowCTE+` SELECT GREATEST(pg_catalog.date_part('epoch', now.t - m.created_at), 0)::float8
+	FROM stego_outbox.messages AS m, now WHERE m.id = $2`, q.now(), d.ID).Scan(&seconds); err != nil {
+		return 0, err
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
 // change is what one move of a claimed message writes besides its new state.
 type change struct {
 	delay       time.Duration // the wait until the message is due again
@@ -1318,6 +1336,7 @@ type change struct {
 	lookup      bool          // true counts one status lookup
 	failureCode string
 	lease       time.Duration // for a move to dispatching: the new lease
+	cause       string        // for a move to parked: the fixed cause class of the alert, or empty for the class of failureCode
 }
 
 // moved is the result of one move.

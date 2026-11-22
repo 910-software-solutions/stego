@@ -291,7 +291,7 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, "")
 	var persisted OrgSetting
-	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+	if err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, command.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return

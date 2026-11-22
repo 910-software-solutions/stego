@@ -230,14 +230,16 @@ func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, m
 }
 
 // NewRelay builds the relay of the service, the outbox destination authz, with the owning table of each protected
-// resource type and the delivery alert bound. It runs the relay's start-up check, a TOUCH of the floor marker, so
+// resource type, the definitions of Schema, so the relay leaves a message of a type or a relation of a newer release
+// for the relay of that release (ST-SUP-RP01-LC40), and the delivery alert bound. It runs the relay's start-up check, a TOUCH of the floor marker, so
 // the service does not start when the provider's schema lacks stego_floor (ST-SUP-RP06-LC13), and then registers
 // the destination on the outbox worker: idempotent, must land, with the relay's state hook (ST-SUP-RP06-LC06,
 // ST-SUP-RP01-LC25). db is the relay role's pool, and relationships the provider's relationships port, which only
 // the relay holds (ST-SUP-RC29-OC08).
 func NewRelay(ctx context.Context, db *sql.DB, relationships stegoauthz.Relationships, worker *outbox.Worker, meter metric.MeterProvider, logger otellog.LoggerProvider) (*stegoauthz.Relay, error) {
-	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relations: Relations, Relationships: relationships, DB: db,
-		Schema: DatabaseSchema, Owners: Owners, Meter: meter, Logger: logger}, stegoauthz.WithAlertBound(AlertBound))
+	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relations: Relations, Types: Definitions,
+		Relationships: relationships, DB: db, Schema: DatabaseSchema, Owners: Owners, Meter: meter, Logger: logger},
+		stegoauthz.WithAlertBound(AlertBound))
 	if err != nil {
 		return nil, err
 	}

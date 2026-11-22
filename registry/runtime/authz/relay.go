@@ -58,6 +58,10 @@ type RelayConfig struct {
 	// list, so a delivered tuple of another relation is refused for good and never reaches the provider (security
 	// review of PR #421, I3). The relation of the floor marker is the relay's own and is not one of them.
 	Relations []Relation
+	// Types are the resource types of the authorization schema of the release, the generated Definitions: a delete of
+	// the tuples of a retired tenant of a type outside them is a message of a newer release, which the relay leaves
+	// for a relay that knows the type (ST-SUP-RP01-LC40). Empty takes the resource types of Relations.
+	Types []string
 	// Owners maps a resource type to the table of its rows. A tuple of a resource type with no owner, such as a
 	// group, stores its token on no row.
 	Owners map[string]Owner
@@ -97,6 +101,7 @@ type Relay struct {
 	schema        string
 	owners        map[string]ownerTable
 	relations     map[Relation]bool
+	types         map[string]bool
 	marker        Tuple
 	bound         time.Duration
 
@@ -180,8 +185,18 @@ func NewRelay(cfg RelayConfig, options ...RelayOption) (*Relay, error) {
 		}
 		relations[relation] = true
 	}
+	types := make(map[string]bool, len(cfg.Types)+len(relations))
+	for _, resourceType := range cfg.Types {
+		if err := validType("resource", resourceType); err != nil {
+			return nil, err
+		}
+		types[resourceType] = true
+	}
+	for relation := range relations {
+		types[relation.ResourceType] = true
+	}
 	r := &Relay{principal: principal, relationships: cfg.Relationships, db: cfg.DB, schema: schema, owners: owners,
-		relations: relations, marker: marker, bound: DefaultAlertBound, deleteLimit: TenantDeleteLimit, deleteCalls: TenantDeleteCalls}
+		relations: relations, types: types, marker: marker, bound: DefaultAlertBound, deleteLimit: TenantDeleteLimit, deleteCalls: TenantDeleteCalls}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -225,8 +240,15 @@ func (r *Relay) AlertBound() time.Duration { return r.bound }
 // destination authz, idempotent and must land, with Deliver as its handler and Hook as its state hook.
 func (r *Relay) Destination() outbox.Destination {
 	rules := Rules()
-	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook}
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook,
+		NotUnderstoodBound: NotUnderstoodBound}
 }
+
+// NotUnderstoodBound is the not-understood bound of the destination authz, and no setting changes it: a tuple that
+// no relay can read within one hour of its enqueue is parked with the alert of a park. A held tuple is a write or a
+// revocation that SpiceDB does not have yet, and it holds the later tuples of its resource, so the bound stays at the
+// default of the outbox and never at the outbox maximum of seven days (security review of PR #490, L2).
+const NotUnderstoodBound = outbox.DefaultNotUnderstoodBound
 
 // Rules returns the declared rules of the destination authz, idempotent and must land, which the resolver of a
 // process that does not deliver applies (security review of PR #421, L3).
@@ -325,9 +347,13 @@ func (r *Relay) uncounted(ctx context.Context, state outbox.State) {
 // of its own it locks the floor row, writes the tuple, touch or delete, together with a TOUCH of the fixed marker
 // relationship in one WriteRelationships request, sets the floor to that request's one written_at token and commits;
 // only then does it store the same token on the owning row in tx, the worker's transaction of the delivery's
-// tenant, which commits with done. It refuses, as a permanent refusal, a payload it cannot read and a write the
-// provider refuses, so the outbox parks the entry (ST-SUP-RP06-LC06); any other error may pass on a retry, which is
-// safe because touch and delete are idempotent.
+// tenant, which commits with done. It refuses, as a permanent refusal, a payload that no release can read and a
+// write the provider refuses, so the outbox parks the entry (ST-SUP-RP06-LC06). A message of a newer release, which
+// this release cannot read, is not understood, and the relay writes nothing for it: a payload of a later version,
+// with a field or an operation that this release does not know, a tuple of a relation that is not on the allow list,
+// or a delete of a retired tenant of a resource type that this release does not know. The outbox then leaves it for
+// the relay of a newer release, within the not-understood bound of the destination (ST-SUP-RP01-LC40). Any other
+// error may pass on a retry, which is safe because touch and delete are idempotent.
 func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Delivery) error {
 	if delivery.Tenant.IsZero() {
 		return outbox.PermanentRefusal(tenant.ErrZero)
@@ -336,6 +362,9 @@ func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Deliver
 		return errors.New("authz: the delivery has no transaction")
 	}
 	message, err := readPayload(delivery.Payload, delivery.Tenant)
+	if errors.Is(err, errNewerPayload) {
+		return outbox.WithFailureCode(outbox.NotUnderstood(err), NewerPayloadCode)
+	}
 	if err != nil {
 		return outbox.PermanentRefusal(err)
 	}
@@ -343,10 +372,16 @@ func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Deliver
 	if message.Operation == OperationDeleteTenant {
 		return r.deliverTenantDelete(ctx, delivery, tuple)
 	}
-	// Only a relation of the allow list is written: a staged tuple of an undeclared relation, or of the floor
-	// marker, is refused for good and never reaches the provider (security review of PR #421, I3).
+	// Only a relation of the allow list is written, and a tuple of the floor marker never: a staged tuple of the
+	// floor marker is refused for good and never reaches the provider (security review of PR #421, I3). A tuple of a
+	// relation that is not on the allow list never reaches the provider either; it can be of a relation that a newer
+	// release added to the schema, so the relay leaves it for the relay of that release, and the outbox parks it
+	// only when no relay took it within the not-understood bound (walkthrough 23, P2-R; ST-SUP-RP01-LC40).
+	if tuple.Resource.Type == r.marker.Resource.Type && tuple.Relation == r.marker.Relation {
+		return outbox.PermanentRefusal(fmt.Errorf("authz: the tuple is of %s, the relation of the floor marker", tuple.Resource.Type+"#"+tuple.Relation))
+	}
 	if !r.relations[Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}] {
-		return outbox.PermanentRefusal(fmt.Errorf("authz: the relation %s of the tuple is not one that the relay may write", tuple.Resource.Type+"#"+tuple.Relation))
+		return outbox.WithFailureCode(outbox.NotUnderstood(fmt.Errorf("authz: the relation %s of the tuple is not one that the relay may write", tuple.Resource.Type+"#"+tuple.Relation)), UnknownRelationCode)
 	}
 	// Every resource ID of the tuple names the tenant of the outbox row, which the staging transaction wrote from its
 	// own tenant; a tuple of another tenant, or one that is not tenant-qualified, is never written (ST-SUP-RP06-LC22).
@@ -401,6 +436,11 @@ func (r *Relay) deliverTenantDelete(ctx context.Context, delivery outbox.Deliver
 	}
 	if resourceKey(tuple.Resource.Type, "") != delivery.ResourceKey {
 		return outbox.PermanentRefusal(errors.New("authz: the relay payload is for another resource key"))
+	}
+	if !r.types[tuple.Resource.Type] {
+		// A type of a newer release can have tuples that this release does not know: the relay of that release
+		// deletes them (ST-SUP-RP01-LC40).
+		return outbox.WithFailureCode(outbox.NotUnderstood(fmt.Errorf("authz: the resource type %s is not one of the schema of this release", tuple.Resource.Type)), UnknownTypeCode)
 	}
 	if !known {
 		// The relay writes no relation of the type, so no tuple of it can be there: nothing is deleted, and no
@@ -559,6 +599,20 @@ func (r *Relay) Check(ctx context.Context) error {
 	return nil
 }
 
+// The failure codes of a message of a newer release, which the relay leaves for the relay of that release
+// (ST-SUP-RP01-LC40): a payload of a later version or with a field or an operation that this release does not know,
+// a tuple of a relation that is not on the allow list, and a delete of a tenant of a resource type that the schema of
+// this release does not hold.
+const (
+	NewerPayloadCode    = "authz-payload-newer"
+	UnknownRelationCode = "authz-relation-unknown"
+	UnknownTypeCode     = "authz-type-unknown"
+)
+
+// errNewerPayload is a payload that a newer release can write: of a later version, or with a field or an operation
+// that this release does not know.
+var errNewerPayload = errors.New("authz: the relay payload is of a newer release")
+
 // payloadVersionKeys is the version of the relay payload before ST-SUP-RP06-LC22: its resource ID, and the subject
 // ID of a subject set, are the bare keys of the outbox row's tenant.
 const payloadVersionKeys = 1
@@ -571,10 +625,22 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&message); err != nil {
+		// A payload of the current version or later that decodes when its unknown fields are ignored has a field of a
+		// newer release; a payload of version 1 has no field that this release does not know.
+		var newer payload
+		if json.Unmarshal(body, &newer) == nil && newer.Version >= payloadVersion {
+			return payload{}, errNewerPayload
+		}
 		return payload{}, errors.New("authz: the relay payload does not decode")
 	}
 	if decoder.More() {
 		return payload{}, errors.New("authz: the relay payload holds more than one value")
+	}
+	// A payload of a later version is of a newer release, whatever its operation: it is held for the relay of that
+	// release before the checks of each operation, so a later filtered delete or delete of a tenant is never refused for
+	// good (security review of PR #490, L1).
+	if message.Version > payloadVersion {
+		return payload{}, errNewerPayload
 	}
 	// A filtered delete exists only at version 2: a version 1 payload with it is refused before the upgrade, so no
 	// older writer's payload is read as one (ST-SUP-Q118, L2 of the security review of PR #272).
@@ -585,6 +651,7 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 	if message.Operation == OperationDeleteTenant && message.Version != payloadVersion {
 		return payload{}, errors.New("authz: the relay payload of a delete of a tenant is not of version 2")
 	}
+	written := message.Version
 	switch message.Version {
 	case payloadVersion:
 	case payloadVersionKeys:
@@ -621,6 +688,11 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 			return payload{}, errors.New("authz: the relay payload of a delete of a tenant is not valid")
 		}
 	default:
+		// An operation of a payload of the current version that this release does not know is of a newer release;
+		// a payload of version 1 has no operation that this release does not know.
+		if written == payloadVersion {
+			return payload{}, errNewerPayload
+		}
 		return payload{}, errors.New("authz: the relay payload has an unknown operation")
 	}
 	return message, nil

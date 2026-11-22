@@ -2709,9 +2709,10 @@ func (w *runtimeHandlerWriter) read() {
 // (ST-SUP-RC20-OC49, ST-SUP-RP10-LC47): a value that is not the identity of a revocation is 400, a client that went away
 // during the wait gets no answer and no internal error code, a database that cannot serve the wait now 503, and any
 // other failure 500. The wait sets no
-// Authz-Revocation header: that header of a write names the revocation of the write itself.
+// Authz-Revocation header: that header of a write names the revocation of the write itself. A wait that Prefer: wait=N
+// asked for sets Preference-Applied (AwaitRevocationOn; walkthrough 23, small items).
 func (w *runtimeHandlerWriter) awaitRevocation() {
-	w.f("\tif err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, command.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\tanswerWaitFailure(w, r, err)\n\t\treturn\n\t}\n")
+	w.f("\tif err := h.rt.Commands.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, command.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\tanswerWaitFailure(w, r, err)\n\t\treturn\n\t}\n")
 }
 
 // awaitWrite emits the call of AwaitWrite of a read or a list (ST-SUP-RP11-LC21): a value that is not the identity

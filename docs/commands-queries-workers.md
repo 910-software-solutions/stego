@@ -1409,6 +1409,27 @@ same authentication as the other routes:
   discards it. The answer is 204, and the audit row
   `resolve-parked-message` is written in the same transaction.
 
+Each park writes one log line `outbox.parked` at the level WARN, and adds one
+to the metric `outbox.parked`. Both name the destination, the state that the
+message left and the cause, one of these fixed classes (ST-SUP-RP01-LC12):
+
+- `refused`: the destination refused the message for good.
+- `not_understood`: the worker of no release could read the message within
+  one hour (ST-SUP-RP01-LC40). A worker of an older release leaves such a
+  message in pending for a worker of a newer release, and counts it in the
+  metric `outbox.not_understood`, and writes the WARN line
+  `outbox.not_understood` on its first hold, at most one line a minute for
+  each destination.
+- `attempts_exhausted`, `lookups_exhausted`: the attempts or the status
+  lookups of the message are at their limit.
+- `outcome_unknown`: the outcome of the send is not known, and the
+  destination cannot find it.
+- `tenant_not_active`: the tenant of the message is not active.
+
+The line also has the failure code of the message, such as
+`delivery-refused-permanent` or `poison`, which the list route gives too.
+Neither holds an error text or a value of the message.
+
 The destination decides which resolutions it accepts (ST-SUP-RP01-LC13):
 
 - An idempotent destination refuses `acted` with 409. To send such a message
@@ -1595,8 +1616,11 @@ curl -X POST https://<host>/api/projects/v1/projects/$PROJECT/tasks \
 The write waits for that revocation before it decides, as a read does: at
 most N seconds, the wait cap (10 seconds) and half the time that the deadline
 leaves. Over gRPC, send the request metadata `authz-revocation-after`. Each
-generated CRUD write and each declared command takes it. The answer does not
-report the wait: its `Authz-Revocation` names the revocation of its own write.
+generated CRUD write and each declared command takes it. Its `Authz-Revocation`
+names the revocation of its own write, not of the wait. From runtime v0.189.0,
+a write that waited with `Prefer: wait=N` answers `Preference-Applied:
+wait=<seconds>`, with the whole seconds that the wait allowed, as the status
+route does.
 A revocation of another tenant, or one that is still pending at the end of the
 wait, does not fail the write: the write is then decided as with no header. A
 value that is not a revocation is 400, or `InvalidArgument` over gRPC. The
@@ -1664,7 +1688,44 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 - `command.CommandSpec.ResetGuards` can hold the permissions of commands of
   another resource type that write the entity: the generator of command
   1.26.0 gives them, and the runtime decides each on the row of the reset.
-- apidiff against v0.188.0: compatible.
+- apidiff against v0.189.0: compatible.
+
+### Release notes for runtime v0.189.0
+
+- In a rolling release, the relay of the release before no longer parks a
+  message that only the new release can read (walkthrough 23, P2-R;
+  recommendation (a) of ST-SUP-Q208, open for the Product owner). New mark
+  `outbox.NotUnderstood`: the worker takes the attempt back, keeps the
+  message pending with the wait of an unknown destination, so a worker of
+  the new release delivers it in the order of its key, and parks it with the
+  cause `not_understood` only when it is older than
+  `Destination.NotUnderstoodBound` (one hour by default, at most seven days).
+  The relay gives the mark for a tuple of a relation that is not on its allow
+  list (`authz-relation-unknown`), a payload of a later version or with a
+  field or an operation that it does not know (`authz-payload-newer`), and a
+  delete of a retired tenant of a resource type outside
+  `RelayConfig.Types` (`authz-type-unknown`). It writes nothing for them.
+  The metric `outbox.not_understood` counts them, and the first hold of each
+  writes a WARN line `outbox.not_understood`, at most one a minute for each
+  destination. The bound of `authz` is one hour (`authz.NotUnderstoodBound`).
+  A payload of a later version is held for each operation, also for a
+  filtered delete and the delete of a tenant.
+- The metric and the log line `outbox.parked` name the fixed cause class
+  (`refused`, `not_understood`, `attempts_exhausted`, `lookups_exhausted`,
+  `outcome_unknown` or `tenant_not_active`), and the line names the failure
+  code.
+- The failure record of the migration Job names the fault, the object and
+  the remedy of the steps `open`, `authorization_schema`,
+  `authorization_schema_again` and `authorization_schema_served`
+  (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
+  refused key source of a start names its fault (`authn.Keys*Fault`).
+- A unique violation of an index that the entity does not declare names the
+  declared fields of its key when the name of the index is
+  `<table>_<columns>_key` and each part is a column of the entity, such as
+  the index of a unique step of a newer release.
+- New `command.Runtime.AwaitRevocationOn`: as `AwaitRevocation`, and it sets
+  `Preference-Applied` when a request with `Prefer: wait=N` waited. `Serve`
+  calls it.
 
 ### Release notes for runtime v0.188.0
 

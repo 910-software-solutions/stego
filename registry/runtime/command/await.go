@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,7 +31,22 @@ import (
 // with no wait. A value that is not an identity, and more
 // than one value, is ErrBadRequest. A request with no such header waits for nothing.
 func (rt *Runtime) AwaitRevocation(r *http.Request, t tenant.Tenant, p authz.Principal) error {
-	return rt.awaitRevocation(r.Context(), t, p, r.Header.Values(authz.RevocationAfterHeader), r.Header.Values("Prefer"))
+	_, err := rt.awaitRevocation(r.Context(), t, p, r.Header.Values(authz.RevocationAfterHeader), r.Header.Values("Prefer"))
+	return err
+}
+
+// AwaitRevocationOn is AwaitRevocation that also answers the preference of the wait on w: when the request gives
+// Prefer: wait=N and the command waited for the revocation, it sets Preference-Applied to wait= and the whole seconds
+// that the wait allowed, as the status route of a revocation does (RFC 7240; walkthrough 23, small items). It sets no
+// other header, and none for a request with no Prefer: wait, for a revocation of another tenant and for a failed wait.
+func (rt *Runtime) AwaitRevocationOn(w http.ResponseWriter, r *http.Request, t tenant.Tenant, p authz.Principal) error {
+	allowed, err := rt.awaitRevocation(r.Context(), t, p, r.Header.Values(authz.RevocationAfterHeader), r.Header.Values("Prefer"))
+	if err == nil && allowed > 0 && w != nil {
+		if _, asked := authz.PreferWait(r.Header); asked {
+			w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(int(allowed/time.Second)))
+		}
+	}
+	return err
 }
 
 // AwaitRevocationRPC is AwaitRevocation for a gRPC call (ST-SUP-RP10-LC47): the revocation comes from the request
@@ -38,25 +54,26 @@ func (rt *Runtime) AwaitRevocation(r *http.Request, t tenant.Tenant, p authz.Pri
 // metadata: authz-revocation of a command names the revocation of the command's own write (ST-SUP-RP10-LC40).
 func (rt *Runtime) AwaitRevocationRPC(ctx context.Context, t tenant.Tenant, p authz.Principal) error {
 	md, _ := metadata.FromIncomingContext(ctx)
-	return rt.awaitRevocation(ctx, t, p, md.Get(authz.RevocationAfterMetadata), md.Get(authz.PreferMetadata))
+	_, err := rt.awaitRevocation(ctx, t, p, md.Get(authz.RevocationAfterMetadata), md.Get(authz.PreferMetadata))
+	return err
 }
 
 // awaitRevocation is the wait of AwaitRevocation and AwaitRevocationRPC for the values of the revocation and of the
-// wait preference that the request gives.
-func (rt *Runtime) awaitRevocation(ctx context.Context, t tenant.Tenant, p authz.Principal, values, prefer []string) error {
+// wait preference that the request gives. It gives the wait that it allowed, zero when it did not wait.
+func (rt *Runtime) awaitRevocation(ctx context.Context, t tenant.Tenant, p authz.Principal, values, prefer []string) (time.Duration, error) {
 	if len(values) == 0 || len(values) == 1 && values[0] == "" {
-		return nil
+		return 0, nil
 	}
 	if len(values) != 1 {
-		return fmt.Errorf("%w: more than one %s value", ErrBadRequest, authz.RevocationAfterHeader)
+		return 0, fmt.Errorf("%w: more than one %s value", ErrBadRequest, authz.RevocationAfterHeader)
 	}
 	text := strings.TrimPrefix(values[0], authz.RevocationPath)
 	id, err := uuid.Parse(text)
 	if err != nil || id.String() != text {
-		return fmt.Errorf("%w: %s is not the identity of a revocation", ErrBadRequest, authz.RevocationAfterHeader)
+		return 0, fmt.Errorf("%w: %s is not the identity of a revocation", ErrBadRequest, authz.RevocationAfterHeader)
 	}
 	if rt == nil || rt.cfg.Authz == nil {
-		return errors.New("command: no authorization runtime to wait for a revocation")
+		return 0, errors.New("command: no authorization runtime to wait for a revocation")
 	}
 	wait, ok := authz.PreferWait(http.Header{"Prefer": prefer})
 	if !ok {
@@ -68,11 +85,14 @@ func (rt *Runtime) awaitRevocation(ctx context.Context, t tenant.Tenant, p authz
 	// Any principal of the tenant that holds the revocation, such as a second user to whom the maker of a row gave
 	// it, waits for it; the wait gives the command nothing but time (decision ST-SUP-Q206 (a), recommended;
 	// walkthrough 22, P3-A).
-	_, _, _, err = rt.cfg.Authz.WaitInTenant(ctx, t, p, id, wait)
-	if err != nil && !errors.Is(err, authz.ErrRevocationNotFound) {
-		return err
+	_, _, allowed, err := rt.cfg.Authz.WaitInTenant(ctx, t, p, id, wait)
+	if errors.Is(err, authz.ErrRevocationNotFound) {
+		return 0, ctx.Err()
 	}
-	return ctx.Err()
+	if err != nil {
+		return 0, err
+	}
+	return allowed, ctx.Err()
 }
 
 // awaitAnswer is the answer of an error of AwaitRevocation (ST-SUP-RP10-LC47): 400 for a bad value, 503 unavailable
