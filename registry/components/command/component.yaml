@@ -40,9 +40,13 @@
 # Version 1.25.0 gives the counter of a field with attempts its declared unlock_after, the window of the decay of its
 # count, and gives a command that declares resets_attempts one typed helper for each field and Resets in its
 # declaration, so only that command resets a count (ST-SUP-RC32-OC24, decision ST-SUP-Q205 (c)).
+# Version 1.26.0 gives the counter of a field that a command resets Reset: true, so the runtime checks it only on a row
+# on which the command decided its own permission, and gives a reset the permissions of the commands of each resource
+# type but the service-level resource that write the entity as its reset guards (ST-SUP-RC32-OC24, recommendation (d)
+# of ST-SUP-Q209).
 kind: component
 name: command
-version: 1.25.0
+version: 1.26.0
 stage: ga
 output_namespace: commands
 

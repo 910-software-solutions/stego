@@ -1628,6 +1628,26 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.190.0
+
+- New field `command.CounterSpec.Reset`: true when a command of the service
+  declares the reset of the counter (ST-SUP-RC32-OC24). `Matches` of a value
+  of such a counter checks it only when the command decided its own
+  permission on the row of the value in the same attempt: on its resource, in
+  a locked read or list (`GetForUpdate`, `GetForDelete`), or for a write of
+  the row. On any other row it gives `false`, charges nothing and fails the
+  call with an internal error that names the counter (ST-SUP-RP10-LC54;
+  recommendation (d) of ST-SUP-Q209, open for the Product owner; the residual
+  sec-489c of the second security review of PR #489). Before, a caller who
+  held the reset and the permission of a command decided on another row or
+  another resource type could read the row with no lock and check it with no
+  bound, a reset after each limit. A counter with no `Reset`, as the code of
+  a generator before gives it, is checked as before.
+- `command.CommandSpec.ResetGuards` can hold the permissions of commands of
+  another resource type that write the entity: the generator of command
+  1.26.0 gives them, and the runtime decides each on the row of the reset.
+- apidiff against v0.188.0: compatible.
+
 ### Release notes for runtime v0.188.0
 
 - A count of wrong attempts can decay (ST-SUP-RP10-LC54, decisions
