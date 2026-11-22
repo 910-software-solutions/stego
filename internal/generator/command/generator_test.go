@@ -1149,6 +1149,8 @@ func TestResetEmission(t *testing.T) {
 			`var orderPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Order", Field: "pin", Limit: 3, UnlockAfter: 3600 * time.Second, Reset: true}))`,
 			"func UnlockPinResetOrderPinAttempts(ctx context.Context, h *UnlockPinHandle, on LoadedOrder) error {",
 			"return command.ResetAttempts(ctx, h, orderPinCounter, on)",
+			"func UnlockPinResetOrderPinAttemptsByID(ctx context.Context, h *UnlockPinHandle, id string) error {",
+			"return command.ResetAttemptsByID(ctx, h, orderPinCounter, id)",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("the generated code does not hold %s", want)
@@ -1165,18 +1167,26 @@ func TestResetEmission(t *testing.T) {
 			"\t\torders, err := commands.OrderRepository(h)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n" +
 			"\t\torder, err := orders.GetForUpdate(ctx, req.OrderId)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n" +
 			"\t\treturn &commands.UnlockPinResponse{}, commands.UnlockPinResetOrderPinAttempts(ctx, h, order)\n\t}\n}\n"
+		// The support desk resets by the ID of the row, with no read of it (decision ST-SUP-Q211 (a)).
+		resetByID := fmt.Sprintf(head, "unlockpinbyid") + "func New() commands.UnlockPinFill {\n\treturn func(ctx context.Context, req *commands.UnlockPinRequest, h *commands.UnlockPinHandle) (*commands.UnlockPinResponse, error) {\n" +
+			"\t\treturn &commands.UnlockPinResponse{}, commands.UnlockPinResetOrderPinAttemptsByID(ctx, h, req.OrderId)\n\t}\n}\n"
+		wrongByID := fmt.Sprintf(head, "wrongresetbyid") + "func Run(ctx context.Context, h *commands.ReserveAndChargeHandle, id string) error {\n" +
+			"\treturn commands.UnlockPinResetOrderPinAttemptsByID(ctx, h, id)\n}\n"
 		// The fill of reserve-and-charge, which may check the PIN, cannot call the reset of unlock-pin.
 		wrong := fmt.Sprintf(head, "wrongreset") + "func Run(ctx context.Context, h *commands.ReserveAndChargeHandle, order commands.LoadedOrder) error {\n" +
 			"\treturn commands.UnlockPinResetOrderPinAttempts(ctx, h, order)\n}\n"
 		releaseFill := fmt.Sprintf(head, "releasehold") + "func New() commands.ReleaseHoldFill {\n\treturn func(ctx context.Context, req *commands.ReleaseHoldRequest, h *commands.ReleaseHoldHandle) (*commands.ReleaseHoldResponse, error) {\n" +
 			"\t\treturn &commands.ReleaseHoldResponse{}, nil\n\t}\n}\n"
 		p := newProject(t, ctx, map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill, "fills/unlock-pin/fill.go": []byte(reset),
-			"fills/release-hold/fill.go": []byte(releaseFill), "fills/wrongreset/fill.go": []byte(wrong)})
-		if output, err := p.goCommand("build", "./out/...", "./fills/unlock-pin"); err != nil {
+			"fills/release-hold/fill.go": []byte(releaseFill), "fills/wrongreset/fill.go": []byte(wrong),
+			"fills/unlockpinbyid/fill.go": []byte(resetByID), "fills/wrongresetbyid/fill.go": []byte(wrongByID)})
+		if output, err := p.goCommand("build", "./out/...", "./fills/unlock-pin", "./fills/unlockpinbyid"); err != nil {
 			t.Errorf("the code with the reset does not build: %v\n%s", err, output)
 		}
-		if output, err := p.goCommand("build", "./fills/wrongreset"); err == nil || !strings.Contains(output, "cannot use h") {
-			t.Errorf("the reset of unlock-pin in the fill of reserve-and-charge gave %v, want a refusal of the handle:\n%s", err, output)
+		for _, fill := range []string{"./fills/wrongreset", "./fills/wrongresetbyid"} {
+			if output, err := p.goCommand("build", fill); err == nil || !strings.Contains(output, "cannot use h") {
+				t.Errorf("the reset of unlock-pin in the fill %s of reserve-and-charge gave %v, want a refusal of the handle:\n%s", fill, err, output)
+			}
 		}
 		for name, resets := range map[string][]string{"a field with no attempts": {"Order.sku"}, "an entity it does not write": {"Hold.pin"}, "the field twice": {"Order.pin", "Order.pin"}} {
 			bad := declaration(t)

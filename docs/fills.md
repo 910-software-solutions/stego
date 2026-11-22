@@ -718,42 +718,47 @@ this one and reset it after each check. Read such a row with `GetForUpdate`
 before `Matches`. A field with no reset command is checked as before. This is
 the decision ST-SUP-Q209 (d).
 
-The code of the command gets one helper for each field, such as
-`UnlockPinResetWalletPinAttempts`. No other command gets it. The fill of
-`unlock-pin` reads the wallet and calls it:
+The code of the command gets two helpers for each field, such as
+`UnlockPinResetWalletPinAttemptsByID` and `UnlockPinResetWalletPinAttempts`.
+No other command gets them. The fill of `unlock-pin` gives the ID of the
+wallet and does not read it:
 
 ```go
 // New gives the fill of the command unlock-pin.
 func New() commands.UnlockPinFill {
 	return func(ctx context.Context, req *commands.UnlockPinRequest, h *commands.UnlockPinHandle) (*commands.UnlockPinResponse, error) {
-		wallets, err := commands.WalletRepository(h)
-		if err != nil {
+		if err := commands.UnlockPinResetWalletPinAttemptsByID(ctx, h, req.WalletId); err != nil {
 			return nil, err
 		}
-		wallet, err := wallets.Get(ctx, req.WalletId)
-		if err != nil {
-			return nil, err
-		}
-		if err := commands.UnlockPinResetWalletPinAttempts(ctx, h, wallet); err != nil {
-			return nil, err
-		}
-		return &commands.UnlockPinResponse{WalletId: wallet.ID()}, nil
+		return &commands.UnlockPinResponse{WalletId: req.WalletId}, nil
 	}
 }
 ```
 
-- The runtime decides `unlock_pin` on the row of the wallet that the fill
-  gives, also when it is not the wallet of the request. A caller who does not
-  have it on that row gets 404.
+- The helper `...ByID` reads only the key and the authorization token of
+  the row (runtime v0.192.0, rest-crud 3.258.0). It gives the fill no value
+  of the row. The runtime decides `unlock_pin` on the row of the ID that the
+  fill gives, also when it is not the wallet of the request, and not the
+  read permission `view`. Thus a support agent who has only `unlock_pin`,
+  as in the schema above, can reset a wallet that it cannot view. A caller
+  who does not have `unlock_pin` on that row, and an ID of no row, get 404.
+  This is the decision ST-SUP-Q211 (a).
+- The helper with no `ByID` takes a wallet that the fill read through the
+  handle, such as with `wallets.Get`. The read decides `view`, so its caller
+  needs `view` and `unlock_pin` on the row. A caller with no `view` gets 404
+  from the read. Use it only when the fill must read the row.
 - The count goes to 0 when the command commits. When the fill returns an
   error, the count stays.
 - The reset gives only an error. It gives no PIN, no hash and no count, and the
   answer is the same for a locked and for an open wallet.
-- Each reset that commits writes one audit row: the action is the command,
-  the resource is the wallet, and the only state is
+- Each reset that commits writes one reset row in the audit log: the action is
+  the command, the resource is the wallet, and the only state is
   `{"attempts_reset": "Wallet.pin"}`. A reset that is denied or that rolls
-  back writes none. A reset writes no change event. With `audit.level:
-  metadata`, the row has no state, and the action still names the command.
+  back writes no reset row. Its command still writes the outcome row that each
+  refused command writes, with the outcome `denied`, or `failed` and the
+  reason `not_found`, and no state. A reset writes no change event. With
+  `audit.level: metadata`, the reset row has no state, and the action still
+  names the command.
 - The command that resets a field does not check it: `Matches` on that field
   gives `false`, counts nothing, and the command answers 500. Else a holder of
   the reset permission could check the PIN with no limit.

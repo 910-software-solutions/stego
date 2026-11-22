@@ -356,7 +356,83 @@ func ResetAttempts[P any](ctx context.Context, h *Handle[P], c *Counter, on Ref)
 	if r.st != s || r.entity != c.spec.Entity || r.resourceType == "" {
 		return ErrNoResource
 	}
-	if err := s.decideCommandOn(ctx, r.resourceType, r.entity, r.id, r.token); err != nil {
+	return s.resetOn(ctx, c, r.resourceType, r.entity, r.id, r.token)
+}
+
+// ResetAttemptsByID is ResetAttempts for the row id of the entity of c, which the fill does not read: the runtime reads
+// only the key and the authorization token of the row, gives the fill no value of it, and decides the command's own
+// permission (the reset permission) on it, not the read permission of the entity. So a support desk that holds only
+// the reset permission can reset a row that it may not view, and learns nothing of the row: a row that is not there
+// and a deny both give ErrNotFound (decision ST-SUP-Q211 (a), walkthrough 24, U-R). The reset guards, the audit row
+// and the rule that the command does not check the field are those of ResetAttempts.
+func ResetAttemptsByID[P any](ctx context.Context, h *Handle[P], c *Counter, id string) error {
+	if h == nil || h.st == nil || c == nil {
+		return errors.New("command: a reset of the attempts needs a handle and a counter")
+	}
+	s := h.st
+	if err := s.enter(); err != nil {
+		return err
+	}
+	defer s.leave()
+	if s.mode != modeCommand || !s.resets[c.name()] || s.commandPermission == "" {
+		return fmt.Errorf("command: %s does not declare the reset of the attempts of %s", s.action, c.name())
+	}
+	var rows resetRows
+	for d := range s.writes {
+		if d.entityName() != c.spec.Entity {
+			continue
+		}
+		if r, ok := d.(resetRows); ok && r.resourceTypeName() != "" {
+			rows = r
+		}
+	}
+	if rows == nil {
+		return ErrNoResource
+	}
+	meta, found, err := rows.resetRow(ctx, s, id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// A row that is not there is decided as one that is, so a deny and a missing row give the same answer, and a
+		// failed decision the same error.
+		if err := s.checkCommandOn(ctx, rows.resourceTypeName(), c.spec.Entity, id, ""); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return fmt.Errorf("%w: %s", ErrNotFound, c.spec.Entity)
+	}
+	return s.resetOn(ctx, c, rows.resourceTypeName(), c.spec.Entity, meta.ID, meta.Token)
+}
+
+// resetRows is a written entity whose row a reset by ID reads: its resource type and the key and token of a row.
+type resetRows interface {
+	resourceTypeName() string
+	resetRow(ctx context.Context, s *state, id string) (Meta, bool, error)
+}
+
+// resetRow reads the key and the authorization token of the row id in the transaction of s, with no lock, and drops
+// the value, which no fill gets. A row that the tenant does not hold is not found.
+func (e *Entity[T]) resetRow(ctx context.Context, s *state, id string) (Meta, bool, error) {
+	if !e.spec.ValidID(id) {
+		return Meta{}, false, nil
+	}
+	st := e.statements()
+	_, meta, err := st.scan(s.opening(s.queryRow(ctx, st.selectRow, s.tenant.ID(), id)))
+	err = scanFailed(err)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Meta{}, false, nil
+	}
+	if err != nil {
+		return Meta{}, false, s.failOf(ctx, e, "read "+e.spec.Name, err)
+	}
+	return meta, true, nil
+}
+
+// resetOn decides the command's own permission and the reset guards on the row id of resourceType, and records the
+// reset of the count of c on it with its audit row (ResetAttempts, ResetAttemptsByID). The caller holds the state.
+func (s *state) resetOn(ctx context.Context, c *Counter, resourceType, entity, id, token string) error {
+	r := struct{ resourceType, id, token string }{resourceType, id, token}
+	if err := s.decideCommandOn(ctx, r.resourceType, entity, r.id, r.token); err != nil {
 		return err
 	}
 	// A caller who may also run a command that checks the field on this row would get checks with no limit, a reset
