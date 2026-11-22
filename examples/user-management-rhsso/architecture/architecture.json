@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.256.0",
+    "archetype_version": "3.257.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -172,7 +172,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "architecture.layer"
         }
       }
@@ -301,7 +301,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "architecture.layer"
         }
       }
@@ -494,7 +494,7 @@
     {
       "id": "component:otel-tracing",
       "name": "otel-tracing",
-      "version": "1.19.0",
+      "version": "1.20.0",
       "stage": "ga",
       "layer": "outside call",
       "flow_part": "Exports a trace span of each request to the OpenTelemetry collector.",
@@ -512,7 +512,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "architecture"
         }
       }
@@ -1083,7 +1083,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "provides"
         }
       }
@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.256.0",
+          "version": "3.257.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1113,7 +1113,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.256.0",
+          "version": "3.257.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.256.0",
+          "version": "3.257.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1150,7 +1150,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.256.0",
+          "version": "3.257.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -4478,7 +4478,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4496,7 +4496,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4514,7 +4514,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4532,7 +4532,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4550,7 +4550,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4568,7 +4568,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4586,7 +4586,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4604,7 +4604,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4622,7 +4622,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4640,7 +4640,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4658,7 +4658,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4676,7 +4676,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4694,7 +4694,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4712,7 +4712,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4730,7 +4730,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4748,7 +4748,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4766,7 +4766,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4784,7 +4784,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4802,7 +4802,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4820,7 +4820,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4838,7 +4838,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4856,7 +4856,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4874,7 +4874,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4892,7 +4892,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4910,7 +4910,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4928,7 +4928,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4946,7 +4946,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4964,7 +4964,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -4982,7 +4982,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5001,7 +5001,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5020,7 +5020,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5038,7 +5038,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5056,7 +5056,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5074,7 +5074,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5092,7 +5092,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5110,7 +5110,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5128,7 +5128,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5219,7 +5219,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5237,7 +5237,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5256,7 +5256,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5275,7 +5275,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5294,7 +5294,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5313,7 +5313,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5331,7 +5331,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -5350,7 +5350,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -6537,6 +6537,25 @@
       }
     },
     {
+      "id": "variable:STEGO_LOG_LEVEL",
+      "name": "STEGO_LOG_LEVEL",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "info",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.20.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:STEGO_MIGRATION_DATABASE_URL",
       "name": "STEGO_MIGRATION_DATABASE_URL",
       "read_by": [
@@ -6604,7 +6623,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.19.0",
+          "version": "1.20.0",
           "field": "environment"
         }
       }
@@ -8877,7 +8896,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8892,7 +8911,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8907,7 +8926,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8922,7 +8941,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8937,7 +8956,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8952,7 +8971,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8967,7 +8986,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8982,7 +9001,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -8997,7 +9016,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9012,7 +9031,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9027,7 +9046,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9042,7 +9061,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9057,7 +9076,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9072,7 +9091,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9087,7 +9106,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9102,7 +9121,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9117,7 +9136,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9132,7 +9151,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9147,7 +9166,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9162,7 +9181,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9177,7 +9196,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9192,7 +9211,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9207,7 +9226,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9222,7 +9241,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9237,7 +9256,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9252,7 +9271,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9267,7 +9286,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9282,7 +9301,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9297,7 +9316,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9312,7 +9331,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9327,7 +9346,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9342,7 +9361,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9357,7 +9376,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9372,7 +9391,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9387,7 +9406,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9402,7 +9421,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9417,7 +9436,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9432,7 +9451,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9447,7 +9466,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9462,7 +9481,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9477,7 +9496,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9492,7 +9511,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9507,7 +9526,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9522,7 +9541,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9537,7 +9556,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9552,7 +9571,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9567,7 +9586,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9582,7 +9601,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9597,7 +9616,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9612,7 +9631,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9627,7 +9646,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9642,7 +9661,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9657,7 +9676,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9672,7 +9691,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9687,7 +9706,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9702,7 +9721,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9717,7 +9736,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9732,7 +9751,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9747,7 +9766,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9762,7 +9781,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9777,7 +9796,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9792,7 +9811,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9807,7 +9826,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9822,7 +9841,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9837,7 +9856,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9852,7 +9871,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9867,7 +9886,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9882,7 +9901,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9897,7 +9916,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9912,7 +9931,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9927,7 +9946,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9942,7 +9961,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9957,7 +9976,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9972,7 +9991,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -9987,7 +10006,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10002,7 +10021,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10017,7 +10036,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10032,7 +10051,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10047,7 +10066,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10062,7 +10081,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10077,7 +10096,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10092,7 +10111,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10107,7 +10126,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10122,7 +10141,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10137,7 +10156,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10152,7 +10171,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10167,7 +10186,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10182,7 +10201,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10197,7 +10216,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10212,7 +10231,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10227,7 +10246,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10242,7 +10261,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10257,7 +10276,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10272,7 +10291,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10287,7 +10306,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10302,7 +10321,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10317,7 +10336,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10332,7 +10351,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10347,7 +10366,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10362,7 +10381,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10377,7 +10396,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10392,7 +10411,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10407,7 +10426,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10422,7 +10441,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10437,7 +10456,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10452,7 +10471,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10467,7 +10486,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10482,7 +10501,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10497,7 +10516,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10512,7 +10531,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10527,7 +10546,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10542,7 +10561,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10557,7 +10576,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10767,7 +10786,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10782,7 +10801,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10797,7 +10816,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10812,7 +10831,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10827,7 +10846,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10842,7 +10861,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10857,7 +10876,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10872,7 +10891,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10887,7 +10906,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10902,7 +10921,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10917,7 +10936,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10932,7 +10951,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10947,7 +10966,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10962,7 +10981,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10977,7 +10996,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -10992,7 +11011,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11007,7 +11026,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11022,7 +11041,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11037,7 +11056,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11052,7 +11071,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11067,7 +11086,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11082,7 +11101,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11097,7 +11116,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11112,7 +11131,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11127,7 +11146,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11142,7 +11161,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11157,7 +11176,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11172,7 +11191,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -11187,7 +11206,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -14283,6 +14302,66 @@
           }
         },
         {
+          "id": "fact:configuration/variable:STEGO_LOG_LEVEL/default",
+          "about": "variable:STEGO_LOG_LEVEL",
+          "name": "default",
+          "value": "info",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.20.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_LOG_LEVEL/read-by",
+          "about": "variable:STEGO_LOG_LEVEL",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.20.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_LOG_LEVEL/required",
+          "about": "variable:STEGO_LOG_LEVEL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.20.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_LOG_LEVEL/secret",
+          "about": "variable:STEGO_LOG_LEVEL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.20.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
           "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL/read-by",
           "about": "variable:STEGO_MIGRATION_DATABASE_URL",
           "name": "read by",
@@ -14442,7 +14521,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -14457,7 +14536,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }
@@ -14472,7 +14551,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.19.0",
+              "version": "1.20.0",
               "field": "environment"
             }
           }

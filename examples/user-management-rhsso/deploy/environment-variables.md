@@ -116,6 +116,7 @@ shows its name only: give its value through a secret of the platform.
 | `OTEL_METRIC_EXPORT_INTERVAL` | integer | no | `10000` | no | 1000 to 60000 milliseconds | `30000` | The time between two exports of metrics, in milliseconds. When it has no value, the time is 10000 milliseconds. |
 | `OTEL_SERVICE_NAME` | string | no | none | no | - | `orders-api` | The service name in the telemetry. When it has no value, the telemetry uses the declared service name. |
 | `OTEL_TRACES_SAMPLER_ARG` | number | no | `0.1` | no | 0 to 1 | `0.5` | The ratio of traces that the service samples. When it has no value, the ratio is 0.1. |
+| `STEGO_LOG_LEVEL` | string | no | `info` | no | debug, info, warn, error | `warn` | The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info. |
 | `STEGO_OTEL_TOKEN_FILE` | path | no | none | no | - | `/etc/stego/otel/token` | The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token. |
 
 ## postgres-adapter

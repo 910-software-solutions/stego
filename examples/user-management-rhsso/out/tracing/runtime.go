@@ -94,6 +94,10 @@ func newRuntime(localOutput io.Writer) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	level, err := readLogLevel(os.Getenv(LogLevelSetting))
+	if err != nil {
+		return nil, err
+	}
 	service := settings.service
 	instance, err := newInstanceID(rand.Reader)
 	if err != nil {
@@ -101,7 +105,7 @@ func newRuntime(localOutput io.Writer) (*Runtime, error) {
 	}
 	runtime := &Runtime{instance: instance, resource: serviceResource(service, instance)}
 	if settings.endpoint == "" {
-		runtime.initServiceLogs(service, localOutput)
+		runtime.initServiceLogs(service, localOutput, level)
 		return runtime, nil
 	}
 	u := settings.origin
@@ -160,7 +164,7 @@ func newRuntime(localOutput io.Writer) (*Runtime, error) {
 		runtime.Close()
 		return nil, err
 	}
-	runtime.initServiceLogs(service, localOutput)
+	runtime.initServiceLogs(service, localOutput, level)
 	return runtime, nil
 }
 
@@ -232,13 +236,41 @@ func (r *Runtime) Close() {
 // ShutdownFailures counts provider shutdown errors and local output timeouts.
 func (r *Runtime) ShutdownFailures() uint64 { return r.shutdownFailures.Load() }
 
-// Handler preserves the next handler when tracing is disabled. Enabled tracing
-// exports method, registered route pattern, and status. It does not record
-// request URLs, headers, or bodies.
+// Handler writes one local access line for each request, with and without a
+// collector: method, registered route pattern, status and duration. Enabled
+// tracing also exports them. It does not record request URLs, headers, or bodies.
 func (r *Runtime) Handler(next http.Handler) http.Handler {
 	if r.provider == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			next.ServeHTTP(w, request.WithContext(r.Context(request.Context())))
+			if r.closed.Load() {
+				next.ServeHTTP(w, request)
+				return
+			}
+			ctx := r.Context(request.Context())
+			method := request.Method
+			switch method {
+			case "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH":
+			default:
+				method = "_OTHER"
+			}
+			start := time.Now()
+			observed := &httpObservation{}
+			ctx = context.WithValue(ctx, httpObservationKey{}, observed)
+			responseCode := 0
+			defer func() {
+				route := observed.route.Load()
+				pattern := ""
+				if route != nil {
+					pattern = *route
+				}
+				r.accessLine(ctx, start, time.Now(), method, pattern, responseCode)
+			}()
+			tracedRequest := request.WithContext(ctx)
+			result := ObserveHTTP(next, w, tracedRequest)
+			if pattern := safeRoute(tracedRequest.Pattern); pattern != "" {
+				observed.route.Store(&pattern)
+			}
+			responseCode = result
 		})
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -279,6 +311,7 @@ func (r *Runtime) Handler(next http.Handler) http.Handler {
 				pattern = *route
 			}
 			r.signals.httpFinished(ctx, start, end, method, pattern, responseCode)
+			r.accessLine(ctx, start, end, method, pattern, responseCode)
 			span.End(trace.WithTimestamp(end))
 		}()
 		tracedRequest := request.WithContext(ctx)
@@ -298,9 +331,6 @@ func (r *Runtime) Handler(next http.Handler) http.Handler {
 // Route runs inside authentication, so it can observe the matched pattern even
 // when authentication copies the request. Handler runs outside authentication.
 func (r *Runtime) Route(next http.Handler) http.Handler {
-	if r.provider == nil {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		defer func() {
 			method := request.Method
@@ -309,7 +339,9 @@ func (r *Runtime) Route(next http.Handler) http.Handler {
 			default:
 				method = "_OTHER"
 			}
-			recordRoute(trace.SpanFromContext(request.Context()), method, request.Pattern)
+			if r.provider != nil {
+				recordRoute(trace.SpanFromContext(request.Context()), method, request.Pattern)
+			}
 			if observed, ok := request.Context().Value(httpObservationKey{}).(*httpObservation); ok {
 				if pattern := safeRoute(request.Pattern); pattern != "" {
 					observed.route.Store(&pattern)
@@ -318,6 +350,60 @@ func (r *Runtime) Route(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, request)
 	})
+}
+
+// accessLine queues the one local line of a request, http.server.request.completed:
+// INFO for a normal status, WARN for 400 to 499, ERROR for 500 or higher and for a
+// handler that panicked (status 0). It holds the method, the route pattern, the
+// status, the error type and the duration, and never a path, query, header or body.
+func (r *Runtime) accessLine(ctx context.Context, start, end time.Time, method, route string, status int) {
+	if r.service.local == nil {
+		return
+	}
+	duration := end.Sub(start).Seconds()
+	local := localRecord{Time: end, Service: r.service.service, Instance: r.instance, Severity: "INFO", Event: "http.server.request.completed", Message: "HTTP request completed", HTTPMethod: method, HTTPRoute: route, HTTPStatus: status, DurationSeconds: &duration}
+	switch {
+	case status == 0:
+		local.Severity, local.ErrorType = "ERROR", "panic"
+	case status >= 500:
+		local.Severity, local.ErrorType = "ERROR", strconv.Itoa(status)
+	case status >= 400:
+		local.Severity = "WARN"
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		local.TraceID = sc.TraceID().String()
+		local.SpanID = sc.SpanID().String()
+	}
+	r.service.mu.Lock()
+	defer r.service.mu.Unlock()
+	if !r.closed.Load() {
+		r.service.local.enqueue(local)
+	}
+}
+
+// rpcLine queues the one local line of a gRPC call, rpc.server.call.completed:
+// INFO for OK, ERROR for a server failure code and WARN for every other code.
+func (r *Runtime) rpcLine(ctx context.Context, start, end time.Time, method, value string, code grpccodes.Code) {
+	if r.service.local == nil {
+		return
+	}
+	duration := end.Sub(start).Seconds()
+	local := localRecord{Time: end, Service: r.service.service, Instance: r.instance, Severity: "WARN", Event: "rpc.server.call.completed", Message: "RPC call completed", RPCMethod: method, RPCStatus: value, DurationSeconds: &duration}
+	switch code {
+	case grpccodes.OK:
+		local.Severity = "INFO"
+	case grpccodes.Unknown, grpccodes.DeadlineExceeded, grpccodes.Unimplemented, grpccodes.Internal, grpccodes.Unavailable, grpccodes.DataLoss:
+		local.Severity, local.ErrorType = "ERROR", value
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		local.TraceID = sc.TraceID().String()
+		local.SpanID = sc.SpanID().String()
+	}
+	r.service.mu.Lock()
+	defer r.service.mu.Unlock()
+	if !r.closed.Load() {
+		r.service.local.enqueue(local)
+	}
 }
 
 type httpObservationKey struct{}
@@ -351,18 +437,22 @@ func (r *Runtime) TraceRPC(ctx context.Context, fullMethod string) (context.Cont
 		return ctx, func(error) {}
 	}
 	ctx = r.Context(ctx)
+	method := strings.TrimPrefix(fullMethod, "/")
+	service, name, found := strings.Cut(method, "/")
+	if !strings.HasPrefix(fullMethod, "/") || !found || service == "" || name == "" || len(method) > 256 || strings.Contains(name, "/") || strings.Trim(service, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._") != "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != "" {
+		method = "_OTHER"
+	}
 	if r.provider == nil {
-		return ctx, func(error) {}
+		start := time.Now()
+		var once sync.Once
+		return ctx, func(err error) {
+			once.Do(func() { code, value := rpcStatus(err); r.rpcLine(ctx, start, time.Now(), method, value, code) })
+		}
 	}
 	md, _ := metadata.FromIncomingContext(ctx)
 	values := md.Get("traceparent")
 	if len(values) == 1 && len(values[0]) == 55 {
 		ctx = (propagation.TraceContext{}).Extract(ctx, propagation.MapCarrier{"traceparent": values[0]})
-	}
-	method := strings.TrimPrefix(fullMethod, "/")
-	service, name, found := strings.Cut(method, "/")
-	if !strings.HasPrefix(fullMethod, "/") || !found || service == "" || name == "" || len(method) > 256 || strings.Contains(name, "/") || strings.Trim(service, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._") != "" || strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != "" {
-		method = "_OTHER"
 	}
 	tracer := r.grpcTracer
 	if tracer == nil {
@@ -373,12 +463,7 @@ func (r *Runtime) TraceRPC(ctx context.Context, fullMethod string) (context.Cont
 	r.signals.rpcStarted(ctx)
 	return ctx, func(err error) {
 		end := time.Now()
-		code := status.Code(err)
-		names := [...]string{"OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED"}
-		if int64(code) >= int64(len(names)) {
-			code = grpccodes.Unknown
-		}
-		value := names[code]
+		code, value := rpcStatus(err)
 		span.SetAttributes(attribute.String("rpc.response.status_code", value))
 		switch code {
 		case grpccodes.Unknown, grpccodes.DeadlineExceeded, grpccodes.Unimplemented, grpccodes.Internal, grpccodes.Unavailable, grpccodes.DataLoss:
@@ -386,6 +471,17 @@ func (r *Runtime) TraceRPC(ctx context.Context, fullMethod string) (context.Cont
 			span.SetAttributes(attribute.String("error.type", value))
 		}
 		r.signals.rpcFinished(ctx, start, end, method, value, code)
+		r.rpcLine(ctx, start, end, method, value, code)
 		span.End(trace.WithTimestamp(end))
 	}
+}
+
+// rpcStatus gives the code of err and its fixed name; an unknown code is UNKNOWN.
+func rpcStatus(err error) (grpccodes.Code, string) {
+	code := status.Code(err)
+	names := [...]string{"OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED"}
+	if int64(code) >= int64(len(names)) {
+		code = grpccodes.Unknown
+	}
+	return code, names[code]
 }

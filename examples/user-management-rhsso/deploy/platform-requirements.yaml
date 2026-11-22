@@ -1116,6 +1116,15 @@ environment:
     description: The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two.
     secret: false
     read_by_mode: worker
+  - name: STEGO_LOG_LEVEL
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: info
+    description: 'The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info.'
+    secret: false
+    allowed: debug, info, warn, error
   - name: STEGO_MIGRATION_DATABASE_URL
     read_by:
       - postgres-adapter

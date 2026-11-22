@@ -5,6 +5,7 @@ package tracing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"sync"
@@ -59,6 +60,7 @@ type localRecord struct {
 	Stage           string    `json:"startup.stage,omitempty"`
 	DatabaseCall    string    `json:"stego.db.call,omitempty"`
 	HTTPMethod      string    `json:"http.request.method,omitempty"`
+	HTTPRoute       string    `json:"http.route,omitempty"`
 	HTTPStatus      int       `json:"http.response.status_code,omitempty"`
 	ErrorType       string    `json:"error.type,omitempty"`
 	RPCMethod       string    `json:"rpc.method,omitempty"`
@@ -80,8 +82,39 @@ type localLogs struct {
 	queue             chan localRecord
 	done              chan struct{}
 	dropped, failures atomic.Uint64
+	// level is the rank of the lowest severity that enqueue writes, from STEGO_LOG_LEVEL.
+	level int
 }
 
+// LogLevelSetting sets the lowest severity of the local JSON lines: debug, info,
+// warn or error, and info when it has no value. Service events are always written.
+const LogLevelSetting = "STEGO_LOG_LEVEL"
+
+// readLogLevel gives the rank of a level. The error text is fixed and does not echo the value.
+func readLogLevel(value string) (int, error) {
+	switch value {
+	case "debug":
+		return 0, nil
+	case "", "info":
+		return 1, nil
+	case "warn":
+		return 2, nil
+	case "error":
+		return 3, nil
+	}
+	return 1, errors.New("STEGO_LOG_LEVEL must be debug, info, warn or error")
+}
+func severityRank(severity string) int {
+	switch severity {
+	case "DEBUG":
+		return 0
+	case "WARN":
+		return 2
+	case "ERROR":
+		return 3
+	}
+	return 1
+}
 func newLocalLogs(writer io.Writer) *localLogs {
 	local := &localLogs{queue: make(chan localRecord, QueueSize), done: make(chan struct{})}
 	go func() {
@@ -95,16 +128,24 @@ func newLocalLogs(writer io.Writer) *localLogs {
 	}()
 	return local
 }
+
+// enqueue writes a record of the level of STEGO_LOG_LEVEL or higher; put writes each record.
 func (local *localLogs) enqueue(record localRecord) {
+	if severityRank(record.Severity) >= local.level {
+		local.put(record)
+	}
+}
+func (local *localLogs) put(record localRecord) {
 	select {
 	case local.queue <- record:
 	default:
 		local.dropped.Add(1)
 	}
 }
-func (r *Runtime) initServiceLogs(service string, writer io.Writer) {
+func (r *Runtime) initServiceLogs(service string, writer io.Writer, level int) {
 	r.service.service = service
 	r.service.local = newLocalLogs(writer)
+	r.service.local.level = level
 	if r.signals.logs != nil {
 		r.service.logger = r.signals.logs.Logger("stego/service")
 	}
@@ -136,7 +177,7 @@ func (r *Runtime) emitServiceEvent(ctx context.Context, event ServiceEvent) bool
 		local.SpanID = sc.SpanID().String()
 	}
 	if r.service.local != nil {
-		r.service.local.enqueue(local)
+		r.service.local.put(local)
 	}
 	if r.service.logger != nil {
 		var record otellog.Record
