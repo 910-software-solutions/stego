@@ -1,6 +1,8 @@
 kind: component
 name: controller
-version: 1.27.0
+# Version 1.28.0 writes the line controller.process.failed in the one form of the lines of the runtime, with the
+# timestamp and the service name (walkthrough 25, L-1).
+version: 1.28.0
 stage: ga
 output_namespace: controller
 requires: []

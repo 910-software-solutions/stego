@@ -87,7 +87,10 @@ name: rest-api
 # ST-SUP-RP10-LC47; walkthrough 23).
 # Version 4.38.0 answers a 503 of a database that cannot serve now with a detail that names the database, and a 503 of
 # an undecided permission with one that names the authorization provider (ST-SUP-RC20-OC37; walkthrough 24).
-version: 4.38.0
+# Version 4.39.0 gives a problem that the status sets at run time the slug of its status: service-unavailable for a
+# 503, such as of a database that cannot serve now, method-not-allowed, content-too-large and unprocessable-content
+# (walkthrough 25, P1-16; ST-SUP-RC20-OC04).
+version: 4.39.0
 stage: ga
 output_namespace: internal/api
 
