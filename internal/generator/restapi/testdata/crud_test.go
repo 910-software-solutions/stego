@@ -1741,7 +1741,7 @@ func TestCrud(t *testing.T) {
 			}
 			logged := e.logs.String()[before:]
 			// The query and the command runtime each log a cause once in each interval.
-			if strings.Count(logged, `"stego.cause":"`+fault.cause+`"`) < 1 {
+			if strings.Count(logged, `"cause":"`+fault.cause+`"`) < 1 {
 				t.Errorf("%s: the log does not name the cause %s: %s", fault.name, fault.cause, logged)
 			}
 			if strings.Contains(logged, "not found\"") || strings.Contains(logged, "connection refused") || strings.Contains(logged, id) {
