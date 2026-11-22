@@ -75,6 +75,9 @@ component writes (`<out>/commands/openapi.json`), in the package
   another field before any request (cli-application 1.30.0; before, a
   second apply of a document with a secret that only the create takes
   failed, and a secret that the patch takes was sent again at each apply).
+  A command that lacks a required field names its flag, such as
+  `the required flag --name is missing`, or the member of `--body FILE`
+  (cli-application 1.30.0).
 
 The fills of the service follow the STEGO gates: `stego validate` and `stego plan`
 also warn when the sign-off of a fill counts only because of a key that the
