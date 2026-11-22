@@ -3,6 +3,9 @@ package restapi
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -2566,6 +2569,54 @@ func TestGenerate_ErrorTypeBasePopulatesTypeURI(t *testing.T) {
 		}
 		if !strings.Contains(errorsContent, `"https://api.hyperfleet.io/errors/internal-error"`) {
 			t.Error("InternalError should use error_type_base for type URI")
+		}
+	})
+}
+
+func TestGenerate_ErrorForStatusType(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC04-T03 A problem that the status sets at run time has the slug of its status, service-unavailable for a 503", func(t *testing.T) {
+		g := &Generator{}
+		ctx := basicContext()
+		ctx.ServiceName = "hyperfleet-api"
+		ctx.ErrorTypeBase = "https://api.hyperfleet.io/errors/"
+		files, _, err := g.Generate(onRuntime(ctx))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// errors.go needs only the standard library: a test of its package calls errorForStatus.
+		dir := t.TempDir()
+		write := func(name, content string) {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("go.mod", "module example.com/api\ngo 1.26.0\n")
+		write("errors.go", findFileContent(t, files, "internal/api/errors.go"))
+		write("errors_test.go", `package api
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestStatusTypes(t *testing.T) {
+	for status, slug := range map[int]string{400: "bad-request", 404: "not-found", 405: "method-not-allowed", 413: "content-too-large",
+		422: "unprocessable-content", 500: "internal-error", 503: "service-unavailable"} {
+		got := errorForStatus(status, "detail")
+		if got.Type != "https://api.hyperfleet.io/errors/"+slug || got.Status != status {
+			t.Errorf("the status %d gave the type %q, want the slug %s", status, got.Type, slug)
+		}
+	}
+	if got := errorForStatus(503, "the database of the service cannot serve the request now; try again"); !strings.HasSuffix(got.Code, "-INT-001") {
+		t.Errorf("the 503 has the code %q, want the code that it had", got.Code)
+	}
+}
+`)
+		command := exec.Command("go", "test", "-count=1", "./...")
+		command.Dir = dir
+		command.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("the problems of the statuses: %v\n%s", err, output)
 		}
 	})
 }
