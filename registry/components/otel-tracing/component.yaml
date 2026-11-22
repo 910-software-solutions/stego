@@ -1,6 +1,8 @@
+# Version 1.21.0: the browser relay refuses traces when the deployment ratio is 0 and drops each span that the
+# TraceIdRatio rule of the browser runtime does not sample at that ratio (security review of PR #494, L1).
 kind: component
 name: otel-tracing
-version: 1.20.0
+version: 1.21.0
 stage: ga
 output_namespace: tracing
 

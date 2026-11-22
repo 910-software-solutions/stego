@@ -1,8 +1,9 @@
 # Version 1.4.0 disables export on a page with no deployment setting also when the caller gives sampleRatio: an
 # option only reduces the deployment ratio and never enables a signal (ST-SUP-RC03-OC12, ST-SUP-RC03-OC13).
+# Version 1.5.0 changes the README only: an ID that beginTrace takes must be random (security review of PR #494, I1).
 kind: component
 name: browser-telemetry
-version: 1.4.0
+version: 1.5.0
 stage: ga
 output_namespace: browsertelemetry
 config:

@@ -24,7 +24,10 @@ that ratio or enable a disabled signal. Without metadata, export is disabled,
 also when the caller supplies `sampleRatio` (from 1.4.0): a page with no
 deployment setting counts as a deployment that disabled every signal. The
 ratio must be between zero and one. `beginTrace` lets a domain workflow supply its
-root trace ID. `RootTraceIdGenerator` uses the platform's cryptographic random
+root trace ID. That ID must be random: take it from a cryptographic random
+source, and never from a counter, a user ID or another value that a person can
+choose. The ratio sampler decides on the trace ID, so a chosen ID can make each
+trace sampled. `RootTraceIdGenerator` uses the platform's cryptographic random
 source and rejects zero IDs. Domain code supplies event names and attributes.
 Do not put credentials or private user data in telemetry records.
 
@@ -57,5 +60,8 @@ providers that do not export and does not create browser timers.
 The generated Go backend checks the session, Origin, CSRF token, content type,
 body size, and admission limits. The shared Go telemetry runtime validates the
 protobuf data, replaces resource and scope identity, removes vendor trace
-state, and uses its existing verified TLS collector connection. The collector
+state, and uses its existing verified TLS collector connection. From
+otel-tracing 1.21.0, the relay refuses traces when the deployment turns them
+off or sets the ratio to zero. It also drops each span whose trace ID the ratio
+sampler of this runtime does not sample at the deployment ratio. The collector
 address and credentials do not enter browser code.
