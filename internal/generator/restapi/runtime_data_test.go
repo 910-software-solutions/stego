@@ -370,7 +370,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.188.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.189.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -1629,8 +1629,13 @@ func TestWaitFailureAnswer(t *testing.T) {
 			}
 			checked++
 			text := string(source)
-			if waits := strings.Count(text, ".AwaitRevocation(") + strings.Count(text, ".AwaitWrite("); waits == 0 || strings.Count(text, "answerWaitFailure(w, r, err)") != waits {
+			if waits := strings.Count(text, ".AwaitRevocationOn(") + strings.Count(text, ".AwaitWrite("); waits == 0 || strings.Count(text, "answerWaitFailure(w, r, err)") != waits {
 				t.Fatalf("%s has %d waits and %d calls of answerWaitFailure, want one call for each wait", name, waits, strings.Count(text, "answerWaitFailure(w, r, err)"))
+			}
+			// A write waits through AwaitRevocationOn with its response writer, so a wait that Prefer: wait=N asked for
+			// answers Preference-Applied (ST-SUP-RP10-LC47; walkthrough 23, small items).
+			if strings.Contains(text, ".AwaitRevocation(") || !strings.Contains(text, ".AwaitRevocationOn(w, r, ") {
+				t.Fatalf("%s waits for a revocation of a write without its response writer", name)
 			}
 		}
 		if checked == 0 {

@@ -82,7 +82,10 @@
 # unlock_after (ST-SUP-RC32-OC24, decision ST-SUP-Q205 (c)).
 kind: component
 name: rest-api
-version: 4.35.0
+# Version 4.36.0 waits for the revocation of Authz-Revocation-After of a write through AwaitRevocationOn with the
+# response writer, so a wait that Prefer: wait=N asked for answers Preference-Applied (ST-SUP-RC20-OC49,
+# ST-SUP-RP10-LC47; walkthrough 23).
+version: 4.36.0
 stage: ga
 output_namespace: internal/api
 

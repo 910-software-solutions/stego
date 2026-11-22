@@ -568,6 +568,17 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 			t.Fatalf("the job over a ticket outside its project gives %v, want a refusal", err)
 		}
 		text := refused.Refusal()
+		// The failure record names the fault, the key and the remedy, fixed texts with no row value (walkthrough 23,
+		// D-f).
+		var named interface {
+			FaultClass() string
+			FaultObject() string
+			FaultRemedy() string
+		}
+		if !errors.As(err, &named) || named.FaultClass() != "schema_change.foreign_key_broken" ||
+			(named.FaultObject() != withinKey && named.FaultObject() != "foreign_key") || named.FaultRemedy() == "" {
+			t.Errorf("the refusal %v names no fault of the foreign key", err)
+		}
 		for _, part := range []string{withinValidate, withinKey, "public.tickets"} {
 			if !strings.Contains(text, part) {
 				t.Errorf("the refusal %q does not name %s", text, part)
@@ -645,6 +656,17 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 			t.Fatalf("the job over two sites with one name gives %v, want a refusal", err)
 		}
 		text := refused.Refusal()
+		// The failure record names the fault, the index and the remedy, fixed texts with no row value (walkthrough 23,
+		// D-f).
+		var named interface {
+			FaultClass() string
+			FaultObject() string
+			FaultRemedy() string
+		}
+		if !errors.As(err, &named) || named.FaultClass() != "schema_change.unique_duplicates" || named.FaultObject() != key ||
+			named.FaultRemedy() == "" || strings.Contains(named.FaultRemedy(), "alpha") {
+			t.Errorf("the refusal %v names no fault of the unique index", err)
+		}
 		for _, part := range []string{index, key, "public.sites", "two or more rows", "run the migration job again"} {
 			if !strings.Contains(text, part) {
 				t.Errorf("the refusal %q does not name %s", text, part)

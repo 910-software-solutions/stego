@@ -45,7 +45,8 @@ through queries.
    fingerprint, and plan, apply, build and deps refuse the fill.
    `stego validate` and `stego plan` also warn when the sign-off counts only
    because of a key that the change adds to `SIGNERS`; with `--strict` this is
-   a fault.
+   a fault. `stego plan --strict` also refuses when `stego apply` would change
+   a generated file, so run `stego apply` and commit before it.
 
 4. Generate, resolve the dependencies and build:
 

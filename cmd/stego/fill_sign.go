@@ -418,7 +418,8 @@ func addedKeyFaults(input compiler.ReconcilerInput, named string) ([]declaration
 	for _, a := range added {
 		faults = append(faults, declaration.ValidationError{Rule: "ST-EXT-UC02-R02", Path: "fills/" + a.Fill + "/" + fill.ManifestFile, Found: a.Signer,
 			Message: fmt.Sprintf("the sign-off of fill %q counts only because of the key of %s, which SIGNERS at %s (commit %s) does not qualify: the change adds it or changes its line. "+
-				"Review the change of SIGNERS on its own and merge it first, or have a person whom SIGNERS at %s lists run stego fill sign --force %s",
+				"Review the change of SIGNERS on its own and merge it first, then check against a base that holds it, such as --base origin/main in a release pipeline in place of the tag of the running release; "+
+				"or, only while a key that SIGNERS at %s lists is still at hand, have its holder run stego fill sign --force %s",
 				a.Fill, a.Signer, base.ref, shortCommit(base.commit), base.ref, a.Fill)})
 	}
 	return faults, nil

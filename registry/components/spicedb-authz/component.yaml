@@ -10,7 +10,10 @@
 # their routes (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
 kind: component
 name: spicedb-authz
-version: 1.4.0
+# Version 1.6.0 gives the relay the definitions of the schema as its types, so the relay of a release leaves a
+# tuple of a type or a relation of a newer release to the relay of that release (ST-SUP-RP01-LC40,
+# ST-SUP-RP06-LC06; walkthrough 23, P2-R).
+version: 1.6.0
 stage: ga
 output_namespace: internal/authz
 

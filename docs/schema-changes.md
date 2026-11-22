@@ -53,6 +53,8 @@ a field in the store, add a field with the new name and drop the old one.
 This changes the API, so it is a breaking change for each client.
 `stego validate` and `stego plan` also warn when the sign-off of a fill counts only
 because of a key that the change adds to `SIGNERS`; with `--strict` this is a fault.
+`stego plan --strict` also refuses a plan that would change a generated file; see
+[the checks of a pull request](../README.md#the-checks-of-a-pull-request).
 
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first
@@ -224,7 +226,9 @@ correct or remove them, then run the migration job again: it builds the index
 again. Rows of two tenants that hold one value are no duplicate, because the
 key starts with the tenant column. From the end of the build, a write of the
 release before that gives a second row one value of the key fails with 409
-`conflict`, which names no field.
+`conflict`. From runtime v0.189.0, the release before names the field of the
+key too, from the name of the index, as the new release does; before runtime
+v0.189.0, it names no field.
 
 A unique key also tells a writer that a row holds a value. A create or an
 update that gives a row the value of another row of the same tenant gets 409,
@@ -668,6 +672,16 @@ release wrote while the field was not secret stays where it is:
   expand step wrote, also while the seal was open, until their own retention
   removes them, and each copy in the systems that read them, such as the
   topics of a consumer and the store of the audit sink.
+- The stored answers of the idempotency keys in `public.idempotency_keys`
+  that a release before the expand step wrote, such as the answer of each
+  create, until the retention of the keys removes them (`idempotency.retention`,
+  24 hours by default). A release of a service with no secret and no pii field
+  has no key ring, so it stores each answer in clear. The release of the expand
+  step, and each later release, has the key ring of the `secret` field, and
+  stores each answer sealed with it (ST-SUP-RP07-LC13): no answer that it
+  stores holds the clear value. The contract step does not remove the clear
+  answers. They are gone one retention after the last process of the release
+  before stopped.
 - The rows of the clear column in the WAL and in each backup taken before the
   contract, until the retention of the WAL and of the backups ends. A restore
   of such a backup brings the clear column back (see [Restore a database with

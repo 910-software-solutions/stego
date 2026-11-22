@@ -464,7 +464,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 			return
 		}
 		// A command after the caller's own write waits for its revocation before its decision (ST-SUP-RP10-LC47).
-		if err := rt.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if err := rt.AwaitRevocationOn(w, r, b.Tenant, b.Principal); err != nil {
 			if httpStatus, code, ok := awaitAnswer(r.Context(), err); ok {
 				rt.writeProblem(w, httpStatus, "", code)
 			}

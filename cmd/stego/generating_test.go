@@ -458,6 +458,77 @@ func TestPlanNamesEveryChange(t *testing.T) {
 	})
 }
 
+func TestStrictPlanRefusesPendingChanges(t *testing.T) {
+	t.Run("ST-GEN-UC05-R02-T03 plan --strict refuses a plan that would change a generated file, names the counts and the remedy, and saves no plan", func(t *testing.T) {
+		generatingProject(t, generatingDeclaration)
+		mustRun(t, runApply)
+		dir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "init", "-q")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "applied")
+		// The generated files are those of the declaration: plan --strict passes (walkthrough 23, T-N).
+		if printed := mustRun(t, runPlan, "--strict", "--base", "HEAD"); !strings.Contains(printed, "No changes") {
+			t.Fatalf("plan --strict on a current project shows a change:\n%s", printed)
+		}
+		// A branch that changes the declaration and does not run apply: its generated files are stale.
+		writeProjectFile(t, "service.yaml", strings.Replace(generatingDeclaration, "  notes: {entity: Note, operations: [create, read]}\n", "", 1))
+		if err := os.Remove(filepath.Join(".stego", "plan.yaml")); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		printed, err := capture(t, runPlan, "--strict", "--base", "HEAD")
+		if err == nil {
+			t.Fatalf("plan --strict passes a project whose generated files are not those of its declaration:\n%s", printed)
+		}
+		for _, want := range []string{"--strict refuses", "update ", "delete ", "run stego apply and commit the files it writes"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %q", err, want)
+			}
+		}
+		if !strings.Contains(printed, "delete:") {
+			t.Errorf("plan --strict does not print the plan that it refuses:\n%s", printed)
+		}
+		if _, err := os.Stat(filepath.Join(".stego", "plan.yaml")); !os.IsNotExist(err) {
+			t.Errorf("plan --strict saved a plan although it refuses: %v", err)
+		}
+		// Without --strict, the same plan is printed and saved, and plan exits 0.
+		if printed := mustRun(t, runPlan, "--base", "HEAD"); !strings.Contains(printed, "Saved the plan") {
+			t.Fatalf("plan without --strict does not save the plan:\n%s", printed)
+		}
+	})
+
+	t.Run("ST-GEN-UC05-R02-T04 plan --strict --show refuses a saved plan that no longer applies, and without --strict exits 0", func(t *testing.T) {
+		// The flags of plan are package variables: a run with --strict that ends early leaves --strict set for the
+		// tests after it.
+		t.Cleanup(func() { strictSecretSources = false })
+		generatingProject(t, generatingDeclaration)
+		mustRun(t, runApply)
+		dir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		git(t, dir, "init", "-q")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "applied")
+		// A plan is saved for a declaration, and the declaration then changes, so the saved plan no longer applies
+		// (security review of PR #490, I4).
+		writeProjectFile(t, "service.yaml", strings.Replace(generatingDeclaration, "  notes: {entity: Note, operations: [create, read]}\n", "", 1))
+		if printed := mustRun(t, runPlan, "--base", "HEAD"); !strings.Contains(printed, "Saved the plan") {
+			t.Fatalf("plan does not save the plan:\n%s", printed)
+		}
+		writeProjectFile(t, "service.yaml", generatingDeclaration)
+		if printed := mustRun(t, runPlan, "--show"); !strings.Contains(printed, "The saved plan does not apply") {
+			t.Fatalf("plan --show does not say that the saved plan does not apply:\n%s", printed)
+		}
+		printed, err := capture(t, runPlan, "--strict", "--show")
+		if err == nil || !strings.Contains(err.Error(), "--strict refuses: the saved plan does not apply") {
+			t.Fatalf("plan --strict --show of a saved plan that does not apply gave %v:\n%s", err, printed)
+		}
+	})
+}
+
 // The declarations of these tests prove behaviour of the compiler that does not depend on the data path. Since the
 // runtime data path is the only data path (ST-SUP-RC20-OC39), a rest-crud declaration with entities needs pooled
 // tenancy, which authorization asks to be stated, the audit log, stated so that it selects its component, SpiceDB

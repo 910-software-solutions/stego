@@ -89,6 +89,9 @@ Do these steps for each upgrade. Do them in this order.
      manifest` is an alert. A pod of the new release must not write it.
    - The parked list of each destination of a consuming worker (see [Add a
      subscription to a running service](#add-a-subscription-to-a-running-service)).
+   - The parked list of the destination `authz`, when the release adds a
+     relation to `authz/schema.zed` (see [Resolve the parked messages of the
+     destination authz](#resolve-the-parked-messages-of-the-destination-authz)).
 7. If you must go back, go back by one release only. See [Which older releases
    can run on a newer database](operations.md#which-older-releases-can-run-on-a-newer-database).
 
@@ -272,6 +275,7 @@ archetype does not have the change.
 | 3.252.0 | 1.252.0 | 1.252.0 | Runtime v0.186.0 and cli-application 1.28.0. A consuming worker whose run fails after SpiceDB denied it a row whose relations the relay has not written yet, such as the row that the run of the create event made a moment before, now gets the outcome `undecided` and the cause `relations_pending` in `worker.run.failed` and `command.consumer.run_failed`, in place of `fill_error` or another class, when the failure comes from that deny. The message goes back to pending with the failure code `relations-pending.<n>.<time>`, the poison count does not count it, and a declared refusal of such a run does not park it, for at most 10 attempts and 5 minutes; then the attempt is classed as before and logs the warn line `command.consumer.relations_pending_past_bound`. `command.NewStruct` also refuses a value of more than 100,000 values in all (`command.MaxStructNodes`), where a map or a list that a value holds at two places counts at each place. A sign-off by a GPG key of `SIGNERS` that is revoked or expired, as its armored block says, no longer qualifies its fill, also when the key signed before it expired. The generated CLI `apply` takes a secret member of a create or a patch, such as a PIN, in the `spec` of a document from a file that only you can read, or from a pipe on standard input, and refuses a file that the group or other users can read, also on standard input, before any request. | An alert or a dashboard on `worker.run.failed` with the cause `fill_error` also reads `relations_pending`: it is not an error of the fill. Alert on a long streak of `relations_pending` for one worker, on the warn line `command.consumer.relations_pending_past_bound`, and on `outbox.oldest.age` of each consumed destination: each tells that the relay does not write the relations of rows. Before the upgrade, run `stego validate`: a fill whose sign-off key is revoked or expired is now unsigned, so sign it again with a valid key of `SIGNERS`. A fill that gives `NewStruct` more than 100,000 values gives a smaller value. Put a secret field of an apply document in a file with mode 600. |
 | 3.253.0 | 1.253.0 | 1.253.0 | Runtime v0.187.0 and typescript-sdk 1.6.0. A command or a read whose `Authz-Revocation-After` names the revocation of a write of another user of the same tenant waits for it, as for a write of the caller (recommendation (a) of ST-SUP-Q206, open for the Product owner); a read then answers `Authz-Revocation: unknown`, and the status route still answers only the maker. The warn line `command.attempts.pool_saturated` comes when a count of wrong attempts waits for a slot of the pool of the counts, with `stego.pool.in_use`, `stego.pool.max_open` and the new `stego.pool.waiting`; `stego.pool.wait_count` is gone. Before, the line could not come. The failure record of the migration Job gives the cause of a SpiceDB refusal with the class of its reason, such as `invalid_argument.relationships_exist`. In the TypeScript SDK, `idempotentReplayed` is `true` or `false`, not a text or `null`. `stego plan` runs the SIGNERS check also when the declaration needs add steps, so `plan --strict` refuses there too. The fault of a fill whose key `SIGNERS` does not list says first to sign it with a listed key. | To let a second user act at once on a new row, give it the `Authz-Revocation-Location` of the create (see [Act at once on a row that another user created](commands-queries-workers.md#act-at-once-on-a-row-that-another-user-created)). An alert on `command.attempts.pool_saturated` reads `stego.pool.waiting` in place of `stego.pool.wait_count`. An alert on the failure record that matches the cause `invalid_argument` exactly also matches `invalid_argument.*`. Build the TypeScript SDK again, and compare `idempotentReplayed` with `true`, not with `"true"`. |
 | 3.254.0 | 1.254.0 | 1.254.0 | Runtime v0.188.0, command 1.25.0 and rest-api 4.35.0. A field with `attempts` can give `unlock_after`, from `1m` to `24h`: a row at its limit of wrong checks then opens again `unlock_after` after its last counted check, on the clock of the database (decision ST-SUP-Q205 (c)). A field with no `unlock_after` keeps the lock until a new value, as before (decision ST-SUP-Q207 (a)). A second count of the checks since the last match or new value never decays: at 10 times the limit, at most 100, the row stays locked until a new value or a reset. A command can declare `resets_attempts: [<Entity>.<field>]` and reset the counts of a row with a permission of its own, which `stego validate` compares with the schema, and which the runtime refuses to a caller who also holds the permission of another command that writes the entity on that row (404 `denied`); each reset writes an audit row (see [Unlock a row at once](fills.md#unlock-a-row-at-once)). `stego validate` warns of `unlock_after` shorter than `24h` on a secret of `min_length` 6 or less. The migration Job adds the columns `charged_at` and `failures` to `attempt_counts`; the next check of a count that a release before wrote gives it a time, so a locked row stays locked for one window. The wait of a second user for the revocation of a create tells the time when the create completed, in the same tenant only. | No declaration has to change. To let a locked row open again with time, give `unlock_after: 24h`, and a reset command whose permission only a support role has. The checks that pods of the release before charge during the rollout count toward the cap too. |
+| 3.255.0 | 1.255.0 | 1.255.0 | Runtime v0.189.0, rest-api 4.36.0, postgres-adapter 6.29.0 and spicedb-authz 1.6.0. In a rolling release that adds a relation or a resource type to `authz/schema.zed`, the relay of the release before leaves each tuple that only the new release can read in pending (failure code `authz-relation-unknown`, `authz-payload-newer` or `authz-type-unknown`) for the relay of the new release, and parks it only after one hour, with the cause `not_understood` (recommendation (a) of ST-SUP-Q208, open for the Product owner); before, it parked such a tuple at once, and the row had no relation. The line and the metric `outbox.parked` name the cause, and the line names the failure code. The failure record of the migration Job names a fault, an object and a remedy for `migrate.open` (`database.connection`), the SpiceDB steps (`spicedb.connection`, `spicedb.schema_refused`, `spicedb.schema_not_served`) and a refused unique or foreign key step (`schema_change.unique_duplicates`, `schema_change.foreign_key_broken`); a refused key source of a start names `authn.keys.load`, `authn.keys.file`, `authn.keys.pem`, `authn.keys.document` or `authn.discovery`. A 409 of a unique index that a unique step of a newer release built names the field on a pod of the release before too. A write that waited with `Prefer: wait=N` answers `Preference-Applied`. `stego plan --strict` also refuses when `stego apply` would create, update or delete a generated file or change the record, or when the declaration needs add steps. | This upgrade is from a release before runtime v0.189.0, whose relay still parks such tuples: after the rollout of a release that adds a relation, resolve the parked messages of the destination `authz` (see [Resolve the parked messages of the destination authz](#resolve-the-parked-messages-of-the-destination-authz)). An alert on `outbox.parked` can read `cause`; add the alert on `outbox.not_understood` of that section; an alert on a failed Job or start can read `fault`. Add `stego drift` to the checks of a pull request, and run `stego apply` and commit before `stego plan --strict` (see [The checks of a pull request](../README.md#the-checks-of-a-pull-request)). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -686,6 +690,25 @@ Do these steps:
    topic of the new subscription, `STEGO_KAFKA_CONSUMER_<S>_TOPIC` (see
    [Subscriptions](subscriptions.md)). The other subscriptions keep their
    settings and their groups.
+
+   In `authz/schema.zed`, give the type `tenant` the relation of the new
+   consuming worker, with its name in snake case, and point the permission
+   that its command checks at it, such as:
+
+   ```text
+   definition tenant {
+   	relation worker_record_payment: service_account
+   }
+
+   definition payment {
+   	relation tenant: tenant
+   	permission record = tenant->worker_record_payment
+   }
+   ```
+
+   Else `stego validate` refuses the declaration, and names the missing
+   relation `worker_<name>` of the type `tenant` (ST-SUP-RC35-OC13). See
+   [Worker grants in each tenant](workers.md).
 2. Choose where the group starts. To apply the backlog, do nothing. To skip
    the backlog, set the offsets of the group to the end of the topic before the
    first start:
@@ -731,6 +754,97 @@ Do these steps:
 From runtime v0.134.0, look at the parked list once after the first start
 all the same: a message that parks has another cause, such as a row that the
 fill needs and that does not exist.
+
+## Resolve the parked messages of the destination authz
+
+The messages of the destination `authz` are the relationship writes of the
+rows: the relay writes them to SpiceDB. In a rolling update, the worker of the
+release before and the worker of the new release run at the same time, and
+both take the messages of the outbox.
+
+A release can add a relation to `authz/schema.zed`, such as `relation tenant:
+tenant` on `payout` with `permission edit = owner + tenant->approver`. The
+migration Job writes the new schema to SpiceDB before the rollout. Then the
+pods of the new release write the tuples of the new relation for each row
+that they make.
+
+- From runtime v0.189.0, the relay of the release before does not write a
+  tuple of a relation that its release does not know. It leaves the message in
+  pending, with the failure code `authz-relation-unknown` and no attempt
+  counted, and the relay of the new release writes it. A message that no relay
+  writes within one hour is parked. The line `outbox.parked` then has the cause
+  `not_understood`. The relay of the release before also leaves a payload of a
+  newer runtime (`authz-payload-newer`) and the delete of a retired tenant of a
+  new resource type (`authz-type-unknown`). The first hold of such a message
+  writes the WARN line `outbox.not_understood`, with the destination and the
+  failure code, at most one line a minute for each destination. The bound of
+  the destination `authz` is one hour, and no setting changes it: a held
+  tuple is a write or a revocation that SpiceDB does not have yet.
+
+  Alert on the metric `outbox.not_understood` of the destination `authz`
+  when it grows for more than 10 minutes, such as with the PromQL rule
+  `increase(outbox_not_understood_total{destination="authz"}[10m]) > 0` for
+  10 minutes. A rollout takes minutes, so a longer growth tells that no
+  worker of the new release runs, such as in a paused rollout. Finish the
+  rollout, or roll forward, before the hour of the bound ends.
+- Before runtime v0.189.0, the relay of the release before parks such a
+  message at once, with the failure code `delivery-refused-permanent`. A row
+  that the new release made during the rollout then has no tuple of the new
+  relation, and a check that needs it gives 404. Thus, when you upgrade from a
+  release before runtime v0.189.0 with such a release, do the steps below after
+  the rollout. To prevent the parks, scale the Deployment `<service>-worker`
+  of the release before to 0 before the rollout, and accept that the messages
+  wait until the new worker starts.
+
+Do these steps in each tenant, after the last pod of the release before
+stopped:
+
+1. Give the operator the permission `resolve` on the destination `authz` in
+   the tenant: the relation `operator` on `outbox_destination`, with the
+   tenant-qualified ID of `authz`. For the tenant `acme` and the user `ops` of
+   the issuer `https://idp.example.test`:
+
+   ```bash
+   b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+   zed relationship create "outbox_destination:$(b64 acme)/$(b64 authz)" operator "user:$(b64 https://idp.example.test)|$(b64 ops)"
+   ```
+
+   SpiceDB can take up to its quantization interval to use the grant (see
+   [Operations](operations.md)). The schema must declare `outbox_destination`
+   with the relation `operator` (see [See and resolve the parked
+   messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)).
+2. Write the header file of the token of the operator, as in step 5 of [Add a
+   subscription to a running service](#add-a-subscription-to-a-running-service),
+   and list the parked messages of `authz`:
+
+   ```sh
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/authz/parked"
+   ```
+
+   Each message has the failure code. A message of a new relation has
+   `delivery-refused-permanent` before runtime v0.189.0, and
+   `authz-relation-unknown` from runtime v0.189.0.
+3. Send each parked message again with `not_acted`, then remove the header
+   file. Do not use `discarded`: a discarded message of `authz` is a
+   relationship change that SpiceDB never gets. The destination `authz` refuses
+   `acted`.
+
+   ```sh
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/authz/parked" |
+     jq -r '.items[].id' | while read -r id; do
+       curl -sS -X POST -H @auth-header -H 'Content-Type: application/json' \
+         -d '{"resolution": "not_acted"}' "https://<host><base path>/stego/outbox/authz/parked/$id:resolve"
+     done
+   shred -u auth-header
+   ```
+
+   Do this again while the list has a `next` cursor.
+4. List the parked messages again. The relay of the new release writes each
+   message that you sent again. A message that parks again has another cause,
+   such as a relation that `authz/schema.zed` of the release does not hold.
+   Correct the cause, then send it again.
+5. Remove the grant of step 1 with `zed relationship delete` and the same
+   three arguments, unless the operator keeps it.
 
 ## A Go build fails with "could not import log/slog"
 

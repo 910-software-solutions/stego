@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -880,5 +882,53 @@ CREATE TABLE IF NOT EXISTS stego_schema.migrations (version text PRIMARY KEY, di
 				t.Fatalf("New with the earlier digest of another migration gave %v, want ErrMigrationChanged that names 002_release", err)
 			}
 		})
+	})
+}
+
+// TestKeySourceFaults proves the fault class, the object and the remedy of a key source that the key set refuses at
+// start, which the failure record of the process names (walkthrough 23, small items).
+func TestKeySourceFaults(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC05-T06 A key source that the key set refuses names its fault class, its object and a remedy, with no path and no URL", func(t *testing.T) {
+		dir := t.TempDir()
+		write := func(name, text string) string {
+			path := dir + "/" + name
+			if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+		untrusted := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }))
+		defer untrusted.Close()
+		for _, c := range []struct {
+			name   string
+			source authn.KeySource
+			class  string
+			object string
+			stage  string
+		}{
+			{"a key file that is not there", authn.KeySource{File: dir + "/secret-keys.json"}, authn.KeysFileFault, "key_document_file", "service.start.authn.keys"},
+			{"a key file that is not a key set", authn.KeySource{File: write("keys.json", "secret-not-json")}, authn.KeysDocumentFault, "key_document", "service.start.authn.keys"},
+			{"a PEM file with no key", authn.KeySource{PEMFile: write("key.pem", "secret-not-pem")}, authn.KeysPEMFault, "key_pem_file", "service.start.authn.keys"},
+			{"a key URL that the system roots do not trust", authn.KeySource{URL: untrusted.URL + "/keys"}, authn.KeysLoadFault, "key_document_url", "service.start.authn.keys"},
+			{"an issuer whose discovery document cannot be loaded", authn.KeySource{Issuer: untrusted.URL + "/realms/secret"}, authn.KeysDiscoveryFault, "discovery_document", "service.start.authn.discovery"},
+		} {
+			_, err := authn.NewKeySet(context.Background(), c.source)
+			var named interface {
+				FaultClass() string
+				FaultObject() string
+				FaultRemedy() string
+			}
+			if !errors.As(err, &named) {
+				t.Errorf("%s gave %v, which names no fault", c.name, err)
+				continue
+			}
+			if named.FaultClass() != c.class || named.FaultObject() != c.object || named.FaultRemedy() == "" || StartStage(err) != c.stage {
+				t.Errorf("%s gave the fault %q, the object %q and the stage %q, want %q, %q and %q with a remedy", c.name,
+					named.FaultClass(), named.FaultObject(), StartStage(err), c.class, c.object, c.stage)
+			}
+			if remedy := named.FaultRemedy(); strings.Contains(remedy, "secret") || strings.Contains(remedy, dir) || strings.Contains(remedy, "127.0.0.1") {
+				t.Errorf("%s gave a remedy with a path, a URL or a value: %q", c.name, remedy)
+			}
+		}
 	})
 }
