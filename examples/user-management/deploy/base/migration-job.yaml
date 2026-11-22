@@ -13,7 +13,7 @@ metadata:
     app.kubernetes.io/component: migration
     app.kubernetes.io/name: user-management
     app.kubernetes.io/part-of: user-management
-  name: user-management-migrate-c4698f6554
+  name: user-management-migrate-65a7f09f91
 spec:
   activeDeadlineSeconds: 7200
   backoffLimit: 2
@@ -236,6 +236,12 @@ spec:
               valueFrom:
                 configMapKeyRef:
                   key: STEGO_HTTP_TLS_KEY
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_LOG_LEVEL
                   name: user-management-config
                   optional: true
             - name: STEGO_MIGRATION_DATABASE_URL

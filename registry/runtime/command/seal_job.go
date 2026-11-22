@@ -491,7 +491,7 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 			}
 			continue
 		}
-		slog.InfoContext(ctx, "command: seal of a secret column", otel.SlogEventKey, SealPassEvent, "change", c.Change, "entity", c.Entity, "column", c.Clear,
+		slog.InfoContext(otel.Security(ctx), "command: seal of a secret column", otel.SlogEventKey, SealPassEvent, "change", c.Change, "entity", c.Entity, "column", c.Clear,
 			"sealed", result.Sealed, "checked", result.Checked, "completed", result.Completed, "waits", result.Waits)
 	}
 	return results, errors.Join(failed...)

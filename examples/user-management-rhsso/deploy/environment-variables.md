@@ -36,6 +36,7 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
+| `STEGO_LOG_LEVEL` | string | no | `info` | no | debug, info, warn, error | `warn` | The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info. |
 | `STEGO_PROBE_CONSOLE` | string | no | `off` | no | json, logfmt, off | `json` | The format of the domain probe values on standard output. When it has no value, the probes write nothing to standard output. |
 
 ## health-check
@@ -116,6 +117,7 @@ shows its name only: give its value through a secret of the platform.
 | `OTEL_METRIC_EXPORT_INTERVAL` | integer | no | `10000` | no | 1000 to 60000 milliseconds | `30000` | The time between two exports of metrics, in milliseconds. When it has no value, the time is 10000 milliseconds. |
 | `OTEL_SERVICE_NAME` | string | no | none | no | - | `orders-api` | The service name in the telemetry. When it has no value, the telemetry uses the declared service name. |
 | `OTEL_TRACES_SAMPLER_ARG` | number | no | `0.1` | no | 0 to 1 | `0.5` | The ratio of traces that the service samples. When it has no value, the ratio is 0.1. |
+| `STEGO_LOG_LEVEL` | string | no | `info` | no | debug, info, warn, error | `warn` | The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info. |
 | `STEGO_OTEL_TOKEN_FILE` | path | no | none | no | - | `/etc/stego/otel/token` | The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token. |
 
 ## postgres-adapter
@@ -154,6 +156,7 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_DATABASE_CONNECTION_MAX_LIFETIME` | duration | no | `30m` | no | 1s to 24h | `1h` | The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes. |
 | `STEGO_DATABASE_MAX_IDLE_CONNECTIONS` | integer | no | none | no | 0 to 1024 | `8` | The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less. |
 | `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` | integer | no | `16` | no | 1 to 1024 | `32` | The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections. |
+| `STEGO_LOG_LEVEL` | string | no | `info` | no | debug, info, warn, error | `warn` | The lowest severity of the log lines on standard output and standard error: debug, info, warn or error. When it has no value, the level is info. |
 | `STEGO_MIGRATION_DATABASE_URL` | string | one of `migration-database-url` | - | yes | - | - | The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
 | `STEGO_MIGRATION_DATABASE_URL_FILE` | path | one of `migration-database-url` | none | no | - | `/etc/stego/database-owner/url` | The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two. |
 | `STEGO_RELAY_DATABASE_URL` | string | one of `relay-database-url` | - | yes | - | - | The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |

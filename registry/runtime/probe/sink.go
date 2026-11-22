@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,10 @@ const QueueLimit = 1024
 
 // consoleSetting is the one setting of the probe runtime (ST-SUP-RP12-LC16).
 const consoleSetting = "STEGO_PROBE_CONSOLE"
+
+// levelSetting is otel.LogLevelSetting, the setting of the lowest level of the console lines (decision on
+// ST-SUP-Q210).
+const levelSetting = "STEGO_LOG_LEVEL"
 
 // The sink names of the counters domain.probe.dropped and domain.probe.failed (ST-SUP-RP12-LC19). The probe counts
 // under its own name what it drops before any sink: values that do not match, emissions after the fill returned
@@ -98,6 +103,16 @@ func (q *queue) put(r *record) {
 	}
 }
 
+// putBelow queues r only while the queue holds fewer than its capacity less reserve records, so the reserve stays
+// for the records that put queues; a record over it is dropped and counted (security review of PR #492, L1).
+func (q *queue) putBelow(r *record, reserve int) {
+	if len(q.records) >= cap(q.records)-reserve {
+		q.dropped.Add(1)
+		return
+	}
+	q.put(r)
+}
+
 // run writes each record. A write that fails or panics is counted, and a record left after the shutdown limit
 // ended is counted as dropped.
 func (q *queue) run(write func(*record) error) {
@@ -163,11 +178,40 @@ type Runtime struct {
 // names of SpanNames, or Start fails. It reads STEGO_PROBE_CONSOLE: json or
 // logfmt turns the console sink on for declared observations, and an absent, empty or off setting leaves it off for
 // them; any other value fails with fixed text (ST-SUP-RP12-LC16). The built-in service events are on the console in
-// every setting (ST-SUP-RP12-LC22). The OTLP sink is on when, and only when, the telemetry runtime has a collector
+// every setting (ST-SUP-RP12-LC22). It reads STEGO_LOG_LEVEL too: the console writes a built-in worker event of that
+// level or higher, info when it has no value, and any other value fails with fixed text (decision on ST-SUP-Q210). The OTLP sink is on when, and only when, the telemetry runtime has a collector
 // endpoint, and it uses the telemetry runtime's providers only (ST-SUP-RP12-LC06, ST-SUP-RP12-LC14). builtins may be
 // nil when the declaration has no worker and no open schema change.
 func Start(telemetry *otel.Runtime, builtins *Builtins) (*Runtime, error) {
-	return start(telemetry, builtins, os.Getenv(consoleSetting), os.Stdout)
+	level, err := consoleLevel(os.Getenv(levelSetting))
+	if err != nil {
+		return nil, err
+	}
+	r, err := start(telemetry, builtins, os.Getenv(consoleSetting), os.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	r.console.level = level
+	return r, nil
+}
+
+// consoleLevel gives the lowest severity of the built-in worker events on the console from a value of
+// STEGO_LOG_LEVEL (otel.ParseLogLevel), which fails with fixed text for a value that is not a level (decision on
+// ST-SUP-Q210).
+func consoleLevel(setting string) (Severity, error) {
+	level, err := otel.ParseLogLevel(setting)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case level >= slog.LevelError:
+		return Error, nil
+	case level >= slog.LevelWarn:
+		return Warn, nil
+	case level >= slog.LevelInfo:
+		return Info, nil
+	}
+	return Debug, nil
 }
 
 // start is Start with the setting and the writer of standard output given.

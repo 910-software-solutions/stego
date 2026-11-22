@@ -34,8 +34,10 @@ var (
 
 	// workerRunFailed has the fixed cause class of the run's error besides its outcome (ST-SUP-RC35-OC06, decision on
 	// ST-SUP-Q159).
-	workerRunFailed   = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome", "cause")
-	workerTickSkipped = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
+	workerRunFailed = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome", "cause")
+	// workerRunCompleted is a run that committed, an Info with the worker name only (decision on ST-SUP-Q210).
+	workerRunCompleted = builtin("worker.run.completed", Event, Info, workerClass, "worker")
+	workerTickSkipped  = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
 	// workerTickFailed is a tick that did not read the tenant list, so it ran no tenant (security review of PR #337,
 	// L2; decision on ST-SUP-Q141).
 	workerTickFailed      = builtin("worker.tick.failed", Event, Error, workerClass, "worker")
@@ -50,7 +52,7 @@ var (
 )
 
 // builtinObservations are the built-in observations, whose names no declared observation may take.
-var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerTickFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
+var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerRunCompleted, workerTickFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
 
 // builtinName tells whether name is the name of a built-in observation.
 func builtinName(name string) bool {
@@ -264,6 +266,12 @@ func (w Worker) RunFailed(ctx context.Context, outcome WorkerOutcome) {
 // fixed cause class of its error, one of WorkerCauses, and nothing else (ST-SUP-RC35-OC06).
 func (w Worker) RunFailedCause(ctx context.Context, outcome WorkerOutcome, cause string) {
 	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome), cause)
+}
+
+// RunCompleted sends worker.run.completed, an Info, for a run that committed, with the worker name and nothing else
+// (decision on ST-SUP-Q210). The console writes it when STEGO_LOG_LEVEL is info or debug.
+func (w Worker) RunCompleted(ctx context.Context) {
+	w.core.builtin(ctx, workerRunCompleted, 1, w.name)
 }
 
 // TickFailed sends worker.tick.failed for a tick that did not read the tenant list, with the worker name only.
