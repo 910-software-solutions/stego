@@ -39,6 +39,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
@@ -100,6 +101,8 @@ type env struct {
 	rtConfig command.Config
 	fills    handlers.Fills
 	mux      *http.ServeMux
+	// codes are the error codes that the completion log of each call holds, by the Idempotency-Key of the call.
+	codes sync.Map
 }
 
 var (
@@ -254,7 +257,26 @@ func (e *env) start() {
 	e.fills = fills
 	must(t, handlers.Register(mux, e.rt, fills, handlers.Options{}))
 	e.mux = mux
-	e.server = httptest.NewServer(e.verifier.Middleware(mux))
+	e.server = httptest.NewServer(e.verifier.Middleware(e.completion(mux)))
+}
+
+// completion gives each call the place of the error code of its completion log, as the Handler of the telemetry
+// runtime does, and keeps the code that the handler gave by the Idempotency-Key of the call: the completion log
+// carries this code and nothing else of the error (ST-SUP-RP03-LC12).
+func (e *env) completion(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.WithErrorCode(r.Context())
+		next.ServeHTTP(w, r.WithContext(ctx))
+		code, _ := otel.ErrorCode(ctx)
+		e.codes.Store(r.Header.Get("Idempotency-Key"), code)
+	})
+}
+
+// completionCode gives the error code of the completion log of the call with the Idempotency-Key key.
+func (e *env) completionCode(key string) string {
+	code, _ := e.codes.Load(`"` + key + `"`)
+	s, _ := code.(string)
+	return s
 }
 
 // bearer sends the preshared key of the local SpiceDB server on each call.
@@ -874,23 +896,35 @@ func TestCommand(t *testing.T) {
 		a := e.as("u-7", "tA", time.Now().Add(time.Hour))
 		ok, denied, failed := e.order(a), e.order(a, "someone-else"), e.order(a)
 		e.behave(t, reservecharge.ReserveAndCharge)
+		// rowsOfTenant counts every audit row of the tenant, so a call that leaves a row more than its own is seen.
+		rowsOfTenant := func() int { return e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1`, a.tenant.ID()) }
+		before := rowsOfTenant()
 		if got := e.post(a.token, "oc07-ok", ok, body); got.status != http.StatusCreated {
 			t.Fatalf("the allowed command answered %d %s", got.status, got.body)
 		}
+		afterOK := rowsOfTenant()
 		if got := e.post(a.token, "oc07-denied", denied, body); got.status != http.StatusNotFound {
 			t.Fatalf("the denied command answered %d", got.status)
 		}
+		afterDenied := rowsOfTenant()
 		reservecharge.Behavior = func(context.Context, *commands.ReserveAndChargeRequest, *commands.ReserveAndChargeHandle) (*commands.ReserveAndChargeResponse, error) {
 			return nil, errors.New("no")
 		}
 		if got := e.post(a.token, "oc07-failed", failed, body); got.status != http.StatusInternalServerError {
 			t.Fatalf("the failed command answered %d", got.status)
 		}
-		if n := e.auditRowsOK(a, ok); n < 1 {
-			t.Errorf("the committed command left %d ok audit rows", n)
+		afterFailed := rowsOfTenant()
+		// The committed command leaves one ok row for its Reservation and one for its Charge, each with the action
+		// reserve-and-charge and the actor user:u-7 (auditRowsOK), and no other row.
+		reservations := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'reserve-and-charge' AND actor_id = $2 AND outcome = 'ok' AND resource_id IN (SELECT id::text FROM reservations WHERE order_id = $3)`,
+			a.tenant.ID(), a.principal.Subject().String(), ok)
+		charges := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'reserve-and-charge' AND actor_id = $2 AND outcome = 'ok' AND resource_id IN (SELECT id::text FROM charges WHERE order_id = $3)`,
+			a.tenant.ID(), a.principal.Subject().String(), ok)
+		if n := e.auditRowsOK(a, ok); n != 2 || reservations != 1 || charges != 1 || afterOK-before != 2 {
+			t.Errorf("the committed command left %d ok rows (%d of its Reservation, %d of its Charge) and %d rows in all, want 2: one of each and no other", n, reservations, charges, afterOK-before)
 		}
-		if e.auditRows(a, "denied", denied) != 1 || e.auditRows(a, "failed", failed) != 1 {
-			t.Errorf("the denied and the failed command left %d and %d audit rows, want 1 each", e.auditRows(a, "denied", denied), e.auditRows(a, "failed", failed))
+		if e.auditRows(a, "denied", denied) != 1 || e.auditRows(a, "failed", failed) != 1 || afterDenied-afterOK != 1 || afterFailed-afterDenied != 1 {
+			t.Errorf("the denied and the failed command left %d and %d rows of their outcome and %d and %d rows in all, want 1 each", e.auditRows(a, "denied", denied), e.auditRows(a, "failed", failed), afterDenied-afterOK, afterFailed-afterDenied)
 		}
 	})
 
@@ -958,15 +992,17 @@ func TestCommand(t *testing.T) {
 			order  string
 			status int
 			code   string
-		}{{internal, first, 500, "internal"}, {refused, second, 409, "reservation.short_stock"}} {
+			key    string
+		}{{internal, first, 500, "internal", "oc09-a"}, {refused, second, 409, "reservation.short_stock", "oc09-b"}} {
 			var code, row string
 			must(t, e.admin.QueryRowContext(e.ctx, `SELECT error_code, row_to_json(a)::text FROM audit_event a WHERE tenant_id = $1 AND resource_id = $2 AND outcome = 'failed'`, a.tenant.ID(), c.order).Scan(&code, &row))
-			if c.got.status != c.status || !bytes.Contains(c.got.body, []byte(`"code":"`+c.code+`"`)) || code != c.code {
-				t.Errorf("the answer %d %s and the audit code %q, want %d and %s", c.got.status, c.got.body, code, c.status, c.code)
+			logged := e.completionCode(c.key)
+			if c.got.status != c.status || !bytes.Contains(c.got.body, []byte(`"code":"`+c.code+`"`)) || code != c.code || logged != c.code {
+				t.Errorf("the answer %d %s, the audit code %q and the completion log code %q, want %d and %s", c.got.status, c.got.body, code, logged, c.status, c.code)
 			}
 			for _, secret := range []string{"a@example.com", "select 1"} {
-				if bytes.Contains(c.got.body, []byte(secret)) || strings.Contains(row, secret) {
-					t.Errorf("%q reached the answer %s or the audit row %s", secret, c.got.body, row)
+				if bytes.Contains(c.got.body, []byte(secret)) || strings.Contains(row, secret) || strings.Contains(logged, secret) {
+					t.Errorf("%q reached the answer %s, the audit row %s or the completion log code %q", secret, c.got.body, row, logged)
 				}
 			}
 		}

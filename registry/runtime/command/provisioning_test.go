@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +13,12 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
@@ -1035,6 +1039,72 @@ func TestProvisioningUnavailable(t *testing.T) {
 		}
 		if line := logs.String(); !strings.Contains(line, `msg="command: the transaction of the tenant decision did not begin"`) || strings.Contains(line, "provider") {
 			t.Errorf("the log of the zero tenant is %q, want the line of a transaction that did not begin", line)
+		}
+	})
+}
+
+// startingConnector is a connector of the pool of a test that gives each new connection, while starting is set, the
+// error of a PostgreSQL server that is starting up (SQLSTATE 57P03), as a server in recovery gives it.
+type startingConnector struct {
+	base     driver.Connector
+	starting *atomic.Bool
+}
+
+func (c startingConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if c.starting.Load() {
+		return nil, &pgconn.PgError{Severity: "FATAL", Code: "57P03", Message: "the database system is starting up"}
+	}
+	return c.base.Connect(ctx)
+}
+
+func (c startingConnector) Driver() driver.Driver { return c.base.Driver() }
+
+func TestProvisioningRecovery(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T08 A Provision whose change of the tenant list meets a database that is starting up is 503 unavailable with Retry-After, and the same key provisions the tenant once the database serves", func(t *testing.T) {
+		f := newProvisioningFixture(t, nil, TenantSpec{})
+		conn, err := tenant.Connection(tenant.Config{InsecureLoopback: true, DSN: f.e.dsn(f.e.roles[0])})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var starting atomic.Bool
+		db := sql.OpenDB(startingConnector{base: stdlib.GetConnector(*conn), starting: &starting})
+		t.Cleanup(func() { _ = db.Close() })
+		// No connection stays idle, so the change of the tenant list opens a new connection after the decision.
+		db.SetMaxIdleConns(0)
+		f.rt.cfg.DB = db
+		// The decision runs on a database that serves; the server goes into recovery once the permission is decided,
+		// before the transaction of the change begins (walkthrough 24, D-k).
+		f.e.decision.setAllow(func(_, _, resource string) bool {
+			starting.Store(true)
+			return resource == "UNQUALIFIED service:orders"
+		})
+		r := httptest.NewRequest(http.MethodPost, "/stego/tenants", strings.NewReader(`{"tenant_id":"org-d"}`))
+		r.Header.Set("Authorization", "Bearer "+f.token)
+		r.Header.Set("Idempotency-Key", `"k-d1"`)
+		w := httptest.NewRecorder()
+		f.verify.Middleware(f.mux).ServeHTTP(w, r)
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || !strings.Contains(w.Body.String(), `"code":"`+ErrorCodeUnavailable+`"`) {
+			t.Fatalf("the Provision in recovery answered %d (Retry-After %q) %s, want 503 unavailable with Retry-After", w.Code, w.Header().Get("Retry-After"), w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "starting up") || strings.Contains(w.Body.String(), "57P03") {
+			t.Fatalf("the answer %s holds the text of the database error", w.Body.String())
+		}
+		if n := f.e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-d'`); n != 0 {
+			t.Fatalf("the tenant list holds org-d %d times after the failed change, want none", n)
+		}
+		// The mapping itself: an unavailable database is 503 unavailable, and a COMMIT whose outcome is not known
+		// stays 500.
+		if o := tenantOutcome(unavailablef("the tenant list was not changed")); o.Status != http.StatusServiceUnavailable || o.Code != ErrorCodeUnavailable || o.Audit != audit.OutcomeFailed {
+			t.Fatalf("tenantOutcome of an unavailable database is %+v, want 503 unavailable, failed", o)
+		}
+		// The retry of the client under the same key, once the database serves again, provisions the tenant once.
+		starting.Store(false)
+		f.e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+		if status, body := f.send("/stego/tenants", "k-d1", `{"tenant_id":"org-d"}`); status != http.StatusCreated {
+			t.Fatalf("the retry answered %d %s, want 201", status, body)
+		}
+		if n := f.e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-d'`); n != 1 {
+			t.Fatalf("the tenant list holds org-d %d times after the retry, want once", n)
 		}
 	})
 }

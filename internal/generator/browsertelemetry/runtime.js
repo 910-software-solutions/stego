@@ -214,8 +214,9 @@ function boundedLogger(inner, report) {
 function browserSettings(override) {
   const off = {traces:false,logs:false,metrics:false,sampleRatio:0};
   const nodes = globalThis.document?.querySelectorAll?.('meta[name="stego-runtime-config"]');
-  if (!nodes?.length) return override === undefined ? off : {traces:true,logs:true,metrics:true,sampleRatio:override};
-  if (nodes.length !== 1) return off;
+  // A page with no deployment setting counts as one that disabled every signal: an option only reduces the ratio
+  // and never enables a signal (ST-SUP-RC03-OC12, ST-SUP-RC03-OC13).
+  if (nodes?.length !== 1) return off;
   const content = nodes[0].getAttribute('content');
   if (typeof content !== 'string' || content.length > 256) return off;
   try {
