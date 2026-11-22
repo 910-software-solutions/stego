@@ -89,6 +89,20 @@ Deployments:
   needs, such as after a roll back past a contract step (see [Which older releases can run on a newer
   database](operations.md#which-older-releases-can-run-on-a-newer-database)). Then a rollout stops at its first
   pod, and the pods that serve stay.
+- `/readyz/modes` of the api pod stays 200 while SpiceDB or the database is down. This is a decision (walkthrough
+  24): each api pod uses the same SpiceDB and the same database, so a readiness that reads them would remove every
+  pod from the endpoints of the Service at the same time. Then each client gets a refused connection or a 503 of the
+  router, with no `Retry-After` and no problem body, and the pods come back only after the next probes. A pod that
+  stays ready answers each request that it cannot serve with 503 and `Retry-After` of 1 to 3 s, and the detail names
+  the cause: `the authorization provider cannot decide the request now` for SpiceDB, and `the database of the
+  service cannot serve the request now` for the database (rest-api 4.38.0). It serves again at the first request
+  after the dependency is back. The Kubernetes guidance on probes and the reports of outages that such readiness
+  checks made say the same: a readiness probe checks what only this pod can fix, not a dependency that all pods
+  share. A new pod does not start while it cannot reach SpiceDB: its start fails with the stage
+  `service.start.spicedb` (see below), so a rollout during the outage stops at its first pod. To see such an outage,
+  alert on the 503 answers of the service, on the warn lines `query: the authorization provider could not decide
+  the read` and `command: the authorization provider could not decide`, and on the probes of SpiceDB and of the
+  database.
 - `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
   `worker: not ready: the component inbox-order-changes stopped`. A service with several subscriptions has one
   inbox for each, `inbox-<subscription>`, and the text names each inbox that stopped or that fails, joined by
@@ -346,6 +360,20 @@ A start of the service whose database pool did not open gives the stage `service
 `database.connection`, `database.settings` or `database.runtime_role`, the object `database`, a remedy and a cause,
 such as `connection_closed` while the database server restarts. A pod that stops so starts again; when it does not
 pass, do what the remedy says.
+
+From runtime v0.192.0 two more refusals of a start give a fault, an object, a remedy and a cause in the record
+(walkthrough 24). Before, they gave the stage alone, such as `component.stego-runtime.constructor[0]`, and the reason
+was only on a separate log line:
+
+| Stage | Fault | Object | Cause | When |
+|---|---|---|---|---|
+| `service.start.spicedb` | `spicedb.connection` | `spicedb` | `unavailable`, `timeout` or another class of the gRPC status code, or `not_serving` | The start cannot reach SpiceDB in 10 s, or SpiceDB answers that it does not serve. The fault is the fault of the migration Job for the same cause. |
+| `service.start.spicedb` | `spicedb.settings` | `spicedb` | `invalid_setting` | `STEGO_SPICEDB_ENDPOINT` or `STEGO_SPICEDB_KEY_FILE` gives no value. |
+| `service.start.migration` | `migration.pending` | `migration_ledger` | `ledger_missing`, `ledger_not_granted` or `migration_missing` | The ledger is not there, the runtime role may not read it, or it does not hold a migration of the release. Run the migration Job of the release. |
+| `service.start.migration` | `migration.changed` | `migration_ledger` | `digest_changed` | The ledger holds another body of a migration of the release. |
+
+None of these fields holds an endpoint, a key, a migration name or a digest. The log line before the record still
+names the migration.
 
 For example, a Job whose SpiceDB refused the connection writes
 `{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","fault":"spicedb.connection","object":"spicedb","remedy":"the migration job cannot reach SpiceDB: ...","cause":"unavailable"}`

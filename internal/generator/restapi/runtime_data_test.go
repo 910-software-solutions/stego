@@ -1648,3 +1648,61 @@ func TestWaitFailureAnswer(t *testing.T) {
 		}
 	})
 }
+
+// unavailableCheck is a test of the generated api package: a read that the database cannot serve now and one that the
+// authorization provider cannot decide now both answer 503 with Retry-After, and each detail names its own cause
+// (walkthrough 24, small items).
+const unavailableCheck = `package api
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"syscall"
+	"testing"
+
+	"github.com/jsell-rh/stego/registry/runtime/query"
+)
+
+func TestUnavailable(t *testing.T) {
+	answer := httptest.NewRecorder()
+	answerRead(answer, httptest.NewRequest(http.MethodGet, "/api/v1/todos/x", nil), "Todo", "x", syscall.ECONNREFUSED)
+	if body := answer.Body.String(); answer.Code != http.StatusServiceUnavailable || answer.Header().Get("Retry-After") == "" ||
+		!strings.Contains(body, "the database of the service cannot serve the request now") || strings.Contains(body, "authorization") {
+		t.Fatalf("a read whose database cannot serve got %d with Retry-After %q and %s, want 503 that names the database", answer.Code, answer.Header().Get("Retry-After"), body)
+	}
+	if !unavailableDatabase(syscall.ECONNREFUSED) || unavailableDatabase(fmt.Errorf("read: %w", query.ErrUndecided)) {
+		t.Fatal("unavailableDatabase does not tell the database from the authorization provider")
+	}
+	answer = httptest.NewRecorder()
+	answerUndecided(answer, httptest.NewRequest(http.MethodGet, "/api/v1/todos/x", nil), false)
+	if body := answer.Body.String(); answer.Code != http.StatusServiceUnavailable || !strings.Contains(body, "the authorization provider cannot decide the request now") {
+		t.Fatalf("an undecided read got %d and %s, want 503 that names the authorization provider", answer.Code, body)
+	}
+}
+`
+
+func TestUnavailableAnswer(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC37-T15 A request that the database cannot serve now answers 503 that names the database, not the authorization provider", func(t *testing.T) {
+		ctx := crudContext()
+		files := crudFiles(t, ctx)
+		helpers := 0
+		for name, source := range files {
+			if strings.Contains(string(source), "func answerUndecided(") {
+				helpers++
+				if !strings.Contains(string(source), "answerUndecided(w, r, o.Code == command.ErrorCodeUnavailable)") {
+					t.Fatalf("%s answers a command that the database could not serve with the text of the authorization provider", name)
+				}
+			}
+		}
+		if helpers != 1 {
+			t.Fatalf("the rest-api component emits %d files with answerUndecided, want 1", helpers)
+		}
+		p := newCrudProject(t, ctx, files)
+		p.write("out/api/unavailable_test.go", []byte(unavailableCheck))
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestUnavailable$", "./out/api"); err != nil {
+			t.Fatalf("the generated answer of an unavailable read: %v\n%s", err, output)
+		}
+	})
+}

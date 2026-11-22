@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"go/format"
+	"path"
 	"reflect"
 	"slices"
 	"strings"
@@ -683,4 +685,154 @@ func sealsAgain(ctx gen.Context, change, runtime, body string) []string {
 		}
 	}
 	return nil
+}
+
+// The relate step (decision ST-SUP-Q212 (a); walkthrough 24, P2-R2). A relate gives each row of an entity the tuple of
+// a relation that the runtime writes for the rows that it makes, such as the relation tenant that a release adds to
+// the schema. Its expand migration changes no table: it makes the table of the release reports, the table of the
+// seal checkpoints and the checkpoint row of the change, as the expand of a seal does, and the ledger makes the lease
+// stego.backfill.<change ID> (RegisterSealStep). The relate job of the controller then stages the tuple of each row
+// through the authz outbox in passes that complete only after the releases before the step stopped
+// (ST-SUP-RP09-LC15), so the rows that a release before makes during the rollout get the tuple too.
+
+// relateTarget is what the relate job reads for one relate change: the resource type of the rows, the subject kind
+// (command.RelateTenant, RelateField or RelateReference), the subject type, whether a field subject is a resource of
+// the tenant, and the column of the subject, or empty for the tenant.
+type relateTarget struct {
+	resourceType, subject, subjectType, column string
+	resource                                   bool
+}
+
+// relateOf resolves the relation of the relate change on its entity, as the command generator writes the tuples of a
+// row: the relation of a relationship whose subject is a field, the relation of a reference to an entity with a
+// resource type, or else the relation tenant, which checking holds to the schema (ST-DECL-INV58). It refuses an entity with no resource type or that no tenant owns, and a relationship whose
+// subject is the caller.
+func relateOf(ctx gen.Context, change types.SchemaChange) (relateTarget, error) {
+	var entity types.Entity
+	found := false
+	byName := map[string]types.Entity{}
+	resourceTypes := map[string]bool{}
+	for _, e := range ctx.Entities {
+		byName[e.Name] = e
+		if e.ResourceType != "" {
+			resourceTypes[e.ResourceType] = true
+		}
+		if e.Name == change.Entity {
+			entity, found = e, true
+		}
+	}
+	switch {
+	case !found:
+		return relateTarget{}, fmt.Errorf("the relate names the entity %s, which the declaration does not declare", change.Entity)
+	case entity.ResourceType == "" || !ownedEntity(entity) || tenantColumn(ctx) == "":
+		return relateTarget{}, fmt.Errorf("the relate names the entity %s, which has no resource type or no tenant that owns its rows", change.Entity)
+	}
+	for _, r := range entity.Relationships {
+		if r.Relation != change.Relation {
+			continue
+		}
+		if r.SubjectSource != types.SubjectSourceField {
+			return relateTarget{}, fmt.Errorf("the relationship %s of %s takes its subject from the caller of the create, which no row holds", r.Relation, entity.Name)
+		}
+		for _, f := range entity.Fields {
+			if f.Name == r.SubjectField {
+				return relateTarget{resourceType: entity.ResourceType, subject: "field", subjectType: r.SubjectType, column: f.ColumnName(),
+					resource: resourceTypes[r.SubjectType]}, nil
+			}
+		}
+		return relateTarget{}, fmt.Errorf("the relationship %s of %s takes its subject from the field %s, which the entity does not declare", r.Relation, entity.Name, r.SubjectField)
+	}
+	for _, f := range entity.Fields {
+		ref, ok := entity.References[f.Name]
+		if f.Type != types.FieldTypeRef || !ok || ref.Relation != change.Relation {
+			continue
+		}
+		to, ok := byName[f.To]
+		if !ok || to.ResourceType == "" {
+			return relateTarget{}, fmt.Errorf("the reference %s.%s refers to %s, which has no resource type", entity.Name, f.Name, f.To)
+		}
+		return relateTarget{resourceType: entity.ResourceType, subject: "reference", subjectType: to.ResourceType, column: f.ColumnName()}, nil
+	}
+	// The relation tenant of the subject type tenant, which the runtime writes for each row; checking holds it to the
+	// schema (ST-DECL-INV58).
+	if change.Relation == "tenant" {
+		return relateTarget{resourceType: entity.ResourceType, subject: "tenant"}, nil
+	}
+	return relateTarget{}, fmt.Errorf("the runtime writes no tuple of the relation %s for the rows of %s: no relationship with a field subject and no reference has it, and it is not tenant", change.Relation, entity.Name)
+}
+
+// relateExpandSQL gives the migration of the expand step of a relate at the position of the schema history: the
+// release reports, the table of the seal checkpoints and the checkpoint row of the change, and no change of a table.
+// The functions of the seal checkpoints are not in the body: the migration job runs them (sealCheckpoints).
+func relateExpandSQL(ctx gen.Context, position int, before, after []tableModel, change types.SchemaChange) (string, error) {
+	runtime, _, err := serviceRoles(ctx)
+	if err != nil {
+		return "", fmt.Errorf("a relate needs the release reports and the relate job of the tenancy component: %w", err)
+	}
+	if _, err := relateOf(ctx, change); err != nil {
+		return "", err
+	}
+	if !reflect.DeepEqual(before, after) {
+		return "", fmt.Errorf("the relate %s changes a table; a relate changes no table", change.ID)
+	}
+	expand := StepMigrationName(position, change.ID, "expand")
+	releases := fmt.Sprintf(releasesText, sqlIdentifier(runtime))
+	row := fmt.Sprintf("INSERT INTO stego_schema.seals (change_id, expand) VALUES (%s, %s) ON CONFLICT (change_id) DO NOTHING;\n", sqlString(change.ID), sqlString(expand))
+	return releases + sealsTable + row, nil
+}
+
+// relateChanges gives the source of the relate job of each relate step in the schema history (command.RelateChange):
+// its change, entity, resource type, relation and subject, and its statement, which takes the tenant as $1, pages by
+// the ID after $2, or from the first row when $2 is NULL, reads at most $3 rows FOR SHARE and gives the ID and the
+// subject value as text.
+func relateChanges(ctx gen.Context) (string, int, error) {
+	stepped := map[string]bool{}
+	for _, step := range ctx.SchemaHistory {
+		stepped[step.Change] = true
+	}
+	key := tenantColumn(ctx)
+	var b bytes.Buffer
+	count := 0
+	for _, change := range ctx.SchemaChanges {
+		if change.Kind != "relate" || !stepped[change.ID] {
+			continue
+		}
+		target, err := relateOf(ctx, change)
+		if err != nil {
+			return "", 0, fmt.Errorf("schema change %s: %w", change.ID, err)
+		}
+		table := "public." + sqlIdentifier(tableName(change.Entity))
+		id := sqlIdentifier(keyColumn)
+		subject := "NULL::text"
+		if target.column != "" {
+			subject = sqlIdentifier(target.column) + "::text"
+		}
+		subjectKind := map[string]string{"tenant": "command.RelateTenant", "field": "command.RelateField", "reference": "command.RelateReference"}[target.subject]
+		fmt.Fprintf(&b, "\t{Change: %q, Entity: %q, ResourceType: %q, Relation: %q, Subject: %s, SubjectType: %q, Resource: %t,\n",
+			change.ID, change.Entity, target.resourceType, change.Relation, subjectKind, target.subjectType, target.resource)
+		// The first page takes NULL for $2, so it reads the zero UUID too.
+		fmt.Fprintf(&b, "\t\tSelect: %q},\n", fmt.Sprintf("SELECT %s::text, %s FROM %s WHERE %s = $1 AND ($2::uuid IS NULL OR %s > $2::uuid) ORDER BY %s LIMIT $3 FOR SHARE",
+			id, subject, table, sqlIdentifier(key), id, id))
+		count++
+	}
+	return b.String(), count, nil
+}
+
+// generateRelateChanges gives the file relate_changes.go of a service with a relate step: RelateChanges, which the
+// relate job of the controller runs (decision ST-SUP-Q212 (a)). A service with none gets no file.
+func generateRelateChanges(ctx gen.Context) (gen.File, bool, error) {
+	source, count, err := relateChanges(ctx)
+	if err != nil || count == 0 {
+		return gen.File{}, false, err
+	}
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
+	out.WriteString("// RelateChanges are the relate steps of the service: the relate job of the controller stages the tuple of the\n// relation of each row through the authz outbox under the backfill lease of the change (decision ST-SUP-Q212 (a)).\nvar RelateChanges = []command.RelateChange{\n")
+	out.WriteString(source)
+	out.WriteString("}\n")
+	code, err := format.Source(out.Bytes())
+	if err != nil {
+		return gen.File{}, false, fmt.Errorf("formatting relate_changes.go: %w", err)
+	}
+	return gen.File{Path: path.Join(ctx.OutputNamespace, "relate_changes.go"), Content: code}, true, nil
 }

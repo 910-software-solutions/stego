@@ -111,6 +111,9 @@ type runtimeWiringData struct {
 	// Seals are the IDs of the seal changes whose step is open: the controller seals their rows under the backfill
 	// lease of each, which the migration job makes (ST-SUP-RP10-LC50).
 	Seals []string
+	// Relates are the IDs of the relate steps in the schema history: the relate job of the controller gives each row
+	// the tuple of the relation under the backfill lease of the change (decision ST-SUP-Q212 (a)).
+	Relates []string
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -155,6 +158,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		}
 	}
 	data.Ring, data.Seals = sealing(svc)
+	data.Relates = relating(svc)
 	if !data.Ring && len(svc.Commands) > 0 {
 		var err error
 		if data.Ring, err = commandSecrets(in.Contexts[commandComponent]); err != nil {
@@ -305,6 +309,26 @@ func sealing(svc *types.ServiceDeclaration) (ring bool, seals []string) {
 		}
 	}
 	return ring, seals
+}
+
+// Leases gives the IDs of the open seals and of the relate steps, whose backfill lease the migration job makes.
+func (d runtimeWiringData) Leases() []string {
+	return append(append([]string(nil), d.Seals...), d.Relates...)
+}
+
+// relating gives the IDs of the relate steps in the schema history (decision ST-SUP-Q212 (a)).
+func relating(svc *types.ServiceDeclaration) []string {
+	stepped := map[string]bool{}
+	for _, step := range svc.SchemaHistory {
+		stepped[step.Change] = true
+	}
+	var relates []string
+	for _, change := range svc.SchemaChanges {
+		if change.Kind == "relate" && stepped[change.ID] {
+			relates = append(relates, change.ID)
+		}
+	}
+	return relates
 }
 
 // commandSecrets tells whether a message of the proto files of the command component holds a member that the proto

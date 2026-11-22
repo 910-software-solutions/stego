@@ -594,6 +594,10 @@ func printNewSchemaSteps(stdout io.Writer, gate baseGate, plan *compiler.Plan) {
 		case change.Kind == "seal" && step.Phase == "expand":
 			// The seal job of the controller seals the rows, as the runtime role with the key ring (ST-SUP-RP10-LC50).
 			backfill = "the seal job of the controller under the lease " + postgresadapter.BackfillLease(change.ID)
+		case change.Kind == "relate":
+			// The relate job of the controller gives each row the tuple of the relation (decision ST-SUP-Q212 (a)).
+			target += "#" + change.Relation
+			backfill = "the relate job of the controller under the lease " + postgresadapter.BackfillLease(change.ID)
 		case backfill == "":
 			backfill = "none"
 		default:

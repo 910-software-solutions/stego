@@ -366,6 +366,37 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, checkTenantServiceRelation(service, schema)...)
 	faults = append(faults, checkOutboxDestination(schema)...)
 	faults = append(faults, droppedSchemaNames(service, schema)...)
+	faults = append(faults, relateSchema(service, schema)...)
+	return faults
+}
+
+// relateSchema refuses a relate step whose relation the schema does not give the resource type of its entity
+// (decision ST-SUP-Q212 (a)): the relation tenant of the subject type tenant, which the runtime writes for each row,
+// or the relation of a relationship or a reference, which the schema names already.
+func relateSchema(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	var faults []ValidationError
+	for i, change := range service.SchemaChanges {
+		if change.Kind != "relate" {
+			continue
+		}
+		entity, ok := findEntity(service.Entities, change.Entity)
+		if !ok || entity.ResourceType == "" {
+			continue
+		}
+		subject := ""
+		for _, r := range entity.Relationships {
+			if r.Relation == change.Relation {
+				subject = r.SubjectType
+			}
+		}
+		if subject == "" && change.Relation == "tenant" {
+			subject = "tenant"
+		}
+		if subject != "" && !schema.RelationAdmits(entity.ResourceType, change.Relation, subject) {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-entity", Path: schemaChangePath(i) + ".relation", Found: change.Relation,
+				Message: fmt.Sprintf("schema change %q relates the rows of %s through %s#%s, which the schema %s does not give the subject type %s; add relation %s: %s to the definition %s", change.ID, change.Entity, entity.ResourceType, change.Relation, schema.Path, subject, change.Relation, subject, entity.ResourceType)})
+		}
+	}
 	return faults
 }
 

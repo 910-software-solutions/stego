@@ -13,7 +13,7 @@ import (
 type SchemaChange struct {
 	// ID is the change's name in lower kebab case, unique in the declaration.
 	ID string `yaml:"id"`
-	// Kind is add, rename, retype, require, drop, unique, relax, within or seal.
+	// Kind is add, rename, retype, require, drop, unique, relax, within, seal or relate.
 	Kind string `yaml:"kind"`
 	// Entity is the entity whose table the change changes.
 	Entity string `yaml:"entity"`
@@ -34,6 +34,10 @@ type SchemaChange struct {
 	// the removed entity's fields; for relax, what the field was before the change, item by item (RelaxedFrom), such
 	// as max_length 64, required.
 	Definition string `yaml:"definition,omitempty"`
+	// Relation is, for relate, the relation of the resource type of the entity whose tuple the runtime writes for each
+	// row, and which the relate job gives to each row that is there (decision ST-SUP-Q212 (a)): the relation tenant,
+	// the relation of a relationship whose subject is a field, or the relation of a reference.
+	Relation string `yaml:"relation,omitempty"`
 }
 
 // UniqueOfField tells whether the change is a unique of a field: a change of kind unique whose Field names a field

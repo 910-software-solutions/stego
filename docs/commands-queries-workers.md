@@ -1677,7 +1677,7 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   `internal`. An error of the COMMIT itself stays 500, because its outcome
   may not be known. A retry with the same `Idempotency-Key` gives the stored
   answer when the first call committed.
-- apidiff against v0.191.0: compatible (no change of the exported API).
+- apidiff against v0.192.0: compatible (no change of the exported API).
 
 ### Release notes for runtime v0.191.0
 
