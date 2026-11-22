@@ -873,11 +873,14 @@ schema_history:
   - {change: payout-tenant-relate, phase: expand}
 ```
 
-A relate of a field or a reference, such as `relation approver` from
-`approver_id`, grants access from the values that the rows hold now, which
+A relate of a field or a reference, such as the relation `approver` from the
+field `approver`, grants access from the values that the rows hold now, which
 the release before wrote under its own rules. Before the release, check those
 values and correct each one that must not grant the relation; `stego
-validate` warns of each such relate.
+validate` warns of each such relate. A relationship whose subject is a field
+needs a create that decides a permission: generation refuses it on an entity
+with a public create, also under a parent. See [Relate a
+field](schema-changes.md#relate-a-field) for the forms that you can use.
 
 Then do the procedure as for each release:
 
