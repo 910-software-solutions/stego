@@ -89,6 +89,20 @@ Deployments:
   needs, such as after a roll back past a contract step (see [Which older releases can run on a newer
   database](operations.md#which-older-releases-can-run-on-a-newer-database)). Then a rollout stops at its first
   pod, and the pods that serve stay.
+- `/readyz/modes` of the api pod stays 200 while SpiceDB or the database is down. This is a decision (walkthrough
+  24): each api pod uses the same SpiceDB and the same database, so a readiness that reads them would remove every
+  pod from the endpoints of the Service at the same time. Then each client gets a refused connection or a 503 of the
+  router, with no `Retry-After` and no problem body, and the pods come back only after the next probes. A pod that
+  stays ready answers each request that it cannot serve with 503 and `Retry-After` of 1 to 3 s, and the detail names
+  the cause: `the authorization provider cannot decide the request now` for SpiceDB, and `the database of the
+  service cannot serve the request now` for the database (rest-api 4.38.0). It serves again at the first request
+  after the dependency is back. The Kubernetes guidance on probes and the reports of outages that such readiness
+  checks made say the same: a readiness probe checks what only this pod can fix, not a dependency that all pods
+  share. A new pod does not start while it cannot reach SpiceDB: its start fails with the stage
+  `service.start.spicedb` (see below), so a rollout during the outage stops at its first pod. To see such an outage,
+  alert on the 503 answers of the service, on the warn lines `query: the authorization provider could not decide
+  the read` and `command: the authorization provider could not decide`, and on the probes of SpiceDB and of the
+  database.
 - `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
   `worker: not ready: the component inbox-order-changes stopped`. A service with several subscriptions has one
   inbox for each, `inbox-<subscription>`, and the text names each inbox that stopped or that fails, joined by
