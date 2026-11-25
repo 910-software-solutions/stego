@@ -2,6 +2,8 @@ package kubernetesservice
 
 import (
 	"bytes"
+	_ "embed"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,8 +58,24 @@ func TestDeploymentValidation(t *testing.T) {
 	}
 }
 
+//go:embed testdata/render_contracts_test.go
+var renderContractTests []byte
+
+// renderContractRecords are the records that testdata/render_contracts_test.go proves in the generated module, each
+// by its own subtest of TestRenderedContracts.
+var renderContractRecords = []string{"ST-SUP-RC15-OC01-T03", "ST-SUP-RC15-OC02-T01", "ST-SUP-RC15-OC05-T01", "ST-SUP-RC15-OC05-T02", "ST-SUP-RC15-OC06-T01",
+	"ST-SUP-RC15-OC07-T01", "ST-SUP-RC15-OC37-T01", "ST-SUP-RC15-OC37-T02", "ST-SUP-RC15-OC39-T01", "ST-SUP-RC15-OC39-T02", "ST-SUP-RC15-OC39-T03"}
+
+// testEvent is one event of go test -json.
+type testEvent struct {
+	Action, Test, Output string
+}
+
 func TestGeneratedDeploymentRenderer(t *testing.T) {
 	ctx := rpcContext()
+	// The declared resolver, which ST-SUP-RC15-OC07-T01 reads in the rendered policies.
+	ctx.ComponentConfig["dns_namespace"] = "openshift-dns"
+	ctx.ComponentConfig["dns_port"] = 5353
 	ctx.ComponentConfig["optional_external_endpoints"] = []any{"service-probe"}
 	ctx.ComponentConfig["rpc_processes"].([]any)[0].(map[string]any)["optional_external_endpoints"] = []any{"rpc-probe"}
 	ctx.ComponentConfig["workers"] = append(ctx.ComponentConfig["workers"].([]any), map[string]any{"name": "remote", "package": "internal/task", "function": "Run", "external_endpoints": []any{"provider"}, "optional_external_endpoints": []any{"worker-probe"}})
@@ -140,11 +158,47 @@ func TestRenderedPolicy(t *testing.T){
 	if err := os.WriteFile(filepath.Join(dir, "out/deploy/render/main_test.go"), []byte(check+externalRendererTests+optionalExternalRendererTests), 0644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "./...")
+	if err := os.WriteFile(filepath.Join(dir, "out/deploy/render/contracts_test.go"), renderContractTests, 0644); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "test", "-json", "-race", "-mod=readonly", "-timeout=20s", "./...")
 	command.Dir = dir
 	command.Env = append(os.Environ(), "GOWORK=off")
 	// One run of the generated module holds the checks of every record below.
 	output, err := command.CombinedOutput()
+	passed, ran := map[string]bool{}, map[string]bool{}
+	var text strings.Builder
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for decoder.More() {
+		var event testEvent
+		if decoder.Decode(&event) != nil {
+			text.Write(output)
+			break
+		}
+		text.WriteString(event.Output)
+		if event.Test != "" {
+			ran[event.Test] = true
+			if event.Action == "pass" {
+				passed[event.Test] = true
+			}
+		}
+	}
+	output = []byte(text.String())
+	// Each record of the rendered contracts passes only by its own subtest, never by a subtest under it
+	// (ST-STD-CODE-R07).
+	for _, id := range renderContractRecords {
+		t.Run(id+" passes in the generated module", func(t *testing.T) {
+			own := ""
+			for name := range ran {
+				if strings.HasPrefix(name, "TestRenderedContracts/"+id+"_") && (own == "" || len(name) < len(own)) {
+					own = name
+				}
+			}
+			if own == "" || !passed[own] {
+				t.Fatalf("the subtest of %s did not pass in the generated module (%q):\n%s", id, own, output)
+			}
+		})
+	}
 	t.Run("ST-SUP-RC15-OC01-T01 The rendered service Pod runs as non-root with a read-only root filesystem", func(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generated deployment: %v\n%s", err, output)
@@ -161,16 +215,6 @@ func TestRenderedPolicy(t *testing.T){
 		}
 	})
 	t.Run("ST-SUP-RC15-OC08-T01 The rendered external egress rules stay narrow", func(t *testing.T) {
-		if err != nil {
-			t.Fatalf("generated deployment: %v\n%s", err, output)
-		}
-	})
-	t.Run("ST-SUP-RC15-OC39-T01 An egress destination given as a DNS name is refused", func(t *testing.T) {
-		if err != nil {
-			t.Fatalf("generated deployment: %v\n%s", err, output)
-		}
-	})
-	t.Run("ST-SUP-RC15-OC39-T02 An egress destination given as an IP address and port is rendered as one ipBlock rule", func(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generated deployment: %v\n%s", err, output)
 		}

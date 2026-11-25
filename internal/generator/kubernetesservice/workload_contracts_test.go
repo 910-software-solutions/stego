@@ -14,28 +14,6 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 )
 
-// manifestItems gives the items of each rendered manifest template of the files, by path, with the placeholders of
-// the template given fixed values.
-func manifestItems(t *testing.T, files []gen.File) map[string][]map[string]any {
-	t.Helper()
-	fill := strings.NewReplacer("{{.Namespace}}", "test", "{{.Image}}", "registry.example.test/widget@sha256:"+strings.Repeat("a", 64), "{{.FSGroup}}", "10001")
-	manifests := map[string][]map[string]any{}
-	for _, file := range files {
-		if !strings.HasPrefix(file.Path, "deploy/render/") || !strings.HasSuffix(file.Path, ".json.tmpl") {
-			continue
-		}
-		var list struct{ Items []map[string]any }
-		if err := json.Unmarshal([]byte(fill.Replace(string(file.Content))), &list); err != nil {
-			t.Fatalf("%s: %v", file.Path, err)
-		}
-		manifests[file.Path] = list.Items
-	}
-	if len(manifests) != 3 {
-		t.Fatalf("want the service, worker and RPC manifests, got %d", len(manifests))
-	}
-	return manifests
-}
-
 // field reads a nested field of a decoded object by the keys given.
 func field(value any, keys ...string) any {
 	for _, key := range keys {
@@ -47,179 +25,65 @@ func field(value any, keys ...string) any {
 
 func workloadFiles(t *testing.T) []gen.File {
 	t.Helper()
-	ctx := rpcContext()
-	ctx.ComponentConfig["dns_namespace"] = "openshift-dns"
-	ctx.ComponentConfig["dns_port"] = 5353
-	files, _, err := (&Generator{}).Generate(ctx)
+	files, _, err := (&Generator{}).Generate(rpcContext())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return files
 }
 
-func TestWorkloadContracts(t *testing.T) {
-	files := workloadFiles(t)
-	manifests := manifestItems(t, files)
-	kinds := func(items []map[string]any, kind string) []map[string]any {
-		var found []map[string]any
-		for _, item := range items {
-			if item["kind"] == kind {
-				found = append(found, item)
-			}
-		}
-		return found
-	}
-	serviceContainer := func(t *testing.T) map[string]any {
-		deployments := kinds(manifests["deploy/render/manifest.json.tmpl"], "Deployment")
-		if len(deployments) != 1 {
-			t.Fatalf("the service manifest holds %d Deployments", len(deployments))
-		}
-		return field(deployments[0], "spec", "template", "spec", "containers").([]any)[0].(map[string]any)
-	}
-
-	t.Run("ST-SUP-RC15-OC02-T01 Every emitted Pod selects the RuntimeDefault seccomp profile", func(t *testing.T) {
-		for name, items := range manifests {
-			for _, deployment := range kinds(items, "Deployment") {
-				if field(deployment, "spec", "template", "spec", "securityContext", "seccompProfile", "type") != "RuntimeDefault" {
-					t.Fatalf("the Pod of %s in %s does not select RuntimeDefault", field(deployment, "metadata", "name"), name)
-				}
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC05-T01 The startup and liveness probes use /livez", func(t *testing.T) {
-		container := serviceContainer(t)
-		for _, probe := range []string{"startupProbe", "livenessProbe"} {
-			if got := field(container, probe, "httpGet", "path"); got != "/livez" {
-				t.Fatalf("the %s path is %v, want /livez", probe, got)
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC05-T02 The readiness probe uses /readyz", func(t *testing.T) {
-		if got := field(serviceContainer(t), "readinessProbe", "httpGet", "path"); got != "/readyz" {
-			t.Fatalf("the readiness probe path is %v, want /readyz", got)
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC06-T01 The NetworkPolicy declares both Ingress and Egress for every workload Pod", func(t *testing.T) {
-		for name, items := range manifests {
-			policies := kinds(items, "NetworkPolicy")
-			for _, deployment := range kinds(items, "Deployment") {
-				labels, _ := field(deployment, "spec", "template", "metadata", "labels").(map[string]any)
-				selected := false
-				for _, policy := range policies {
-					types, _ := field(policy, "spec", "policyTypes").([]any)
-					both := len(types) == 2 && types[0] == "Ingress" && types[1] == "Egress"
-					match, _ := field(policy, "spec", "podSelector", "matchLabels").(map[string]any)
-					covers := len(match) > 0
-					for key, value := range match {
-						covers = covers && labels[key] == value
-					}
-					selected = selected || (both && covers)
-				}
-				if !selected {
-					t.Fatalf("no NetworkPolicy with Ingress and Egress selects the Pods of %s in %s", field(deployment, "metadata", "name"), name)
-				}
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC07-T01 DNS egress goes only to the declared resolver namespace and port, over UDP and TCP", func(t *testing.T) {
-		for name, items := range manifests {
-			for _, policy := range kinds(items, "NetworkPolicy") {
-				dns := 0
-				for _, rule := range field(policy, "spec", "egress").([]any) {
-					ports, _ := field(rule, "ports").([]any)
-					protocols := map[any]any{}
-					for _, port := range ports {
-						protocols[field(port, "protocol")] = field(port, "port")
-					}
-					if _, udp := protocols["UDP"]; !udp {
-						continue
-					}
-					dns++
-					to := field(rule, "to").([]any)
-					if len(to) != 1 || field(to[0], "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "openshift-dns" ||
-						protocols["UDP"] != float64(5353) || protocols["TCP"] != float64(5353) || len(ports) != 2 {
-						t.Fatalf("%s: the DNS rule %v is not to openshift-dns on 5353 over UDP and TCP only", name, rule)
-					}
-				}
-				if dns != 1 {
-					t.Fatalf("%s: %d DNS rules, want one", name, dns)
-				}
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC39-T03 The emitted network policy uses no Technology Preview resource", func(t *testing.T) {
-		for name, items := range manifests {
-			for _, item := range items {
-				kind, version := item["kind"], item["apiVersion"]
-				switch kind {
-				case "AdminNetworkPolicy", "BaselineAdminNetworkPolicy", "EgressFirewall", "DNSNameResolver":
-					t.Fatalf("%s holds the Technology Preview resource %s", name, kind)
-				case "NetworkPolicy":
-					if version != "networking.k8s.io/v1" {
-						t.Fatalf("%s holds a NetworkPolicy of %v", name, version)
-					}
-				}
-				if strings.Contains(fmt.Sprint(version), "policy.networking.k8s.io") || strings.Contains(fmt.Sprint(version), "openshift.io") {
-					t.Fatalf("%s holds %v %v", name, version, kind)
-				}
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC15-OC37-T01 The service container sets STEGO_HTTP_REQUIRE_TLS to 1", func(t *testing.T) {
-		for _, variable := range serviceContainer(t)["env"].([]any) {
-			if field(variable, "name") == "STEGO_HTTP_REQUIRE_TLS" {
-				if field(variable, "value") != "1" {
-					t.Fatalf("STEGO_HTTP_REQUIRE_TLS is %v", field(variable, "value"))
-				}
-				return
-			}
-		}
-		t.Fatal("the service container does not set STEGO_HTTP_REQUIRE_TLS")
-	})
-
-	t.Run("ST-SUP-RC15-OC37-T02 The TLS settings point at the mounted key pair", func(t *testing.T) {
-		container := serviceContainer(t)
-		env := map[any]any{}
-		for _, variable := range container["env"].([]any) {
-			env[field(variable, "name")] = field(variable, "value")
-		}
-		deployment := kinds(manifests["deploy/render/manifest.json.tmpl"], "Deployment")[0]
-		secrets := map[any]any{}
-		for _, volume := range field(deployment, "spec", "template", "spec", "volumes").([]any) {
-			secrets[field(volume, "name")] = field(volume, "secret", "secretName")
-		}
-		mounted := ""
-		for _, mount := range container["volumeMounts"].([]any) {
-			if secrets[field(mount, "name")] == "widget-files" {
-				mounted, _ = field(mount, "mountPath").(string)
-			}
-		}
-		if mounted == "" || env["STEGO_HTTP_TLS_CERT"] != path.Join(mounted, "tls.crt") || env["STEGO_HTTP_TLS_KEY"] != path.Join(mounted, "tls.key") {
-			t.Fatalf("the TLS settings %v and %v do not name the key pair under the mount %q of the service Secret", env["STEGO_HTTP_TLS_CERT"], env["STEGO_HTTP_TLS_KEY"], mounted)
-		}
-	})
-}
+// The contracts of the rendered manifests (OC01, OC02, OC05, OC06, OC07, OC37, OC39) are tested on the output of the
+// generated render command, in testdata/render_contracts_test.go, which TestGeneratedDeploymentRenderer runs.
 
 // ignored tells whether a build context path is left out by the patterns of a .dockerignore file, as Docker reads
 // them: each pattern in order, the last one that matches decides, and ! admits again. A pattern matches the path or
-// a folder that holds it; ** matches any number of path elements.
-func ignored(patterns []string, name string) bool {
+// a folder that holds it; ** matches any number of path elements, * any run of characters other than /, and ? one.
+// moby/patternmatcher, which BuildKit uses, is not a dependency of STEGO: adding it moves other modules of go.mod,
+// so TestIgnoreMatcher holds this matcher to the cases of the Docker documentation instead.
+func ignored(t *testing.T, patterns []string, name string) bool {
+	t.Helper()
 	excluded := false
 	for _, pattern := range patterns {
 		admit := strings.HasPrefix(pattern, "!")
 		pattern = strings.TrimSuffix(strings.TrimPrefix(pattern, "!"), "/")
 		expression := "^" + strings.NewReplacer(`\*\*/`, `(.*/)?`, `\*\*`, `.*`, `\*`, `[^/]*`, `\?`, `[^/]`).Replace(regexp.QuoteMeta(pattern)) + "(/.*)?$"
-		if regexp.MustCompile(expression).MatchString(name) {
+		matcher, err := regexp.Compile(expression)
+		if err != nil {
+			t.Fatalf("the pattern %q: %v", pattern, err)
+		}
+		if matcher.MatchString(name) {
 			excluded = !admit
 		}
 	}
 	return excluded
+}
+
+func TestIgnoreMatcher(t *testing.T) {
+	t.Run("ST-SUP-RC15-OC31-T02 The build context admits only the module files and the declared source directories", func(t *testing.T) {
+		// The cases of the .dockerignore rules in the Docker documentation, and of the patterns this component emits.
+		for _, tc := range []struct {
+			patterns []string
+			name     string
+			excluded bool
+		}{
+			{[]string{"*/temp*"}, "somedir/temporary.txt", true},
+			{[]string{"*/temp*"}, "temp", false},
+			{[]string{"*/*/temp*"}, "somedir/subdir/temporary.txt", true},
+			{[]string{"temp?"}, "tempa", true},
+			{[]string{"temp?"}, "tempab", false},
+			{[]string{"**/*.go"}, "a/b/c.go", true},
+			{[]string{"**/*.go"}, "c.go", true},
+			{[]string{"*.md", "!README*.md"}, "README-secret.md", false},
+			{[]string{"*.md", "!README*.md", "README-secret.md"}, "README-secret.md", true},
+			{[]string{"**", "!internal/", "!internal/**"}, "internal/a/b.go", false},
+			{[]string{"**", "!internal/", "!internal/**"}, "internals/a.go", true},
+			{[]string{"**", "!internal/**", "**/.*"}, "internal/.env", true},
+		} {
+			if got := ignored(t, tc.patterns, tc.name); got != tc.excluded {
+				t.Fatalf("%v and %s: excluded %v, want %v", tc.patterns, tc.name, got, tc.excluded)
+			}
+		}
+	})
 }
 
 func TestImageContracts(t *testing.T) {
@@ -251,7 +115,7 @@ func TestImageContracts(t *testing.T) {
 		// The declared source directory of the test context is internal; the generated code is under out.
 		for name, patterns := range ignores {
 			for path, want := range map[string]bool{"go.mod": false, "go.sum": false, "internal/a.go": false, "out/x.go": false, "cmd/x/main.go": true, "docs/a.md": true, "Makefile": true} {
-				if ignored(patterns, path) != want {
+				if ignored(t, patterns, path) != want {
 					t.Fatalf("%s: %s excluded is %v, want %v", name, path, !want, want)
 				}
 			}
@@ -260,8 +124,9 @@ func TestImageContracts(t *testing.T) {
 
 	t.Run("ST-SUP-RC15-OC31-T03 Hidden files and private-key files stay out of the build context", func(t *testing.T) {
 		for name, patterns := range ignores {
-			for _, path := range []string{"internal/.env", "internal/.git/config", "out/.hidden", "internal/tls.key", "internal/server.pem", "internal/id.p12", "out/k.pfx"} {
-				if !ignored(patterns, path) {
+			for _, path := range []string{"internal/.env", "internal/.git/config", "out/.hidden", "internal/tls.key", "internal/server.pem", "internal/id.p12", "out/k.pfx",
+				"internal/k.p8", "internal/id_rsa", "out/id_ed25519", "internal/id_ecdsa", "internal/key.der", "internal/store.jks", "internal/java.keystore", "internal/putty.ppk"} {
+				if !ignored(t, patterns, path) {
 					t.Fatalf("%s admits %s", name, path)
 				}
 			}
@@ -271,8 +136,23 @@ func TestImageContracts(t *testing.T) {
 	t.Run("ST-SUP-RC15-OC32-T01 The Containerfile builds with CGO disabled", func(t *testing.T) {
 		for name, text := range images {
 			build := text[:strings.Index(text, stages(text)[1])]
-			if !regexp.MustCompile(`(?m)^ENV .*\bCGO_ENABLED=0\b`).MatchString(build) || !strings.Contains(build, "go build") {
-				t.Fatalf("%s: the builder stage does not build with CGO_ENABLED=0:\n%s", name, build)
+			// The last setting of CGO_ENABLED before the go build is 0: an ENV or an inline setting after it, or a
+			// later one of 1, fails the test.
+			goBuild := regexp.MustCompile(`(?m)^RUN .*\bgo build\b`).FindStringIndex(build)
+			if goBuild == nil {
+				t.Fatalf("%s: the builder stage runs no go build", name)
+			}
+			settings := regexp.MustCompile(`\bCGO_ENABLED=(\S+)`).FindAllStringSubmatchIndex(build, -1)
+			last := ""
+			for _, setting := range settings {
+				if setting[0] < goBuild[1] {
+					last = build[setting[2]:setting[3]]
+				} else {
+					t.Fatalf("%s: CGO_ENABLED is set after the go build:\n%s", name, build)
+				}
+			}
+			if last != "0" {
+				t.Fatalf("%s: the go build runs with CGO_ENABLED %q, want 0:\n%s", name, last, build)
 			}
 		}
 	})
@@ -342,25 +222,39 @@ func allocatorRules(t *testing.T, c gen.Context) []map[string]any {
 		if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
 			t.Fatal(err)
 		}
-		// The ClusterRoles that a ClusterRoleBinding binds to the allocator's ServiceAccount, widget-queue: the declared
-		// allocation roles are ClusterRoles too, which the allocator grants to other accounts, and are not its own.
-		bound := map[any]bool{}
+		// The roles that a ClusterRoleBinding or a RoleBinding binds to the allocator's ServiceAccount, widget-queue,
+		// whatever kind of role it refers to. The declared allocation roles are ClusterRoles too, which the allocator
+		// grants to other accounts with the verb bind and holds no rule of itself: bind lets it make a binding of
+		// the role for another account, not use the role, so they are not its own rules (review of #503, L7).
+		bound := map[string]bool{}
 		for _, item := range doc.Items {
-			if item["kind"] != "ClusterRoleBinding" {
+			if item["kind"] != "ClusterRoleBinding" && item["kind"] != "RoleBinding" {
 				continue
 			}
-			for _, subject := range item["subjects"].([]any) {
+			subjects, _ := item["subjects"].([]any)
+			for _, subject := range subjects {
 				if field(subject, "kind") == "ServiceAccount" && field(subject, "name") == "widget-queue" {
-					bound[field(item, "roleRef", "name")] = true
+					bound[fmt.Sprint(field(item, "roleRef", "kind"))+"/"+fmt.Sprint(field(item, "roleRef", "name"))] = true
 				}
 			}
 		}
 		for _, item := range doc.Items {
-			if item["kind"] != "ClusterRole" || !bound[field(item, "metadata", "name")] {
+			kind := fmt.Sprint(item["kind"])
+			if (kind != "ClusterRole" && kind != "Role") || !bound[kind+"/"+fmt.Sprint(field(item, "metadata", "name"))] {
 				continue
 			}
-			for _, rule := range item["rules"].([]any) {
-				rules = append(rules, rule.(map[string]any))
+			// An aggregated role takes the rules of every role that its selector matches, so no rule list of the
+			// manifest bounds it.
+			if item["aggregationRule"] != nil {
+				t.Fatalf("the allocator holds the aggregated role %v", field(item, "metadata", "name"))
+			}
+			items, _ := item["rules"].([]any)
+			for _, rule := range items {
+				object, ok := rule.(map[string]any)
+				if !ok {
+					t.Fatalf("the role %v holds a rule that is not an object: %v", field(item, "metadata", "name"), rule)
+				}
+				rules = append(rules, object)
 			}
 		}
 	}
