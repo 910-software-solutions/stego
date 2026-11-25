@@ -83,6 +83,7 @@ func TestAuditLogCompiledService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a generated service")
 	}
+	t.Parallel()
 	input, pin := compiledService(t, customerService)
 	plan, err := compiler.Reconcile(input)
 	if err != nil {

@@ -306,6 +306,7 @@ func TestServiceBindsItsDeclarationAtBuildTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("applies a project, builds the generated service and runs it")
 	}
+	t.Parallel()
 	t.Run("ST-GEN-INV14-T A generated service reads no declaration, scans nothing and registers nothing by name, tag or init", func(t *testing.T) {
 		// ST-DECL-TD03 on the runtime data path, with its three modes stated (ST-DECL-INV89): a pooled service with authorization, tenancy, the
 		// command and query components and the postgres-adapter.

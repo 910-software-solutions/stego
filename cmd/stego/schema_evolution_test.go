@@ -169,9 +169,8 @@ func newEvolution(t *testing.T) *evolution {
 	e.git(t, "commit", "-q", "-m", "v1r")
 	e.git(t, "tag", "v1r")
 	e.git(t, "checkout", "-q", mainline)
-	relateBuilt := make(chan error, 1)
 	goBin := pinnedGo(t)
-	go func() { relateBuilt <- e.buildWith(goBin, "v1r", root) }()
+	relateBuilt := e.buildBeside(t, goBin, "v1r", root)
 	declaration, err := os.ReadFile(filepath.Join(e.repo, "service.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +193,9 @@ func newEvolution(t *testing.T) *evolution {
 	e.git(t, "add", "-A")
 	e.git(t, "commit", "-q", "-m", "v2")
 	e.git(t, "tag", "v2")
-	e.build(t, "v2", root)
+	// The builds of v2 and v3 run beside the steps that follow, as the build of v1r does: no step needs their
+	// binaries before the check.
+	v2Built := e.buildBeside(t, goBin, "v2", root)
 	committed, err := os.ReadFile(filepath.Join(e.repo, "service.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +215,7 @@ func newEvolution(t *testing.T) *evolution {
 	e.git(t, "add", "-A")
 	e.git(t, "commit", "-q", "-m", "v3")
 	e.git(t, "tag", "v3")
-	e.build(t, "v3", root)
+	v3Built := e.buildBeside(t, goBin, "v3", root)
 	// A head that removes the finished change and its steps: the check against v3 refuses it, as only a new
 	// baseline may fold a finished change (ST-GEN-UC15-R03).
 	removed := strings.Replace(strings.Replace(strings.Replace(v3, "  - {id: user-email-rename, kind: rename, entity: User, field: contact_email, from: email}\n", "", 1),
@@ -232,9 +233,15 @@ func newEvolution(t *testing.T) *evolution {
 	e.plans["undeclared plan"], e.plans["undeclared plan error"] = e.stego(t, stego, "plan", "--base", "v1")
 	e.plans["undeclared status"] = e.git(t, "status", "--porcelain", "--untracked-files=all")
 	e.git(t, "checkout", "-q", "--", "service.yaml")
-	// The build of v1r runs beside the builds of v2 and v3 (it takes the time of one build of the package).
-	if err := <-relateBuilt; err != nil {
-		t.Fatal(err)
+	// The builds of v1r, v2 and v3 run beside each other and beside the steps above (they take about the time of one
+	// build of the package). Each one is waited for, so no build outlives the test.
+	for _, built := range []func() error{relateBuilt, v2Built, v3Built} {
+		if err := built(); err != nil {
+			t.Error(err)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
 	}
 	return e
 }
@@ -324,6 +331,24 @@ func (e *evolution) buildWith(goBin, tag, root string) error {
 	return nil
 }
 
+// buildBeside starts build of the release at the tag in a goroutine and gives a function that waits for the build and
+// gives its error. The test waits for the build when it ends too, also after a failure before the wait, so no build
+// writes in the folder of the test after the test removed it.
+func (e *evolution) buildBeside(t *testing.T, goBin, tag, root string) func() error {
+	t.Helper()
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		err = e.buildWith(goBin, tag, root)
+	}()
+	t.Cleanup(func() { <-done })
+	return func() error {
+		<-done
+		return err
+	}
+}
+
 // startEvolutionSpiceDB starts a local SpiceDB container, unprivileged, with the memory datastore, and gives its
 // address and preshared key. The container is removed when the test ends.
 func startEvolutionSpiceDB(t *testing.T) (string, string) {
@@ -374,6 +399,9 @@ func TestSchemaEvolution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the releases of the example user-management")
 	}
+	// The test has its own folder, SpiceDB container and databases, and no other test of the package uses the
+	// PostgreSQL server, so it runs beside the other parallel tests.
+	t.Parallel()
 	dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
