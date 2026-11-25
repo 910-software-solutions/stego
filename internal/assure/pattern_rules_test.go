@@ -3,15 +3,18 @@ package assure
 import (
 	"encoding/json"
 	"os/exec"
+	"path"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // The proofs of the pattern ST-PAT-GO-CODE in one domain: its rules R01 (each hand-written technical record fills
 // exactly one slot), R02 (each fill serves an essential record) and R03 (the fills meet the code standard). Each
 // domain's test makes a goCodeProof for its own ID and names each subtest with its test record, numbered by the
-// domain's position.
+// domain's position: ST-ASR 1, ST-BLD 2, ST-DECL 3, ST-DIS 4, ST-DLV 5, ST-EXT 6, ST-GEN 7 and ST-SUP 8. Extending
+// has a test of its own, in pattern_rule_ext_test.go.
 
 // latheWorkspace is the part of lathe check --json that the pattern proofs read.
 type latheWorkspace struct {
@@ -32,11 +35,28 @@ type latheWorkspace struct {
 		Relation string `json:"relation"`
 		Target   string `json:"target"`
 	} `json:"links"`
+	Problems []struct {
+		Check   string `json:"check"`
+		Record  string `json:"record"`
+		Message string `json:"message"`
+	} `json:"problems"`
+}
+
+// checked holds the workspace that the first call of checkedWorkspace read: each domain's proof reads the same spec,
+// so lathe check runs once for the test binary.
+var checked struct {
+	sync.Mutex
+	workspace *latheWorkspace
 }
 
 // checkedWorkspace runs lathe check --json on the spec of the repository and gives its product's workspace.
 func checkedWorkspace(t *testing.T) latheWorkspace {
 	t.Helper()
+	checked.Lock()
+	defer checked.Unlock()
+	if checked.workspace != nil {
+		return *checked.workspace
+	}
 	lathe := latheCLI(t)
 	root, err := RepositoryRoot(".")
 	if err != nil {
@@ -56,15 +76,18 @@ func checkedWorkspace(t *testing.T) latheWorkspace {
 	if err := json.Unmarshal(output, &check); err != nil || len(check.Products) == 0 {
 		t.Fatalf("the output is not lathe check --json: %v", err)
 	}
-	return check.Products[0].Workspace
+	checked.workspace = &check.Products[0].Workspace
+	return *checked.workspace
 }
 
 // domainFills gives each hand-written technical record of the domain with the slots it fills: the records of the
-// technical stage that nothing provides, and that no tooling record generates.
+// technical stage whose kind is accidental, that nothing provides, and that no tooling record generates. A record of
+// an essential kind of the technical stage, such as an output contract or a library contract, is a promise and not
+// code, and a standard or its rule is the rules that code follows: none of them fills a slot.
 func domainFills(workspace latheWorkspace, domain string) (map[string][]string, map[string]bool) {
 	technical := map[string]bool{}
 	for _, kind := range workspace.Kinds {
-		if kind.Stage == "technical-specification" {
+		if kind.Stage == "technical-specification" && kind.Complexity == "accidental" {
 			technical[kind.Kind] = true
 		}
 	}
@@ -121,44 +144,24 @@ func (p goCodeProof) oneSlotEach(t *testing.T) {
 	}
 }
 
-// servesAnEssentialRecord proves ST-PAT-GO-CODE-R02 in the domain.
+// accountedFor is the check of the pinned Lathe that names an accidental record which serves no essential record.
+const accountedFor = "accidental-not-accounted-for"
+
+// servesAnEssentialRecord proves ST-PAT-GO-CODE-R02 in the domain. A fill serves an essential record as the pinned
+// Lathe counts it (its check accidental-not-accounted-for): it builds an essential obligation, implements or sits
+// under an essential record other than its product or domain, carries out an essential rule that it meets, persists
+// an essential aggregate, links to an essential record through a relation of the product, or holds an essential
+// record. Thus the test reads that check's findings, and fails on each one that names a fill of the domain.
 func (p goCodeProof) servesAnEssentialRecord(t *testing.T) {
-	workspace, records := p.workspace, p.records
-	{
-		essential := map[string]bool{}
-		for _, kind := range workspace.Kinds {
-			if kind.Complexity == "essential" {
-				essential[kind.Kind] = true
-			}
+	var faults []string
+	for _, problem := range p.workspace.Problems {
+		if _, filled := p.records[problem.Record]; filled && problem.Check == accountedFor {
+			faults = append(faults, problem.Message)
 		}
-		byID := map[string]int{}
-		for i, record := range workspace.Records {
-			byID[record.ID] = i
-		}
-		isEssential := func(id string) bool {
-			i, held := byID[id]
-			return held && essential[workspace.Records[i].Kind]
-		}
-		serves := map[string][]string{}
-		for _, link := range workspace.Links {
-			if link.Relation == "implements" || link.Relation == "builds_on" {
-				serves[link.Source] = append(serves[link.Source], link.Target)
-			}
-		}
-		for id := range records {
-			served := slices.ContainsFunc(serves[id], isEssential)
-			for parent := workspace.Records[byID[id]].Parent; !served && parent != ""; {
-				served = isEssential(parent)
-				i, held := byID[parent]
-				if !held {
-					break
-				}
-				parent = workspace.Records[i].Parent
-			}
-			if !served {
-				t.Errorf("%s implements, builds or sits under no essential record", id)
-			}
-		}
+	}
+	slices.Sort(faults)
+	for _, fault := range faults {
+		t.Error(fault)
 	}
 }
 
@@ -188,8 +191,14 @@ func (p goCodeProof) meetsTheCodeStandard(t *testing.T) {
 				}
 			}
 		}
+		// A fault is the domain's when its path is a file of a fill, a file in the folder of a fill's file (such as a
+		// source file that no record names, ST-STD-CODE-R05), or the package of a fill's file.
+		folders := map[string]bool{}
+		for file := range files {
+			folders[path.Dir(file)] = true
+		}
 		inScope := func(fault CodeFault) bool {
-			if files[fault.Path] {
+			if files[fault.Path] || folders[path.Dir(fault.Path)] && path.Ext(fault.Path) != "" {
 				return true
 			}
 			for file := range files {
@@ -256,4 +265,44 @@ func TestDistributingFollowsTheGoCodePattern(t *testing.T) {
 	t.Run("ST-PAT-GO-CODE-R01-T04 Distributing's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
 	t.Run("ST-PAT-GO-CODE-R02-T04 Distributing's fills each serve an essential record", proof.servesAnEssentialRecord)
 	t.Run("ST-PAT-GO-CODE-R03-T04 Distributing's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestAssuringFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-ASR")
+	t.Run("ST-PAT-GO-CODE-R01-T01 Assuring's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R03-T01 Assuring's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestBuildingFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-BLD")
+	t.Run("ST-PAT-GO-CODE-R01-T02 Building's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R02-T02 Building's fills each serve an essential record", proof.servesAnEssentialRecord)
+	t.Run("ST-PAT-GO-CODE-R03-T02 Building's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestDeclaringFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-DECL")
+	t.Run("ST-PAT-GO-CODE-R01-T03 Declaring's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R02-T03 Declaring's fills each serve an essential record", proof.servesAnEssentialRecord)
+	t.Run("ST-PAT-GO-CODE-R03-T03 Declaring's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestDeliveringFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-DLV")
+	t.Run("ST-PAT-GO-CODE-R01-T05 Delivering's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R02-T05 Delivering's fills each serve an essential record", proof.servesAnEssentialRecord)
+	t.Run("ST-PAT-GO-CODE-R03-T05 Delivering's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestGeneratingFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-GEN")
+	t.Run("ST-PAT-GO-CODE-R01-T07 Generating's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R02-T07 Generating's fills each serve an essential record", proof.servesAnEssentialRecord)
+	t.Run("ST-PAT-GO-CODE-R03-T07 Generating's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
+}
+
+func TestSupplyingFollowsTheGoCodePattern(t *testing.T) {
+	proof := newGoCodeProof(t, "ST-SUP")
+	t.Run("ST-PAT-GO-CODE-R01-T08 Supplying's hand-written technical records each fill exactly one slot", proof.oneSlotEach)
+	t.Run("ST-PAT-GO-CODE-R03-T08 Supplying's fills meet every rule of the code standard that applies to them", proof.meetsTheCodeStandard)
 }
