@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/compiler"
@@ -307,10 +310,68 @@ func goInProject(t *testing.T, args ...string) {
 	}
 }
 
-// walkthroughFirstBuild runs the user flow of the fifth walkthrough up to its first binary, with no step by hand:
-// stego init, the inventory declaration, stego fill create for the command, the query and the consuming worker,
-// validate, apply, deps and go build. It gives the path of the binary.
+// walkthroughBuild is the project of the fifth walkthrough after its first build, which the first test that needs it
+// makes, and the binary of that build. Each later test works in a copy of it, so the package builds the walkthrough
+// once and not once per test.
+var walkthroughBuild struct {
+	sync.Mutex
+	project, binary string
+}
+
+// walkthroughFirstBuild gives the project of the fifth walkthrough after its first build in a new working folder,
+// with the environment of the walkthrough, and gives the path of the binary. The first test that calls it runs the
+// user flow (walkthroughFlow) and keeps a copy of the result; a later test gets a copy of that copy. When the flow
+// fails, no copy is kept, and the next test runs the flow again.
 func walkthroughFirstBuild(t *testing.T) string {
+	t.Helper()
+	walkthroughBuild.Lock()
+	defer walkthroughBuild.Unlock()
+	if walkthroughBuild.project == "" {
+		binary := walkthroughFlow(t)
+		folder, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep := filepath.Join(fixtureRoot, "walkthrough-first-build")
+		if err := os.MkdirAll(keep, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, copy := range [][2]string{{folder, filepath.Join(keep, "service")}, {binary, filepath.Join(keep, "inventory")}} {
+			if output, err := exec.Command("cp", "-a", copy[0], copy[1]).CombinedOutput(); err != nil {
+				t.Fatalf("keep the first build of the walkthrough: %v\n%s", err, output)
+			}
+		}
+		// A copy is the same project only when no file of the project names the folder that it was made in.
+		if err := filepath.WalkDir(folder, func(name string, entry fs.DirEntry, err error) error {
+			if err != nil || !entry.Type().IsRegular() {
+				return err
+			}
+			data, err := os.ReadFile(name)
+			if err == nil && bytes.Contains(data, []byte(folder)) {
+				return fmt.Errorf("%s names the folder of the project %s, so a copy of the project is not the same project", name, folder)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		walkthroughBuild.project, walkthroughBuild.binary = filepath.Join(keep, "service"), filepath.Join(keep, "inventory")
+		return binary
+	}
+	project := copyFolder(t, walkthroughBuild.project)
+	binary := filepath.Join(t.TempDir(), "inventory")
+	if output, err := exec.Command("cp", "-a", walkthroughBuild.binary, binary).CombinedOutput(); err != nil {
+		t.Fatalf("copy the binary of the walkthrough: %v\n%s", err, output)
+	}
+	t.Chdir(project)
+	walkthroughSettings(t)
+	signingSettings(t, testFillKeys(t))
+	return binary
+}
+
+// walkthroughFlow runs the user flow of the fifth walkthrough up to its first binary, with no step by hand: stego
+// init, the inventory declaration, stego fill create for the command, the query and the consuming worker, validate,
+// apply, deps and go build. It gives the path of the binary.
+func walkthroughFlow(t *testing.T) string {
 	t.Helper()
 	walkthroughProject(t)
 	for name, slot := range map[string]string{"place-order": "command.command", "open-orders": "query.query", "fulfill-orders": "worker.worker"} {

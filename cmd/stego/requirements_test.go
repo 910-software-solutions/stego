@@ -286,6 +286,7 @@ func requirementsEqual(a, b delivery.Requirement) bool {
 }
 
 func TestPlatformRequirementsApply(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-DLV-UC01-R01-T01 Applying the plan writes platform requirements that state each need of the components, with its keys and ports", func(t *testing.T) {
 		registry := requirementsRegistry(t)
 		dir := requirementsProject(t)
@@ -808,6 +809,7 @@ slots:
 }
 
 func TestPlatformRequirementsChangeOnlyThroughTheDeclaration(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-DLV-UC01-R05-T03 A need changes in the platform requirements when the declaration or the registry changes, and not when a fill changes", func(t *testing.T) {
 		p := newFillProject(t)
 		p.registry = requirementsRegistry(t)
@@ -876,6 +878,7 @@ func expectChange(t *testing.T, before, after []delivery.Requirement, name strin
 // TestEnvironmentVariablesApply proves that apply writes the list of every environment variable that the service
 // accepts in the platform requirements and the reference rendered from it (ST-DLV-UC01-R03, R05 to R09).
 func TestEnvironmentVariablesApply(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-DLV-UC01-R06-T01 Applying the plan writes every environment variable of the active set in the platform requirements, in name order, with its facts", func(t *testing.T) {
 		registry := requirementsRegistry(t)
 		dir := requirementsProject(t)

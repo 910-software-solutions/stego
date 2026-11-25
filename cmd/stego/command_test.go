@@ -82,6 +82,7 @@ func routeFaults(faults []declaration.ValidationError) []declaration.ValidationE
 }
 
 func TestOperationRoutes(t *testing.T) {
+	t.Parallel()
 	command := func(route string) string {
 		return td02 + "commands:\n  - name: reserve-and-charge\n    writes: [Todo]\n    resource_type: todo\n    permission: edit\n    resource_member: todoId\n    fill: reserve-and-charge\n" + route
 	}
