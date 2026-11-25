@@ -1243,6 +1243,7 @@ func wideSchema(width int, leaf string) string {
 }
 
 func TestArchitectureGrantWork(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-GEN-UC08-R13-T02 The expansion of a wide and deep schema stops at a stated work limit, and the model says that its roles are not complete", func(t *testing.T) {
 		// With a leaf that grants nothing, no path is found, so only the work limit can stop the expansion.
 		empty, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(wideSchema(40, "nil")))
@@ -1508,6 +1509,7 @@ func TestArchitectureConfigurationFacts(t *testing.T) {
 }
 
 func TestArchitectureContext(t *testing.T) {
+	t.Parallel()
 	summary := func(m *ArchitectureModel) (actors, relations []string) {
 		for _, a := range m.Actors {
 			actors = append(actors, a.ID+" "+a.Kind+" "+a.Name+" <"+sourceText(a.Source)+">")
