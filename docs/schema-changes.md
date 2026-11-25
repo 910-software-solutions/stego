@@ -778,6 +778,31 @@ relate when:
 Generation refuses the relation `tenant` when `authz/schema.zed` does not give
 the resource type the relation `tenant` of the subject type `tenant`.
 
+### The check against the base
+
+`stego compat --base` and `stego plan --base` read the declaration and the
+schema of the base. They give a fault of ST-GEN-INV33 for each relation that
+the head writes for each row of an entity of the base and that the base does
+not write (runtime v0.196.0, rest-crud 3.262.0):
+
+- For an entity that a tenant owns, the fault suggests the relate step at
+  expand. Declare it, and the check accepts the head.
+- For a relation whose subject is the caller of the create
+  (`subject_source: caller`), no row holds the subject, so no relate step can
+  give the rows the tuple. The fault suggests no schema change. Give the
+  permission another path: a relation that the rows get, such as the relation
+  of a reference, of a field that the rows hold, or `tenant`, with its relate
+  step.
+- For an entity that is `shared` or `system`, the relate job does not read
+  its rows, so no relate step can give them the tuple of a relationship or a
+  reference. The fault suggests no schema change. Give the permission another
+  path, through a relation that the base writes already.
+
+A base that binds no `authorization` schema writes no relation. Thus a head
+that adds the schema gets a fault for each relation that it writes for the
+rows of the base, such as the relation `organization` of each reference to
+`Organization`. Declare a relate step for each of them.
+
 ### Relate a field
 
 A relationship whose subject is a field needs a create that decides a

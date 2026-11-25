@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1019,4 +1020,112 @@ func TestBaseRelateFaults(t *testing.T) {
 			t.Errorf("a base whose commit does not hold its schema: want an error, got %v", err)
 		}
 	})
+	// The relations that no relate step gives the rows of the base, and a base that binds no schema (security review
+	// of PR #495, L1, L2 and I1).
+	{
+		declared := string(userManagementBase(t))
+		schema, err := os.ReadFile(filepath.Join("..", "..", "examples", "user-management", "authz", "schema.zed"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		compile := func(source string) *declaration.AuthzSchema {
+			t.Helper()
+			compiled, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return compiled
+		}
+		edit := func(text, old, new string) string {
+			t.Helper()
+			edited := strings.Replace(text, old, new, 1)
+			if edited == text {
+				t.Fatalf("the text has no %q to edit", old)
+			}
+			return edited
+		}
+		faultsOf := func(t *testing.T, baseText string, baseSchema []byte, headText string, headSchema *declaration.AuthzSchema) []BaseFault {
+			t.Helper()
+			base := BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(baseText), Record: recordFor([]byte(baseText)), Schema: baseSchema}
+			head := parseHead(t, headText)
+			check, err := CheckBase(base, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			faults, err := RelateFaults(check, base, head, headSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return faults
+		}
+		// otherPath tells whether the faults are one fault of the entity and the relation that suggests no schema change
+		// and tells the author to give the permission another path.
+		otherPath := func(faults []BaseFault, entity, relation string) bool {
+			return len(faults) == 1 && faults[0].Rule == BaseCompatRule && faults[0].Entity == entity && len(faults[0].Declare) == 0 &&
+				strings.Contains(faults[0].Message, relation) && strings.Contains(faults[0].Message, "Give the permission another path")
+		}
+		t.Run("ST-GEN-INV33-T A new relation from the caller of the create on a base entity with rows is refused, and the fault tells the author to give the permission another path", func(t *testing.T) {
+			t.Parallel()
+			caller := "    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n"
+			head := edit(declared, "    public_reasons: {create: an activity entry of a caller has no resource to decide on before it exists}\n", "    public_reasons: {create: an activity entry of a caller has no resource to decide on before it exists}\n"+caller)
+			if faults := faultsOf(t, declared, schema, head, compile(string(schema))); !otherPath(faults, "ActivityEntry", "activity_entry#owner") || !strings.Contains(faults[0].Message, "caller") {
+				t.Errorf("a new caller relation: want one fault of ActivityEntry and activity_entry#owner with no schema change, got %+v", faults)
+			}
+			// A relate step cannot correct it, as no row holds the caller of its create.
+			related := withChanges(head, "  - {id: activity-entry-owner-relate, kind: relate, entity: ActivityEntry, relation: owner}\n", "  - {change: activity-entry-owner-relate, phase: expand}\n")
+			if faults := faultsOf(t, declared, schema, related, compile(string(schema))); !otherPath(faults, "ActivityEntry", "activity_entry#owner") {
+				t.Errorf("a new caller relation with a relate step: want the same fault, got %+v", faults)
+			}
+			// A base that writes the caller relation already gives no fault.
+			if faults := faultsOf(t, head, schema, head, compile(string(schema))); len(faults) != 0 {
+				t.Errorf("a base with the caller relation: want no fault, got %+v", faults)
+			}
+		})
+		t.Run("ST-GEN-INV33-T A new field or reference relation of a shared or system entity of the base is refused, and the fault tells the author to give the permission another path", func(t *testing.T) {
+			t.Parallel()
+			plans := "  - name: Plan\n    tenant: shared\n    resource_type: plan\n    permissions: {read: view, list: view}\n    fields:\n      - { name: label, type: string }\n      - { name: owner_id, type: string, max_length: 255 }\n      - { name: org_id, type: ref, to: Organization }\n\n"
+			planSchema := string(schema) + "\ndefinition plan {\n\trelation owner: user\n\trelation organization: organization\n\trelation tenant: tenant\n\tpermission view = owner + organization->view\n}\n\ndefinition tenant {\n\trelation auditor: user\n}\n"
+			base := edit(declared, "  - name: ActivityEntry\n", plans+"  - name: ActivityEntry\n")
+			field := edit(base, "    resource_type: plan\n", "    resource_type: plan\n    relationships:\n      - {relation: owner, subject_source: field, subject_field: owner_id, subject_type: user}\n")
+			reference := edit(base, "    resource_type: plan\n", "    resource_type: plan\n    references:\n      org_id: {relation: organization, permission: view}\n")
+			// The base binds the schema with the definition plan, so only the new relation of the head differs; the
+			// relation tenant, which a shared row cannot have, gives no fault.
+			for _, kind := range []string{"shared", "system"} {
+				for _, c := range []struct{ name, head, relation, field string }{
+					{"a field relation", field, "plan#owner", "owner_id"},
+					{"a reference relation", reference, "plan#organization", "org_id"},
+				} {
+					baseText := strings.Replace(base, "tenant: shared", "tenant: "+kind, 1)
+					headText := strings.Replace(c.head, "tenant: shared", "tenant: "+kind, 1)
+					faults := faultsOf(t, baseText, []byte(planSchema), headText, compile(planSchema))
+					if !otherPath(faults, "Plan", c.relation) || faults[0].Field != c.field || !strings.Contains(faults[0].Message, "is "+kind) {
+						t.Errorf("%s of a %s entity: want one fault of Plan.%s and %s that names %s and no schema change, got %+v", c.name, kind, c.field, c.relation, kind, faults)
+					}
+					if faults := faultsOf(t, headText, []byte(planSchema), headText, compile(planSchema)); len(faults) != 0 {
+						t.Errorf("%s of a %s entity that the base writes already: want no fault, got %+v", c.name, kind, faults)
+					}
+				}
+			}
+		})
+		t.Run("ST-GEN-INV33-T A head that binds an authorization schema that the base did not bind needs a relate step for each relation of the rows of the base", func(t *testing.T) {
+			t.Parallel()
+			unbound := edit(declared, "authorization:\n  provider: spicedb\n  schema_path: authz/schema.zed\n  subject_from_identity: user\n", "")
+			// The base binds no schema, so the commit holds none that the check reads.
+			faults := faultsOf(t, unbound, nil, declared, compile(string(schema)))
+			var named []string
+			for _, f := range faults {
+				if f.Rule != BaseCompatRule || len(f.Declare) != 1 || f.Declare[0].Kind != "relate" {
+					t.Errorf("want a fault that suggests a relate step, got %+v", f)
+				}
+				named = append(named, f.Entity+"."+f.Field+" "+f.Declare[0].ID)
+			}
+			if want := []string{"User.org_id user-organization-relate", "OrgSetting.org_id orgsetting-organization-relate"}; !slices.Equal(named, want) {
+				t.Errorf("a head that adds the schema: want the faults %v, got %v", want, named)
+			}
+			related := withChanges(declared, "  - {id: user-organization-relate, kind: relate, entity: User, relation: organization}\n  - {id: orgsetting-organization-relate, kind: relate, entity: OrgSetting, relation: organization}\n", "  - {change: user-organization-relate, phase: expand}\n  - {change: orgsetting-organization-relate, phase: expand}\n")
+			if faults := faultsOf(t, unbound, nil, related, compile(string(schema))); len(faults) != 0 {
+				t.Errorf("a head that adds the schema with its relate steps: want no fault, got %+v", faults)
+			}
+		})
+	}
 }
