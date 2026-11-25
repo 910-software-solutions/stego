@@ -561,6 +561,7 @@ func TestDeclaringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DECL")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T03 Declaring's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T03 Each test file of Declaring belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T03 Each obligation of Declaring that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T03 Declaring's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T03 Each obligation of Declaring with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
