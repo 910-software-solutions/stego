@@ -58,8 +58,8 @@ func checkStage(component *Component) error {
 }
 
 // checkGoldenPaths refuses an archetype or a mixin that includes a component
-// that is not fit for a golden path, naming each such component with its
-// stage (ST-SUP-SP01).
+// that is not fit for a golden path, as a component or as the default_auth of
+// an archetype, naming each such component with its stage (ST-SUP-SP01).
 func checkGoldenPaths(r *Registry) error {
 	var faults []string
 	check := func(kind, name string, components []string) {
@@ -74,7 +74,14 @@ func checkGoldenPaths(r *Registry) error {
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(r.archetypes)) {
-		check("archetype", name, r.archetypes[name].Components)
+		archetype := r.archetypes[name]
+		included := archetype.Components
+		// The default_auth of an archetype is in the active set of every service of it, as a part of the archetype
+		// (sec-501 L2).
+		if archetype.DefaultAuth != "" && !slices.Contains(included, archetype.DefaultAuth) {
+			included = append(slices.Clone(included), archetype.DefaultAuth)
+		}
+		check("archetype", name, included)
 	}
 	for _, name := range slices.Sorted(maps.Keys(r.mixins)) {
 		check("mixin", name, r.mixins[name].AddsComponents)

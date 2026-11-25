@@ -27,6 +27,15 @@ func TestGoldenPathHoldsOnlyGA(t *testing.T) {
 		})
 		registryProject(t, f.project, "", pinned(f.common, commonSHA), pinned(f.local, f.localSHA))
 		f.compose(t).refused(t, "archetype svc-arch", "beta-x (beta)", "alpha-y (alpha)")
+		// The default_auth of an archetype is a part of it too (sec-501 L2).
+		g := newSupplyingFixture(t)
+		withAuth := strings.Replace(commonRegistryFiles()["archetypes/svc-arch/archetype.yaml"], "components:\n", "default_auth: beta-x\ncomponents:\n", 1)
+		commonSHA = commitRegistry(t, g.common, map[string]string{
+			"components/beta-x/component.yaml":   experimentComponent("beta-x", "beta"),
+			"archetypes/svc-arch/archetype.yaml": withAuth,
+		})
+		registryProject(t, g.project, "", pinned(g.common, commonSHA), pinned(g.local, g.localSHA))
+		g.compose(t).refused(t, "archetype svc-arch", "beta-x (beta)")
 	})
 
 	t.Run("ST-SUP-UC03-R02-T02 A mixin that brings a component below ga is refused, naming the component and its stage", func(t *testing.T) {
@@ -74,7 +83,7 @@ func TestExperimentReachableOnlyOnPurpose(t *testing.T) {
 			"an acceptance of another component only": "experimental_acceptances:\n  - {component: beta-y, accepted_until: " + daysFromToday(30) + ", reason: pilot}\n",
 		} {
 			faults := acceptanceFaults(t, acceptances)
-			if len(faults) != 1 || !strings.Contains(faults[0], "overrides.local-port") || !strings.Contains(faults[0], "local-a is beta") || !strings.Contains(faults[0], "does not accept it by name") {
+			if len(faults) != 1 || !strings.Contains(faults[0], "overrides.local-port") || !strings.Contains(faults[0], "local-a, which is beta") || !strings.Contains(faults[0], "does not accept it by name") {
 				t.Fatalf("%s: want one fault that names local-a, its stage and that the declaration does not accept it, got %v", name, faults)
 			}
 		}
