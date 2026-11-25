@@ -1,11 +1,18 @@
 package rhssoauth
 
 import (
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/format"
+	"go/importer"
 	goparser "go/parser"
 	"go/token"
+	gotypes "go/types"
+	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -150,159 +157,298 @@ func ssoOwnFiles(t *testing.T) (map[string]string, map[string]string) {
 	return own, all
 }
 
-// ssoSyntax parses the files that rh-sso-auth emits beside the shared runtime, and gives each with the
-// identifiers that the shared runtime declares at package level: its functions, types, variables and constants, and
-// its method names.
-func ssoSyntax(t *testing.T) (map[string]*ast.File, map[string]bool, map[string]bool) {
+// ssoPackage type-checks the generated auth package, the shared runtime of jwt-auth and the files of rh-sso-auth,
+// with go/types, and gives the SSO files, the type information and the package. The standard library comes from
+// its source in GOROOT, and github.com/golang-jwt/jwt/v5 from its source in the module cache, so no network is used.
+func ssoPackage(t *testing.T) (map[string]*ast.File, *gotypes.Info, *gotypes.Package) {
 	t.Helper()
 	own, all := ssoOwnFiles(t)
-	shared, methods := map[string]bool{}, map[string]bool{}
-	parsed := map[string]*ast.File{}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	mine := map[string]*ast.File{}
 	for name, text := range all {
-		file, err := goparser.ParseFile(token.NewFileSet(), name, text, 0)
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		file, err := goparser.ParseFile(fset, name, text, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, mine := own[name]; mine {
-			parsed[name] = file
-			continue
+		files = append(files, file)
+		if _, ok := own[name]; ok {
+			mine[name] = file
 		}
-		for _, declaration := range file.Decls {
-			switch d := declaration.(type) {
-			case *ast.FuncDecl:
-				if d.Recv == nil {
-					shared[d.Name.Name] = true
-				} else {
-					methods[d.Name.Name] = true
-				}
-			case *ast.GenDecl:
-				for _, spec := range d.Specs {
-					switch s := spec.(type) {
-					case *ast.TypeSpec:
-						shared[s.Name.Name] = true
-					case *ast.ValueSpec:
-						for _, n := range s.Names {
-							shared[n.Name] = true
-						}
-					}
-				}
+	}
+	info := &gotypes.Info{Uses: map[*ast.Ident]gotypes.Object{}, Defs: map[*ast.Ident]gotypes.Object{}, Selections: map[*ast.SelectorExpr]*gotypes.Selection{}, Types: map[ast.Expr]gotypes.TypeAndValue{}}
+	config := gotypes.Config{Importer: localImporter(t, fset)}
+	pkg, err := config.Check("example.com/sso/internal/auth", fset, files, info)
+	if err != nil {
+		t.Fatalf("the emitted auth package does not type-check: %v", err)
+	}
+	return mine, info, pkg
+}
+
+// localImporter imports the standard library from GOROOT and github.com/golang-jwt/jwt/v5 from its source in the
+// module cache, at the version that jwt-auth requires.
+func localImporter(t *testing.T, fset *token.FileSet) gotypes.Importer {
+	t.Helper()
+	std := importer.ForCompiler(fset, "source", nil)
+	// go mod download gives the folder of the module at the version jwt-auth requires, from the module cache when it
+	// holds it, as the generated-module tests of this package fetch it.
+	download := exec.Command("go", "mod", "download", "-json", "github.com/golang-jwt/jwt/v5@"+jwtVersion(t))
+	download.Dir = t.TempDir()
+	download.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	if err := os.WriteFile(filepath.Join(download.Dir, "go.mod"), []byte("module example.com/download\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := download.Output()
+	if err != nil {
+		t.Fatalf("go mod download of github.com/golang-jwt/jwt/v5: %v", err)
+	}
+	var module struct{ Dir string }
+	if err := json.Unmarshal(out, &module); err != nil || module.Dir == "" {
+		t.Fatalf("go mod download gave no folder of github.com/golang-jwt/jwt/v5: %v\n%s", err, out)
+	}
+	jwtDir := module.Dir
+	var jwt *gotypes.Package
+	return importerFunc(func(importPath string) (*gotypes.Package, error) {
+		if importPath != "github.com/golang-jwt/jwt/v5" {
+			return std.Import(importPath)
+		}
+		if jwt != nil {
+			return jwt, nil
+		}
+		names, err := filepath.Glob(filepath.Join(jwtDir, "*.go"))
+		if err != nil || len(names) == 0 {
+			return nil, fmt.Errorf("github.com/golang-jwt/jwt/v5 has no Go file at %s", jwtDir)
+		}
+		var files []*ast.File
+		for _, name := range names {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
 			}
+			file, err := goparser.ParseFile(fset, name, nil, 0)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, file)
 		}
-	}
-	return parsed, shared, methods
+		config := gotypes.Config{Importer: std}
+		jwt, err = config.Check(importPath, fset, files, nil)
+		return jwt, err
+	})
 }
 
-// importNames gives the local name of each import of a file by its path.
-func importNames(file *ast.File) map[string]string {
-	names := map[string]string{}
-	for _, spec := range file.Imports {
-		importPath, _ := strconv.Unquote(spec.Path.Value)
-		name := path.Base(importPath)
-		if importPath == "github.com/golang-jwt/jwt/v5" {
-			name = "jwt"
-		}
-		if spec.Name != nil {
-			name = spec.Name.Name
-		}
-		names[importPath] = name
+// jwtVersion gives the version of github.com/golang-jwt/jwt/v5 that the shared runtime of jwt-auth requires.
+func jwtVersion(t *testing.T) string {
+	t.Helper()
+	_, wiring, err := new(jwtauth.Generator).Generate(gen.Context{OutputNamespace: "internal/auth", ServiceName: "test", BasePath: "/api/v1", ErrorTypeBase: "https://errors.example/",
+		ComponentConfig: map[string]any{"issuer": "https://issuer.example", "audience": "test", "jwk_cert_file": "/etc/jwks.json"}})
+	if err != nil || wiring.GoModRequires["github.com/golang-jwt/jwt/v5"] == "" {
+		t.Fatalf("jwt-auth names no version of github.com/golang-jwt/jwt/v5: %v", err)
 	}
-	return names
+	return wiring.GoModRequires["github.com/golang-jwt/jwt/v5"]
 }
 
-// ssoSharedAllowed are the declarations of the shared runtime that the SSO files may use: the one verifier and its
-// configuration, the identity it gives, and helpers that read settings and write a denial. Any other reference to the
-// shared runtime, such as NewVerifier, compileJWKS, VerifyWithJWKS or NewAuthMiddleware, is a verifier of its own.
-var ssoSharedAllowed = map[string]bool{"NewJWKSVerifier": true, "JWKSConfig": true, "JWKSVerifier": true, "Config": true, "Identity": true,
-	"identityKey": true, "declaredValue": true, "envOrDefault": true, "extractToken": true, "writeAuthError": true}
+type importerFunc func(string) (*gotypes.Package, error)
 
-// ssoImports are the packages the SSO files may import: none of them makes a network client or a timer.
+func (f importerFunc) Import(importPath string) (*gotypes.Package, error) { return f(importPath) }
+
+// ssoValues are the types of the shared runtime that the SSO files may build and read: the configuration they give
+// the one verifier, and the identity it gives back. Every other type of the shared runtime, such as JWKSVerifier or
+// Verifier, may not be built by hand, and its fields may not be read.
+var ssoValues = map[string]bool{"JWKSConfig": true, "Config": true, "Identity": true}
+
+// ssoAllowed are the objects that the SSO files may use, by package path and name: the one verifier of the shared
+// runtime with its configuration and identity, the helpers that read settings and write a denial, and the decode of
+// the claims of a token that the verifier checked. A method is named by its receiver type and its name.
+var ssoAllowed = map[string]bool{
+	"auth.NewJWKSVerifier": true, "auth.JWKSConfig": true, "auth.JWKSVerifier": true, "auth.Config": true, "auth.Identity": true,
+	"auth.identityKey": true, "auth.declaredValue": true, "auth.envOrDefault": true, "auth.extractToken": true, "auth.writeAuthError": true,
+	"auth.JWKSVerifier.Verify": true, "auth.JWKSVerifier.Stop": true,
+	"jwt.MapClaims": true, "jwt.Token": true, "jwt.NewParser": true, "jwt.Parser.ParseUnverified": true,
+}
+
+// ssoImports are the packages the SSO files may import, each by its own name: none of them makes a network client
+// or a task.
 var ssoImports = map[string]bool{"context": true, "errors": true, "net/http": true, "os": true, "strings": true, "github.com/golang-jwt/jwt/v5": true}
 
-// ssoVerifierFaults gives each place where the SSO files verify a token or make a verifier other than the one common
-// verifier: a reference to a shared declaration outside ssoSharedAllowed, a method of the shared runtime other than
-// Verify and Stop of h.verifier, a jwt name other than MapClaims, Token and NewParser, a Parse call other than
-// jwt.NewParser().ParseUnverified, and a ParseUnverified that comes before the common verifier checks the token.
-func ssoVerifierFaults(files map[string]*ast.File, shared, methods map[string]bool) []string {
-	var faults []string
-	for name, file := range files {
-		jwtName := importNames(file)["github.com/golang-jwt/jwt/v5"]
-		for _, declaration := range file.Decls {
-			// Each declaration, a function body or a package-level value: a value such as var f = compileJWKS is
-			// a verifier of its own too.
-			var body ast.Node = declaration
-			if function, ok := declaration.(*ast.FuncDecl); ok {
-				if function.Body == nil {
-					continue
-				}
-				body = function.Body
+// objectName gives the name of an object for ssoAllowed: the last element of its package path and its name, with
+// the receiver type of a method.
+func objectName(object gotypes.Object) string {
+	if object.Pkg() == nil {
+		return object.Name()
+	}
+	base := path.Base(object.Pkg().Path())
+	if base == "v5" {
+		base = "jwt"
+	}
+	if function, ok := object.(*gotypes.Func); ok {
+		if receiver := function.Type().(*gotypes.Signature).Recv(); receiver != nil {
+			named := receiver.Type()
+			if pointer, ok := named.(*gotypes.Pointer); ok {
+				named = pointer.Elem()
 			}
-			verified := token.NoPos
-			ast.Inspect(body, func(node ast.Node) bool {
-				switch n := node.(type) {
-				case *ast.Ident:
-					if shared[n.Name] && !ssoSharedAllowed[n.Name] {
-						faults = append(faults, name+": "+n.Name)
-					}
-				case *ast.SelectorExpr:
-					if x, ok := n.X.(*ast.Ident); ok && x.Name == jwtName && jwtName != "" {
-						if n.Sel.Name != "MapClaims" && n.Sel.Name != "Token" && n.Sel.Name != "NewParser" {
-							faults = append(faults, name+": jwt."+n.Sel.Name)
-						}
-						return true
-					}
-					if methods[n.Sel.Name] {
-						receiver, _ := n.X.(*ast.SelectorExpr)
-						if receiver == nil || receiver.Sel.Name != "verifier" || (n.Sel.Name != "Verify" && n.Sel.Name != "Stop") {
-							faults = append(faults, name+": the shared method "+n.Sel.Name)
-						} else if n.Sel.Name == "Verify" && verified == token.NoPos {
-							verified = n.Pos()
-						}
-					}
-					if strings.HasPrefix(n.Sel.Name, "Parse") {
-						inner, _ := n.X.(*ast.CallExpr)
-						constructor, _ := func() (*ast.SelectorExpr, bool) {
-							if inner == nil {
-								return nil, false
-							}
-							s, ok := inner.Fun.(*ast.SelectorExpr)
-							return s, ok
-						}()
-						if n.Sel.Name != "ParseUnverified" || constructor == nil || constructor.Sel.Name != "NewParser" {
-							faults = append(faults, name+": the parse "+n.Sel.Name)
-						} else if verified == token.NoPos || verified > n.Pos() {
-							faults = append(faults, name+": ParseUnverified before the common verifier")
-						}
-					}
-				}
-				return true
-			})
+			if n, ok := named.(*gotypes.Named); ok {
+				return base + "." + n.Obj().Name() + "." + object.Name()
+			}
 		}
 	}
-	return faults
+	return base + "." + object.Name()
 }
 
-// ssoClientFaults gives each place where the SSO files import a package outside ssoImports, start a goroutine, or
-// use a client, a transport or a request function of net/http, under any import name.
-func ssoClientFaults(files map[string]*ast.File) []string {
+// ssoFaults judges every use in the SSO files by its object, as go/types resolves it, and gives the faults of a
+// verifier and the faults of a client or a task apart. It refuses an import outside
+// ssoImports or a dot or a blank import; a use of a function, a type, a variable or a constant of the shared runtime
+// or of the jwt package outside ssoAllowed; a composite literal or a new of a type of the shared runtime, which
+// builds a verifier by hand; a selection of a field of a struct of the shared runtime; a use of net/http Client,
+// Transport, RoundTripper, DefaultClient, DefaultTransport, Get, Head, Post, PostForm and NewRequest*;
+// context.AfterFunc and a go statement, which start a task; and a ParseUnverified that does not follow the check
+// of the error of Verify, in the same block.
+func ssoFaults(files map[string]*ast.File, info *gotypes.Info, pkg *gotypes.Package) (verifier, client []string) {
 	var faults []string
-	denied := map[string]bool{"Client": true, "Transport": true, "DefaultClient": true, "DefaultTransport": true, "RoundTripper": true,
+	httpDenied := map[string]bool{"Client": true, "Transport": true, "RoundTripper": true, "DefaultClient": true, "DefaultTransport": true,
 		"Get": true, "Head": true, "Post": true, "PostForm": true, "NewRequest": true, "NewRequestWithContext": true}
-	for name, file := range files {
-		imports := importNames(file)
-		for importPath := range imports {
-			if !ssoImports[importPath] {
-				faults = append(faults, name+": imports "+importPath)
+	own := func(object gotypes.Object) bool {
+		_, declared := object.(*gotypes.Var)
+		for _, file := range files {
+			if object.Pos() >= file.Pos() && object.Pos() <= file.End() {
+				return true
 			}
 		}
-		httpName := imports["net/http"]
+		return declared && object.Parent() != pkg.Scope() && object.Parent() != nil && object.Parent() != gotypes.Universe
+	}
+	for name, file := range files {
+		for _, spec := range file.Imports {
+			importPath, _ := strconv.Unquote(spec.Path.Value)
+			if !ssoImports[importPath] {
+				client = append(client, name+": imports "+importPath)
+			}
+			if spec.Name != nil && (spec.Name.Name == "." || spec.Name.Name == "_") {
+				client = append(client, name+": "+spec.Name.Name+" import of "+importPath)
+			}
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.GoStmt:
-				faults = append(faults, name+": starts a goroutine")
-			case *ast.SelectorExpr:
-				if x, ok := n.X.(*ast.Ident); ok && httpName != "" && x.Name == httpName && denied[n.Sel.Name] {
-					faults = append(faults, name+": net/http."+n.Sel.Name)
+				client = append(client, name+": starts a goroutine")
+			case *ast.CompositeLit:
+				if tv, ok := info.Types[n]; ok {
+					if named, ok := tv.Type.(*gotypes.Named); ok && named.Obj().Pkg() == pkg && !own(named.Obj()) && !ssoValues[named.Obj().Name()] {
+						faults = append(faults, name+": builds a "+named.Obj().Name()+" by hand")
+					}
 				}
+			case *ast.CallExpr:
+				if id, ok := n.Fun.(*ast.Ident); ok && id.Name == "new" && len(n.Args) == 1 {
+					if tv, ok := info.Types[n.Args[0]]; ok {
+						if named, ok := tv.Type.(*gotypes.Named); ok && named.Obj().Pkg() == pkg && !own(named.Obj()) {
+							faults = append(faults, name+": new of "+named.Obj().Name())
+						}
+					}
+				}
+			case *ast.StructType:
+				// A struct of the SSO files that embeds a type of the shared runtime takes its methods as its own.
+				for _, embedded := range n.Fields.List {
+					if len(embedded.Names) == 0 {
+						if tv, ok := info.Types[embedded.Type]; ok {
+							embeddedType := tv.Type
+							if p, ok := embeddedType.(*gotypes.Pointer); ok {
+								embeddedType = p.Elem()
+							}
+							if named, ok := embeddedType.(*gotypes.Named); ok && named.Obj().Pkg() != nil && !own(named.Obj()) {
+								faults = append(faults, name+": embeds "+objectName(named.Obj()))
+							}
+						}
+					}
+				}
+			case *ast.SelectorExpr:
+				// A method call through a promoted or an indirect selection is judged by the method it reaches.
+				if selection, ok := info.Selections[n]; ok && (selection.Kind() == gotypes.MethodVal || selection.Kind() == gotypes.MethodExpr) {
+					if method := selection.Obj(); method.Pkg() != nil && (method.Pkg() == pkg || method.Pkg().Path() == "github.com/golang-jwt/jwt/v5") && !own(method) && !ssoAllowed[objectName(method)] {
+						faults = append(faults, name+": "+objectName(method))
+					}
+				}
+				if selection, ok := info.Selections[n]; ok && selection.Kind() == gotypes.FieldVal {
+					if field := selection.Obj(); field.Pkg() == pkg && !own(field) {
+						if receiver := selection.Recv(); receiver != nil {
+							if p, ok := receiver.(*gotypes.Pointer); ok {
+								receiver = p.Elem()
+							}
+							if named, ok := receiver.(*gotypes.Named); !ok || (!own(named.Obj()) && !ssoValues[named.Obj().Name()]) {
+								faults = append(faults, name+": reads the field "+field.Name()+" of the shared runtime")
+							}
+						}
+					}
+				}
+			case *ast.Ident:
+				object := info.Uses[n]
+				if object == nil || object.Pkg() == nil {
+					return true
+				}
+				switch object.Pkg().Path() {
+				case "net/http":
+					if httpDenied[object.Name()] {
+						client = append(client, name+": net/http."+object.Name())
+					}
+				case "context":
+					if object.Name() == "AfterFunc" {
+						client = append(client, name+": context.AfterFunc")
+					}
+				case pkg.Path(), "github.com/golang-jwt/jwt/v5":
+					if _, field := object.(*gotypes.Var); field && object.(*gotypes.Var).IsField() {
+						return true
+					}
+					if !own(object) && !ssoAllowed[objectName(object)] {
+						faults = append(faults, name+": "+objectName(object))
+					}
+				}
+			case *ast.BlockStmt:
+				faults = append(faults, unverifiedParses(name, n, info)...)
+			}
+			return true
+		})
+	}
+	return faults, client
+}
+
+// unverifiedParses gives a fault for each call of ParseUnverified in the block that does not come after a statement
+// that checks the error of a call of Verify of the block and returns: if err != nil { return ... } after
+// x, err := h.verifier.Verify(...).
+func unverifiedParses(name string, block *ast.BlockStmt, info *gotypes.Info) []string {
+	var faults []string
+	verified := false
+	var verifyErr gotypes.Object
+	for _, statement := range block.List {
+		if assign, ok := statement.(*ast.AssignStmt); ok && len(assign.Rhs) == 1 {
+			if call, ok := assign.Rhs[0].(*ast.CallExpr); ok {
+				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Verify" && len(assign.Lhs) == 2 {
+					if id, ok := assign.Lhs[1].(*ast.Ident); ok {
+						verifyErr = info.Uses[id]
+						if verifyErr == nil {
+							verifyErr = info.Defs[id]
+						}
+					}
+				}
+			}
+		}
+		if check, ok := statement.(*ast.IfStmt); ok && verifyErr != nil && check.Init == nil {
+			if binary, ok := check.Cond.(*ast.BinaryExpr); ok && binary.Op == token.NEQ {
+				if id, ok := binary.X.(*ast.Ident); ok && info.Uses[id] == verifyErr {
+					if last := check.Body.List; len(last) > 0 {
+						// The check returns at its end: if err != nil { writeAuthError(...); return }.
+						if _, returns := last[len(last)-1].(*ast.ReturnStmt); returns {
+							verified = true
+						}
+					}
+				}
+			}
+		}
+		ast.Inspect(statement, func(node ast.Node) bool {
+			if _, nested := node.(*ast.BlockStmt); nested {
+				return false
+			}
+			if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "ParseUnverified" && !verified {
+				faults = append(faults, name+": ParseUnverified before the checked result of the common verifier")
 			}
 			return true
 		})
@@ -312,34 +458,24 @@ func ssoClientFaults(files map[string]*ast.File) []string {
 
 func TestSSOUsesTheSharedVerifier(t *testing.T) {
 	t.Run("ST-SUP-RC21-OC11-T01 The SSO code creates no second signature verifier", func(t *testing.T) {
-		_, all := ssoOwnFiles(t)
+		files, info, pkg := ssoPackage(t)
 		calls := 0
-		for name, text := range all {
-			file, err := goparser.ParseFile(token.NewFileSet(), name, text, 0)
-			if err != nil {
-				t.Fatal(err)
+		for _, object := range info.Uses {
+			if object.Name() == "NewJWKSVerifier" && object.Pkg() == pkg {
+				calls++
 			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				if call, ok := node.(*ast.CallExpr); ok {
-					if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "NewJWKSVerifier" {
-						calls++
-					}
-				}
-				return true
-			})
 		}
 		if calls != 1 {
 			t.Fatalf("the emitted code calls NewJWKSVerifier %d times, want once", calls)
 		}
-		files, shared, methods := ssoSyntax(t)
-		if faults := ssoVerifierFaults(files, shared, methods); len(faults) > 0 {
-			t.Fatalf("the SSO files verify a token apart from the common verifier: %v", faults)
+		if faults, client := ssoFaults(files, info, pkg); len(faults) > 0 || len(client) > 0 {
+			t.Fatalf("the SSO files verify a token apart from the common verifier: %v, or import a package that could: %v", faults, client)
 		}
 	})
 	t.Run("ST-SUP-RC21-OC11-T02 The SSO code creates no second HTTP client", func(t *testing.T) {
-		files, _, _ := ssoSyntax(t)
-		if faults := ssoClientFaults(files); len(faults) > 0 {
-			t.Fatalf("the SSO files make a client, a request or a task of their own: %v", faults)
+		files, info, pkg := ssoPackage(t)
+		if _, client := ssoFaults(files, info, pkg); len(client) > 0 {
+			t.Fatalf("the SSO files make a client, a request or a task of their own: %v", client)
 		}
 	})
 }
