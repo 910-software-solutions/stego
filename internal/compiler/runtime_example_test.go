@@ -67,6 +67,12 @@ func TestRuntimeExample(t *testing.T) {
 			t.Fatalf("the check of the example did not run and pass (go test: %v):\n%s", runErr, output)
 		}
 	})
+	t.Run(oneInstanceCheck, func(t *testing.T) {
+		name := strings.ReplaceAll(oneInstanceCheck, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestExample/"+name+" ") {
+			t.Fatalf("the instance check of the example did not run and pass (go test: %v):\n%s", runErr, output)
+		}
+	})
 	t.Run("ST-SUP-RC01-OC12-T08 A start on a database that does not satisfy the schema manifest alerts, and the migration job refuses it", func(t *testing.T) {
 		name := "ST-SUP-RC01-OC12-T08_A_start_on_a_database_that_does_not_satisfy_the_schema_manifest_alerts,_and_the_migration_job_refuses_it"
 		if !strings.Contains(string(output), "--- PASS: TestSchemaManifest/"+name+" ") {
@@ -86,6 +92,10 @@ func TestRuntimeExample(t *testing.T) {
 		}
 	})
 }
+
+// oneInstanceCheck is the check of TestExample that the lines of the HTTP layer and of the runtime of one process name
+// one instance (core49 follow-up), with the ID of the test record it proves.
+const oneInstanceCheck = "ST-SUP-RP03-LC16-T11 Each line of the HTTP layer and of the runtime of one process names one instance"
 
 // provisionRetireCheck is the check of TestProvisionRetire in the module of the example, with the ID of the test
 // record it proves.

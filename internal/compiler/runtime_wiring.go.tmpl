@@ -390,11 +390,17 @@ func Modes() ([]string, error) {
 	return names, nil
 }
 
+{{- if .Telemetry}}
+// Telemetry is the HTTP telemetry of the process, whose instance identity the runtime of the service takes.
+type Telemetry interface{ Instance() string }
+
+{{end -}}
 // NewService builds the runtime of the service through the service runtime, from the settings of the deployment and
 // the declaration (ST-SUP-RP14), and makes the command and query handlers, which Routes serves. It reads the settings
 // of the worker mode too when the process runs it, so a missing one stops the start at its stage
-// (ST-SUP-RP14-LC05).
-func NewService(ctx context.Context) (rt *Runtime, err error) {
+// (ST-SUP-RP14-LC05).{{if .Telemetry}} The runtime of the service takes the instance identity of telemetry, so each
+// line of the process names one instance (core49 follow-up).{{end}}
+func NewService({{if .Telemetry}}telemetry Telemetry, {{end}}ctx context.Context) (rt *Runtime, err error) {
 	// Each log/slog line of the process is a JSON line, as each line of the log provider (walkthrough 21, U-E).
 	service.UseJSONLog()
 	selection, err := selectModes()
@@ -434,7 +440,11 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	}
 {{- if .API}}
 	afterSlots := api.NewAfterSlots()
-	svc, err := service.New(ctx, settings, parts(afterSlots))
+	svcParts := parts(afterSlots)
+{{- if .Telemetry}}
+	svcParts.Instance = telemetry.Instance()
+{{- end}}
+	svc, err := service.New(ctx, settings, svcParts)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +454,11 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 		return nil, err
 	}
 {{- else}}
-	svc, err := service.New(ctx, settings, parts())
+	svcParts := parts()
+{{- if .Telemetry}}
+	svcParts.Instance = telemetry.Instance()
+{{- end}}
+	svc, err := service.New(ctx, settings, svcParts)
 	if err != nil {
 		return nil, err
 	}

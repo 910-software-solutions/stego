@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -81,7 +82,7 @@ type service struct {
 	spice *grpc.ClientConn
 	key   *authntest.Key
 	base  string
-	log   *bytes.Buffer
+	log   *lockedBuffer
 	// cursor is the cursor key of the service, and processEnv the environment of the service binary on a port.
 	cursor     []byte
 	processEnv func(port string) []string
@@ -130,7 +131,7 @@ func migrated(t *testing.T) *service {
 	t.Cleanup(func() { _, _ = root.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)") })
 	u := *server
 	u.Path = "/" + name
-	s := &service{t: t, ctx: context.Background(), log: &bytes.Buffer{}}
+	s := &service{t: t, ctx: context.Background(), log: &lockedBuffer{}}
 	s.admin, err = sql.Open("pgx", u.String())
 	must(t, err)
 	t.Cleanup(func() { s.admin.Close() })
@@ -459,6 +460,44 @@ func TestExample(t *testing.T) {
 		// Each write left its audit row in the tenant.
 		if n := s.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 't-acme' AND outcome = 'ok' AND action IN ('create', 'patch', 'upsert')`); n < 5 {
 			t.Errorf("%d ok audit rows of the tenant, want at least 5", n)
+		}
+	})
+	t.Run("ST-SUP-RP03-LC16-T11 Each line of the HTTP layer and of the runtime of one process names one instance", func(t *testing.T) {
+		s.t = t
+		// A request that the HTTP layer logs at WARN, as it logs each status of 400 to 499.
+		if r := s.send(s.as("u-owner", "t-acme", "member"), http.MethodGet, "/organizations/00000000-0000-7000-8000-000000000000", ""); r.status != http.StatusNotFound {
+			t.Fatalf("the read of an unknown organization answered %d %s, want 404", r.status, r.body)
+		}
+		instances := map[string][]string{}
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+			instances = map[string][]string{}
+			for _, line := range strings.Split(s.log.String(), "\n") {
+				var head struct {
+					Event    string `json:"event.name"`
+					Instance string `json:"service.instance.id"`
+				}
+				if json.Unmarshal([]byte(line), &head) != nil || head.Instance == "" {
+					continue
+				}
+				if !slices.Contains(instances[head.Instance], head.Event) {
+					instances[head.Instance] = append(instances[head.Instance], head.Event)
+				}
+			}
+			var events []string
+			for _, named := range instances {
+				events = append(events, named...)
+			}
+			// The access line of the HTTP layer, and the line service.listening that main writes through the log/slog
+			// handler of the runtime, which names the instance of the telemetry runtime of the service.
+			if slices.Contains(events, "http.server.request.completed") && slices.Contains(events, "service.listening") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the log holds no line of the HTTP layer and of the runtime with an instance after 30 s: %v\n%s", instances, s.log)
+			}
+		}
+		if len(instances) != 1 {
+			t.Fatalf("the lines of one process name %d instances, want one: %v", len(instances), instances)
 		}
 	})
 }
