@@ -551,11 +551,161 @@ func ssoFaults(files map[string]*ast.File, info *gotypes.Info, pkg *gotypes.Pack
 				}
 			case *ast.BlockStmt:
 				faults = append(faults, unverifiedParses(name, n, info, pkg)...)
+			case *ast.InterfaceType:
+				faults = append(faults, name+": an interface type")
+			case *ast.TypeSwitchStmt:
+				faults = append(faults, name+": a type switch")
+			case *ast.FuncDecl:
+				if n.Type.TypeParams != nil {
+					faults = append(faults, name+": the type parameters of "+n.Name.Name)
+				}
+			case *ast.FuncType:
+				if n.TypeParams != nil {
+					faults = append(faults, name+": a type parameter list")
+				}
 			}
 			return true
 		})
+		faults = append(faults, interfaceCalls(name, file, info)...)
+		faults = append(faults, verifierFlow(name, file, info, pkg)...)
 	}
 	return faults, client
+}
+
+// ssoInterfaceCalls are the only methods that the SSO files may call on a receiver of an interface type, by the
+// interface and the method: the ones the template uses, and Error of error. A call on another interface could reach a
+// method that the allow list of objects does not name, such as read or refresh of the key source.
+var ssoInterfaceCalls = map[string]bool{"context.Context.Value": true, "net/http.Handler.ServeHTTP": true, "error.Error": true}
+
+// interfaceCalls gives each method call of the file whose receiver has an interface type, unless ssoInterfaceCalls
+// names it.
+func interfaceCalls(name string, file *ast.File, info *gotypes.Info) []string {
+	var faults []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		selection, ok := info.Selections[selector]
+		if !ok || selection.Kind() != gotypes.MethodVal || !gotypes.IsInterface(selection.Recv()) {
+			return true
+		}
+		if key := gotypes.TypeString(gotypes.Unalias(selection.Recv()), nil) + "." + selector.Sel.Name; !ssoInterfaceCalls[key] {
+			faults = append(faults, name+": calls "+key+" on an interface")
+		}
+		return true
+	})
+	return faults
+}
+
+// verifierFlow holds the flow of the one verifier in the file: it enters only through NewJWKSVerifier, into a local
+// variable that only the composite literal of JWTHandler takes, under the key verifier; and the field
+// JWTHandler.verifier is used only as h.verifier.Verify(...) or h.verifier.Stop(), called on the spot. Any other use
+// of a value of a shared type other than the configuration and the identity is a fault: an assignment, an argument,
+// a result, a capture, a conversion, a comparison, a method value or a field of another type. This also refuses a
+// conversion of the verifier to any or to an interface.
+func verifierFlow(name string, file *ast.File, info *gotypes.Info, pkg *gotypes.Package) []string {
+	var faults []string
+	parent := map[ast.Node]ast.Node{}
+	var stack []ast.Node
+	ast.Inspect(file, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if len(stack) > 0 {
+			parent[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	// shared tells whether a type is a type of the shared runtime that the SSO files may not hold freely: not one
+	// that the SSO files declare, and not a value of ssoValues.
+	shared := func(typ gotypes.Type) bool {
+		named, ok := derefType(typ).(*gotypes.Named)
+		if !ok || named.Obj().Pkg() != pkg || ssoValues[named.Obj().Name()] {
+			return false
+		}
+		_, declared := ssoTypes[named.Obj().Name()]
+		return !declared
+	}
+	// inHandlerLiteral tells whether a node is the key or the value of the element verifier of a composite literal of
+	// JWTHandler.
+	inHandlerLiteral := func(node ast.Node, asKey bool) bool {
+		element, ok := parent[node].(*ast.KeyValueExpr)
+		if !ok {
+			return false
+		}
+		key, ok := element.Key.(*ast.Ident)
+		if !ok || key.Name != "verifier" || (asKey && element.Key != node) || (!asKey && element.Value != node) {
+			return false
+		}
+		literal, ok := parent[element].(*ast.CompositeLit)
+		if !ok {
+			return false
+		}
+		tv, ok := info.Types[literal]
+		if !ok {
+			return false
+		}
+		named, ok := derefType(tv.Type).(*gotypes.Named)
+		return ok && named.Obj().Name() == "JWTHandler"
+	}
+	// calledMethod tells whether a selector h.verifier is the receiver of a call of Verify or Stop on the spot.
+	calledMethod := func(field *ast.SelectorExpr) bool {
+		method, ok := parent[field].(*ast.SelectorExpr)
+		if !ok || method.X != field || (method.Sel.Name != "Verify" && method.Sel.Name != "Stop") {
+			return false
+		}
+		call, ok := parent[method].(*ast.CallExpr)
+		return ok && call.Fun == method
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.SelectorExpr:
+			selection, ok := info.Selections[n]
+			if !ok || selection.Kind() != gotypes.FieldVal || !shared(selection.Obj().Type()) {
+				return true
+			}
+			receiver, isIdent := n.X.(*ast.Ident)
+			if n.Sel.Name != "verifier" || !isIdent || receiver.Name != "h" || !calledMethod(n) {
+				faults = append(faults, name+": uses the verifier other than h.verifier.Verify or h.verifier.Stop called on the spot")
+			}
+			return false
+		case *ast.Ident:
+			object := info.Uses[n]
+			if object == nil {
+				object = info.Defs[n]
+			}
+			v, ok := object.(*gotypes.Var)
+			if !ok || !shared(v.Type()) || (v.Pkg() == pkg && v.Parent() == pkg.Scope() && ssoAllowed[objectName(v)]) {
+				return true
+			}
+			switch {
+			case v.IsField() && info.Defs[n] == v && n.Name == "verifier":
+				// The declaration of the field JWTHandler.verifier; the type rule holds it to *JWKSVerifier.
+			case v.IsField() && inHandlerLiteral(n, true):
+			case !v.IsField() && info.Defs[n] == v:
+				// The definition of the local verifier: its value must come from NewJWKSVerifier, in a := statement.
+				made := false
+				if assign, isAssign := parent[n].(*ast.AssignStmt); isAssign && len(assign.Rhs) == 1 {
+					if call, isCall := assign.Rhs[0].(*ast.CallExpr); isCall {
+						if callee, isIdent := call.Fun.(*ast.Ident); isIdent && callee.Name == "NewJWKSVerifier" && info.Uses[callee] != nil && info.Uses[callee].Pkg() == pkg {
+							made = true
+						}
+					}
+				}
+				if !made {
+					faults = append(faults, name+": holds a verifier that NewJWKSVerifier did not make")
+				}
+			case !v.IsField() && inHandlerLiteral(n, false):
+			default:
+				faults = append(faults, name+": uses the verifier "+n.Name+" other than in the handler it builds")
+			}
+		}
+		return true
+	})
+	return faults
 }
 
 // isVerify tells whether a call is the method Verify of auth.JWKSVerifier, as go/types resolves it, on the field
