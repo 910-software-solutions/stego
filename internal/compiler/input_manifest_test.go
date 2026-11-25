@@ -206,6 +206,7 @@ func TestInputManifestDigestVector(t *testing.T) {
 }
 
 func TestOversizedStateCannotBeSaved(t *testing.T) {
+	t.Parallel()
 	input := snapshotTestInput(t)
 	applyInitialSnapshot(t, input)
 	plan, err := Reconcile(input)
@@ -273,6 +274,7 @@ func TestInputManifestMustMatchAppliedState(t *testing.T) {
 }
 
 func TestInputManifestIsBoundedAndCanonical(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-GEN-INV23-T The input manifest is bounded, canonical and digested one way", func(t *testing.T) {
 		for name, change := range map[string]func(*InputManifest){
 			"1025 files": func(m *InputManifest) {

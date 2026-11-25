@@ -45,9 +45,13 @@ func TestRuntimeExample(t *testing.T) {
 	p.write("out/examplecheck/example_test.go", string(check))
 	p.useLocalRuntime()
 	p.goCommand("mod", "tidy")
-	p.goCommand("vet", "./out/...")
+	// The build of the service runs beside its vet: both only read the tidied module.
 	binary := filepath.Join(p.dir, "bin", "service")
-	p.goCommand("build", "-o", binary, "./out")
+	built := buildBeside(t, func() error { return p.goRun("build", "-o", binary, "./out") })
+	p.goCommand("vet", "./out/...")
+	if err := built(); err != nil {
+		t.Fatal(err)
+	}
 	endpoint, key := startWiringSpiceDB(t)
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout="+innerTimeout(t).String(), "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure|TestProvisionRetire)$", "./out/examplecheck")
 	cmd.Dir = p.dir
