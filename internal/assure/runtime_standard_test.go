@@ -393,3 +393,91 @@ func TestDeploymentLeavesTheConsoleSinkOff(t *testing.T) {
 		report(t, "ST-STD-OBS-R03", faults)
 	})
 }
+
+// A set of the tenant setting: set_config('app.tenant', value, local) or a SET of app.tenant, in SQL or in Go text.
+var (
+	tenantSetConfig = regexp.MustCompile(`set_config\('app\.tenant',\s*[^,]+,\s*(true|false)\)`)
+	tenantSet       = regexp.MustCompile(`(?i)\bSET\s+(SESSION\s+|LOCAL\s+)?app\.tenant\b`)
+)
+
+// A role that STEGO's code creates, with the attributes that the statement gives it: in SQL text, or in a format
+// string whose attributes are an argument (CREATE ROLE %s %s), whose value the file sets in a flags variable.
+var (
+	createRole  = regexp.MustCompile(`(?i)CREATE ROLE\s+\S+\s+([A-Z% ]*)`)
+	roleFlags   = regexp.MustCompile(`flags\s*:?=\s*"([A-Z ]+)"`)
+	formatFlags = "%S"
+)
+
+// storeCode gives the Go source files that hold the SQL that STEGO runs as a service's roles: the runtime library and
+// the generators.
+func storeCode(t *testing.T, tree Tree) []sourceFile {
+	t.Helper()
+	return append(goSources(t, tree, runtimeModule), goSources(t, tree, "internal/generator")...)
+}
+
+func TestTenantStandard(t *testing.T) {
+	_, tree := readHead(t)
+	files := storeCode(t, tree)
+
+	t.Run("ST-STD-TXN-R02-T01 The tenant setting is set only transaction-local, with set_config and true", func(t *testing.T) {
+		var faults []string
+		sets := 0
+		for _, source := range files {
+			for _, line := range strings.Split(string(source.data), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "//") {
+					continue
+				}
+				for _, match := range tenantSetConfig.FindAllStringSubmatch(line, -1) {
+					sets++
+					if match[1] != "true" {
+						faults = append(faults, fmt.Sprintf("%s sets app.tenant for the session: %s", source.name, strings.TrimSpace(line)))
+					}
+				}
+				if tenantSet.MatchString(line) {
+					faults = append(faults, fmt.Sprintf("%s sets app.tenant with SET: %s", source.name, strings.TrimSpace(line)))
+				}
+			}
+		}
+		if sets == 0 {
+			faults = append(faults, "no file sets app.tenant, so the test reads the wrong files")
+		}
+		report(t, "ST-STD-TXN-R02", faults)
+	})
+
+	t.Run("ST-STD-TXN-R03-T01 Each role that STEGO creates is NOBYPASSRLS and NOSUPERUSER", func(t *testing.T) {
+		var faults []string
+		roles := 0
+		for _, source := range files {
+			text := string(source.data)
+			var flags []string
+			for _, match := range roleFlags.FindAllStringSubmatch(text, -1) {
+				flags = append(flags, match[1])
+			}
+			for _, match := range createRole.FindAllStringSubmatch(text, -1) {
+				roles++
+				attributes := strings.Fields(strings.ToUpper(match[1]))
+				if slices.Contains(attributes, formatFlags) {
+					if len(flags) != 1 {
+						faults = append(faults, fmt.Sprintf("%s creates a role with attributes from an argument, and does not set them in one flags variable", source.name))
+						continue
+					}
+					attributes = append(attributes, strings.Fields(flags[0])...)
+				}
+				for _, want := range []string{"NOSUPERUSER", "NOBYPASSRLS"} {
+					if !slices.Contains(attributes, want) {
+						faults = append(faults, fmt.Sprintf("%s creates a role with no %s: %s", source.name, want, strings.TrimSpace(match[0])))
+					}
+				}
+			}
+			for _, line := range strings.Split(text, "\n") {
+				if regexp.MustCompile(`(?i)\b(ALTER ROLE\s+\S+\s+[A-Z ]*\b(SUPERUSER|BYPASSRLS)\b)`).MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+					faults = append(faults, fmt.Sprintf("%s gives a role SUPERUSER or BYPASSRLS: %s", source.name, strings.TrimSpace(line)))
+				}
+			}
+		}
+		if roles == 0 {
+			faults = append(faults, "no file creates a role, so the test reads the wrong files")
+		}
+		report(t, "ST-STD-TXN-R03", faults)
+	})
+}
