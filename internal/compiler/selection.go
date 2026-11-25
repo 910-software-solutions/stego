@@ -104,6 +104,53 @@ func validateSelectedComponents(svc *types.ServiceDeclaration, reg *registry.Reg
 	return faults
 }
 
+// validateAcceptedComponents enforces ST-SUP-UC04-R02 on the active component set: a component whose stage is not
+// ga reaches a service only when the declaration accepts it by name, with an acceptance that has not run out. The
+// components of an archetype and of a mixin are ga (ST-SUP-SP01), and validateSelectedComponents holds a component
+// that a setting selects, so this holds the rest: a component that a port override brings into the set. Each fault
+// names the component, its stage, the override that brings it and the acceptance to add.
+func validateAcceptedComponents(svc *types.ServiceDeclaration, active map[string]*registry.Component) []ValidationError {
+	today := acceptanceClock().UTC().Format(acceptanceDate)
+	selected := map[string]bool{}
+	for _, s := range selectComponents(svc) {
+		selected[s.Component] = true
+	}
+	var faults []ValidationError
+	for _, name := range sortedKeys(active) {
+		component := active[name]
+		if registry.FitForGoldenPath(component) || selected[name] {
+			continue
+		}
+		path := "overrides"
+		for _, port := range sortedKeys(svc.Overrides) {
+			if bound, ok := svc.Overrides[port].(string); ok && bound == name {
+				path = "overrides." + port
+				break
+			}
+		}
+		add := fmt.Sprintf("add an experimental acceptance: experimental_acceptances: [{component: %s, accepted_until: <a date no later than %s>, reason: <why the service accepts it>}]", name, component.Sunset)
+		var accepted *types.ExperimentalAcceptance
+		for i := range svc.ExperimentalAcceptances {
+			if svc.ExperimentalAcceptances[i].Component == name {
+				accepted = &svc.ExperimentalAcceptances[i]
+			}
+		}
+		switch {
+		case accepted == nil:
+			faults = append(faults, ValidationError{
+				Category: "component", Rule: "experimental-acceptance", Path: path, Found: name,
+				Message: fmt.Sprintf("the component %s is %s, and the declaration does not accept it by name; %s", name, component.Stage, add),
+			})
+		case !validDate(accepted.AcceptedUntil) || accepted.AcceptedUntil < today:
+			faults = append(faults, ValidationError{
+				Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
+				Message: fmt.Sprintf("the component %s is %s, and its experimental acceptance until %q has run out or is not a date; %s", name, component.Stage, accepted.AcceptedUntil, add),
+			})
+		}
+	}
+	return faults
+}
+
 func validDate(text string) bool {
 	_, err := time.Parse(acceptanceDate, text)
 	return err == nil
