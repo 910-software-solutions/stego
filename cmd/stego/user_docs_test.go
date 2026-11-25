@@ -172,6 +172,7 @@ func userDocs(t *testing.T) []string {
 }
 
 func TestUserDocDeclarations(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-STD-DOCS-R02-T02 Each whole service declaration in a user doc passes stego validate against the repository's registry", func(t *testing.T) {
 		registry, err := filepath.Abs(filepath.Join("..", "..", "registry"))
 		if err != nil {

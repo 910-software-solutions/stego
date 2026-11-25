@@ -45,6 +45,7 @@ func readArchitecture(t *testing.T, dir string) (compiler.ArchitectureModel, any
 }
 
 func TestArchitectureApply(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-GEN-UC08-R01-T01 Apply writes an architecture model with the five aspects of the service, and the record lists it", func(t *testing.T) {
 		registryDir := requirementsRegistry(t)
 		dir := requirementsProject(t)

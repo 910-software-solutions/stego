@@ -8,6 +8,7 @@ import (
 )
 
 func TestModeDeploymentsOfScaffolds(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-DLV-UC07-R07-T02 stego apply writes the Deployment of the api mode and that of the worker modes for a service of the runtime data path, and one Deployment for a browser-service", func(t *testing.T) {
 		// The rpc-service scaffold has an entity and a query, so it is on the runtime data path.
 		project, _ := initialized(t, "rpc-service")
