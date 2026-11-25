@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 func TestComponentWritesOnlyItsOwnNamespace(t *testing.T) {
@@ -66,6 +68,41 @@ func TestComponentWritesOnlyItsOwnNamespace(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(input.ProjectDir, "out")); !os.IsNotExist(err) {
 			t.Fatalf("a refused plan wrote the output folder: %v", err)
+		}
+	})
+}
+
+func TestOneSlotNameHasOneContract(t *testing.T) {
+	t.Run("ST-SUP-INV04-T A mixin that replaces a part of its archetype is refused, and a mixin that only adds is accepted", func(t *testing.T) {
+		// Two components of one active set that offer the slot check, each with its own contract: the slot files are
+		// refused, so the contract of a fill never depends on the order of a map (sec-500 M1).
+		root := t.TempDir()
+		files := map[string]string{"common/types.proto": "syntax = \"proto3\";\npackage common;\nmessage Result {\n  bool ok = 1;\n}\n"}
+		for _, name := range []string{"first", "second"} {
+			files["components/"+name+"/component.yaml"] = "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: " + name +
+				"\nversion: 1.0.0\nstage: ga\nslots:\n  - name: check\n    phase: before_store\n    operations: [create]\n    proto: " + name + ".Check\n"
+			files["components/"+name+"/slots/check.proto"] = "syntax = \"proto3\";\npackage " + name + ";\nimport \"stego/common/types.proto\";\nservice Check {\n  rpc Evaluate(Request) returns (common.Result);\n}\nmessage Request {\n  string id = 1;\n}\n"
+		}
+		for name, data := range files {
+			file := filepath.Join(root, name)
+			if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, file, data)
+		}
+		reg, err := registry.Load(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		declaration := &types.ServiceDeclaration{Slots: []types.SlotDeclaration{{Slot: "check", Gate: []string{"policy"}}}}
+		for range 10 {
+			_, err := generateSlotFiles("slots", map[string]*registry.Component{"first": reg.Component("first"), "second": reg.Component("second")}, declaration, reg)
+			if err == nil || !strings.Contains(err.Error(), `slot "check" is defined twice`) || !strings.Contains(err.Error(), "components/first") || !strings.Contains(err.Error(), "components/second") {
+				t.Fatalf("two contracts of the slot check were not refused by name: %v", err)
+			}
+		}
+		if _, err := generateSlotFiles("slots", map[string]*registry.Component{"first": reg.Component("first")}, declaration, reg); err != nil {
+			t.Fatalf("one contract of the slot check was refused: %v", err)
 		}
 	})
 }

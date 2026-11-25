@@ -9,8 +9,8 @@ import (
 // CheckExtension is the rule of ST-SUP-INV04: a mixin only adds components and slots to the archetype it extends,
 // and replaces no part of it. It refuses a mixin that states overrides other than none, that adds a slot whose name
 // a component of the archetype already offers, or that adds a component the archetype does not hold which provides
-// a port that a component of the archetype provides, or that the archetype binds. Each fault names the mixin, the
-// part it replaces and the archetype. A component that the archetype already holds adds nothing, so a mixin may
+// a port that a component of the archetype provides, or that the archetype binds, or a slot that the archetype or
+// another part of the mixin offers. Each fault names the mixin, the part it replaces and the archetype. A component that the archetype already holds adds nothing, so a mixin may
 // name it. The decoder already refuses a mixin that states a field a mixin does not have, such as bindings or
 // conventions.
 func (r *Registry) CheckExtension(archetype *Archetype, mixin *Mixin) error {
@@ -49,14 +49,31 @@ func (r *Registry) CheckExtension(archetype *Archetype, mixin *Mixin) error {
 			faults = append(faults, fmt.Sprintf("it adds the slot %s, which the component %s of the archetype offers", slot.Name, owner))
 		}
 	}
+	// A component that the mixin adds may offer no slot that the archetype offers, or that the mixin adds itself,
+	// or that another component it adds offers: one slot name has one contract (sec-500 M1).
+	added := map[string]string{}
+	for _, slot := range mixin.AddsSlots {
+		added[slot.Name] = "the mixin itself"
+	}
 	for _, name := range mixin.AddsComponents {
 		component := r.components[name]
 		if component == nil || slices.Contains(held, name) {
 			continue
 		}
 		for _, port := range component.Provides {
-			if owner, owned := portOwner[port.Name]; owned {
+			// An archetype may bind a port to a component that only a mixin adds, for a service that binds the
+			// mixin: the binding names the component, so the mixin replaces nothing (sec-500 I2).
+			if owner, owned := portOwner[port.Name]; owned && owner != name {
 				faults = append(faults, fmt.Sprintf("it adds the component %s, which provides the port %s that %s answers in the archetype", name, port.Name, owner))
+			}
+		}
+		for _, slot := range component.Slots {
+			if owner, offered := slotOwner[slot.Name]; offered {
+				faults = append(faults, fmt.Sprintf("it adds the component %s, which offers the slot %s that the component %s of the archetype offers", name, slot.Name, owner))
+			} else if other, twice := added[slot.Name]; twice {
+				faults = append(faults, fmt.Sprintf("it adds the component %s, which offers the slot %s that %s also adds", name, slot.Name, other))
+			} else {
+				added[slot.Name] = "the component " + name
 			}
 		}
 	}

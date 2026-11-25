@@ -221,6 +221,34 @@ func TestNamespaceIsAGoImportPath(t *testing.T) {
 				t.Fatalf("a generator ran for the namespace %q", written)
 			}
 		}
+		// A namespace that holds a path element the go command ignores or treats as special, or that overlaps a path
+		// that STEGO writes, is refused when the registry is loaded (sec-500 L1, L2).
+		for _, namespace := range []string{"internal/.hidden", "internal/_x", "internal/testdata", "vendor/x", "go.sum", "slots", "internal/stegoruntime",
+			"internal", "deploy", "Deploy/base", "architecture", ".github/workflows", ".tekton", "containerfile"} {
+			input, marker := namespaced(namespace, &stubGenerator{})
+			plan, err := Reconcile(input)
+			if plan != nil || err == nil || !strings.HasPrefix(err.Error(), "loading registry: ") || !strings.Contains(err.Error(), "stub-store") || !strings.Contains(err.Error(), `"`+namespace+`"`) {
+				t.Fatalf("the namespace %q was not refused at load by name: %v", namespace, err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("a generator ran for the namespace %q", namespace)
+			}
+		}
+		// A generator with no preflight that emits a Go library at the top of a namespace whose last element is no
+		// package name is refused before any file is written (sec-500 L2).
+		for _, namespace := range []string{"lib/type", "lib/my-lib", "lib/main"} {
+			input, _ := namespaced(namespace, &stubGenerator{files: []gen.File{{Path: namespace + "/store.go", Content: []byte("package store\n")}}})
+			plan, err := Reconcile(input)
+			if plan != nil || err == nil || !strings.Contains(err.Error(), "stub-store") || !strings.Contains(err.Error(), path.Base(namespace)) {
+				t.Fatalf("the Go library under %q was not refused by name: %v", namespace, err)
+			}
+		}
+		if _, err := Reconcile(func() ReconcilerInput {
+			input, _ := namespaced("lib/store", &stubGenerator{files: []gen.File{{Path: "lib/store/store.go", Content: []byte("package store\n")}}})
+			return input
+		}()); err != nil {
+			t.Fatalf("the Go library under lib/store was refused: %v", err)
+		}
 		// A library namespace whose last element is no package name is refused by the preflight of the library,
 		// before any generator runs. my-lib is a valid path element, and is not taken as my_lib or mylib.
 		for _, namespace := range []string{"lib/main", "lib/type", "lib/_", "lib/my-lib"} {

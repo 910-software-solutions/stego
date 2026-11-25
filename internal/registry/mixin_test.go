@@ -39,6 +39,10 @@ func inv04Files() map[string]string {
 		"components/store-b/component.yaml":          component("store-b", "internal/store-b", "store-port", "", "[]"),
 		"components/auth-a/component.yaml":           component("auth-a", "internal/auth", "auth-port", "", "[]"),
 		"components/extra-a/component.yaml":          component("extra-a", "internal/extra", "", "", "[]"),
+		"components/twin/component.yaml":             component("twin", "internal/twin", "", "", slot("before_create")),
+		"components/twin/slots/before_create.proto":  proto("Other"),
+		"components/twin-b/component.yaml":           component("twin-b", "internal/twin-b", "", "", slot("after_twin")),
+		"components/twin-b/slots/after_twin.proto":   proto("OtherTwin"),
 		"archetypes/svc-arch/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
 			"name: svc-arch\nlanguage: go\nversion: 1.0.0\ncomponents: [api-a, store-a, auth-a]\nconventions:\n  layout: flat\n" +
 			"compatible_mixins: [extra-mixin]\nbindings:\n  store-port: store-a\n  auth-port: auth-a\n",
@@ -72,6 +76,11 @@ func TestMixinAddsAndNeverReplaces(t *testing.T) {
 			{"again-slot", "adds_components: []\nadds_slots:\n  - name: before_create\n    phase: before_store\n    operations: [create]\n    proto: stego.slots.before_create\noverrides: none\n",
 				map[string]string{"slots/before_create.proto": "syntax = \"proto3\";\n\npackage stego.slots;\n\nservice BeforeCreate {}\n"}, "before_create"},
 			{"override-all", "adds_components: []\nadds_slots: []\noverrides: all\n", nil, "overrides"},
+			// twin offers before_create, which api-a of svc-arch offers: two contracts for one slot (sec-500 M1).
+			{"twin-mixin", "adds_components: [twin]\nadds_slots: []\noverrides: none\n", nil, "before_create"},
+			// twin offers before_create, and the mixin adds before_create as a slot of its own too.
+			{"self-twin", "adds_components: [twin-b]\nadds_slots:\n  - name: after_twin\n    phase: after_store\n    operations: [create]\n    proto: stego.slots.after_twin\noverrides: none\n",
+				map[string]string{"slots/after_twin.proto": "syntax = \"proto3\";\n\npackage stego.slots;\n\nservice AfterTwin {}\n"}, "after_twin"},
 			// A mixin has no field for a binding or a convention, so the decoder refuses each by its path.
 			{"bind-store", "adds_components: []\nadds_slots: []\nbindings:\n  store-port: extra-a\noverrides: none\n", nil, "bindings"},
 			{"change-layout", "adds_components: []\nadds_slots: []\nconventions:\n  layout: nested\noverrides: none\n", nil, "conventions"},
@@ -88,6 +97,14 @@ func TestMixinAddsAndNeverReplaces(t *testing.T) {
 			if tc.part != "bindings" && tc.part != "conventions" && !strings.Contains(err.Error(), "svc-arch") {
 				t.Fatalf("the refusal of %s does not name svc-arch: %v", tc.name, err)
 			}
+		}
+		// An archetype that binds a port to extra-a, which only extra-mixin adds, is accepted: the binding names the
+		// component that the mixin adds (sec-500 I2).
+		bound := inv04Files()
+		bound["components/extra-a/component.yaml"] = strings.Replace(strings.Replace(bound["components/extra-a/component.yaml"], "provides: []", "provides: [extra-port]", 1), "ports: {}", "ports:\n    extra-port: inbound", 1)
+		bound["archetypes/svc-arch/archetype.yaml"] = strings.Replace(bound["archetypes/svc-arch/archetype.yaml"], "  auth-port: auth-a\n", "  auth-port: auth-a\n  extra-port: extra-a\n", 1)
+		if _, err := LoadDirectories(writeRegistryFolder(t, bound)); err != nil {
+			t.Fatalf("an archetype that binds extra-port to extra-a, which extra-mixin adds, was refused: %v", err)
 		}
 		// A mixin that names a component the archetype already holds adds nothing, and replaces nothing.
 		if err := extend("same-store", "adds_components: [store-a]\nadds_slots: []\noverrides: none\n", nil); err != nil {
