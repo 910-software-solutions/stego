@@ -100,7 +100,7 @@ func run() (stegoErr error) {
 		return err
 	}
 	stegoStage = "component.stego-runtime.constructor[0]"
-	service, err := stegoruntime.NewService(ctx)
+	service, err := stegoruntime.NewService(tracingRuntime, ctx)
 	if err != nil {
 		if stage := stegoruntime.StartStage(err); stage != "" {
 			stegoStage = stage

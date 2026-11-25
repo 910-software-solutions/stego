@@ -181,6 +181,10 @@ func (e *safeExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 	return nil
 }
 
+// Instance is the random instance identity of the process that the telemetry reports. The runtime of the service
+// takes it, so each line of one process names one instance.
+func (r *Runtime) Instance() string { return r.instance }
+
 // ExportFailures counts failed batches without retaining remote error text.
 func (r *Runtime) ExportFailures() uint64 { return r.failures.Load() }
 func (r *Runtime) Close() {
