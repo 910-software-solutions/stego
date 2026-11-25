@@ -67,6 +67,12 @@ func TestRuntimeExample(t *testing.T) {
 			t.Fatalf("the check of the example did not run and pass (go test: %v):\n%s", runErr, output)
 		}
 	})
+	t.Run(nilTelemetryCheck, func(t *testing.T) {
+		name := strings.ReplaceAll(nilTelemetryCheck, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestExample/"+name+" ") {
+			t.Fatalf("the nil telemetry check of the example did not run and pass (go test: %v):\n%s", runErr, output)
+		}
+	})
 	t.Run(oneInstanceCheck, func(t *testing.T) {
 		name := strings.ReplaceAll(oneInstanceCheck, " ", "_")
 		if !strings.Contains(string(output), "--- PASS: TestExample/"+name+" ") {
@@ -92,6 +98,10 @@ func TestRuntimeExample(t *testing.T) {
 		}
 	})
 }
+
+// nilTelemetryCheck is the check of TestExample that the generated NewService refuses a nil telemetry runtime with an
+// error (security review of PR #497), with the ID of the test record it proves.
+const nilTelemetryCheck = "ST-SUP-RP03-LC16-T12 NewService refuses a nil telemetry runtime with an error and does not panic"
 
 // oneInstanceCheck is the check of TestExample that the lines of the HTTP layer and of the runtime of one process name
 // one instance (core49 follow-up), with the ID of the test record it proves.

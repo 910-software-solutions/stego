@@ -41,6 +41,7 @@ import (
 
 	"github.com/example/service/out/internal/stegoruntime"
 	"github.com/example/service/out/internal/tenancy"
+	"github.com/example/service/out/tracing"
 )
 
 const (
@@ -460,6 +461,21 @@ func TestExample(t *testing.T) {
 		// Each write left its audit row in the tenant.
 		if n := s.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 't-acme' AND outcome = 'ok' AND action IN ('create', 'patch', 'upsert')`); n < 5 {
 			t.Errorf("%d ok audit rows of the tenant, want at least 5", n)
+		}
+	})
+	t.Run("ST-SUP-RP03-LC16-T12 NewService refuses a nil telemetry runtime with an error and does not panic", func(t *testing.T) {
+		for name, telemetry := range map[string]stegoruntime.Telemetry{"nil": nil, "nil runtime": (*tracing.Runtime)(nil)} {
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						t.Fatalf("NewService with a %s telemetry panicked: %v", name, p)
+					}
+				}()
+				rt, err := stegoruntime.NewService(telemetry, context.Background())
+				if err == nil || rt != nil || !strings.Contains(err.Error(), "telemetry runtime") {
+					t.Fatalf("NewService with a %s telemetry gave %v, %v; want an error that names the telemetry runtime", name, rt, err)
+				}
+			}()
 		}
 	})
 	t.Run("ST-SUP-RP03-LC16-T11 Each line of the HTTP layer and of the runtime of one process names one instance", func(t *testing.T) {
