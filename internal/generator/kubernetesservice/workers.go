@@ -120,6 +120,10 @@ func workers(ctx gen.Context) ([]worker, error) {
 	return result, nil
 }
 
+// privateKeyPatterns are the file names that the build context never takes: the extensions of private keys and key
+// stores, PEM, PKCS#8, PKCS#12, DER, Java and PuTTY, and the default names of SSH private keys.
+var privateKeyPatterns = []string{"*.key", "*.pem", "*.p8", "*.p12", "*.pfx", "*.der", "*.jks", "*.keystore", "*.ppk", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+
 func imageFiles(ctx gen.Context, namespace, target, entrypoint string) []gen.File {
 	dirs, _ := sources(ctx)
 	var docker, ignore strings.Builder
@@ -129,7 +133,12 @@ func imageFiles(ctx gen.Context, namespace, target, entrypoint string) []gen.Fil
 		fmt.Fprintf(&docker, "COPY %s/ ./%s/\n", dir, dir)
 		fmt.Fprintf(&ignore, "!%s/\n!%s/**\n", dir, dir)
 	}
-	ignore.WriteString("**/.*/**\n**/.*\n**/*.key\n**/*.pem\n**/*.p12\n**/*.pfx\n")
+	// Hidden files, and the files that hold a private key by their extension or by the name an SSH key takes
+	// (ST-SUP-RC15-OC31; review of #503, M2).
+	ignore.WriteString("**/.*/**\n**/.*\n")
+	for _, pattern := range privateKeyPatterns {
+		ignore.WriteString("**/" + pattern + "\n")
+	}
 	fmt.Fprintf(&docker, "RUN go mod verify && go build -mod=readonly -trimpath -buildvcs=false -o /%s ./%s\nFROM scratch\nCOPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\nCOPY --from=build --chmod=0555 /%s /%s\nUSER 65532:65532\n", entrypoint, target, entrypoint, entrypoint)
 	if entrypoint == "service" {
 		docker.WriteString("EXPOSE 8443\n")
