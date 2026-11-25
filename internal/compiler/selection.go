@@ -68,40 +68,96 @@ var acceptanceClock = time.Now
 // acceptanceDate is the form of the date of an acceptance (ST-DECL-EN07).
 const acceptanceDate = "2006-01-02"
 
-// validateSelectedComponents enforces ST-GEN-INV37 on the components that the declared settings select and the
-// registry holds: one that is not ga needs an experimental acceptance (ST-DECL-EN07) that names it and has not run
-// out, which it holds to the end of its date in UTC. Each fault names the component, its stage, the setting that
-// selects it and the acceptance to add. A selected component that the registry does not hold is a refusal from
-// outside the declaration, at generation (selectedComponentMissing).
-func validateSelectedComponents(svc *types.ServiceDeclaration, reg *registry.Registry) []ValidationError {
+// acceptanceFault is the one rule of an experimental acceptance (ST-DECL-EN07): a component whose stage is not ga
+// reaches a service only when the declaration accepts it by name, with an acceptance whose date is a date, has not
+// run out, which it holds to the end of its date in UTC, and is not later than the sunset of the component
+// (ST-DECL-INV15). It gives nil for a ga component and for an acceptance that holds, and else the fault: at path when
+// the declaration does not accept the component, and at experimental_acceptances when its acceptance does not hold.
+// reached says how the component reaches the service, in the words of the message, such as "the tenancy setting
+// selects the component tenancy".
+func acceptanceFault(svc *types.ServiceDeclaration, name string, component *registry.Component, path, reached string) *ValidationError {
+	if component == nil || registry.FitForGoldenPath(component) {
+		return nil
+	}
 	today := acceptanceClock().UTC().Format(acceptanceDate)
+	add := fmt.Sprintf("add an experimental acceptance: experimental_acceptances: [{component: %s, accepted_until: <a date no later than %s>, reason: <why the service accepts it>}]", name, component.Sunset)
+	var accepted *types.ExperimentalAcceptance
+	for i := range svc.ExperimentalAcceptances {
+		if svc.ExperimentalAcceptances[i].Component == name {
+			accepted = &svc.ExperimentalAcceptances[i]
+		}
+	}
+	switch {
+	case accepted == nil:
+		return &ValidationError{Category: "component", Rule: "experimental-acceptance", Path: path, Found: name,
+			Message: fmt.Sprintf("%s, which is %s, and the declaration does not accept it by name; %s", reached, component.Stage, add)}
+	case !validDate(accepted.AcceptedUntil) || accepted.AcceptedUntil < today:
+		return &ValidationError{Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
+			Message: fmt.Sprintf("%s, which is %s, and its experimental acceptance until %q has run out or is not a date; %s", reached, component.Stage, accepted.AcceptedUntil, add)}
+	case validDate(component.Sunset) && accepted.AcceptedUntil > component.Sunset:
+		return &ValidationError{Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
+			Message: fmt.Sprintf("%s, which is %s, and its experimental acceptance until %s is later than its sunset %s (ST-DECL-INV15); %s", reached, component.Stage, accepted.AcceptedUntil, component.Sunset, add)}
+	}
+	return nil
+}
+
+// validateSelectedComponents enforces ST-GEN-INV37 on the components that the declared settings select and the
+// registry holds: one that is not ga needs an experimental acceptance that holds (acceptanceFault). Each fault names
+// the component, its stage, the setting that selects it and the acceptance to add. A selected component that the
+// registry does not hold is a refusal from outside the declaration, at generation (selectedComponentMissing).
+func validateSelectedComponents(svc *types.ServiceDeclaration, reg *registry.Registry) []ValidationError {
 	var faults []ValidationError
 	for _, s := range selectComponents(svc) {
-		component := reg.Component(s.Component)
-		if component == nil || registry.FitForGoldenPath(component) {
-			continue
-		}
-		add := fmt.Sprintf("add an experimental acceptance: experimental_acceptances: [{component: %s, accepted_until: <a date no later than %s>, reason: <why the service accepts it>}]", s.Component, component.Sunset)
-		var accepted *types.ExperimentalAcceptance
-		for i := range svc.ExperimentalAcceptances {
-			if svc.ExperimentalAcceptances[i].Component == s.Component {
-				accepted = &svc.ExperimentalAcceptances[i]
-			}
-		}
-		switch {
-		case accepted == nil:
-			faults = append(faults, ValidationError{
-				Category: "component", Rule: "experimental-acceptance", Path: s.Setting, Found: s.Component,
-				Message: fmt.Sprintf("the %s setting selects the component %s, which is %s; %s", s.Setting, s.Component, component.Stage, add),
-			})
-		case !validDate(accepted.AcceptedUntil) || accepted.AcceptedUntil < today:
-			faults = append(faults, ValidationError{
-				Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
-				Message: fmt.Sprintf("the %s setting selects the component %s, which is %s, and its experimental acceptance until %q has run out or is not a date; %s", s.Setting, s.Component, component.Stage, accepted.AcceptedUntil, add),
-			})
+		reached := fmt.Sprintf("the %s setting selects the component %s", s.Setting, s.Component)
+		if fault := acceptanceFault(svc, s.Component, reg.Component(s.Component), s.Setting, reached); fault != nil {
+			faults = append(faults, *fault)
 		}
 	}
 	return faults
+}
+
+// validateAcceptedComponents enforces ST-SUP-UC04-R02 on the active component set: a component whose stage is not
+// ga reaches a service only when the declaration accepts it by name, with an acceptance that holds
+// (acceptanceFault). The components of an archetype and of a mixin are ga (ST-SUP-SP01), and
+// validateSelectedComponents holds a component that a setting selects, so this holds the rest: a component that a
+// port override brings into the set. The registry refuses an archetype whose default_auth is not ga when it loads
+// (checkGoldenPaths). Each fault names the component, its stage, what brings it and the acceptance to add.
+func validateAcceptedComponents(svc *types.ServiceDeclaration, active map[string]*registry.Component) []ValidationError {
+	selected := map[string]bool{}
+	for _, s := range selectComponents(svc) {
+		selected[s.Component] = true
+	}
+	var faults []ValidationError
+	for _, name := range sortedKeys(active) {
+		if selected[name] {
+			continue
+		}
+		path, reached := "overrides", "the component "+name+" is in the active set"
+		for _, port := range sortedKeys(svc.Overrides) {
+			if bound, ok := svc.Overrides[port].(string); ok && bound == name {
+				path, reached = "overrides."+port, "the override of "+port+" brings the component "+name
+				break
+			}
+		}
+		if fault := acceptanceFault(svc, name, active[name], path, reached); fault != nil {
+			faults = append(faults, *fault)
+		}
+	}
+	return faults
+}
+
+// validatePipelineComponent holds the ci-pipeline component to the acceptance rule when the declaration names a CI
+// provider, because the run then reads the pipeline pins of the component, which is not part of the active set
+// (sec-501 L1).
+func validatePipelineComponent(svc *types.ServiceDeclaration, reg *registry.Registry) []ValidationError {
+	if svc.Delivery == nil || svc.Delivery.CI == "" {
+		return nil
+	}
+	reached := fmt.Sprintf("the delivery.ci setting %s reads the pipeline pins of the component %s", svc.Delivery.CI, registry.PipelineComponent)
+	if fault := acceptanceFault(svc, registry.PipelineComponent, reg.Component(registry.PipelineComponent), "delivery.ci", reached); fault != nil {
+		return []ValidationError{*fault}
+	}
+	return nil
 }
 
 func validDate(text string) bool {

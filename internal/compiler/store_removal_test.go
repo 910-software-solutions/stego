@@ -26,6 +26,7 @@ var storeMarks = map[string]*regexp.Regexp{
 
 // TestStoreRemoved is the proof of the removal of the GORM store path.
 func TestStoreRemoved(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-SUP-RC20-OC39-T01 Once the trigger holds, the tree holds no store path, data_path switch or GORM ledger protection", func(t *testing.T) {
 		root := filepath.Join("..", "..")
 		for _, folder := range []string{"internal", "cmd", "registry"} {
