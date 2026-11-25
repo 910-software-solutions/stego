@@ -3938,6 +3938,7 @@ func TestAssemble_TopologicalSortCircularDependency(t *testing.T) {
 }
 
 func TestAssemble_TopologicalSortDiamondDependency(t *testing.T) {
+	t.Parallel()
 	// Diamond dependency: A→B, A→C, B→D, C→D. D must be emitted first,
 	// then B and C (in some order), then A last.
 	input := AssemblerInput{

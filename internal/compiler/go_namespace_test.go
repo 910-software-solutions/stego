@@ -25,6 +25,7 @@ import (
 )
 
 func TestLibraryGeneratorsCheckGoPackageNames(t *testing.T) {
+	t.Parallel()
 	for name, generator := range map[string]gen.Generator{
 		"keycloak": new(keycloakprovider.Generator), "controller": new(controller.Generator), "grpc": new(grpcapplication.ProcessGenerator), "http": new(httpapplication.Generator), "jwt": new(jwtauth.Generator), "kafka": new(kafkaproducer.Generator), "kubernetes": new(kubernetesclient.Generator), "outbox": new(outbox.Generator), "storage": new(postgresadapter.Generator), "postgres client": new(postgresclient.Generator), "rest": new(restapi.Generator), "sso": new(rhssoauth.Generator),
 	} {
