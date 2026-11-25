@@ -99,8 +99,12 @@ func TestNamespaceContractsGateCompilation(t *testing.T) {
 					"stub-api": rejectedInputGenerator{t}, "stub-store": rejectedInputGenerator{t},
 				},
 			}
+			// A namespace that is no Go import path, or that overlaps a path STEGO writes, is refused when the registry is
+			// loaded (ST-SUP-INV13, sec-500 L1); one that
+			// overlaps another component's is refused by checking.
 			validation, err := Validate(input)
-			if err != nil || !validation.HasErrors() || !strings.Contains(FormatValidation(validation), "[namespace]") {
+			refusedAtLoad := err != nil && (strings.Contains(err.Error(), "is not a valid Go import path") || strings.Contains(err.Error(), "which STEGO writes"))
+			if !refusedAtLoad && (err != nil || !validation.HasErrors() || !strings.Contains(FormatValidation(validation), "[namespace]")) {
 				t.Fatalf("invalid namespace was accepted: result=%+v, err=%v", validation, err)
 			}
 			if _, err := Reconcile(input); err == nil {
