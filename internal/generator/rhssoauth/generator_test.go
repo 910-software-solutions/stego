@@ -568,6 +568,7 @@ func ssoFaults(files map[string]*ast.File, info *gotypes.Info, pkg *gotypes.Pack
 		})
 		faults = append(faults, interfaceCalls(name, file, info)...)
 		faults = append(faults, verifierFlow(name, file, info, pkg)...)
+		faults = append(faults, declarationFaults(name, file, info, pkg, tracing)...)
 	}
 	return faults, client
 }
@@ -667,8 +668,10 @@ func verifierFlow(name string, file *ast.File, info *gotypes.Info, pkg *gotypes.
 			if !ok || selection.Kind() != gotypes.FieldVal || !shared(selection.Obj().Type()) {
 				return true
 			}
+			// The receiver is the receiver object of the method that holds the use, as go/types resolves it, never
+			// another variable that has the name h.
 			receiver, isIdent := n.X.(*ast.Ident)
-			if n.Sel.Name != "verifier" || !isIdent || receiver.Name != "h" || !calledMethod(n) {
+			if n.Sel.Name != "verifier" || !isIdent || !isReceiver(info.Uses[receiver], pkg) || !calledMethod(n) {
 				faults = append(faults, name+": uses the verifier other than h.verifier.Verify or h.verifier.Stop called on the spot")
 			}
 			return false
@@ -708,6 +711,102 @@ func verifierFlow(name string, file *ast.File, info *gotypes.Info, pkg *gotypes.
 	return faults
 }
 
+// ssoFunctions are the only functions and methods that the SSO files may declare, by file and name, as the template
+// gives them: the three constructors of the handler (NewJWTHandlerWithTelemetry only in the variant with the
+// otel-tracing peer), its methods Build and Stop, and the helpers of context.go. A method is named by its receiver
+// type. Another declaration could hold a second verifier, such as a handler made per request.
+func ssoFunctions(tracing bool) map[string]bool {
+	functions := map[string]bool{"sso.go NewJWTHandler": true, "sso.go NewJWTHandlerWithContext": true, "sso.go JWTHandler.Build": true, "sso.go JWTHandler.Stop": true,
+		"context.go GetAuthPayload": true, "context.go GetAuthPayloadFromContext": true, "context.go GetUsernameFromContext": true,
+		"context.go SetUsernameContext": true, "context.go TokenFromContext": true, "context.go claimString": true, "context.go extractPayload": true}
+	if tracing {
+		functions["sso.go NewJWTHandlerWithTelemetry"] = true
+	}
+	return functions
+}
+
+// declarationFaults holds the SSO files to ssoFunctions, and holds each call of a constructor of the handler: the
+// one call of NewJWTHandlerWithContext is the return expression of NewJWTHandler and of NewJWTHandlerWithTelemetry,
+// and no other call of a NewJWTHandler function is in the SSO files. So the files make one verifier, at start, and
+// never a second one at run time, per request, on a reload or in a loop.
+func declarationFaults(name string, file *ast.File, info *gotypes.Info, pkg *gotypes.Package, tracing bool) []string {
+	var faults []string
+	allowed := ssoFunctions(tracing)
+	base := path.Base(name)
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		key := base + " " + function.Name.Name
+		if function.Recv != nil && len(function.Recv.List) == 1 {
+			if named, ok := derefType(info.Types[function.Recv.List[0].Type].Type).(*gotypes.Named); ok {
+				key = base + " " + named.Obj().Name() + "." + function.Name.Name
+			}
+		}
+		if !allowed[key] {
+			faults = append(faults, name+": declares "+key)
+		}
+		// A return statement of NewJWTHandler or NewJWTHandlerWithTelemetry may be one call of
+		// NewJWTHandlerWithContext; every other call of a constructor is a fault.
+		wrapper := function.Recv == nil && (function.Name.Name == "NewJWTHandler" || function.Name.Name == "NewJWTHandlerWithTelemetry")
+		returned := map[*ast.CallExpr]bool{}
+		if wrapper {
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				if ret, ok := node.(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+					if call, ok := ret.Results[0].(*ast.CallExpr); ok {
+						returned[call] = true
+					}
+				}
+				return true
+			})
+		}
+		ast.Inspect(function, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			callee, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			object, ok := info.Uses[callee].(*gotypes.Func)
+			if !ok || object.Pkg() != pkg || !strings.HasPrefix(object.Name(), "NewJWTHandler") {
+				return true
+			}
+			if !(returned[call] && object.Name() == "NewJWTHandlerWithContext") {
+				faults = append(faults, name+": calls "+object.Name()+" in "+function.Name.Name)
+			}
+			return true
+		})
+	}
+	// A constructor named as a value, not called, could be called elsewhere.
+	ast.Inspect(file, func(node ast.Node) bool {
+		if id, ok := node.(*ast.Ident); ok {
+			if object, ok := info.Uses[id].(*gotypes.Func); ok && object.Pkg() == pkg && strings.HasPrefix(object.Name(), "NewJWTHandler") {
+				if call, isCall := parentCall(file, id); !isCall || call.Fun != ast.Expr(id) {
+					faults = append(faults, name+": uses "+object.Name()+" as a value")
+				}
+			}
+		}
+		return true
+	})
+	return faults
+}
+
+// parentCall gives the call whose function is the identifier, when there is one.
+func parentCall(file *ast.File, id *ast.Ident) (*ast.CallExpr, bool) {
+	var found *ast.CallExpr
+	ast.Inspect(file, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok && call.Fun == ast.Expr(id) {
+			found = call
+			return false
+		}
+		return found == nil
+	})
+	return found, found != nil
+}
+
 // isVerify tells whether a call is the method Verify of auth.JWKSVerifier, as go/types resolves it, on the field
 // verifier of the receiver h of the SSO handler: h.verifier.Verify(...).
 func isVerify(call *ast.CallExpr, info *gotypes.Info, pkg *gotypes.Package) bool {
@@ -724,7 +823,28 @@ func isVerify(call *ast.CallExpr, info *gotypes.Info, pkg *gotypes.Package) bool
 		return false
 	}
 	receiver, ok := field.X.(*ast.Ident)
-	return ok && receiver.Name == "h"
+	return ok && isReceiver(info.Uses[receiver], pkg)
+}
+
+// isReceiver tells whether the object is the receiver of a method of a type that the package declares, as go/types
+// resolves it. A receiver is in scope only in the body of its own method, so a use of it is the receiver of the
+// method that holds the use, never another variable that has the same name.
+func isReceiver(object gotypes.Object, pkg *gotypes.Package) bool {
+	if object == nil {
+		return false
+	}
+	for _, name := range pkg.Scope().Names() {
+		named, ok := pkg.Scope().Lookup(name).Type().(*gotypes.Named)
+		if !ok {
+			continue
+		}
+		for i := 0; i < named.NumMethods(); i++ {
+			if named.Method(i).Type().(*gotypes.Signature).Recv() == object {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // unverifiedParses gives a fault for each call of ParseUnverified in the block that does not come after a statement
