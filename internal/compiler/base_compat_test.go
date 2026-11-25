@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/registry"
@@ -941,6 +942,81 @@ func TestBaseUniqueOfField(t *testing.T) {
 			"{id: user-display-name-relax, kind: relax, entity: User, field: display_name, definition: max_length 100}"))
 		if faults := uniqueRuntimeFaults(applied("v0.108.0"), base, relaxed); len(faults) != 0 {
 			t.Errorf("a relax: refused as a unique step: %+v", faults)
+		}
+	})
+}
+
+func TestBaseRelateFaults(t *testing.T) {
+	t.Parallel()
+	t.Run("ST-GEN-INV33-T A relation that the head writes for each row of a base entity and the base does not write needs a relate step", func(t *testing.T) {
+		t.Parallel()
+		declared := userManagementBase(t)
+		schema, err := os.ReadFile(filepath.Join("..", "..", "examples", "user-management", "authz", "schema.zed"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The head gives organization the relation tenant of the subject type tenant, which the runtime writes for
+		// each row (walkthrough 24, P2-R2).
+		tenantSchema := strings.Replace(string(schema), "definition organization {\n\trelation owner: user\n", "definition tenant {\n\trelation auditor: user\n}\n\ndefinition organization {\n\trelation owner: user\n\trelation tenant: tenant\n", 1)
+		if tenantSchema == string(schema) {
+			t.Fatal("the schema of the example has no definition organization to edit")
+		}
+		compile := func(source string) *declaration.AuthzSchema {
+			t.Helper()
+			compiled, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return compiled
+		}
+		related := withChanges(string(declared), "  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n", "  - {change: organization-tenant-relate, phase: expand}\n")
+		base := BaseSource{Ref: "main", Commit: "c0ffee", Declaration: declared, Record: recordFor(declared), Schema: schema}
+		cases := []struct {
+			name, head string
+			schema     *declaration.AuthzSchema
+			fault      bool
+		}{
+			{"the same schema", string(declared), compile(string(schema)), false},
+			{"a new relation tenant with no relate step", string(declared), compile(tenantSchema), true},
+			{"a new relation tenant with its relate step", related, compile(tenantSchema), false},
+			{"a head that binds no schema", string(declared), nil, false},
+		}
+		for _, c := range cases {
+			head := parseHead(t, c.head)
+			check, err := CheckBase(base, head)
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			faults, err := RelateFaults(check, base, head, c.schema)
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if !c.fault {
+				if len(faults) != 0 {
+					t.Errorf("%s: want no fault, got %+v", c.name, faults)
+				}
+				continue
+			}
+			if len(faults) != 1 || faults[0].Rule != BaseCompatRule || faults[0].Entity != "Organization" || !strings.Contains(faults[0].Message, "organization#tenant") ||
+				len(faults[0].Declare) != 1 || faults[0].Declare[0].Kind != "relate" || faults[0].Declare[0].ID != "organization-tenant-relate" || faults[0].Declare[0].Needs != "relation: tenant" {
+				t.Errorf("%s: want one fault that names Organization, organization#tenant and the relate step, got %+v", c.name, faults)
+			}
+		}
+		// The base that has the relation already gives no fault, and a base whose commit does not hold its schema
+		// fails, so the check never takes a base with no schema as one that writes no relation.
+		withTenant := base
+		withTenant.Schema = []byte(tenantSchema)
+		check, err := CheckBase(withTenant, parseHead(t, string(declared)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if faults, err := RelateFaults(check, withTenant, parseHead(t, string(declared)), compile(tenantSchema)); err != nil || len(faults) != 0 {
+			t.Errorf("a base that writes the relation tenant: want no fault, got %+v, %v", faults, err)
+		}
+		missing := base
+		missing.Schema = nil
+		if _, err := RelateFaults(check, missing, parseHead(t, string(declared)), compile(tenantSchema)); err == nil || !strings.Contains(err.Error(), "does not hold") {
+			t.Errorf("a base whose commit does not hold its schema: want an error, got %v", err)
 		}
 	})
 }
