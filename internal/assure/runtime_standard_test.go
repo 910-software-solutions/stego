@@ -481,3 +481,59 @@ func TestTenantStandard(t *testing.T) {
 		report(t, "ST-STD-TXN-R03", faults)
 	})
 }
+
+// auditMigration is the file of the audit runtime that creates the audit table, its triggers and its grants.
+const auditMigration = runtimeModule + "/audit/jobs.go"
+
+func TestAuditAndMoneyStandard(t *testing.T) {
+	_, tree := readHead(t)
+
+	t.Run("ST-STD-TXN-R06-T01 The runtime role gets only SELECT and INSERT on the audit table, and triggers reject UPDATE, DELETE and TRUNCATE", func(t *testing.T) {
+		data, held := tree.File(auditMigration)
+		if !held {
+			t.Fatalf("the tree holds no %s", auditMigration)
+		}
+		text := string(data)
+		var faults []string
+		grants := regexp.MustCompile(`(?m)^GRANT ([A-Z, ]+) ON \{s\}\.\{events\}(, [^ ]+)* TO \{role\};`).FindAllStringSubmatch(text, -1)
+		if len(grants) != 1 || strings.Join(strings.Fields(strings.ReplaceAll(grants[0][1], ",", " ")), " ") != "SELECT INSERT" {
+			faults = append(faults, fmt.Sprintf("%s grants the runtime role %v on the audit table, want SELECT, INSERT only", auditMigration, grants))
+		}
+		if regexp.MustCompile(`GRANT[^;]*\b(UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\{events\}`).MatchString(text) {
+			faults = append(faults, auditMigration+" grants UPDATE, DELETE, TRUNCATE or ALL on the audit table")
+		}
+		for _, trigger := range []string{
+			`BEFORE UPDATE OR DELETE ON {s}.{events}`,
+			`BEFORE UPDATE OR DELETE OR TRUNCATE ON {s}.{events}`,
+			`CREATE TRIGGER %I BEFORE UPDATE OR DELETE OR TRUNCATE ON %I.%I FOR EACH STATEMENT EXECUTE FUNCTION %I.audit_reject_change()`,
+		} {
+			if !strings.Contains(text, trigger) {
+				faults = append(faults, fmt.Sprintf("%s has no trigger %q", auditMigration, trigger))
+			}
+		}
+		if !strings.Contains(text, `RAISE EXCEPTION 'the audit table rejects %', TG_OP`) {
+			faults = append(faults, auditMigration+" has no function that rejects the change")
+		}
+		report(t, "ST-STD-TXN-R06", faults)
+	})
+
+	t.Run("ST-STD-TXN-R12-T01 No code of the money and ledger runtime holds an amount as a float", func(t *testing.T) {
+		var faults []string
+		for _, folder := range []string{runtimeModule + "/money", runtimeModule + "/ledger"} {
+			for _, source := range goSources(t, tree, folder) {
+				ast.Inspect(source.file, func(node ast.Node) bool {
+					if ident, ok := node.(*ast.Ident); ok && (ident.Name == "float32" || ident.Name == "float64") {
+						faults = append(faults, fmt.Sprintf("%s uses %s", source.name, ident.Name))
+					}
+					return true
+				})
+				for _, imported := range importsOf(source.file) {
+					if imported == "math/big" || imported == "strconv" && strings.Contains(string(source.data), "ParseFloat") {
+						faults = append(faults, fmt.Sprintf("%s reads an amount as a float or a big number", source.name))
+					}
+				}
+			}
+		}
+		report(t, "ST-STD-TXN-R12", faults)
+	})
+}
