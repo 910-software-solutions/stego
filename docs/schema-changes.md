@@ -866,7 +866,25 @@ definition organization {
 ```
 
 The field holds the subject ID of the user, as the authorization provider
-holds it for the caller. The runtime sets the subject of a field at the
+holds it for the caller: the base64url of the issuer (the `iss` claim byte
+for byte), a `|`, and the base64url of the `sub` claim, both with no `=`
+padding. The create permission is decided on the tenant-qualified ID of the
+service-level resource: the base64url of the tenant ID, a `/`, and the
+base64url of the service name. A grant on `service:<service name>` gives
+nothing, and each create of the user gets 404. For the service
+`organizations`, the tenant `acme`, the user `dora` of the issuer
+`https://idp.example.test` as the creator, and the user `erin` as the
+approver:
+
+```bash
+b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+iss=$(b64 https://idp.example.test)
+zed relationship create "service:$(b64 acme)/$(b64 organizations)" organization_creator "user:$iss|$(b64 dora)"
+# The value of the field approver in the body of the create or in a stored row:
+printf '%s\n' "$iss|$(b64 erin)"
+```
+
+The runtime sets the subject of a field at the
 create only: an update or a patch that changes the field gets 400 with the
 name of the field. A pod of the release before can still change the field
 during the rollout, and it changes no tuple. The relate job removes the
