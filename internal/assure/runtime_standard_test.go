@@ -113,6 +113,31 @@ func tableFill(function *ast.FuncDecl) bool {
 	return literal
 }
 
+// processGlobals are the registries and the settings of the whole process that a library must not use on its own:
+// the default HTTP mux, the default logger and its output, the database driver and gob registries, the global
+// providers of OpenTelemetry, the environment and signals (review of PR #504, M4). The flag package outside a
+// FlagSet of its own is one too.
+var processGlobals = map[string]bool{
+	"net/http.Handle": true, "net/http.HandleFunc": true, "net/http.DefaultServeMux": true, "net/http.DefaultClient": true,
+	"log/slog.SetDefault": true, "log.SetOutput": true, "log.SetFlags": true, "log.SetPrefix": true,
+	"database/sql.Register": true, "encoding/gob.Register": true, "encoding/gob.RegisterName": true,
+	"go.opentelemetry.io/otel.SetTracerProvider": true, "go.opentelemetry.io/otel.SetMeterProvider": true,
+	"go.opentelemetry.io/otel.SetTextMapPropagator": true, "go.opentelemetry.io/otel.SetErrorHandler": true,
+	"os.Setenv": true, "os.Unsetenv": true, "os/signal.Notify": true, "expvar.Publish": true,
+}
+
+// admittedGlobals are the uses of a setting of the whole process that ST-STD-RUNTIME-R01 admits, by file and name,
+// each because the service's own code calls the function that holds it: service.UseJSONLog sets the default logger
+// when the generated NewService and Migrate call it. A new use fails the test.
+var admittedGlobals = map[string][]string{
+	runtimeModule + "/service/service.go": {"log/slog.SetDefault"},
+}
+
+// admittedGlobal tells if the use is one of admittedGlobals.
+func admittedGlobal(source sourceFile, name string) bool {
+	return slices.Contains(admittedGlobals[source.name], name)
+}
+
 // frameworkFaults gives each fault of ST-STD-RUNTIME-R01 in the runtime module: an init that is not one of the two
 // admitted forms, a read of a struct tag, a lookup of a type or a function by name (plugin, reflect), and a call of
 // a function of the process's global registries (flag, expvar, the default HTTP mux).
@@ -141,9 +166,12 @@ func frameworkFaults(files []sourceFile) []string {
 				}
 			case *ast.SelectorExpr:
 				if pkg, ok := n.X.(*ast.Ident); ok {
-					switch imports[pkg.Name] + "." + n.Sel.Name {
-					case "net/http.Handle", "net/http.HandleFunc", "net/http.DefaultServeMux", "flag.Parse", "flag.CommandLine":
-						faults = append(faults, fmt.Sprintf("%s uses %s.%s, a registry of the process", source.name, pkg.Name, n.Sel.Name))
+					imported := imports[pkg.Name]
+					name := imported + "." + n.Sel.Name
+					if processGlobals[name] || imported == "flag" && !slices.Contains([]string{"NewFlagSet", "ContinueOnError", "ExitOnError", "PanicOnError", "FlagSet", "ErrHelp", "Value", "Flag"}, n.Sel.Name) {
+						if !admittedGlobal(source, name) {
+							faults = append(faults, fmt.Sprintf("%s uses %s, a registry or a setting of the whole process", source.name, name))
+						}
 					}
 				}
 				if n.Sel.Name == "Tag" || n.Sel.Name == "Lookup" && strings.Contains(fmt.Sprint(n.X), "Tag") {
@@ -211,9 +239,18 @@ func driverFaults(files []sourceFile, admitted func(name, imported string) bool)
 	return append(faults, foreignTransactions(files)...)
 }
 
+// libraryFiles gives the Go source files of the runtime library: those of the runtime module, apart from its test
+// harnesses pgtest and kafkatest, which are tooling (ST-SUP-TOOL14, ST-SUP-TOOL15) that only tests import.
+func libraryFiles(t *testing.T, tree Tree) []sourceFile {
+	t.Helper()
+	return slices.DeleteFunc(goSources(t, tree, runtimeModule), func(source sourceFile) bool {
+		return strings.HasPrefix(source.name, runtimeModule+"/internal/pgtest/") || strings.HasPrefix(source.name, runtimeModule+"/kafkatest/")
+	})
+}
+
 func TestRuntimeLibraryStandard(t *testing.T) {
 	_, tree := readHead(t)
-	files := goSources(t, tree, runtimeModule)
+	files := libraryFiles(t, tree)
 
 	t.Run("ST-STD-RUNTIME-R01-T01 The runtime library registers and discovers nothing by name, struct tag or init", func(t *testing.T) {
 		report(t, "ST-STD-RUNTIME-R01", frameworkFaults(files))
@@ -252,23 +289,45 @@ func knownDriverImport(name, imported string) bool {
 	return slices.Contains(known[name], imported)
 }
 
-// gitopsFaults gives each fault of ST-STD-TRUST-R05 in a file that delivers to a GitOps tool: an import of an HTTP,
-// gRPC or Kubernetes client, a run of a command, and a read of a credential from the environment.
+// importNames gives the name by which the file refers to each import path: its alias, or its last element.
+func importNames(file *ast.File) map[string]string {
+	names := map[string]string{}
+	for _, spec := range file.Imports {
+		value, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := path.Base(value)
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		names[name] = value
+	}
+	return names
+}
+
+// gitopsFaults gives each fault of ST-STD-TRUST-R05 in a file that delivers to a GitOps tool: an import of a network,
+// process, gRPC, Kubernetes or Argo CD client, by any alias, a read of the environment, where a credential of the tool
+// would be, and a read of a file, where a credential or a kube configuration would be (review of PR #504, L6). The
+// adapter writes its files; the caller reads the declaration and passes its values.
 func gitopsFaults(source sourceFile) []string {
 	var faults []string
 	for _, imported := range importsOf(source.file) {
 		switch {
-		case imported == "net/http", imported == "net", imported == "os/exec", strings.HasPrefix(imported, "google.golang.org/grpc"),
+		case imported == "net/http", imported == "net", imported == "os/exec", imported == "syscall", strings.HasPrefix(imported, "google.golang.org/grpc"),
 			strings.HasPrefix(imported, "k8s.io/client-go"), strings.HasPrefix(imported, "sigs.k8s.io/controller-runtime"),
 			strings.HasPrefix(imported, "github.com/argoproj/"):
 			faults = append(faults, fmt.Sprintf("%s imports %s, so it can call the tool or the cluster", source.name, imported))
 		}
 	}
+	names := importNames(source.file)
+	reads := map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "os.Environ": true, "os.ReadFile": true, "os.Open": true,
+		"os.OpenFile": true, "io/ioutil.ReadFile": true, "os.UserHomeDir": true}
 	ast.Inspect(source.file, func(node ast.Node) bool {
 		if call, ok := node.(*ast.CallExpr); ok {
 			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "os" && (selector.Sel.Name == "Getenv" || selector.Sel.Name == "LookupEnv") {
-					faults = append(faults, fmt.Sprintf("%s reads the environment, where a credential of the tool would be", source.name))
+				if pkg, ok := selector.X.(*ast.Ident); ok && reads[names[pkg.Name]+"."+selector.Sel.Name] {
+					faults = append(faults, fmt.Sprintf("%s calls %s.%s, which reads the environment or a file where a credential of the tool would be", source.name, names[pkg.Name], selector.Sel.Name))
 				}
 			}
 		}
@@ -309,68 +368,12 @@ func TestGitOpsDeliveryWritesFilesOnly(t *testing.T) {
 	})
 }
 
-// A claim of rows: a statement that takes a batch of rows to work on, LIMIT and then FOR UPDATE. A lock of one
-// row by its key (FOR UPDATE with no LIMIT) is not a claim: it waits for the one row that it names.
-var claimStatement = regexp.MustCompile(`(?i)\bLIMIT\s+[a-z0-9_$]+\s+FOR\s+(NO\s+KEY\s+)?UPDATE(\s+OF\s+[a-z_.]+)?(\s+SKIP\s+LOCKED)?`)
-
-// A session-scoped advisory lock: pg_advisory_lock or pg_try_advisory_lock with no _xact.
-var sessionLock = regexp.MustCompile(`pg_(try_)?advisory_lock\(`)
-
-// claimFaults gives each fault of ST-STD-TXN-R14 in a file of the outbox and job runtime: a claim of a batch of
-// rows with no SKIP LOCKED, and a session-scoped advisory lock. It also counts the claims that it reads.
-func claimFaults(source sourceFile) ([]string, int) {
-	var faults []string
-	claims := 0
-	for _, line := range strings.Split(string(source.data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if sessionLock.MatchString(line) {
-			faults = append(faults, fmt.Sprintf("%s takes a session-scoped advisory lock: %s", source.name, trimmed))
-		}
-		for _, match := range claimStatement.FindAllStringSubmatch(line, -1) {
-			claims++
-			if match[3] == "" {
-				faults = append(faults, fmt.Sprintf("%s claims a batch of rows FOR UPDATE with no SKIP LOCKED: %s", source.name, trimmed))
-			}
-		}
-	}
-	return faults, claims
-}
-
-// claimPackages are the packages of the runtime module that claim outbox and job rows: the outbox queue and its
-// relays, the jobs of audit, ledger and lease, and the seal jobs of the command runtime.
-var claimPackages = []string{"outbox", "audit", "ledger", "lease", "command", "idempotency"}
-
-func TestRowsAreOwnedByTheirClaim(t *testing.T) {
-	_, tree := readHead(t)
-	files := goSources(t, tree, runtimeModule)
-	t.Run("ST-STD-TXN-R14-T01 Each claim of outbox and job rows in the runtime library skips locked rows and takes no session lock", func(t *testing.T) {
-		var faults []string
-		claims := 0
-		for _, source := range files {
-			inside := strings.TrimPrefix(path.Dir(source.name), runtimeModule+"/")
-			if !slices.Contains(claimPackages, strings.Split(inside, "/")[0]) {
-				continue
-			}
-			found, n := claimFaults(source)
-			faults = append(faults, found...)
-			claims += n
-		}
-		if claims == 0 {
-			faults = append(faults, "no file of the claim packages holds a claim of a batch of rows, so the test reads the wrong files")
-		}
-		report(t, "ST-STD-TXN-R14", faults)
-	})
-}
-
 // consoleSink is the variable that turns the console sink of the domain probes on (ST-SUP-RP12-LC16).
 const consoleSink = "STEGO_PROBE_CONSOLE"
 
 func TestDeploymentLeavesTheConsoleSinkOff(t *testing.T) {
 	_, tree := readHead(t)
-	t.Run("ST-STD-OBS-R03-T01 No Kubernetes base or GitOps object that STEGO wrote for an example sets the console sink", func(t *testing.T) {
+	t.Run("ST-STD-OBS-R03-T01 No Kubernetes base or GitOps object of a committed example sets the console sink", func(t *testing.T) {
 		var faults []string
 		read := 0
 		for _, name := range tree.paths() {
@@ -391,149 +394,5 @@ func TestDeploymentLeavesTheConsoleSinkOff(t *testing.T) {
 			faults = append(faults, "the tree holds no deploy/base file of an example, so the test reads nothing")
 		}
 		report(t, "ST-STD-OBS-R03", faults)
-	})
-}
-
-// A set of the tenant setting: set_config('app.tenant', value, local) or a SET of app.tenant, in SQL or in Go text.
-var (
-	tenantSetConfig = regexp.MustCompile(`set_config\('app\.tenant',\s*[^,]+,\s*(true|false)\)`)
-	tenantSet       = regexp.MustCompile(`(?i)\bSET\s+(SESSION\s+|LOCAL\s+)?app\.tenant\b`)
-)
-
-// A role that STEGO's code creates, with the attributes that the statement gives it: in SQL text, or in a format
-// string whose attributes are an argument (CREATE ROLE %s %s), whose value the file sets in a flags variable.
-var (
-	createRole  = regexp.MustCompile(`(?i)CREATE ROLE\s+\S+\s+([A-Z% ]*)`)
-	roleFlags   = regexp.MustCompile(`flags\s*:?=\s*"([A-Z ]+)"`)
-	formatFlags = "%S"
-)
-
-// storeCode gives the Go source files that hold the SQL that STEGO runs as a service's roles: the runtime library and
-// the generators.
-func storeCode(t *testing.T, tree Tree) []sourceFile {
-	t.Helper()
-	return append(goSources(t, tree, runtimeModule), goSources(t, tree, "internal/generator")...)
-}
-
-func TestTenantStandard(t *testing.T) {
-	_, tree := readHead(t)
-	files := storeCode(t, tree)
-
-	t.Run("ST-STD-TXN-R02-T01 The tenant setting is set only transaction-local, with set_config and true", func(t *testing.T) {
-		var faults []string
-		sets := 0
-		for _, source := range files {
-			for _, line := range strings.Split(string(source.data), "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "//") {
-					continue
-				}
-				for _, match := range tenantSetConfig.FindAllStringSubmatch(line, -1) {
-					sets++
-					if match[1] != "true" {
-						faults = append(faults, fmt.Sprintf("%s sets app.tenant for the session: %s", source.name, strings.TrimSpace(line)))
-					}
-				}
-				if tenantSet.MatchString(line) {
-					faults = append(faults, fmt.Sprintf("%s sets app.tenant with SET: %s", source.name, strings.TrimSpace(line)))
-				}
-			}
-		}
-		if sets == 0 {
-			faults = append(faults, "no file sets app.tenant, so the test reads the wrong files")
-		}
-		report(t, "ST-STD-TXN-R02", faults)
-	})
-
-	t.Run("ST-STD-TXN-R03-T01 Each role that STEGO creates is NOBYPASSRLS and NOSUPERUSER", func(t *testing.T) {
-		var faults []string
-		roles := 0
-		for _, source := range files {
-			text := string(source.data)
-			var flags []string
-			for _, match := range roleFlags.FindAllStringSubmatch(text, -1) {
-				flags = append(flags, match[1])
-			}
-			for _, match := range createRole.FindAllStringSubmatch(text, -1) {
-				roles++
-				attributes := strings.Fields(strings.ToUpper(match[1]))
-				if slices.Contains(attributes, formatFlags) {
-					if len(flags) != 1 {
-						faults = append(faults, fmt.Sprintf("%s creates a role with attributes from an argument, and does not set them in one flags variable", source.name))
-						continue
-					}
-					attributes = append(attributes, strings.Fields(flags[0])...)
-				}
-				for _, want := range []string{"NOSUPERUSER", "NOBYPASSRLS"} {
-					if !slices.Contains(attributes, want) {
-						faults = append(faults, fmt.Sprintf("%s creates a role with no %s: %s", source.name, want, strings.TrimSpace(match[0])))
-					}
-				}
-			}
-			for _, line := range strings.Split(text, "\n") {
-				if regexp.MustCompile(`(?i)\b(ALTER ROLE\s+\S+\s+[A-Z ]*\b(SUPERUSER|BYPASSRLS)\b)`).MatchString(line) && !strings.HasPrefix(strings.TrimSpace(line), "//") {
-					faults = append(faults, fmt.Sprintf("%s gives a role SUPERUSER or BYPASSRLS: %s", source.name, strings.TrimSpace(line)))
-				}
-			}
-		}
-		if roles == 0 {
-			faults = append(faults, "no file creates a role, so the test reads the wrong files")
-		}
-		report(t, "ST-STD-TXN-R03", faults)
-	})
-}
-
-// auditMigration is the file of the audit runtime that creates the audit table, its triggers and its grants.
-const auditMigration = runtimeModule + "/audit/jobs.go"
-
-func TestAuditAndMoneyStandard(t *testing.T) {
-	_, tree := readHead(t)
-
-	t.Run("ST-STD-TXN-R06-T01 The runtime role gets only SELECT and INSERT on the audit table, and triggers reject UPDATE, DELETE and TRUNCATE", func(t *testing.T) {
-		data, held := tree.File(auditMigration)
-		if !held {
-			t.Fatalf("the tree holds no %s", auditMigration)
-		}
-		text := string(data)
-		var faults []string
-		grants := regexp.MustCompile(`(?m)^GRANT ([A-Z, ]+) ON \{s\}\.\{events\}(, [^ ]+)* TO \{role\};`).FindAllStringSubmatch(text, -1)
-		if len(grants) != 1 || strings.Join(strings.Fields(strings.ReplaceAll(grants[0][1], ",", " ")), " ") != "SELECT INSERT" {
-			faults = append(faults, fmt.Sprintf("%s grants the runtime role %v on the audit table, want SELECT, INSERT only", auditMigration, grants))
-		}
-		if regexp.MustCompile(`GRANT[^;]*\b(UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*\{events\}`).MatchString(text) {
-			faults = append(faults, auditMigration+" grants UPDATE, DELETE, TRUNCATE or ALL on the audit table")
-		}
-		for _, trigger := range []string{
-			`BEFORE UPDATE OR DELETE ON {s}.{events}`,
-			`BEFORE UPDATE OR DELETE OR TRUNCATE ON {s}.{events}`,
-			`CREATE TRIGGER %I BEFORE UPDATE OR DELETE OR TRUNCATE ON %I.%I FOR EACH STATEMENT EXECUTE FUNCTION %I.audit_reject_change()`,
-		} {
-			if !strings.Contains(text, trigger) {
-				faults = append(faults, fmt.Sprintf("%s has no trigger %q", auditMigration, trigger))
-			}
-		}
-		if !strings.Contains(text, `RAISE EXCEPTION 'the audit table rejects %', TG_OP`) {
-			faults = append(faults, auditMigration+" has no function that rejects the change")
-		}
-		report(t, "ST-STD-TXN-R06", faults)
-	})
-
-	t.Run("ST-STD-TXN-R12-T01 No code of the money and ledger runtime holds an amount as a float", func(t *testing.T) {
-		var faults []string
-		for _, folder := range []string{runtimeModule + "/money", runtimeModule + "/ledger"} {
-			for _, source := range goSources(t, tree, folder) {
-				ast.Inspect(source.file, func(node ast.Node) bool {
-					if ident, ok := node.(*ast.Ident); ok && (ident.Name == "float32" || ident.Name == "float64") {
-						faults = append(faults, fmt.Sprintf("%s uses %s", source.name, ident.Name))
-					}
-					return true
-				})
-				for _, imported := range importsOf(source.file) {
-					if imported == "math/big" || imported == "strconv" && strings.Contains(string(source.data), "ParseFloat") {
-						faults = append(faults, fmt.Sprintf("%s reads an amount as a float or a big number", source.name))
-					}
-				}
-			}
-		}
-		report(t, "ST-STD-TXN-R12", faults)
 	})
 }

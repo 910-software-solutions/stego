@@ -12,7 +12,6 @@
 {"source_id":"ST-ASR-SP13-PR","target_id":"ST-STD-DOCS-R03"}
 {"source_id":"ST-ASR-SP14-PR","target_id":"ST-STD-DOCS-R01"}
 {"source_id":"ST-ASR-TOOL01","target_id":"ST-STD-LOCAL-R02"}
-{"source_id":"ST-ASR-TOOL02","target_id":"ST-STD-LOCAL-R01"}
 {"source_id":"ST-ASR-TOOL02","target_id":"ST-STD-TRUST-R06"}
 {"source_id":"ST-ASR-TOOL05","target_id":"ST-STD-DOCS-R01"}
 {"source_id":"ST-BLD-CMD06-H","target_id":"ST-STD-TRUST-R03"}
@@ -70,8 +69,10 @@
 {"source_id":"ST-SUP-TOOL11","target_id":"ST-STD-RUNTIME-R04"}
 {"source_id":"ST-SUP-TOOL13","target_id":"ST-STD-RUNTIME-R03"}
 {"source_id":"ST-SUP-TOOL13","target_id":"ST-STD-RUNTIME-R04"}
+{"source_id":"ST-SUP-TOOL14","target_id":"ST-STD-LOCAL-R01"}
 {"source_id":"ST-SUP-TOOL14","target_id":"ST-STD-LOCAL-R04"}
 {"source_id":"ST-SUP-TOOL14","target_id":"ST-STD-LOCAL-R05"}
+{"source_id":"ST-SUP-TOOL15","target_id":"ST-STD-LOCAL-R01"}
 {"source_id":"ST-SUP-TOOL15","target_id":"ST-STD-LOCAL-R04"}
 {"source_id":"ST-SUP-TOOL15","target_id":"ST-STD-LOCAL-R05"}
 {"source_id":"ST-VO61-VT","target_id":"ST-STD-TXN-R12"}

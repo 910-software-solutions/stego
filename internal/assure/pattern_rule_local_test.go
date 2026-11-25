@@ -119,14 +119,23 @@ func report(t *testing.T, rule string, faults []string) {
 	}
 }
 
-// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and neither is a line
-// that compiles a regular expression, where a check such as this one writes the text that it looks for. A test
-// that hides a fault in a regular expression is not seen; that is a known limit of a scan of text.
+// localTestsFile is the file of these checks.
+const localTestsFile = "internal/assure/pattern_rule_local_test.go"
+
+// ownCheck tells if the file is one of Assuring's own files of checks, which write the text that they look for in
+// regular expressions (review of PR #504, L3).
+func ownCheck(name string) bool {
+	return strings.HasPrefix(name, "internal/assure/") && strings.HasSuffix(name, "_test.go")
+}
+
+// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
+// files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
+// for.
 func codeLines(name string, data []byte) []string {
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || strings.Contains(line, "regexp.MustCompile(") || strings.Contains(line, "re.compile(") {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && strings.Contains(line, "regexp.MustCompile(") {
 			continue
 		}
 		lines = append(lines, line)
@@ -529,10 +538,10 @@ var hostWrite = regexp.MustCompile(`(os\.(WriteFile|Create|Mkdir|MkdirAll|OpenFi
 // second proof".
 var sharedCluster = regexp.MustCompile(`(?i)[^.]*\b(jshell|shared cluster|OpenShift cluster)\b[^.]*`)
 
-// needsCluster tells if the test record says that it needs a shared cluster. A test of a pattern rule or a standard
-// rule of local development reads records that name a cluster; it needs none itself.
+// needsCluster tells if the test record says that it needs a shared cluster. A unit test of this file reads records
+// that name a cluster; it needs none itself (review of PR #504, L2).
 func (test localTest) needsCluster() bool {
-	if strings.HasPrefix(test.id, "ST-PAT-LOCAL-TEST-") || strings.HasPrefix(test.id, "ST-STD-LOCAL-") {
+	if test.file == localTestsFile && test.fields["level"] == "unit" {
 		return false
 	}
 	for _, sentence := range sharedCluster.FindAllString(test.text(), -1) {
