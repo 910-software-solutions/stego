@@ -67,7 +67,7 @@ the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
 | `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
 | `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
 | `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
