@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +60,38 @@ func stegoBinary(t *testing.T) string {
 			t.Fatalf("building stego: %v\n%s", err, output)
 		}
 	}), "stego")
+}
+
+// postgresTLS is held by each test while its check runs, when the check turns TLS on in the PostgreSQL server of
+// STEGO_TEST_POSTGRES_DSN with a certificate of its own and resets it at its end: the checks of TestRuntimeWiring,
+// TestRuntimeGRPC, TestRelationshipOutbox and TestRevocationWiring. So only one of these checks runs at a time, and
+// the builds before them run in parallel.
+var postgresTLS sync.Mutex
+
+// runTLSCheck runs the inner go test cmd of a check that turns TLS on in the PostgreSQL server, while it holds
+// postgresTLS, and gives its output and its error.
+func runTLSCheck(cmd *exec.Cmd) ([]byte, error) {
+	postgresTLS.Lock()
+	defer postgresTLS.Unlock()
+	return cmd.CombinedOutput()
+}
+
+// buildBeside runs build in a goroutine and gives a function that waits for build and gives its error. The test waits
+// for build when it ends too, also after a failure before the wait, so no build writes in a folder of the test after
+// the test removed it. build must call no method of the test that stops it.
+func buildBeside(t *testing.T, build func() error) func() error {
+	t.Helper()
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		err = build()
+	}()
+	t.Cleanup(func() { <-done })
+	return func() error {
+		<-done
+		return err
+	}
 }
 
 // wiringProject is one project folder of the test service with a registry copy of its own.
@@ -255,26 +289,63 @@ func (p *wiringProject) git(args ...string) {
 // goCommand runs the pinned go command in the project.
 func (p *wiringProject) goCommand(args ...string) {
 	p.t.Helper()
+	if err := p.goRun(args...); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// goRun runs the pinned go command in the project and gives its error with its output.
+func (p *wiringProject) goRun(args ...string) error {
 	cmd := exec.Command(wiringPinnedGo(), args...)
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("GOFLAGS=-mod=mod")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		p.t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, output)
+		return fmt.Errorf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
+	return nil
 }
 
 // useLocalRuntime makes the module of the project take the runtime library from this repository's registry/runtime
 // folder, as the work file of scripts/runtime-workspace.sh does for a local build.
 func (p *wiringProject) useLocalRuntime() {
 	p.t.Helper()
-	runtimeDir, err := filepath.Abs(filepath.Join("..", "..", "registry", "runtime"))
-	if err != nil {
+	if err := p.addLocalRuntime(); err != nil {
 		p.t.Fatal(err)
 	}
-	replace := "replace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir
-	if mod := p.read("go.mod"); !strings.Contains(mod, replace) {
-		p.write("go.mod", mod+"\n"+replace+"\n")
+}
+
+// addLocalRuntime is useLocalRuntime, and gives its error.
+func (p *wiringProject) addLocalRuntime() error {
+	runtimeDir, err := filepath.Abs(filepath.Join("..", "..", "registry", "runtime"))
+	if err != nil {
+		return err
 	}
+	replace := "replace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir
+	name := filepath.Join(p.dir, "go.mod")
+	mod, err := os.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(mod), replace) {
+		return nil
+	}
+	return os.WriteFile(name, []byte(string(mod)+"\n"+replace+"\n"), 0o644)
+}
+
+// release applies the project, takes the runtime library from this repository (useLocalRuntime), tidies the module
+// and builds the service into binary, and gives the first error. It calls no method of the test that stops it, so it
+// can run in a goroutine of its own (buildBeside). The fills of the project are qualified before (qualifyFills).
+func (p *wiringProject) release(binary string) error {
+	if output, err := p.stegoExec(nil, "apply"); err != nil {
+		return fmt.Errorf("stego apply: %v\n%s", err, output)
+	}
+	if err := p.addLocalRuntime(); err != nil {
+		return err
+	}
+	if err := p.goRun("mod", "tidy"); err != nil {
+		return err
+	}
+	return p.goRun("build", "-o", binary, "./out")
 }
 
 // afterSlotBinding binds the fill order-created of testdata/runtime_wiring/after at orders.after_create.
@@ -351,6 +422,7 @@ func TestRuntimeDataPath(t *testing.T) {
 	t.Parallel()
 	stego := stegoBinary(t)
 	t.Run("ST-SUP-RC01-OC41-T05 A service with data access is generated on the runtime data path only, and is refused without the command and query components", func(t *testing.T) {
+		t.Parallel()
 		fresh := newWiringProject(t, stego, runtimeArchetype)
 		generated := planned(fresh.stego("plan"), "generate")
 		for _, want := range []string{RuntimeWiringNamespace + "/runtime.go", "internal/storage/tables.go", "commands/handlers/handlers.go", "queries/serve/serve.go"} {
@@ -395,6 +467,7 @@ func TestRuntimeDataPath(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC11-OC31-T01 A service on the runtime data path gets no jwt-auth middleware and its verifier takes the declared settings", func(t *testing.T) {
+		t.Parallel()
 		runtime := newWiringProject(t, stego, runtimeArchetype)
 		runtime.stego("apply")
 		if _, err := os.Stat(filepath.Join(runtime.dir, "out", "internal", "auth")); !os.IsNotExist(err) {
@@ -416,6 +489,7 @@ func TestRuntimeDataPath(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC20-OC54-T04 The members token and pin of verify-order, which the fixture proto marks debug_redact, are secrets in the generated service", func(t *testing.T) {
+		t.Parallel()
 		shop := newWiringProject(t, stego, runtimeArchetype)
 		shop.stego("apply")
 		var document struct {
@@ -449,6 +523,7 @@ func TestRuntimeDataPath(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC01-OC41-T06 An example on the runtime data path keeps its generated output", func(t *testing.T) {
+		t.Parallel()
 		for _, example := range []string{"user-management", "user-management-rhsso"} {
 			p := &wiringProject{t: t, dir: t.TempDir()}
 			if err := os.CopyFS(p.dir, os.DirFS(filepath.Join("..", "..", "examples", example))); err != nil {
@@ -583,6 +658,15 @@ func TestRuntimeWiring(t *testing.T) {
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
 	stego := stegoBinary(t)
+	// The next release adds the entity Tag with no schema step, and declares its three modes out of order, which the
+	// check of ST-GEN-INV26 starts it with. Its apply and build run beside the apply and build of the first release:
+	// no step needs its binary before the check.
+	next := newWiringProject(t, stego, runtimeArchetype)
+	declaration := next.read("service.yaml")
+	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [controller, api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
+	next.qualifyFills()
+	nextBinary := filepath.Join(next.dir, "bin", "service")
+	nextBuilt := buildBeside(t, func() error { return next.release(nextBinary) })
 	p := newWiringProject(t, stego, runtimeArchetype)
 	p.applyWithAfterSlot()
 	// The check is the files of testdata/runtime_wiring/check: the wiring checks and the checks of the secret fields.
@@ -595,9 +679,13 @@ func TestRuntimeWiring(t *testing.T) {
 	}
 	p.useLocalRuntime()
 	p.goCommand("mod", "tidy")
-	p.goCommand("vet", "./out/...")
+	// The build of the service runs beside its vet: both only read the tidied module.
 	binary := filepath.Join(p.dir, "bin", "service")
-	p.goCommand("build", "-o", binary, "./out")
+	built := buildBeside(t, func() error { return p.goRun("build", "-o", binary, "./out") })
+	p.goCommand("vet", "./out/...")
+	if err := built(); err != nil {
+		t.Fatal(err)
+	}
 	t.Run("ST-SUP-RC18-OC31-T03 The generated service links no test support of the runtime library", func(t *testing.T) {
 		cmd := exec.Command(wiringPinnedGo(), "list", "-deps", "./out")
 		cmd.Dir = p.dir
@@ -646,22 +734,16 @@ func TestRuntimeWiring(t *testing.T) {
 			t.Fatalf("stego validate of the modes [api] gave %v, want the faults of worker and controller:\n%s", err, output)
 		}
 	})
-	// The next release adds the entity Tag with no schema step, and declares its three modes out of order, which the
-	// check of ST-GEN-INV26 starts it with.
-	next := newWiringProject(t, stego, runtimeArchetype)
-	declaration := next.read("service.yaml")
-	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [controller, api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
-	next.stego("apply")
-	next.useLocalRuntime()
-	next.goCommand("mod", "tidy")
-	nextBinary := filepath.Join(next.dir, "bin", "service")
-	next.goCommand("build", "-o", nextBinary, "./out")
+	// The next release is built beside the steps above; the check needs its binary.
+	if err := nextBuilt(); err != nil {
+		t.Fatalf("the next release: %v", err)
+	}
 	endpoint, key := startWiringSpiceDB(t)
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^TestWiring$", "./out/wiringcheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
 		"STEGO_WIRING_NEXT_BINARY="+nextBinary)
-	output, runErr := cmd.CombinedOutput()
+	output, runErr := runTLSCheck(cmd)
 	passed := func(t *testing.T, id string) {
 		t.Helper()
 		name := strings.ReplaceAll(id, " ", "_")

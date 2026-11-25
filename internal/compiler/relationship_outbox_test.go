@@ -65,7 +65,9 @@ func TestRelationshipOutbox(t *testing.T) {
 		t.Skip("builds and runs a generated service")
 	}
 	// The check turns TLS on at the server and off again, as the checks of TestRuntimeWiring and TestRuntimeGRPC do,
-	// so it does not run in parallel with them: a test that is not parallel ends before the parallel tests start.
+	// so it does not run at the same time as them: the test runs in parallel, and its check holds postgresTLS
+	// (runTLSCheck).
+	t.Parallel()
 	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
@@ -92,7 +94,7 @@ func TestRelationshipOutbox(t *testing.T) {
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRelationshipOutbox$", "./out/relationshipcheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_RELATIONSHIP_BINARY=" + binary)
-	output, runErr := cmd.CombinedOutput()
+	output, runErr := runTLSCheck(cmd)
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {
 		name := strings.TrimPrefix(t.Name(), "TestRelationshipOutbox/")

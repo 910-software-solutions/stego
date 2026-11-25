@@ -16,6 +16,7 @@ import (
 )
 
 func TestDependencyFailuresPreserveProjectFiles(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-BLD-INV01-T A failed or interrupted resolution leaves go.mod and go.sum as they were, or recoverable to the resolved pair", func(t *testing.T) {
 		for _, failure := range []string{"tidy", "verify", "list", "diff", "source-add", "source-edit", "source-delete", "module-edit", "cancel"} {
 			t.Run(failure, func(t *testing.T) {

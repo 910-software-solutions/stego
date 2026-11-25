@@ -332,27 +332,22 @@ func walkthroughFirstBuild(t *testing.T) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		keep := filepath.Join(fixtureRoot, "walkthrough-first-build")
-		if err := os.MkdirAll(keep, 0o700); err != nil {
+		// The guard runs before any copy: a copy is the same project only when no file of the project names the
+		// folder that it was made in.
+		if err := sameProjectInCopy(folder); err != nil {
+			t.Fatal(err)
+		}
+		// Each attempt copies into a new folder, which it removes when a copy fails, so a later attempt never copies
+		// into what an earlier one left.
+		keep, err := os.MkdirTemp(fixtureRoot, "walkthrough-first-build-")
+		if err != nil {
 			t.Fatal(err)
 		}
 		for _, copy := range [][2]string{{folder, filepath.Join(keep, "service")}, {binary, filepath.Join(keep, "inventory")}} {
 			if output, err := exec.Command("cp", "-a", copy[0], copy[1]).CombinedOutput(); err != nil {
+				_ = os.RemoveAll(keep)
 				t.Fatalf("keep the first build of the walkthrough: %v\n%s", err, output)
 			}
-		}
-		// A copy is the same project only when no file of the project names the folder that it was made in.
-		if err := filepath.WalkDir(folder, func(name string, entry fs.DirEntry, err error) error {
-			if err != nil || !entry.Type().IsRegular() {
-				return err
-			}
-			data, err := os.ReadFile(name)
-			if err == nil && bytes.Contains(data, []byte(folder)) {
-				return fmt.Errorf("%s names the folder of the project %s, so a copy of the project is not the same project", name, folder)
-			}
-			return err
-		}); err != nil {
-			t.Fatal(err)
 		}
 		walkthroughBuild.project, walkthroughBuild.binary = filepath.Join(keep, "service"), filepath.Join(keep, "inventory")
 		return binary
@@ -366,6 +361,51 @@ func walkthroughFirstBuild(t *testing.T) string {
 	walkthroughSettings(t)
 	signingSettings(t, testFillKeys(t))
 	return binary
+}
+
+// sameProjectInCopy gives an error when a copy of the project in folder is not the same project: a regular file names
+// the folder, as it is or with its links resolved, or a symlink has an absolute target, a target that names the folder
+// or a relative target out of the folder. A copy of such a link does not point into the copy.
+func sameProjectInCopy(folder string) error {
+	names := [][]byte{[]byte(folder)}
+	if resolved, err := filepath.EvalSymlinks(folder); err == nil && resolved != folder {
+		names = append(names, []byte(resolved))
+	}
+	named := func(data []byte) bool {
+		for _, name := range names {
+			if bytes.Contains(data, name) {
+				return true
+			}
+		}
+		return false
+	}
+	return filepath.WalkDir(folder, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&fs.ModeSymlink != 0 {
+			target, err := os.Readlink(name)
+			if err != nil {
+				return err
+			}
+			inside, err := filepath.Rel(folder, filepath.Join(filepath.Dir(name), target))
+			if filepath.IsAbs(target) || named([]byte(target)) || err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("%s links to %s, so a copy of the project %s is not the same project", name, target, folder)
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if named(data) {
+			return fmt.Errorf("%s names the folder of the project %s, so a copy of the project is not the same project", name, folder)
+		}
+		return nil
+	})
 }
 
 // walkthroughFlow runs the user flow of the fifth walkthrough up to its first binary, with no step by hand: stego
