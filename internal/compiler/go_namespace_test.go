@@ -3,6 +3,8 @@ package compiler
 import (
 	"go/parser"
 	"go/token"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -177,4 +179,92 @@ func TestProtobufGeneratedPackagesMustBeImportable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// markerGenerator writes a marker file into a folder each time it runs, and plans the file a.go in its namespace,
+// so a test sees whether the compiler ran it.
+type markerGenerator struct{ marker string }
+
+func (g markerGenerator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
+	if err := os.WriteFile(g.marker, []byte("ran\n"), 0o600); err != nil {
+		return nil, nil, err
+	}
+	return []gen.File{{Path: ctx.OutputNamespace + "/a.go", Content: []byte("package " + filepath.Base(ctx.OutputNamespace) + "\n")}}, nil, nil
+}
+
+func TestNamespaceIsAGoImportPath(t *testing.T) {
+	t.Run("ST-SUP-INV13-T A namespace that is not a Go import path, or a library namespace whose last element is not a usable package name, is refused before rendering and is never rewritten", func(t *testing.T) {
+		// namespaced gives a test input whose stub-store states the namespace and runs the generator given, and
+		// the marker file of a markerGenerator for stub-api.
+		namespaced := func(namespace string, store gen.Generator) (ReconcilerInput, string) {
+			input := snapshotTestInput(t)
+			path := filepath.Join(input.RegistryDir, "components", "stub-store", "component.yaml")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, path, strings.Replace(string(data), "output_namespace: internal/storage", "output_namespace: "+namespace, 1))
+			marker := filepath.Join(t.TempDir(), "marker")
+			input.Generators["stub-api"] = markerGenerator{marker}
+			input.Generators["stub-store"] = store
+			return input, marker
+		}
+		// A component namespace that is not a valid Go import path is refused when the registry is loaded.
+		for _, namespace := range []string{"'internal/store cache'", "internal//store"} {
+			input, marker := namespaced(namespace, &stubGenerator{})
+			plan, err := Reconcile(input)
+			written := strings.Trim(namespace, "'")
+			if plan != nil || err == nil || !strings.Contains(err.Error(), "stub-store") || !strings.Contains(err.Error(), `"`+written+`"`) {
+				t.Fatalf("the namespace %q was not refused by name: %v", written, err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("a generator ran for the namespace %q", written)
+			}
+		}
+		// A library namespace whose last element is no package name is refused by the preflight of the library,
+		// before any generator runs. my-lib is a valid path element, and is not taken as my_lib or mylib.
+		for _, namespace := range []string{"lib/main", "lib/type", "lib/_", "lib/my-lib"} {
+			input, marker := namespaced(namespace, new(postgresclient.Generator))
+			plan, err := Reconcile(input)
+			if plan != nil || err == nil || !strings.Contains(err.Error(), "stub-store") || !strings.Contains(err.Error(), path.Base(namespace)) {
+				t.Fatalf("the library namespace %q was not refused by name: %v", namespace, err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("a generator ran for the library namespace %q", namespace)
+			}
+		}
+		// A component namespace with a hyphen and a library namespace with a package name are accepted, and every
+		// planned file is under exactly the namespace as written.
+		input, marker := namespaced("lib/worker", new(postgresclient.Generator))
+		api := filepath.Join(input.RegistryDir, "components", "stub-api", "component.yaml")
+		data, err := os.ReadFile(api)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, api, strings.Replace(string(data), "output_namespace: internal/api", "output_namespace: go-services/worker", 1))
+		plan, err := Reconcile(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatal("the generator of go-services/worker did not run")
+		}
+		seen := map[string]bool{}
+		for _, file := range plan.GeneratedFiles {
+			for _, namespace := range []string{"go-services/worker/", "lib/worker/"} {
+				if strings.HasPrefix(file.Path, namespace) {
+					seen[namespace] = true
+					if strings.HasSuffix(file.Path, ".go") {
+						parsed, err := parser.ParseFile(token.NewFileSet(), file.Path, file.Content, parser.PackageClauseOnly)
+						if err != nil || parsed.Name.Name != "worker" {
+							t.Fatalf("%s does not hold the package worker: %v", file.Path, err)
+						}
+					}
+				}
+			}
+		}
+		if !seen["go-services/worker/"] || !seen["lib/worker/"] {
+			t.Fatalf("the plan holds no file under go-services/worker or lib/worker: %v", plan.Files)
+		}
+	})
 }
