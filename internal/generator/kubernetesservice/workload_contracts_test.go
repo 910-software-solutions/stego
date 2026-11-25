@@ -1,6 +1,7 @@
 package kubernetesservice
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -314,6 +315,41 @@ func TestAllocatorHasNoSecretAccess(t *testing.T) {
 // stego. and a domain, in any quoting.
 var stegoKeyPattern = regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.{}-]*`)
 
+// oldPrefixAllowed are the only lines of the tracked files outside data/ that may hold the old key prefix: the
+// release note and the check of docs/upgrade.md, which tell an operator to look for namespaces with the old labels.
+// A line is named by its file and its text.
+var oldPrefixAllowed = map[string]bool{
+	"docs/upgrade.md:   kubectl --context <context> get ns -l stego" + ".dev/allocator":          true,
+	"docs/upgrade.md:   kubectl --context <context> get ns -l stego" + ".dev/allocation-profile": true,
+}
+
+// oldPrefixLines gives each line of a tracked file of the checkout at root, outside data/, that holds the old key
+// prefix and that oldPrefixAllowed does not name, and the release row of docs/upgrade.md when it names the old
+// prefix in more than its stated places. It fails the test when git cannot read the checkout: git grep exits 1 when
+// no line matches and 0 when one does; any other end, such as 128 outside a checkout, is no reading.
+func oldPrefixLines(t *testing.T, root string) []string {
+	t.Helper()
+	list := exec.Command("git", "grep", "-I", "--no-color", "stego"+".dev", "--", ".", ":!data")
+	list.Dir = root
+	output, err := list.Output()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return nil
+	default:
+		t.Fatalf("git grep could not read the checkout at %s: %v", root, err)
+	}
+	var faults []string
+	for _, line := range strings.Split(strings.TrimRight(string(output), "\n"), "\n") {
+		if oldPrefixAllowed[line] || (strings.HasPrefix(line, "docs/upgrade.md:| ") && strings.Contains(line, "[Upgrade over the old label keys]")) {
+			continue
+		}
+		faults = append(faults, line)
+	}
+	return faults
+}
+
 func TestKeyPrefix(t *testing.T) {
 	t.Run("ST-SUP-RC15-OC46-T01 The emitted manifests and scripts write and reserve only keys of the STEGO prefix", func(t *testing.T) {
 		contexts := map[string]gen.Context{"service": rpcContext(), "allocation": allocationContext(), "network": networkProfileContext(), "peer": peerAllocationContext(), "isolated": isolatedAllocationContext()}
@@ -367,19 +403,22 @@ func TestKeyPrefix(t *testing.T) {
 				t.Fatalf("%s holds the old key prefix", script)
 			}
 		}
-		// No tracked file of the repository holds the old prefix, apart from the records under data/ that state the
-		// decision, the tests that search for it on purpose, and the upgrade note that tells an operator to check for it.
-		list := exec.Command("git", "grep", "-l", "stego"+".dev", "--", ".", ":!data")
-		list.Dir = filepath.Join("..", "..", "..")
-		output, err := list.Output()
-		if err != nil && len(output) != 0 {
-			t.Fatal(err)
+		if faults := oldPrefixLines(t, filepath.Join("..", "..", "..")); len(faults) > 0 {
+			t.Fatalf("tracked files hold the old key prefix: %v", faults)
 		}
-		for _, name := range strings.Fields(string(output)) {
-			switch name {
-			case "internal/generator/kubernetesservice/workload_contracts_test.go", "internal/generator/kubernetesclient/generator_test.go", "docs/upgrade.md":
-			default:
-				t.Fatalf("%s holds the old key prefix", name)
+		// The prefix is one value: kubernetes-workload and the two Python constants of the cluster checks state the
+		// same prefix as this component.
+		if kubernetesworkload.KeyPrefix != KeyPrefix {
+			t.Fatalf("kubernetes-workload states the prefix %q, this component %q", kubernetesworkload.KeyPrefix, KeyPrefix)
+		}
+		for _, script := range []string{"check-allocation-account-identity.py", "check-namespace-allocation.py"} {
+			data, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", script))
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := regexp.MustCompile(`(?m)^KEY_PREFIX = "([^"]*)"$`).FindStringSubmatch(string(data))
+			if found == nil || found[1] != KeyPrefix {
+				t.Fatalf("%s states the prefix %v, want %q", script, found, KeyPrefix)
 			}
 		}
 		if keys == 0 || workloadKeys == 0 {
