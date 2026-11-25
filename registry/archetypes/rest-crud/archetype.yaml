@@ -8,7 +8,7 @@ version: 3.261.0
 runtime:
   module: github.com/jsell-rh/stego/registry/runtime
   version: v0.195.0
-  sum: h1:DLjzN/SH1Crr6YmI/FyvxrNw92MJYaYvmieFNxcO+MU=
+  sum: h1:wHqlq4QhzlJIqE4uMjo3lZDdHWxru697QcuRO0mrsYM=
 
 components:
   - rest-api
