@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/jwtauth"
 )
 
 func TestGenerateSharedRuntime(t *testing.T) {
@@ -107,6 +108,76 @@ func TestRuntimeAuth(t *testing.T) {
 					t.Fatalf("rh-sso-auth with %s gave %v, want a refusal that names rh-sso-auth", name, err)
 				}
 			})
+		}
+	})
+}
+
+// ssoOwnFiles gives the Go files that rh-sso-auth emits beside the shared runtime of jwt-auth, which holds the one
+// signature verifier, the one key source and its HTTP client, by path, with the whole set of emitted files.
+func ssoOwnFiles(t *testing.T) (map[string]string, map[string]string) {
+	t.Helper()
+	ctx := gen.Context{OutputNamespace: "internal/auth", ServiceName: "test-api", BasePath: "/api/v1", ErrorTypeBase: "https://errors.example/",
+		ComponentConfig: map[string]any{"issuer": "https://issuer.example", "audience": "test", "jwk_cert_file": "/etc/jwks.json"}}
+	files, _, err := new(Generator).Generate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := ctx
+	shared.ServiceName = "test"
+	common, _, err := new(jwtauth.Generator).Generate(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := map[string]bool{}
+	for _, f := range common {
+		runtime[f.Path] = true
+	}
+	own, all := map[string]string{}, map[string]string{}
+	for _, f := range files {
+		all[f.Path] = string(f.Content)
+		if !runtime[f.Path] {
+			own[f.Path] = string(f.Content)
+		}
+	}
+	if len(own) == 0 {
+		t.Fatal("rh-sso-auth emits no file of its own")
+	}
+	return own, all
+}
+
+func TestSSOUsesTheSharedVerifier(t *testing.T) {
+	t.Run("ST-SUP-RC21-OC11-T01 The SSO code creates no second signature verifier", func(t *testing.T) {
+		own, all := ssoOwnFiles(t)
+		calls := 0
+		for _, text := range all {
+			calls += strings.Count(text, "NewJWKSVerifier(") - strings.Count(text, "func NewJWKSVerifier(")
+		}
+		if calls != 1 {
+			t.Fatalf("the emitted code calls NewJWKSVerifier %d times, want once", calls)
+		}
+		for name, text := range own {
+			for _, word := range []string{"jwt.Parse(", "ParseWithClaims(", "func(token *jwt.Token)", "Keyfunc", ".Verify(raw"} {
+				if strings.Contains(text, word) && !(word == ".Verify(raw" && strings.Contains(text, "h.verifier.Verify(")) {
+					t.Fatalf("%s holds %q: a verifier of its own", name, word)
+				}
+			}
+			// The SSO payload decodes the claims of a token without its key only after the common verifier has
+			// checked the token.
+			if at := strings.Index(text, "ParseUnverified("); at >= 0 {
+				if verified := strings.Index(text, "h.verifier.Verify("); verified < 0 || verified > at {
+					t.Fatalf("%s decodes a token before the common verifier checks it", name)
+				}
+			}
+		}
+	})
+	t.Run("ST-SUP-RC21-OC11-T02 The SSO code creates no second HTTP client", func(t *testing.T) {
+		own, _ := ssoOwnFiles(t)
+		for name, text := range own {
+			for _, word := range []string{"http.Client", "http.Transport", "http.Get(", "http.Post(", "http.DefaultClient", "http.NewRequest"} {
+				if strings.Contains(text, word) {
+					t.Fatalf("%s holds %q: an HTTP client of its own", name, word)
+				}
+			}
 		}
 	})
 }
