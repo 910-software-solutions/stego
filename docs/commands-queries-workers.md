@@ -1697,6 +1697,10 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   message again; each other cause stays ERROR (walkthrough 25, L-3).
 - `schema.backfill.throttled` is sent with its reason
   (`probe.BackfillThrottleReasons`). Before, each was dropped and counted.
+- OpenTelemetry Go v1.47.0 (the OTLP log exporter v0.23.0), which fixes
+  GO-2026-6974: a span or log attribute of U+FFFD runes could pass the limit
+  of the attribute value length. The code of otel-tracing 1.22.0 requires
+  the same versions.
 - apidiff against v0.194.0: compatible (added `otel.SlogHandler.SetIdentity`,
   `otel.GeneratedEvent`, `probe.RelationsPendingCause` and
   `probe.BackfillThrottleReasons`).
