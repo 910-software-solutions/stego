@@ -28,6 +28,7 @@ func TestExternalEndpointPolicy(t *testing.T){
  for _,extra:=range [][]string{
   nil,{"--egress","unknown=192.0.2.10:443"},
   {"--egress","provider=private-kube.invalid:443"},
+  {"--egress","provider=db.example.com:5432"},
   {"--egress","provider=192.0.2.0/24:443"},
   {"--egress","provider=0.0.0.0:443"},
   {"--egress","provider=127.0.0.1:443"},
@@ -44,7 +45,7 @@ func TestExternalEndpointPolicy(t *testing.T){
  }{
   output.Reset();err:=render(append(append([]string{},base...),extra...),&output)
   if err==nil||output.Len()!=0{t.Fatal("invalid endpoint emitted a manifest")}
-  if strings.Contains(err.Error(),"private-kube"){t.Fatal("endpoint error exposed input")}
+  if strings.Contains(err.Error(),"private-kube")||strings.Contains(err.Error(),"db.example.com"){t.Fatal("endpoint error exposed input")}
  }
  output.Reset()
  if err:=render(append(append([]string{},base[:len(base)-2]...),one...),&output);err==nil||output.Len()!=0{t.Fatal("service accepted a worker-only endpoint")}

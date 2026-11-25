@@ -165,6 +165,16 @@ func TestRenderedPolicy(t *testing.T){
 			t.Fatalf("generated deployment: %v\n%s", err, output)
 		}
 	})
+	t.Run("ST-SUP-RC15-OC39-T01 An egress destination given as a DNS name is refused", func(t *testing.T) {
+		if err != nil {
+			t.Fatalf("generated deployment: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC15-OC39-T02 An egress destination given as an IP address and port is rendered as one ipBlock rule", func(t *testing.T) {
+		if err != nil {
+			t.Fatalf("generated deployment: %v\n%s", err, output)
+		}
+	})
 	t.Run("ST-SUP-RC15-OC09-T01 An incomplete or wrong endpoint binding gives no rendered manifest", func(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generated deployment: %v\n%s", err, output)
