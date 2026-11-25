@@ -305,6 +305,11 @@ type Telemetry interface{ Instance() string }
 // (ST-SUP-RP14-LC05). The runtime of the service takes the instance identity of telemetry, so each
 // line of the process names one instance (core49 follow-up).
 func NewService(telemetry Telemetry, ctx context.Context) (rt *Runtime, err error) {
+	// A start with no telemetry runtime is refused, as the runtime would take no instance identity of the process
+	// (security review of PR #497).
+	if telemetry == nil || telemetry.Instance() == "" {
+		return nil, errors.New("the runtime of the service needs the telemetry runtime of the process, which gives its instance identity")
+	}
 	// Each log/slog line of the process is a JSON line, as each line of the log provider (walkthrough 21, U-E).
 	service.UseJSONLog()
 	selection, err := selectModes()

@@ -34,10 +34,10 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261125082600-e131202cf88d
+        module_version: v0.0.0-20261125091057-5a395cf14df9+dirty
         vcs: git
-        revision: e131202cf88dd8f2c30402e30ba43872ef81ebc4
-        source_state: clean
+        revision: 5a395cf14df9d90e291304c02e65442841bb9376
+        source_state: modified
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
@@ -159,7 +159,7 @@ last_applied:
         internal/authz/authz.go: dce5c5ed5f1c4a28f6d7b4385afb03f6f362a7aa03822beaf6bcdf569fce49cc
         internal/authz/schema.zed: b367c32af4283fa3bb39bc88067e4b1045d94fd04e8a71e504199a85b13185b4
         internal/outbox/outbox.go: c2957ac0acaf9f20e543beb6aa0297ea72a898a969fb43fd21d408dc42df6caf
-        internal/stegoruntime/runtime.go: c2977bd8a15c67056cfb04ec36018eddc8212330480b4e5688e04a2f72d76c9c
+        internal/stegoruntime/runtime.go: 78c3ad9b0c08896663b7b00b292ae85dad23cfe1ad2ea9f058d75f74df93d694
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
         internal/storage/migrate.go: e35d3bfa0fb2b44a26e2533df5a82bcb581fb286f314ec6c4b50e457aa79defa
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
@@ -204,7 +204,7 @@ last_applied:
         tracing/http_observation.go: 56493be11d5e29efb771b5862d45ad2ef9e010e0b01b27766e61b0971862ea86
         tracing/identity.go: 2c7be8be622a167b67941ea98459f7540b8ba16b64a7631dad109db70c2c0bb6
         tracing/outbox.go: eccaf1f079bab838e07fa5b16314df735667e21cffa2101f92cb3d9b3bcc4b4d
-        tracing/runtime.go: d9ffd03b2953a114f859e9d831e3942b1a36987b8430f5033e76a47b020c412e
+        tracing/runtime.go: b4af7648c4c69b791c98c01e608c6b7c9a22aaa9a32155d86ee8c061f095f9fd
         tracing/service.go: c654d01a421e32b676ddcdea279d9b30f116492784102c51eb7502b11644b0f2
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
