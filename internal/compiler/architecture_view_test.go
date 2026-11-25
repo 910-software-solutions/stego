@@ -104,6 +104,7 @@ func dataIDs(n *html.Node) map[string]bool {
 }
 
 func TestArchitectureView(t *testing.T) {
+	t.Parallel()
 	model, view, m := viewFixture(t, "user-management.json")
 	_, accessView, am := viewFixture(t, "access.json")
 	page := parseView(t, view)

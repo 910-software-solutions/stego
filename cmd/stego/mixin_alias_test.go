@@ -298,3 +298,24 @@ func TestScopedAccessWarning(t *testing.T) {
 		}
 	})
 }
+
+func TestMixinBringsTheMixinItRequires(t *testing.T) {
+	t.Parallel()
+	t.Run("ST-SUP-UC10-R03-T01 Binding a mixin without the mixin it requires is refused, naming both", func(t *testing.T) {
+		run := stegoIn(t, td02Project(t, td02+"mixins: [kafka-events]\n"), nil, "validate")
+		if run.code == 0 {
+			t.Fatalf("stego validate of kafka-events alone passed:\n%s", run.stdout)
+		}
+		for _, word := range []string{`"kafka-events"`, `"durable-events"`, "requires"} {
+			if !strings.Contains(run.stdout+run.stderr, word) {
+				t.Fatalf("the refusal does not name %s:\n%s%s", word, run.stdout, run.stderr)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-UC10-R03-T02 Binding a mixin with the mixin it requires is accepted", func(t *testing.T) {
+		if run := stegoIn(t, td02Project(t, td02+"mixins: [kafka-events, durable-events]\n"), nil, "validate"); run.code != 0 {
+			t.Fatalf("stego validate of kafka-events with durable-events: exit %d\n%s%s", run.code, run.stdout, run.stderr)
+		}
+	})
+}

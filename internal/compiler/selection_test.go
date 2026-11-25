@@ -158,3 +158,75 @@ func TestComponentSelection(t *testing.T) {
 		}
 	})
 }
+
+// betaComponent is a beta component with the sunset given, for a unit test of the acceptance rule.
+func betaComponent(sunset string) *registry.Component {
+	return &registry.Component{Name: "local-a", Stage: types.StageBeta, Sunset: sunset}
+}
+
+func TestAcceptanceRule(t *testing.T) {
+	t.Run("ST-GEN-INV37-T Each setting selects its component, and a component that is not ga needs an acceptance", func(t *testing.T) {
+		// The boundary day and the form of the date of an acceptance, which one rule holds for a component that a
+		// setting selects and for one that an override brings (acceptanceFault; sec-501 I1).
+		atClock(t, "2099-06-01T23:59:59Z")
+		component := betaComponent("2099-12-31")
+		accept := func(until string) *types.ServiceDeclaration {
+			return &types.ServiceDeclaration{Overrides: map[string]any{"local-port": "local-a"},
+				ExperimentalAcceptances: []types.ExperimentalAcceptance{{Component: "local-a", AcceptedUntil: until, Reason: "pilot"}}}
+		}
+		faults := func(svc *types.ServiceDeclaration) []*ValidationError {
+			var all []*ValidationError
+			if fault := acceptanceFault(svc, "local-a", component, "tenancy", "the tenancy setting selects the component local-a"); fault != nil {
+				all = append(all, fault)
+			}
+			for _, fault := range validateAcceptedComponents(svc, map[string]*registry.Component{"local-a": component}) {
+				all = append(all, &fault)
+			}
+			return all
+		}
+		for until, refused := range map[string]bool{"2099-06-01": false, "2099-05-31": true, "2099-6-1": true, "": true, "tomorrow": true, "2099-12-31": false} {
+			got := faults(accept(until))
+			if (refused && len(got) != 2) || (!refused && len(got) != 0) {
+				t.Fatalf("the acceptance until %q gave the faults %v, want refused %v by both routes", until, got, refused)
+			}
+			for _, fault := range got {
+				if fault.Path != "experimental_acceptances" || !strings.Contains(fault.Message, "has run out or is not a date") {
+					t.Fatalf("the acceptance until %q was refused with %v", until, fault)
+				}
+			}
+		}
+		// From the start of the next day in UTC, the acceptance of the day before has run out.
+		atClock(t, "2099-06-02T00:00:00Z")
+		if got := faults(accept("2099-06-01")); len(got) != 2 {
+			t.Fatalf("the acceptance of the day before passed: %v", got)
+		}
+	})
+}
+
+func TestAcceptanceNotLaterThanSunset(t *testing.T) {
+	t.Run("ST-DECL-INV15-T An acceptance dated later than its component's sunset is refused", func(t *testing.T) {
+		atClock(t, "2099-01-01T12:00:00Z")
+		component := betaComponent("2099-12-31")
+		for until, refused := range map[string]bool{"2100-01-01": true, "2099-12-31": false, "2099-12-30": false} {
+			svc := &types.ServiceDeclaration{ExperimentalAcceptances: []types.ExperimentalAcceptance{{Component: "local-a", AcceptedUntil: until, Reason: "pilot"}}}
+			// The rule holds for a component that a setting selects and for one that an override brings.
+			for name, fault := range map[string]*ValidationError{
+				"selected": acceptanceFault(svc, "local-a", component, "tenancy", "the tenancy setting selects the component local-a"),
+				"overridden": func() *ValidationError {
+					f := validateAcceptedComponents(svc, map[string]*registry.Component{"local-a": component})
+					if len(f) == 0 {
+						return nil
+					}
+					return &f[0]
+				}(),
+			} {
+				if refused != (fault != nil) {
+					t.Fatalf("%s, the acceptance until %s: fault %v, want refused %v", name, until, fault, refused)
+				}
+				if refused && (!strings.Contains(fault.Message, "local-a") || !strings.Contains(fault.Message, until) || !strings.Contains(fault.Message, "2099-12-31")) {
+					t.Fatalf("%s: the fault does not name the component, the acceptance date and the sunset: %v", name, fault)
+				}
+			}
+		}
+	})
+}

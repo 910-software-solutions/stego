@@ -62,9 +62,10 @@ func TestRuntimeGRPC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs a generated service")
 	}
-	// Not parallel: the check turns TLS on in the PostgreSQL server with a certificate of its own and resets it at its
-	// end, as the check of TestRuntimeWiring does, so the two must not run at the same time. A test that is not
-	// parallel ends before the parallel tests of the package go on.
+	// The check turns TLS on in the PostgreSQL server with a certificate of its own and resets it at its end, as the
+	// check of TestRuntimeWiring does, so the two must not run at the same time: the test runs in parallel, and its
+	// check holds postgresTLS (runTLSCheck).
+	t.Parallel()
 	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
@@ -110,7 +111,7 @@ func TestRuntimeGRPC(t *testing.T) {
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestGRPC$", "./out/grpccheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_GRPC_BINARY="+binary)
-	output, runErr := cmd.CombinedOutput()
+	output, runErr := runTLSCheck(cmd)
 	for _, id := range grpcCheckIDs {
 		t.Run(id, func(t *testing.T) {
 			name := strings.ReplaceAll(id, " ", "_")
