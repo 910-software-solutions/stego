@@ -42,6 +42,15 @@ func newCapabilityProject(t *testing.T) *fillProject {
 	return p
 }
 
+// signingSettings sets the Git configuration with which stego fill sign signs in this process: that of listed-ssh,
+// and no SSH agent.
+func signingSettings(t *testing.T, keys *fillKeys) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(keys.homes["listed-ssh"], ".gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("SSH_AUTH_SOCK", "")
+}
+
 // qualifyInProcess qualifies the fills of the project in the working folder in this process, as the service author
 // does: it writes the SIGNERS file of ST-EXT-TD02, runs stego test, and signs each fill with evidence with listed-ssh, a key that
 // the test run makes for the test only. Plan and apply then accept the fills (ST-GEN-INV10).
@@ -49,9 +58,7 @@ func qualifyInProcess(t *testing.T) {
 	t.Helper()
 	keys := testFillKeys(t)
 	writeProjectFile(t, "SIGNERS", keys.signers)
-	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(keys.homes["listed-ssh"], ".gitconfig"))
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("SSH_AUTH_SOCK", "")
+	signingSettings(t, keys)
 	mustRun(t, runTest)
 	entries, err := os.ReadDir("fills")
 	if err != nil {

@@ -326,11 +326,7 @@ func walkthroughProject(t *testing.T) {
 	_, source, _, _ := runtime.Caller(0)
 	fixture := filepath.Join(filepath.Dir(source), "testdata", "walkthrough5")
 	t.Chdir(serviceFolder(t))
-	t.Setenv("STEGO_REGISTRY", shippedRegistry(t))
-	t.Setenv("STEGO_MODULE", "example.com/inventory")
-	t.Setenv("STEGO_GO_VERSION", "1.26.11")
-	t.Setenv("GOWORK", "off")
-	t.Setenv("GOTOOLCHAIN", "local")
+	walkthroughSettings(t)
 	mustRun(t, runInit, "--archetype", "rest-crud")
 	for name, target := range map[string]string{"schema.zed": "authz/schema.zed", "inventory.proto": "proto/inventory.proto", "service.yaml": "service.yaml"} {
 		data, err := os.ReadFile(filepath.Join(fixture, name))
@@ -339,6 +335,17 @@ func walkthroughProject(t *testing.T) {
 		}
 		writeProjectFile(t, target, string(data))
 	}
+}
+
+// walkthroughSettings sets the environment in which the commands of stego run for the project of the fifth
+// walkthrough.
+func walkthroughSettings(t *testing.T) {
+	t.Helper()
+	t.Setenv("STEGO_REGISTRY", shippedRegistry(t))
+	t.Setenv("STEGO_MODULE", "example.com/inventory")
+	t.Setenv("STEGO_GO_VERSION", "1.26.11")
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
 }
 
 // walkthroughFixture gives a file of testdata/walkthrough5.
