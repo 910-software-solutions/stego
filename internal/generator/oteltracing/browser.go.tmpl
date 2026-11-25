@@ -45,11 +45,18 @@ func RelayBrowserTelemetry(ctx context.Context,signal string,data []byte,service
  }
  switch signal {
  case "traces":
+  // The deployment turns browser traces off with no provider or a ratio of 0, and the relay then refuses them, as
+  // it refuses logs and metrics that are off (security review of PR #494, L1).
+  if runtime.provider==nil||!(runtime.browserSampleRatio>0){return ErrBrowserTelemetryUnavailable}
   var request tracecollector.ExportTraceServiceRequest
   if !decode(&request)||len(request.ResourceSpans)!=1{return ErrBrowserTelemetryInput}
   r:=request.ResourceSpans[0];if len(r.ScopeSpans)!=1{return ErrBrowserTelemetryInput};r.Resource=resource();r.SchemaUrl=""
   s:=r.ScopeSpans[0];if len(s.Spans)==0||len(s.Spans)>16{return ErrBrowserTelemetryInput};s.Scope=scope();s.SchemaUrl=""
   for _,span:=range s.Spans{if !browserID(span.TraceId,16,false)||!browserID(span.SpanId,8,false)||!browserID(span.ParentSpanId,8,true)||span.Name==""||len(span.Name)>128||span.EndTimeUnixNano<span.StartTimeUnixNano||!browserTime(span.StartTimeUnixNano)||!browserTime(span.EndTimeUnixNano)||len(span.Attributes)>16||len(span.Events)>2||len(span.Links)>2{return ErrBrowserTelemetryInput};span.TraceState="";for _,link:=range span.Links{link.TraceState=""}}
+  // A span whose trace ID the TraceIdRatio rule of the browser runtime does not sample at the deployment ratio is
+  // dropped: an option of the page can only lower that ratio, so the browser sends no such span.
+  kept:=s.Spans[:0];for _,span:=range s.Spans{if browserSampled(span.TraceId,runtime.browserSampleRatio){kept=append(kept,span)}};s.Spans=kept
+  if len(s.Spans)==0{return nil}
   response,err:=tracecollector.NewTraceServiceClient(runtime.connection).Export(ctx,&request)
   if err!=nil||response.GetPartialSuccess().GetRejectedSpans()!=0||response.GetPartialSuccess().GetErrorMessage()!=""{return ErrBrowserTelemetryUnavailable}
  case "logs":
@@ -77,6 +84,15 @@ func RelayBrowserTelemetry(ctx context.Context,signal string,data []byte,service
  return nil
 }
 func browserID(value []byte,size int,optional bool)bool{if optional&&len(value)==0{return true};if len(value)!=size{return false};for _,b:=range value{if b!=0{return true}};return false}
+// browserSampled applies the TraceIdRatio rule of the browser runtime (@opentelemetry/sdk-trace-base
+// TraceIdRatioBasedSampler): the XOR of the four 32-bit words of the trace ID, big-endian, must be below
+// floor(ratio * 0xffffffff).
+func browserSampled(traceID []byte,ratio float64)bool{
+ if len(traceID)!=16||!(ratio>0){return false}
+ var accumulation uint32
+ for i:=0;i<16;i+=4{accumulation^=uint32(traceID[i])<<24|uint32(traceID[i+1])<<16|uint32(traceID[i+2])<<8|uint32(traceID[i+3])}
+ return uint64(accumulation)<uint64(math.Floor(math.Min(ratio,1)*0xffffffff))
+}
 func browserTime(value uint64)bool{now:=time.Now();return value>=uint64(now.Add(-24*time.Hour).UnixNano())&&value<=uint64(now.Add(5*time.Minute).UnixNano())}
 func boundedBrowserMessage(message protoreflect.Message,budget *int)bool{
  *budget--;if *budget<0||!message.IsValid()||len(message.GetUnknown())!=0{return false}

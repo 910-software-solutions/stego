@@ -151,3 +151,84 @@ func TestBrowserSettingsFollowRuntime(t *testing.T) {
 		t.Fatal("closed runtime enabled browser export")
 	}
 }
+
+// browserTraceWith gives a browser trace batch with one span for each trace ID.
+func browserTraceWith(t *testing.T, ids ...[]byte) []byte {
+	t.Helper()
+	request := browserTrace()
+	scope := request.ResourceSpans[0].ScopeSpans[0]
+	first := scope.Spans[0]
+	scope.Spans = nil
+	for i, id := range ids {
+		span := proto.Clone(first).(*tracepb.Span)
+		span.TraceId, span.SpanId = id, bytes.Repeat([]byte{byte(i + 2)}, 8)
+		scope.Spans = append(scope.Spans, span)
+	}
+	data, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// traceID gives a trace ID whose four 32-bit words XOR to word, as the browser TraceIdRatio rule reads it.
+func traceID(word uint32) []byte {
+	id := bytes.Repeat([]byte{0x5a}, 16)
+	id[12], id[13], id[14], id[15] = id[12]^byte(word>>24), id[13]^byte(word>>16), id[14]^byte(word>>8), id[15]^byte(word)
+	return id
+}
+
+func TestBrowserRelayDeploymentRatio(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC15-T02 The browser relay refuses traces at a zero ratio and drops a span that the deployment ratio does not sample", func(t *testing.T) {
+		collector := collectorFixture(t, false)
+		pending := func() int {
+			count := 0
+			for {
+				select {
+				case batch := <-collector.received:
+					count += len(batch.ResourceSpans[0].ScopeSpans[0].Spans)
+				default:
+					return count
+				}
+			}
+		}
+		// At the ratio 0.5 the bound is floor(0.5 * 0xffffffff) = 0x7fffffff: the word 0x10 is below it, 0x7fffffff is not.
+		sampled, dropped := traceID(0x10), traceID(0x7fffffff)
+		t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0")
+		zero, err := NewRuntime()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer zero.Close()
+		if err := RelayBrowserTelemetry(zero.Context(context.Background()), "traces", browserTraceWith(t, sampled), "example-browser"); !errors.Is(err, ErrBrowserTelemetryUnavailable) {
+			t.Fatal("the relay forwarded browser traces at the ratio 0:", err)
+		}
+		if count := pending(); count != 0 {
+			t.Fatal("the relay exported spans at the ratio 0:", count)
+		}
+		zero.Close()
+		t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0.5")
+		half, err := NewRuntime()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer half.Close()
+		ctx := half.Context(context.Background())
+		if err := RelayBrowserTelemetry(ctx, "traces", browserTraceWith(t, sampled, dropped), "example-browser"); err != nil {
+			t.Fatal(err)
+		}
+		batch := <-collector.received
+		if spans := batch.ResourceSpans[0].ScopeSpans[0].Spans; len(spans) != 1 || !bytes.Equal(spans[0].TraceId, sampled) {
+			t.Fatalf("the relay did not keep only the sampled span: %d spans", len(spans))
+		}
+		if err := RelayBrowserTelemetry(ctx, "traces", browserTraceWith(t, dropped), "example-browser"); err != nil {
+			t.Fatal(err)
+		}
+		if count := pending(); count != 0 {
+			t.Fatal("the relay exported a span that the ratio does not sample:", count)
+		}
+		if !browserSampled(traceID(0), 1) || browserSampled(traceID(0xffffffff), 1) || browserSampled(traceID(0), 0) {
+			t.Fatal("the ratio rule differs from the browser TraceIdRatio rule at its ends")
+		}
+	})
+}

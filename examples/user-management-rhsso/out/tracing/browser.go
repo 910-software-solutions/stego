@@ -65,6 +65,11 @@ func RelayBrowserTelemetry(ctx context.Context, signal string, data []byte, serv
 	}
 	switch signal {
 	case "traces":
+		// The deployment turns browser traces off with no provider or a ratio of 0, and the relay then refuses them, as
+		// it refuses logs and metrics that are off (security review of PR #494, L1).
+		if runtime.provider == nil || !(runtime.browserSampleRatio > 0) {
+			return ErrBrowserTelemetryUnavailable
+		}
 		var request tracecollector.ExportTraceServiceRequest
 		if !decode(&request) || len(request.ResourceSpans) != 1 {
 			return ErrBrowserTelemetryInput
@@ -89,6 +94,18 @@ func RelayBrowserTelemetry(ctx context.Context, signal string, data []byte, serv
 			for _, link := range span.Links {
 				link.TraceState = ""
 			}
+		}
+		// A span whose trace ID the TraceIdRatio rule of the browser runtime does not sample at the deployment ratio is
+		// dropped: an option of the page can only lower that ratio, so the browser sends no such span.
+		kept := s.Spans[:0]
+		for _, span := range s.Spans {
+			if browserSampled(span.TraceId, runtime.browserSampleRatio) {
+				kept = append(kept, span)
+			}
+		}
+		s.Spans = kept
+		if len(s.Spans) == 0 {
+			return nil
 		}
 		response, err := tracecollector.NewTraceServiceClient(runtime.connection).Export(ctx, &request)
 		if err != nil || response.GetPartialSuccess().GetRejectedSpans() != 0 || response.GetPartialSuccess().GetErrorMessage() != "" {
@@ -189,6 +206,20 @@ func browserID(value []byte, size int, optional bool) bool {
 		}
 	}
 	return false
+}
+
+// browserSampled applies the TraceIdRatio rule of the browser runtime (@opentelemetry/sdk-trace-base
+// TraceIdRatioBasedSampler): the XOR of the four 32-bit words of the trace ID, big-endian, must be below
+// floor(ratio * 0xffffffff).
+func browserSampled(traceID []byte, ratio float64) bool {
+	if len(traceID) != 16 || !(ratio > 0) {
+		return false
+	}
+	var accumulation uint32
+	for i := 0; i < 16; i += 4 {
+		accumulation ^= uint32(traceID[i])<<24 | uint32(traceID[i+1])<<16 | uint32(traceID[i+2])<<8 | uint32(traceID[i+3])
+	}
+	return uint64(accumulation) < uint64(math.Floor(math.Min(ratio, 1)*0xffffffff))
 }
 func browserTime(value uint64) bool {
 	now := time.Now()
