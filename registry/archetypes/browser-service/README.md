@@ -24,3 +24,17 @@ The browser HTML must have one valid head element for public runtime settings.
 Applications supply their assets, API routes, identity-provider settings, and
 deployment destinations. These inputs remain subject to the backend and
 deployment validation rules.
+
+## More than one API
+
+The backend sends a request under `api_prefix` to the API of
+`STEGO_BROWSER_API_URL`. To reach more APIs, declare the setting `apis` of
+`browser-backend`: 1 to 15 entries `{name, prefix}` under
+`overrides.browser-backend.apis`. Then give the origin of each name in
+`STEGO_BROWSER_API_URLS`, as `name=origin` pairs separated by commas, such
+as `fulfilment=https://fulfilment.example.com,billing=https://billing.example.com`.
+A browser service thus reaches at most 16 APIs: `api_prefix` and 15 entries.
+All APIs share one pool of 16 requests at one time, so each API has a smaller
+share when you declare more APIs. For the rules, the shares and the cost of
+the limit, see
+[More than one API](../../components/browser-backend/README.md#more-than-one-api).

@@ -119,9 +119,9 @@ func(s *waitSessions)take(id string)bool{s.mu.Lock();defer s.mu.Unlock();if s.he
 // give gives back a slot of the session id.
 func(s *waitSessions)give(id string){s.mu.Lock();defer s.mu.Unlock();if s.held[id]--;s.held[id]<=0{delete(s.held,id)}}
 // poolAPIs gives the API of api_prefix and each declared API a pool of permits and a pool of waiting reads of its
-// own, so that a slow API cannot take the capacity of another; the shares keep the total at most
-// client.MaxConcurrentRequests and MaxWaitingReads, with at least one of each for each API, and the permits of the
-// backend bound every request together.
+// own, so that a slow API cannot take the capacity of another, with at least one of each for each API. The 1 to 16
+// APIs (MaxAPIs) keep the permits at most client.MaxConcurrentRequests in total; a waiting read holds a permit too,
+// and the permits of the backend bound every request together (ST-SUP-Q213).
 func poolAPIs(main *apiRoute,apis []apiRoute){
  n:=1+len(apis);share:=max(1,client.MaxConcurrentRequests/n);waits:=max(1,MaxWaitingReads/n)
  main.permits,main.waits,main.sessions=make(chan struct{},share),make(chan struct{},waits),&waitSessions{held:map[string]int{}}
