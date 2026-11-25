@@ -97,8 +97,10 @@ func TestRuntime(t *testing.T) {
 		if err := os.Symlink(modules, filepath.Join(dir, "node_modules")); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"runtime.test.mjs", "usage.mts"} {
-			data, err := os.ReadFile("testdata/" + name)
+		// The shared vectors of the TraceIdRatio rule, which the browser relay of otel-tracing also reads
+		// (ST-SUP-RC17-OC15-T03, ST-SUP-RC17-OC15-T04).
+		for name, source := range map[string]string{"runtime.test.mjs": "testdata/runtime.test.mjs", "usage.mts": "testdata/usage.mts", "browser_sampler_vectors.json": "../oteltracing/testdata/browser_sampler_vectors.json"} {
+			data, err := os.ReadFile(source)
 			if err != nil {
 				t.Fatal(err)
 			}

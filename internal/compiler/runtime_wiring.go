@@ -37,6 +37,13 @@ const RuntimeWiringNamespace = "internal/stegoruntime"
 // the tables and the tenant wall come from the PostgreSQL adapter and the tenancy component.
 var runtimeWiringComponents = []string{adapterComponent, gen.TenancyComponent, authorizationComponent, auditComponent, "outbox"}
 
+// tracingComponent is the component of the HTTP telemetry of the service (ST-SUP-RC17), and tracingRuntime the
+// variable of main.go that holds its runtime.
+const (
+	tracingComponent = "otel-tracing"
+	tracingRuntime   = "tracingRuntime"
+)
+
 // restAPIComponent is the component of the collection handlers (ST-SUP-RC20).
 const restAPIComponent = "rest-api"
 
@@ -72,7 +79,11 @@ type runtimeWiringData struct {
 	// inboxes the worker mode runs (ST-SUP-RC38).
 	Inbox                                                                           string
 	Service, DeclarationVersion, SubjectType, TenantClaim, ProblemType, ProblemCode string
-	Issuer, Audience, Header, KeyFile, RoleClaim                                    string
+	// Telemetry is true when the service has the component otel-tracing: NewService then takes its runtime, whose
+	// instance identity the runtime of the service takes, so each line of one process names one instance (core49
+	// follow-up).
+	Telemetry                                    bool
+	Issuer, Audience, Header, KeyFile, RoleClaim string
 	// Discovery, CAFile, SubjectClaim and Algorithms are the settings of an auth provider that the verifier serves
 	// through the discovery document of its issuer, such as oidc-auth (ST-SUP-RC37).
 	Discovery            bool
@@ -151,6 +162,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		ProblemCode: problemCode(svc.Name),
 	}
 	data.KafkaTopic = slices.Contains(in.Names, kafkaProducerComponent)
+	data.Telemetry = slices.Contains(in.Names, tracingComponent)
 	for _, e := range svc.Entities {
 		for _, f := range e.Fields {
 			data.Sealed = data.Sealed || f.Sealed()
@@ -207,9 +219,16 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	if err != nil {
 		return nil, ComponentWiring{}, err
 	}
+	constructor, deps := path.Base(RuntimeWiringNamespace)+".NewService()", map[int][]string(nil)
+	if data.Telemetry {
+		// The runtime of the service takes the instance identity of the HTTP telemetry of the process (core49
+		// follow-up); the assembler adds ctx after it.
+		constructor, deps = path.Base(RuntimeWiringNamespace)+".NewService("+tracingRuntime+")", map[int][]string{0: {tracingRuntime}}
+	}
 	wiring := &gen.Wiring{
 		Imports:                 []string{RuntimeWiringNamespace},
-		Constructors:            []string{path.Base(RuntimeWiringNamespace) + ".NewService()"},
+		Constructors:            []string{constructor},
+		ConstructorDeps:         deps,
 		ConstructorResources:    map[int][]gen.Resource{0: {gen.ServiceContext}},
 		ConstructorReturnsError: map[int]bool{0: true},
 		ConstructorDeferCalls:   map[int]string{0: "Close()"},

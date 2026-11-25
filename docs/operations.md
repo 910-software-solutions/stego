@@ -26,7 +26,7 @@ member reads it on each line. A line holds these members, in this order:
 | `timestamp` | The time in UTC, in RFC 3339 with nanoseconds, such as `2026-11-22T07:29:43.822602285Z`. | Yes |
 | `severity` | `DEBUG`, `INFO`, `WARN`, `ERROR` or `FATAL`. | Yes |
 | `service.name` | The name of the service: the declared name. On the lines of the runtime and of the HTTP telemetry, `OTEL_SERVICE_NAME` takes its place when it is set. A line before the start knows the name gives `unknown_service`. | Yes |
-| `service.instance.id` | The identity of the writer in the process. The HTTP telemetry of a service and its runtime each have an identity, so the lines of one process can show two. The failure record has none. | No |
+| `service.instance.id` | The identity of the process, a random UUID v4. Each line of one process that has it shows the same identity: the runtime of the service takes the identity of the HTTP telemetry (runtime v0.196.0, rest-crud 3.262.0). The failure record has none. | No |
 | `event.name` | The name of the event, such as `worker.run.failed`. | Yes |
 | `message` | A fixed text. | Yes |
 | `trace_id`, `span_id` | The trace and the span of the line, when it has them. | No |

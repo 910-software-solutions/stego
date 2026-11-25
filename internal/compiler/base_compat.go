@@ -1898,16 +1898,25 @@ func createDifference(before, after postgresadapter.BaselineTable, changes []typ
 }
 
 // RelateFaults gives the faults of ST-GEN-INV33 for the relations of the authorization schema (decision ST-SUP-Q212
-// (a)): for each entity of the base with rows that a tenant owns, each relation that the head writes for each row and
-// the base does not write, with no schema change of kind relate for the entity and the relation. The runtime writes the
-// tuple of a relation only for the rows that a release that writes it makes, so the rows that the base made, and the
-// rows that it makes during the rollout, get no tuple, and a permission through the relation denies them. The base
-// writes a relation as the head does: the relation tenant when its schema gives the resource type of the entity the
-// relation tenant of the subject type tenant, the relation of a relationship whose subject is a field, and the
-// relation of a reference to an entity with a resource type. A relation whose subject is a field that the base entity
-// does not store has no value on the rows that are there, so it needs no relate step. It gives no fault when the check
-// refused the base record, no release ran, or the base or the head binds no schema. headSchema is the schema that the
-// head binds, or nil.
+// (a)): for each entity of the base with rows, each relation that the head writes for each row and the base does not
+// write. The runtime writes the tuple of a relation only for the rows that a release that writes it makes, so the rows
+// that the base made, and the rows that it makes during the rollout, get no tuple, and a permission through the
+// relation denies them. The base writes a relation as the head does: the relation tenant when its schema gives the
+// resource type of the entity the relation tenant of the subject type tenant, the relation of a relationship whose
+// subject is a field or the caller, and the relation of a reference to an entity with a resource type. A relation
+// whose subject is a field that the base entity does not store has no value on the rows that are there, so it needs
+// no relate step. A base that binds no schema writes no relation, so a head that adds the schema gets a fault for each
+// relation that it writes for the rows of the base (security review of PR #495, I1).
+//
+// The fault of a relation of an entity that a tenant owns suggests the relate step at expand, and a relate step of the
+// entity and the relation corrects it. No relate step can correct two other faults, so they suggest no schema change
+// and tell the author to give the permission another path (security review of PR #495, L1 and L2): a relation whose
+// subject is the caller of the create, which no row holds, and a relation of an entity that is shared or system, whose
+// rows the relate job does not read. The relation tenant of a shared or system entity is not checked: such a row has
+// no tenant.
+//
+// It gives no fault when the check refused the base record, no release ran, or the head binds no schema. headSchema
+// is the schema that the head binds, or nil.
 func RelateFaults(check BaseCheck, base BaseSource, head *types.ServiceDeclaration, headSchema *declaration.AuthzSchema) ([]BaseFault, error) {
 	if !check.Released || headSchema == nil || base.Declaration == nil || slices.ContainsFunc(check.Faults, func(f BaseFault) bool { return f.Rule == BaseRecordRule }) {
 		return nil, nil
@@ -1916,36 +1925,56 @@ func RelateFaults(check BaseCheck, base BaseSource, head *types.ServiceDeclarati
 	if err != nil {
 		return nil, err
 	}
-	if declared.Authorization == nil || declared.Authorization.SchemaPath == "" {
-		return nil, nil
-	}
-	schemaPath := declared.Authorization.SchemaPath
-	if base.Schema == nil {
-		return nil, fmt.Errorf("the base ref %s (commit %s) binds the authorization schema %s, which the commit does not hold in the service folder", base.Ref, base.Commit, schemaPath)
-	}
-	if len(base.Schema) > declaration.MaxSchemaBytes {
-		return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s) is larger than %d bytes", schemaPath, base.Ref, base.Commit, declaration.MaxSchemaBytes)
-	}
-	baseSchema, err := declaration.CompileAuthzSchema(schemaPath, base.Schema)
-	if err != nil {
-		return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s): %w", schemaPath, base.Ref, base.Commit, err)
+	var baseSchema *declaration.AuthzSchema
+	if declared.Authorization != nil && declared.Authorization.SchemaPath != "" {
+		schemaPath := declared.Authorization.SchemaPath
+		if base.Schema == nil {
+			return nil, fmt.Errorf("the base ref %s (commit %s) binds the authorization schema %s, which the commit does not hold in the service folder", base.Ref, base.Commit, schemaPath)
+		}
+		if len(base.Schema) > declaration.MaxSchemaBytes {
+			return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s) is larger than %d bytes", schemaPath, base.Ref, base.Commit, declaration.MaxSchemaBytes)
+		}
+		if baseSchema, err = declaration.CompileAuthzSchema(schemaPath, base.Schema); err != nil {
+			return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s): %w", schemaPath, base.Ref, base.Commit, err)
+		}
 	}
 	var faults []BaseFault
 	for _, entity := range head.Entities {
 		before, ok := findStoredEntity(declared, entity.Name)
-		if !ok || entity.ResourceType == "" || (entity.Tenant != "" && entity.Tenant != "owned") {
+		if !ok || entity.ResourceType == "" {
 			continue
 		}
+		owned := entity.Tenant == "" || entity.Tenant == "owned"
 		written := writtenRelations(head, entity, headSchema)
-		was := map[string]string{}
-		if before.ResourceType == entity.ResourceType {
+		if !owned {
+			delete(written, declaration.TenantRelation)
+		}
+		callers := callerRelations(entity)
+		// baseName gives the name in the base of a field of the head, back through the renames that the base does not
+		// declare, so a new relation on a renamed field is found (security review of PR #497, L2).
+		baseName := newRenames(declared, head, entity.Name)
+		// The relations that the base writes for its rows, each with its source: none when it binds no schema or gives
+		// the entity another resource type. The caller relations of the base are a set of their own, which only the
+		// check of the caller relations of the head reads (security review of PR #497, L1).
+		was := map[string]writtenRelation{}
+		var wasCallers []string
+		if baseSchema != nil && before.ResourceType == entity.ResourceType {
 			was = writtenRelations(declared, before, baseSchema)
+			wasCallers = callerRelations(before)
 		}
 		for _, relation := range slices.Sorted(maps.Keys(written)) {
-			if _, ok := was[relation]; ok {
+			source := written[relation]
+			// The base writes the relation already when it writes it from the same source: tenant, the same field or
+			// the same reference, by its name in the base.
+			if prior, ok := was[relation]; slices.Contains(callers, relation) || ok && prior.kind == source.kind && prior.field == baseName(source.field) {
 				continue
 			}
-			if field := written[relation]; field != "" && !slices.ContainsFunc(before.Fields, func(f types.Field) bool { return f.Name == field }) {
+			if source.field != "" && !slices.ContainsFunc(before.Fields, func(f types.Field) bool { return f.Name == baseName(source.field) }) {
+				continue
+			}
+			if !owned {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: source.field,
+					Message: fmt.Sprintf("the head writes the relation %s#%s for each row of %s, and the base does not write it: the rows that the base made get no tuple of it, and a permission through %s denies them. %s is %s, and a relate step reads only the rows that a tenant owns, so no schema change gives them the tuple. Give the permission another path, through a relation that the base writes for the rows of %s", entity.ResourceType, relation, entity.Name, relation, entity.Name, entity.Tenant, entity.Name)})
 				continue
 			}
 			if slices.ContainsFunc(head.SchemaChanges, func(c types.SchemaChange) bool {
@@ -1953,23 +1982,46 @@ func RelateFaults(check BaseCheck, base BaseSource, head *types.ServiceDeclarati
 			}) {
 				continue
 			}
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: written[relation],
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: source.field,
 				Message: fmt.Sprintf("the head writes the relation %s#%s for each row of %s, and the base does not write it: the runtime writes its tuple only for the rows that the head makes, so the rows that the base made, and the rows that it makes during the rollout, get none, and a permission through %s denies them. Declare a schema change of kind relate for %s and the relation %s, with its expand step at the end of the schema history; its relate job gives each row the tuple", entity.ResourceType, relation, entity.Name, relation, entity.Name, relation),
 				Declare: []SuggestedChange{{ID: kebab(entity.Name) + "-" + kebab(relation) + "-relate", Kind: "relate", Entity: entity.Name, Needs: "relation: " + relation, Phase: "expand"}}})
+		}
+		for _, relation := range callers {
+			if slices.Contains(wasCallers, relation) {
+				continue
+			}
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name,
+				Message: fmt.Sprintf("the head writes the relation %s#%s from the caller of each create of %s, and the base does not write it: the rows that the base made, and the rows that it makes during the rollout, get no tuple of it, and a permission through %s denies them. No row holds the caller of its create, so no relate step gives them the tuple. Give the permission another path, through a relation that the rows of %s get: the relation of a relationship whose subject is a field that the rows hold, of a reference, or tenant, each with its relate step", entity.ResourceType, relation, entity.Name, relation, entity.Name)})
 		}
 	}
 	return faults, nil
 }
 
+// callerRelations gives, in their declared order, the relation of each relationship of the entity whose subject is the
+// caller of the create, which the runtime writes for each row that a create makes and which no row holds.
+func callerRelations(entity types.Entity) []string {
+	var relations []string
+	for _, r := range entity.Relationships {
+		if r.SubjectSource == types.SubjectSourceCaller && r.Relation != "" && !slices.Contains(relations, r.Relation) {
+			relations = append(relations, r.Relation)
+		}
+	}
+	return relations
+}
+
+// writtenRelation is the source of a relation that the runtime writes for each row: its kind (field, reference or
+// tenant) and the field that holds its subject, or empty for tenant.
+type writtenRelation struct{ kind, field string }
+
 // writtenRelations gives each relation that the runtime writes for each row of the entity, as the command generator
-// writes the tuples of a row, with the field that holds its subject, or empty for the relation tenant: the relation
-// of a relationship whose subject is a field, the relation of a reference to an entity with a resource type, and the
-// relation tenant when the schema gives the resource type of the entity the relation tenant of the subject type tenant.
-func writtenRelations(service *types.ServiceDeclaration, entity types.Entity, schema *declaration.AuthzSchema) map[string]string {
-	written := map[string]string{}
+// writes the tuples of a row, with its source: the relation of a relationship whose subject is a field, the relation
+// of a reference to an entity with a resource type, and the relation tenant when the schema gives the resource type of
+// the entity the relation tenant of the subject type tenant.
+func writtenRelations(service *types.ServiceDeclaration, entity types.Entity, schema *declaration.AuthzSchema) map[string]writtenRelation {
+	written := map[string]writtenRelation{}
 	for _, r := range entity.Relationships {
 		if r.SubjectSource == types.SubjectSourceField && r.Relation != "" {
-			written[r.Relation] = r.SubjectField
+			written[r.Relation] = writtenRelation{kind: "field", field: r.SubjectField}
 		}
 	}
 	for _, f := range entity.Fields {
@@ -1979,12 +2031,50 @@ func writtenRelations(service *types.ServiceDeclaration, entity types.Entity, sc
 		}
 		if to, ok := findStoredEntity(service, f.To); ok && to.ResourceType != "" {
 			if _, taken := written[ref.Relation]; !taken {
-				written[ref.Relation] = f.Name
+				written[ref.Relation] = writtenRelation{kind: "reference", field: f.Name}
 			}
 		}
 	}
 	if _, taken := written["tenant"]; !taken && schema.RelationAdmits(entity.ResourceType, "tenant", "tenant") {
-		written["tenant"] = ""
+		written["tenant"] = writtenRelation{kind: "tenant"}
 	}
 	return written
+}
+
+// newRenames gives the function that maps the name of a field of the entity in the head to its name in the base: back
+// through each rename of the entity that the head declares and the base does not, the last in the schema history
+// first, as collectionIndexes undoes renames. A rename with no step yet comes after each one with a step. Empty stays
+// empty.
+func newRenames(base, head *types.ServiceDeclaration, entity string) func(string) string {
+	known := map[string]bool{}
+	for _, change := range base.SchemaChanges {
+		known[change.ID] = true
+	}
+	position := map[string]int{}
+	for i, step := range head.SchemaHistory {
+		if _, seen := position[step.Change]; !seen {
+			position[step.Change] = i
+		}
+	}
+	at := func(change types.SchemaChange) int {
+		if i, ok := position[change.ID]; ok {
+			return i
+		}
+		return len(head.SchemaHistory)
+	}
+	var renames []types.SchemaChange
+	for _, change := range head.SchemaChanges {
+		if change.Kind == "rename" && change.Entity == entity && !known[change.ID] {
+			renames = append(renames, change)
+		}
+	}
+	slices.SortStableFunc(renames, func(a, b types.SchemaChange) int { return at(a) - at(b) })
+	return func(field string) string {
+		for i := len(renames) - 1; i >= 0 && field != ""; i-- {
+			if renames[i].Field == field {
+				field = renames[i].From
+			}
+		}
+		return field
+	}
 }

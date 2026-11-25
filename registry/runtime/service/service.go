@@ -46,6 +46,10 @@ type Parts struct {
 	// Service is the name of the service, and DeclarationVersion the SHA-256 of its declaration, which each audit row
 	// carries.
 	Service, DeclarationVersion string
+	// Instance is the instance identity of the process that the generated HTTP telemetry of the service holds, a UUID
+	// v4 in lower case. New starts the telemetry runtime with it (otel.NewWithInstance), so the lines of the HTTP layer
+	// and of the runtime of one process name one instance. Empty gives the telemetry runtime an identity of its own.
+	Instance string
 	// SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
 	// trigger; the command runtime sets the writer marker to them in each transaction that writes
 	// (ST-SUP-RC01-OC23).
@@ -289,7 +293,14 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.authz, err = p.NewAuthz(svc.pool, svc.provider, svc.queue); err != nil {
 		return nil, err
 	}
-	if svc.telemetry, err = otel.New(p.Service, probe.SpanNames()...); err != nil {
+	// The telemetry runtime takes the instance identity of the HTTP telemetry of the process, when the generated code
+	// gives it, so each line of one process names one instance (core49 follow-up).
+	if p.Instance != "" {
+		svc.telemetry, err = otel.NewWithInstance(p.Service, p.Instance, probe.SpanNames()...)
+	} else {
+		svc.telemetry, err = otel.New(p.Service, probe.SpanNames()...)
+	}
+	if err != nil {
 		return nil, err
 	}
 	identifyLog(svc.telemetry.Service(), svc.telemetry.Instance())

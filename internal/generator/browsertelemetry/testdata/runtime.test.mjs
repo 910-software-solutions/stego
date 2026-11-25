@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {readFileSync} from 'node:fs';
 import {createBrowserTelemetry,RootTraceIdGenerator} from './telemetry/index.js';
 const csrf='c'.repeat(43);
 const parent='0af7651916cd43dd8448eb211c80319c';
@@ -276,6 +277,35 @@ test('ST-SUP-RC03-OC13-T04 An option does not enable any signal when the page ha
   try {
    assert.deepEqual(await exportedPaths(t, calls), [], 'settings: '+String(settings));
    assert.equal(await exportedTraces(t, calls, spread(10)), 0);
+  } finally {await t.shutdown();}
+ }
+});
+
+// The shared vectors of the TraceIdRatio rule, which the browser relay of otel-tracing checks against its own rule
+// (ST-SUP-RC17-OC15-T03). Each vector holds the decision of the pinned sampler, and the emitted runtime exports a root
+// span of the trace ID exactly when the vector says that it is sampled.
+test('ST-SUP-RC17-OC15-T04 The shared vectors are the decisions of the sampler of the browser runtime', async()=>{
+ const {TraceIdRatioBasedSampler,SamplingDecision}=await import('@opentelemetry/sdk-trace-base');
+ const vectors=JSON.parse(readFileSync(new URL('./browser_sampler_vectors.json', import.meta.url),'utf8'));
+ assert.equal(vectors.source,'@opentelemetry/sdk-trace-base 2.10.0 TraceIdRatioBasedSampler');
+ const pinned=JSON.parse(readFileSync(new URL('./node_modules/@opentelemetry/sdk-trace-base/package.json', import.meta.url),'utf8'));
+ assert.equal(pinned.version,'2.10.0');
+ assert.ok(vectors.cases.length>=100&&vectors.cases.some(c=>c.sampled)&&vectors.cases.some(c=>!c.sampled));
+ for (const c of vectors.cases) {
+  const decision=new TraceIdRatioBasedSampler(c.ratio).shouldSample(undefined,c.trace_id).decision;
+  assert.equal(decision===SamplingDecision.RECORD_AND_SAMPLED,c.sampled,`${c.trace_id} at the ratio ${c.ratio}`);
+ }
+ for (const ratio of [...new Set(vectors.cases.map(c=>c.ratio))]) {
+  const cases=vectors.cases.filter(c=>c.ratio===ratio);
+  const calls=setup();deployment({version:1,traces:true,logs:true,metrics:true,sampleRatio:ratio});
+  const t=createBrowserTelemetry({});
+  try {
+   const ids=cases.map(c=>c.trace_id);
+   const exported=new Set();
+   for (const id of ids) {t.beginTrace(id);t.tracer.startSpan('sampled').end();await t.forceFlush();}
+   const bodies=calls.filter(c=>c.options.method==='POST'&&c.url.endsWith('/traces')).map(c=>Buffer.from(c.options.body));
+   for (const id of ids) if (bodies.some(b=>b.includes(Buffer.from(id,'hex')))) exported.add(id);
+   for (const c of cases) assert.equal(exported.has(c.trace_id),c.sampled,`${c.trace_id} at the ratio ${ratio} through the emitted runtime`);
   } finally {await t.shutdown();}
  }
 });

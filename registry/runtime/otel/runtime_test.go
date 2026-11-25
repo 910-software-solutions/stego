@@ -1365,3 +1365,36 @@ func TestOperationSpan(t *testing.T) {
 		}
 	})
 }
+
+func TestOneInstancePerProcess(t *testing.T) {
+	t.Run("ST-SUP-RP03-LC16-T10 A runtime started with the instance identity of the process names that identity on each signal and line", func(t *testing.T) {
+		clearEnvironment(t)
+		const instance = "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+		r, err := NewWithInstance("records", instance)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if r.Instance() != instance || r.console == nil || r.console.instance != instance {
+			t.Fatalf("the runtime names the instance %q and its console %q, want %q", r.Instance(), r.console.instance, instance)
+		}
+		if value, ok := r.resource.Set().Value("service.instance.id"); !ok || value.AsString() != instance {
+			t.Fatalf("the resource of the signals names the instance %v, want %q", value, instance)
+		}
+		// New still gives each runtime an identity of its own (ST-SUP-RC17-OC19).
+		other, err := New("records")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close()
+		if other.Instance() == instance || !instancePattern.MatchString(other.Instance()) {
+			t.Fatalf("New gave the instance %q", other.Instance())
+		}
+		// A value that is not a UUID v4 in lower case is refused, with text that does not hold it.
+		for _, bad := range []string{"", "host-01", strings.ToUpper(instance), "3f2a1b4c-5d6e-1f70-8a9b-0c1d2e3f4a5b", instance + "\n"} {
+			if refused, err := NewWithInstance("records", bad); err == nil || refused != nil || (bad != "" && strings.Contains(err.Error(), bad)) {
+				t.Fatalf("NewWithInstance(%q) gave %v, %v; want a refusal that does not hold the value", bad, refused, err)
+			}
+		}
+	})
+}

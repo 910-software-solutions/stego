@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -145,15 +146,35 @@ func New(service string, operations ...string) (*Runtime, error) {
 	return newRuntime(service, context.WithTimeout, operations...)
 }
 
+// NewWithInstance is New with the instance identity that another telemetry runtime of the same process holds
+// already, such as the generated HTTP telemetry of the service, so that each line and each signal of one process
+// names one instance (ST-SUP-RP03-LC16; core49 follow-up). The identity must be a random UUID v4 in lower case, as the
+// runtimes make it (ST-SUP-RC17-OC13); another value is refused with fixed text that does not hold it.
+func NewWithInstance(service, instance string, operations ...string) (*Runtime, error) {
+	if !instancePattern.MatchString(instance) {
+		return nil, errors.New("the telemetry instance identity is not a UUID v4 in lower case")
+	}
+	return startRuntime(service, instance, context.WithTimeout, operations...)
+}
+
+// instancePattern is the form of an instance identity: a UUID v4 in lower case.
+var instancePattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 // newRuntime is New with the clock of the export and shutdown bounds.
-func newRuntime(service string, bound deadline, operations ...string) (_ *Runtime, err error) {
+func newRuntime(service string, bound deadline, operations ...string) (*Runtime, error) {
+	return startRuntime(service, "", bound, operations...)
+}
+
+// startRuntime is newRuntime with the instance identity of the process, or empty for a new random one.
+func startRuntime(service, instance string, bound deadline, operations ...string) (_ *Runtime, err error) {
 	values, err := readSettings(service, os.Environ())
 	if err != nil {
 		return nil, err
 	}
-	instance, err := newInstanceID(rand.Reader)
-	if err != nil {
-		return nil, err
+	if instance == "" {
+		if instance, err = newInstanceID(rand.Reader); err != nil {
+			return nil, err
+		}
 	}
 	r := &Runtime{service: values.service, instance: instance, resource: serviceResource(values.service, instance), deadline: bound}
 	if err := r.register(operations); err != nil {

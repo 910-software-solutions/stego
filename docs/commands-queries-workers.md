@@ -1666,6 +1666,22 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.196.0
+
+- Each line of one process names one `service.instance.id` (core49
+  follow-up). Before, the HTTP telemetry of otel-tracing and the runtime of
+  the service each made an instance identity, so the access lines and the
+  lines of the runtime of one process named two. `otel.NewWithInstance`
+  starts the telemetry runtime with the identity that it is given, and
+  refuses an identity that is not a UUID v4 in lower case.
+  `service.Parts.Instance` gives it to `service.New`; with no value the
+  runtime makes an identity of its own, as before. The generated
+  `NewService` of rest-crud 3.262.0, rpc-service 1.262.0 and
+  browser-service 1.262.0 takes the runtime of otel-tracing and gives the
+  runtime of the service its identity.
+- apidiff against v0.195.0: compatible (added `otel.NewWithInstance` and
+  `service.Parts.Instance`).
+
 ### Release notes for runtime v0.195.0
 
 - Each JSON line of the runtime has one form (walkthrough 25, L-1; see

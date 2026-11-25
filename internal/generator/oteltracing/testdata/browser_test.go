@@ -3,7 +3,11 @@ package tracing
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -227,8 +231,52 @@ func TestBrowserRelayDeploymentRatio(t *testing.T) {
 		if count := pending(); count != 0 {
 			t.Fatal("the relay exported a span that the ratio does not sample:", count)
 		}
-		if !browserSampled(traceID(0), 1) || browserSampled(traceID(0xffffffff), 1) || browserSampled(traceID(0), 0) {
+		if !browserSampled(traceID(0), 1) || !browserSampled(traceID(0xffffffff), 1) || browserSampled(traceID(0), 0) {
 			t.Fatal("the ratio rule differs from the browser TraceIdRatio rule at its ends")
+		}
+	})
+}
+
+// samplerVectors are the shared vectors of the TraceIdRatio rule: trace IDs and ratios with the decision of the
+// TraceIdRatioBasedSampler of @opentelemetry/sdk-trace-base at the version that the browser runtime pins. The Node
+// test of the browser runtime checks the same file against that sampler (ST-SUP-RC17-OC15-T04).
+type samplerVectors struct {
+	Source string `json:"source"`
+	Cases  []struct {
+		TraceID string  `json:"trace_id"`
+		Ratio   float64 `json:"ratio"`
+		Sampled bool    `json:"sampled"`
+	} `json:"cases"`
+}
+
+func TestBrowserRelaySamplerVectors(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC15-T03 The relay rule gives the decision of the browser sampler for each shared vector", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("testdata", "browser_sampler_vectors.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var vectors samplerVectors
+		if err := json.Unmarshal(data, &vectors); err != nil {
+			t.Fatal(err)
+		}
+		if vectors.Source != "@opentelemetry/sdk-trace-base 2.10.0 TraceIdRatioBasedSampler" || len(vectors.Cases) < 100 {
+			t.Fatalf("the vectors are not those of the pinned browser sampler: %q, %d cases", vectors.Source, len(vectors.Cases))
+		}
+		sampled := 0
+		for _, c := range vectors.Cases {
+			id, err := hex.DecodeString(c.TraceID)
+			if err != nil || len(id) != 16 {
+				t.Fatalf("the vector trace ID %q is not 16 bytes of hex", c.TraceID)
+			}
+			if got := browserSampled(id, c.Ratio); got != c.Sampled {
+				t.Errorf("trace ID %s at the ratio %v: the relay rule gives %v, the browser sampler %v", c.TraceID, c.Ratio, got, c.Sampled)
+			}
+			if c.Sampled {
+				sampled++
+			}
+		}
+		if sampled == 0 || sampled == len(vectors.Cases) {
+			t.Fatalf("the vectors hold %d sampled cases of %d, so they test one decision only", sampled, len(vectors.Cases))
 		}
 	})
 }
