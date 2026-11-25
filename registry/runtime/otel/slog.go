@@ -6,11 +6,17 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 )
 
 // SlogEvent is the event name of a log/slog line whose message is a text and that names no event of its own.
@@ -26,10 +32,12 @@ var eventName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`)
 
 // SlogHandler is the log/slog handler of a process of the runtime (ST-SUP-RP03-LC16; walkthrough 21, U-E): it writes
 // each record of level INFO or higher as one JSON line on its output, in the format of the console lines of the log
-// provider, so that no line of the runtime is plain text. The line holds the timestamp, the severity, the event
-// name, the message and the attributes. The event name is the value of the attribute SlogEventKey when it has the
+// provider, so that no line of the runtime is plain text. The line has the one form of internal/logline (walkthrough
+// 25, L-1): the timestamp in UTC, the severity, the service name and the instance identity (SetIdentity), the event
+// name, the message, the trace and the span of the context, and the attributes. The event name is the value of the attribute SlogEventKey when it has the
 // form of an event name; else the message, when it has that form, such as command.fill.failed; else SlogEvent. Only a
-// line of a package of the runtime names its event: a line of other code, such as a fill, gets SlogEvent. Each
+// line of a package of the runtime names its event, and a line of a generated package the event of generatedEvents
+// that it writes: another line of other code, such as of a fill, gets SlogEvent. Each
 // attribute key gets the prefix stego., as the attributes of the runtime's records have it, and the keys of a group
 // are joined with a dot. A line holds at most SlogAttributeLimit attributes of at most SlogValueLimit characters each.
 // The handler writes the values that the caller gives, so a caller gives no value of a
@@ -42,10 +50,63 @@ type SlogHandler struct {
 	level slog.Level
 }
 
-// lockedWriter writes each line of all the handlers of one output in one call, one line at a time.
+// lockedWriter writes each line of all the handlers of one output in one call, one line at a time. It holds the
+// identity of the writer that the lines name, which SetIdentity gives once the telemetry runtime started.
 type lockedWriter struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu       sync.Mutex
+	out      io.Writer
+	identity atomic.Pointer[slogIdentity]
+}
+
+// slogIdentity is the service name and the instance identity of the lines of a handler.
+type slogIdentity struct{ service, instance string }
+
+// SetIdentity gives the service name and the instance identity that each later line of the handler, and of each
+// handler that WithAttrs and WithGroup made from it, names (walkthrough 25, L-1): the start of the service and the
+// migration job give those of the telemetry runtime (otel.Runtime.Service and Instance). Before it, a line names the
+// service of OTEL_SERVICE_NAME, or unknown_service, and no instance.
+func (h *SlogHandler) SetIdentity(service, instance string) {
+	h.out.identity.Store(&slogIdentity{service: service, instance: instance})
+}
+
+// generatedEvents are the event names that a line of log/slog of code outside the runtime may name, each with the
+// generated packages that write it: the line of the HTTP server of main (main) and of the gRPC server of the generated
+// transport (a package path that ends in /transport) that listens, service.listening, and the line of the audit sink
+// of the generated runtime wiring (/internal/stegoruntime), service.audit_sink.selected. A line of another package,
+// such as of a fill, cannot name them (security review of PR #496, L2).
+var generatedEvents = map[string][]string{
+	"service.listening":           {"main", "/transport"},
+	"service.audit_sink.selected": {"/internal/stegoruntime"},
+}
+
+// GeneratedEvent tells whether a line of log/slog of code outside the runtime may name the event name: one of the
+// fixed events of the generated code (security review of PR #496, I1).
+func GeneratedEvent(name string) bool {
+	_, ok := generatedEvents[name]
+	return ok
+}
+
+// generatedSource tells whether the function function, as runtime.Frame.Function gives it, is of a generated package
+// that writes the event: the package main, or a package whose path ends in the suffix of the event and has no
+// segment fills, where the fills of a service are.
+func generatedSource(function, event string) bool {
+	pkg := function
+	if slash := strings.LastIndex(pkg, "/"); slash >= 0 {
+		if dot := strings.Index(pkg[slash:], "."); dot >= 0 {
+			pkg = pkg[:slash+dot]
+		}
+	} else if dot := strings.Index(pkg, "."); dot >= 0 {
+		pkg = pkg[:dot]
+	}
+	if strings.Contains("/"+pkg+"/", "/fills/") {
+		return false
+	}
+	for _, suffix := range generatedEvents[event] {
+		if (suffix == "main" && pkg == "main") || (suffix != "main" && strings.HasSuffix(pkg, suffix)) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewSlogHandler gives the handler that writes its lines of level INFO or higher on out.
@@ -132,7 +193,7 @@ func qualified(groups []string, attrs []slog.Attr) []slog.Attr {
 }
 
 // Handle writes the line of record.
-func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
+func (h *SlogHandler) Handle(ctx context.Context, record slog.Record) error {
 	event := ""
 	attrs := append([]slog.Attr{}, h.attrs...)
 	var own []slog.Attr
@@ -140,8 +201,9 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 	// name stego.log, so it cannot pass as an event of the runtime (security review of PR #485, I1).
 	runtimeLine := fromRuntime(record)
 	record.Attrs(func(a slog.Attr) bool {
-		if runtimeLine && len(h.groups) == 0 && a.Key == SlogEventKey && event == "" {
-			if v := a.Value.Resolve(); v.Kind() == slog.KindString && eventName.MatchString(v.String()) {
+		if len(h.groups) == 0 && a.Key == SlogEventKey && event == "" {
+			if v := a.Value.Resolve(); v.Kind() == slog.KindString && eventName.MatchString(v.String()) &&
+				(runtimeLine || (record.Source() != nil && generatedSource(record.Source().Function, v.String()))) {
 				event = v.String()
 				return true
 			}
@@ -156,27 +218,23 @@ func (h *SlogHandler) Handle(_ context.Context, record slog.Record) error {
 			event = record.Message
 		}
 	}
-	at := record.Time
-	if at.IsZero() {
-		at = time.Now()
+	service, instance := os.Getenv("OTEL_SERVICE_NAME"), ""
+	if id := h.out.identity.Load(); id != nil {
+		service, instance = id.service, id.instance
 	}
-	b := make([]byte, 0, 256)
-	b = append(b, `{"timestamp":`...)
-	b = appendJSONText(b, at.UTC().Format(time.RFC3339Nano))
-	b = append(b, `,"severity":`...)
-	b = appendJSONText(b, slogSeverity(record.Level))
-	b = append(b, `,"event.name":`...)
-	b = appendJSONText(b, event)
-	b = append(b, `,"message":`...)
-	b = appendJSONText(b, record.Message)
-	first, written := true, 0
+	head := logline.Head{Time: record.Time, Severity: slogSeverity(record.Level), Service: service, Instance: instance,
+		Event: event, Message: record.Message}
+	if ctx != nil {
+		if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+			head.TraceID, head.SpanID = sc.TraceID().String(), sc.SpanID().String()
+		}
+	}
+	b := logline.AppendHead(make([]byte, 0, 256), head)
+	written, seen := 0, map[string]bool{}
 	for _, a := range attrs {
-		b = appendSlogAttr(b, "stego", a, &first, &written)
+		b = appendSlogAttr(b, "stego", a, &written, seen)
 	}
-	if !first {
-		b = append(b, '}')
-	}
-	b = append(b, '}', '\n')
+	b = logline.AppendEnd(b, written)
 	h.out.mu.Lock()
 	defer h.out.mu.Unlock()
 	_, err := h.out.out.Write(b)
@@ -197,9 +255,9 @@ func slogSeverity(level slog.Level) string {
 }
 
 // appendSlogAttr appends the attribute a under the key prefix: a group gives each of its attributes under the prefix
-// and its key, and an empty attribute gives nothing. first tells whether no attribute is written yet, which opens the
-// object of the attributes.
-func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool, written *int) []byte {
+// and its key, and an empty attribute gives nothing. written counts the attributes written, which opens the object
+// of the attributes at the first, and seen holds the keys written.
+func appendSlogAttr(b []byte, prefix string, a slog.Attr, written *int, seen map[string]bool) []byte {
 	v := a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
 		return b
@@ -214,7 +272,7 @@ func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool, written *
 	}
 	if v.Kind() == slog.KindGroup {
 		for _, member := range v.Group() {
-			b = appendSlogAttr(b, key, member, first, written)
+			b = appendSlogAttr(b, key, member, written, seen)
 		}
 		return b
 	}
@@ -222,15 +280,14 @@ func appendSlogAttr(b []byte, prefix string, a slog.Attr, first *bool, written *
 	if *written >= SlogAttributeLimit {
 		return b
 	}
-	*written++
-	if *first {
-		b = append(b, `,"attributes":{`...)
-		*first = false
-	} else {
-		b = append(b, ',')
+	// A key that the line has already, such as stego.x after x, is not written twice (security review of PR #496,
+	// I3): the first value stays.
+	if seen[logline.Key(key)] {
+		return b
 	}
-	b = appendJSONText(b, key)
-	b = append(b, ':')
+	seen[logline.Key(key)] = true
+	b = logline.AppendKey(b, *written, key)
+	*written++
 	switch v.Kind() {
 	case slog.KindBool:
 		return strconv.AppendBool(b, v.Bool())

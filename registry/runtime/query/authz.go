@@ -220,7 +220,7 @@ func (b *boundWarning) warn(ctx context.Context, entity string) {
 	count := b.count
 	b.last, b.count = now, 0
 	b.mu.Unlock()
-	slog.WarnContext(ctx, "query: an entity of small expected cardinality has more visible rows than the bound; declare it large",
+	slog.WarnContext(ctx, "query: an entity of small expected cardinality has more visible rows than the bound; declare it large", otel.SlogEventKey, "query.cardinality.exceeded",
 		"entity", entity, "bound", MaxSearchKeys, "lists", count)
 }
 
@@ -862,7 +862,7 @@ var undecidedLog = authz.NewCauseLog(nil)
 func undecided(ctx context.Context, entity string, err error) error {
 	cause, transient := authz.Cause(err), authz.Transient(err)
 	if ok, held := undecidedLog.Allow(cause); ok {
-		slog.WarnContext(otel.Security(ctx), "query: the authorization provider could not decide the read", "entity", entity, "cause", cause,
+		slog.WarnContext(otel.Security(ctx), "query: the authorization provider could not decide the read", otel.SlogEventKey, "query.authz.undecided", "entity", entity, "cause", cause,
 			"transient", transient, "held_back", held)
 	}
 	return &undecidedError{transient: transient}

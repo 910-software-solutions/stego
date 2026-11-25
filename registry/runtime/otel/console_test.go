@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,9 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 )
 
 // consoleClock is a clock that only the test moves.
@@ -69,12 +73,18 @@ func consoleRuntime(t *testing.T, out *lockedBuffer, clock *consoleClock) *Runti
 	t.Helper()
 	r := &Runtime{service: "records", instance: "00000000-0000-4000-8000-000000000000"}
 	r.resource = serviceResource(r.service, r.instance)
-	r.console = newConsole(out, clock.Now, nil, consoleSkip(false))
+	r.console = newConsole(out, "records", "instance-1", clock.Now, nil, consoleSkip(false))
 	if err := r.startSignals(nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(r.Close)
 	return r
+}
+
+// dropped is the count stego.dropped of a count line, and nil for another line.
+func dropped(line map[string]any) any {
+	attrs, _ := line["attributes"].(map[string]any)
+	return attrs["stego.dropped"]
 }
 
 func emitRecord(logger otellog.Logger, severity otellog.Severity, event, body string, attrs ...attribute.KeyValue) {
@@ -118,7 +128,8 @@ func TestConsole(t *testing.T) {
 		attrs, _ := first["attributes"].(map[string]any)
 		if first["event.name"] != "command.consumer.run_failed" || first["severity"] != "WARN" ||
 			first["message"] != "a consuming worker's run did not commit" || first["timestamp"] == "" ||
-			attrs["worker"] != "ship-order" || attrs["attempt"] != float64(3) || attrs["cause"] != "fill_error" || len(attrs) != len(consumer) {
+			attrs["stego.worker"] != "ship-order" || attrs["stego.attempt"] != float64(3) || attrs["stego.cause"] != "fill_error" || len(attrs) != len(consumer) ||
+			first["service.name"] != "records" || first["service.instance.id"] != "instance-1" {
 			t.Fatalf("the line of the WARN record is %v", first)
 		}
 
@@ -139,7 +150,7 @@ func TestConsole(t *testing.T) {
 		}
 		lines = out.lines(t)
 		last := lines[len(lines)-1]
-		if last["event.name"] != "kafka.delivery_failed" || last["dropped"] != float64(burst-ConsoleLimit) || len(lines) != 1+ConsoleLimit+1 {
+		if last["event.name"] != "kafka.delivery_failed" || dropped(last) != float64(burst-ConsoleLimit) || len(lines) != 1+ConsoleLimit+1 {
 			t.Fatalf("after the window the last line is %v of %d lines, want the count %d of the dropped lines", last, len(lines), burst-ConsoleLimit)
 		}
 		// The window of the consumer event dropped nothing, so it has no count line; a new window writes again.
@@ -154,7 +165,7 @@ func TestConsole(t *testing.T) {
 		// No line holds a key other than the fixed keys and the attributes of its record.
 		for _, line := range lines {
 			for key := range line {
-				if !slices.Contains([]string{"timestamp", "severity", "event.name", "message", "attributes", "dropped"}, key) {
+				if !slices.Contains([]string{"timestamp", "severity", "service.name", "service.instance.id", "event.name", "message", "attributes"}, key) {
 					t.Fatalf("a console line holds the key %q", key)
 				}
 			}
@@ -197,14 +208,14 @@ func TestConsole(t *testing.T) {
 		var counts []map[string]any
 		errors := 0
 		for _, line := range out.lines(t) {
-			if _, ok := line["dropped"]; ok {
+			if dropped(line) != nil {
 				counts = append(counts, line)
 			} else if line["severity"] != "WARN" {
 				errors++
 			}
 		}
-		if errors != ConsoleLimit || len(counts) != 2 || counts[0]["severity"] != "WARN" || counts[0]["dropped"] != float64(warnings-ConsoleLimit) ||
-			counts[1]["severity"] != "ERROR" || counts[1]["dropped"] != float64(2) {
+		if errors != ConsoleLimit || len(counts) != 2 || counts[0]["severity"] != "WARN" || dropped(counts[0]) != float64(warnings-ConsoleLimit) ||
+			counts[1]["severity"] != "ERROR" || dropped(counts[1]) != float64(2) {
 			t.Fatalf("the console wrote %d ERROR and FATAL lines and the count lines %v, want %d and a WARN count of %d and an ERROR count of 2",
 				errors, counts, ConsoleLimit, warnings-ConsoleLimit)
 		}
@@ -212,7 +223,7 @@ func TestConsole(t *testing.T) {
 	t.Run("ST-SUP-RP03-LC16-T01 A full console queue drops the line, counts it, and never blocks the record", func(t *testing.T) {
 		out := &blockedWriter{release: make(chan struct{})}
 		clock := &consoleClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}
-		c := newConsole(out, clock.Now, nil, consoleSkip(false))
+		c := newConsole(out, "records", "instance-1", clock.Now, nil, consoleSkip(false))
 		r := &Runtime{service: "records", instance: "00000000-0000-4000-8000-000000000000"}
 		r.resource = serviceResource(r.service, r.instance)
 		r.console = c
@@ -254,7 +265,7 @@ func TestConsole(t *testing.T) {
 func countEvent(lines []map[string]any, event string) int {
 	n := 0
 	for _, line := range lines {
-		if line["event.name"] == event && line["dropped"] == nil {
+		if line["event.name"] == event && dropped(line) == nil {
 			n++
 		}
 	}
@@ -267,4 +278,91 @@ type blockedWriter struct{ release chan struct{} }
 func (w *blockedWriter) Write(p []byte) (int, error) {
 	<-w.release
 	return len(p), nil
+}
+
+// text gives the raw lines written so far, each with its line feed.
+func (b *lockedBuffer) text() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, line := range strings.SplitAfter(b.buf.String(), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestLineForm(t *testing.T) {
+	t.Run("ST-SUP-RP03-LC16-T08 Each line of the console and of log/slog has the one form of the lines of the runtime", func(t *testing.T) {
+		out := &lockedBuffer{}
+		clock := &consoleClock{now: time.Date(2026, 11, 22, 7, 29, 43, 822602285, time.FixedZone("EST", -5*3600))}
+		r := consoleRuntime(t, out, clock)
+		logger := r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/command")
+		// A record with attributes of the runtime and of the semantic conventions, one with no attribute, and a burst
+		// over the limit, which gives the count line at the end of the window.
+		emitRecord(logger, otellog.SeverityWarn, "command.consumer.run_failed", "a consuming worker's run did not commit",
+			attribute.String("worker", "ship-order"), attribute.Int64("attempt", 3), attribute.Bool("retry", true),
+			attribute.Float64("duration_seconds", 0.25), attribute.String("http.route", "/orders/{id}"), attribute.String("error.type", "500"))
+		emitRecord(logger, otellog.SeverityError, "kafka.delivery_failed", "a Kafka delivery failed")
+		for range ConsoleLimit + 2 {
+			emitRecord(logger, otellog.SeverityFatal, "command.fill.failed", "a fill failed")
+		}
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		clock.move(ConsoleWindow)
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		// The lines of log/slog: of the runtime with an event name, with a message that is an event name, of a group,
+		// with a span, and with no identity and with one.
+		var slogOut lockedBuffer
+		h := NewSlogHandlerAt(&slogOut, slog.LevelDebug)
+		logger2 := slog.New(h)
+		logger2.Info("the migration job started", SlogEventKey, "migrate.job.started")
+		h.SetIdentity("records", "instance-1")
+		logger2.Debug("command.fill.failed", "action", "ship", "held_back", 2)
+		logger2.Warn("command: a sealed value does not open", SlogEventKey, "command.seal.unopened", slog.Group("seal", "entity", "order"))
+		logger2.With("mode", "api").Error("plain text of a fill")
+		sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1, 2, 3}, SpanID: trace.SpanID{4, 5}, TraceFlags: trace.FlagsSampled})
+		logger2.InfoContext(trace.ContextWithSpanContext(context.Background(), sc), "the server listens", SlogEventKey, "service.listening", "address", "[::]:8080", "at", clock.Now())
+
+		lines := append(out.text(), slogOut.text()...)
+		if len(lines) != 1+1+ConsoleLimit+1+5 {
+			t.Fatalf("the console and log/slog wrote %d lines, want %d: %q", len(lines), 1+1+ConsoleLimit+1+5, lines)
+		}
+		events := map[string]bool{}
+		for _, line := range lines {
+			if err := logline.Check([]byte(line)); err != nil {
+				t.Fatalf("the line %q: %v", line, err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			events[decoded["event.name"].(string)] = true
+			if !strings.HasSuffix(decoded["timestamp"].(string), "Z") {
+				t.Fatalf("the line %q has no UTC timestamp", line)
+			}
+		}
+		for _, want := range []string{"command.consumer.run_failed", "kafka.delivery_failed", "command.fill.failed", "migrate.job.started", "command.seal.unopened", "stego.log", "service.listening"} {
+			if !events[want] {
+				t.Fatalf("no line has the event %s: %v", want, events)
+			}
+		}
+		// The form refuses the shapes that walkthrough 25 found: fields at the top level, fields under fields, a
+		// local offset, a key with no prefix, and no service name.
+		for _, bad := range []string{
+			`{"http.request.method":"GET","timestamp":"2026-11-22T02:54:43.322614534-05:00","severity":"WARN","service.name":"companies","event.name":"http.server.request.completed","message":"HTTP request completed"}` + "\n",
+			`{"timestamp":"2026-11-22T07:29:43.822602285Z","severity":"ERROR","service.name":"procurement","event.name":"worker.run.failed","message":"m","fields":{"worker":"record-jobs"}}` + "\n",
+			`{"timestamp":"2026-11-22T07:29:43.822602285-05:00","severity":"INFO","service.name":"s","event.name":"stego.log","message":"m"}` + "\n",
+			`{"timestamp":"2026-11-22T07:29:43.822602285Z","severity":"INFO","service.name":"s","event.name":"a.b","message":"m","attributes":{"worker":"w"}}` + "\n",
+			`{"timestamp":"2026-11-22T07:27:13.205904421Z","severity":"INFO","event.name":"stego.log","message":"starting server on [::]:30830"}` + "\n",
+		} {
+			if logline.Check([]byte(bad)) == nil {
+				t.Fatalf("the form takes the line %q", bad)
+			}
+		}
+	})
 }

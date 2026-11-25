@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
@@ -42,6 +43,62 @@ type consoleSink struct {
 	// level is the lowest severity of a built-in worker event that the console writes, from STEGO_LOG_LEVEL; the zero
 	// value writes each (decision on ST-SUP-Q210).
 	level Severity
+	// stopWatch ends the goroutine of watch, and watched is closed when it ended; both nil with no watch.
+	stopWatch, watched chan struct{}
+	unwatchOnce        sync.Once
+}
+
+// watch closes the windows of the rate limit that ended at each tick of ticks, so the count line of the dropped
+// lines of a window comes at the end of its window also when no later line of its event name comes (walkthrough 25,
+// L-2). stop is called when the watch ends, such as the Stop of the ticker. The watch ends at drain or unwatch.
+func (s *consoleSink) watch(ticks <-chan time.Time, stop func()) {
+	s.stopWatch, s.watched, s.unwatchOnce = make(chan struct{}), make(chan struct{}), sync.Once{}
+	go func() {
+		defer close(s.watched)
+		if stop != nil {
+			defer stop()
+		}
+		for {
+			select {
+			case <-ticks:
+				s.mu.Lock()
+				if err := s.closeWindows(false); err != nil {
+					s.builtins.failed.Add(1)
+				}
+				s.mu.Unlock()
+			case <-s.stopWatch:
+				return
+			}
+		}
+	}()
+}
+
+// stopWatching tells the watch to end, once; it does not wait.
+func (s *consoleSink) stopWatching() {
+	if s.stopWatch != nil {
+		s.unwatchOnce.Do(func() { close(s.stopWatch) })
+	}
+}
+
+// unwatched waits until the goroutine of the watch ended, or until ctx ends, and tells whether it ended. The
+// goroutine can wait in a write of a count line on a blocked standard output, so the wait is bounded by ctx, the
+// shutdown limit (ST-SUP-RP12-LC12; security review of PR #496, M1).
+func (s *consoleSink) unwatched(ctx context.Context) bool {
+	if s.watched == nil {
+		return true
+	}
+	select {
+	case <-s.watched:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// unwatch ends the watch and waits for its goroutine until ctx ends.
+func (s *consoleSink) unwatch(ctx context.Context) bool {
+	s.stopWatching()
+	return s.unwatched(ctx)
 }
 
 // budget is the key of one rate limit of the built-in events: the event name, and whether it is of severity ERROR,
@@ -108,11 +165,14 @@ func (s *consoleSink) failed() uint64  { return s.queue.failed.Load() + s.builti
 // drain writes what both queues hold, then the line of telemetry.runtime.stopped, all until ctx ends. It tells
 // whether it wrote everything.
 func (s *consoleSink) drain(ctx context.Context, stopped *record) bool {
+	// The watch ends on each path of drain, also when a queue does not drain in time, so its ticker does not
+	// outlive the stop (security review of PR #496, L1).
+	s.stopWatching()
 	ok := s.queue.drain(ctx)
 	if !s.builtins.drain(ctx) {
 		ok = false
 	}
-	if !ok {
+	if !ok || !s.unwatched(ctx) {
 		return false
 	}
 	done := make(chan struct{})
@@ -220,24 +280,14 @@ func (s *consoleSink) closeWindows(all bool) error {
 }
 
 // droppedLine is the JSON line of the lines of one built-in event name and budget that the rate limit dropped in one
-// window: the timestamp, the severity of the budget, the service name, the instance identity, the event name, the
-// message and the count.
+// window, in the form of internal/logline: the severity of the budget, the event name, the message and the count
+// stego.dropped.
 func (s *consoleSink) droppedLine(b []byte, at time.Time, event string, severity Severity, dropped uint64) []byte {
-	b = append(b, `{"timestamp":`...)
-	b = appendJSONString(b, at.UTC().Format(time.RFC3339Nano))
-	b = append(b, `,"severity":`...)
-	b = appendJSONString(b, severity.String())
-	b = append(b, `,"service.name":`...)
-	b = appendJSONString(b, s.service)
-	b = append(b, `,"service.instance.id":`...)
-	b = appendJSONString(b, s.instance)
-	b = append(b, `,"event.name":`...)
-	b = appendJSONString(b, event)
-	b = append(b, `,"message":`...)
-	b = appendJSONString(b, droppedMessage)
-	b = append(b, `,"dropped":`...)
+	b = logline.AppendHead(b, logline.Head{Time: at, Severity: severity.String(), Service: s.service, Instance: s.instance,
+		Event: event, Message: droppedMessage})
+	b = logline.AppendKey(b, 0, "dropped")
 	b = strconv.AppendUint(b, dropped, 10)
-	return append(b, '}', '\n')
+	return logline.AppendEnd(b, 1)
 }
 
 // write writes the line of one record in one write call, within the rate limit of the built-in events. The two
@@ -260,58 +310,74 @@ func (s *consoleSink) write(r *record) error {
 	return err
 }
 
-// json is the JSON line of a record: the timestamp, the severity, the service name, the instance identity, the
-// name, the stego.outcome, the histogram or count value, the correlation and the declared fields, in that order
-// (ST-SUP-RP12-LC07). A built-in line carries no tenant, principal or operation (ST-SUP-RP12-LC22).
-func (s *consoleSink) json(b []byte, r *record) []byte {
-	b = append(b, `{"timestamp":`...)
-	b = appendJSONString(b, r.time.UTC().Format(time.RFC3339Nano))
-	b = append(b, `,"severity":`...)
-	b = appendJSONString(b, r.obs.severity.String())
-	b = append(b, `,"service.name":`...)
-	b = appendJSONString(b, s.service)
-	b = append(b, `,"service.instance.id":`...)
-	b = appendJSONString(b, s.instance)
-	b = append(b, `,"event.name":`...)
-	b = appendJSONString(b, r.obs.signal)
-	if r.outcome != "" {
-		b = append(b, `,"stego.outcome":`...)
-		b = appendJSONString(b, r.outcome)
-	}
-	if text, ok := consoleValue(r); ok {
-		b = append(b, `,"value":`...)
-		b = append(b, text...)
-	}
-	if r.spanCtx.IsValid() {
-		b = append(b, `,"trace_id":`...)
-		b = appendJSONString(b, r.spanCtx.TraceID().String())
-		b = append(b, `,"span_id":`...)
-		b = appendJSONString(b, r.spanCtx.SpanID().String())
-	}
-	if r.obs.class == declared {
-		b = append(b, `,"tenant":`...)
-		b = appendJSONString(b, r.tenant)
-		b = append(b, `,"principal":`...)
-		b = appendJSONString(b, r.principal)
-		b = append(b, `,"operation":`...)
-		b = appendJSONString(b, r.operation)
-	}
-	if len(r.obs.fields) > 0 {
-		b = append(b, `,"fields":{`...)
-		for i, f := range r.obs.fields {
-			if i > 0 {
-				b = append(b, ',')
-			}
-			b = appendJSONString(b, f.name)
-			b = append(b, ':')
-			b = appendJSONValue(b, r.values[i])
-		}
-		b = append(b, '}')
-	}
-	return append(b, '}', '\n')
+// consoleAttr is one attribute of the line of a record, with its key on the line.
+type consoleAttr struct {
+	key   string
+	text  string
+	value *Value
+	raw   []byte
 }
 
-// logfmt is the logfmt line of a record, with the keys of the JSON line and each declared field as fields.<name>.
+// attrs gives the attributes of the line of a record, in their order (walkthrough 25, L-1): stego.outcome, the
+// histogram or count value stego.value, of a declared observation stego.tenant, stego.principal and
+// stego.operation, and the fields: of a built-in observation each as stego.<name>, such as stego.worker, and of a
+// declared observation each as stego.field.<name>, so no declared field takes a key of the runtime.
+func (s *consoleSink) attrs(r *record) []consoleAttr {
+	var out []consoleAttr
+	if r.outcome != "" {
+		out = append(out, consoleAttr{key: "stego.outcome", text: r.outcome})
+	}
+	if text, ok := consoleValue(r); ok {
+		out = append(out, consoleAttr{key: "stego.value", raw: text})
+	}
+	if r.obs.class == declared {
+		out = append(out, consoleAttr{key: "stego.tenant", text: r.tenant}, consoleAttr{key: "stego.principal", text: r.principal},
+			consoleAttr{key: "stego.operation", text: r.operation})
+	}
+	for i, f := range r.obs.fields {
+		key := "stego." + f.name
+		if r.obs.class == declared {
+			key = "stego.field." + f.name
+		}
+		out = append(out, consoleAttr{key: key, value: &r.values[i]})
+	}
+	return out
+}
+
+// head is the start of the line of a record: the timestamp, the severity, the service name, the instance identity,
+// the event name, the message and the trace and span of the record.
+func (s *consoleSink) head(r *record) logline.Head {
+	h := logline.Head{Time: r.time, Severity: r.obs.severity.String(), Service: s.service, Instance: s.instance,
+		Event: r.obs.signal, Message: r.obs.message}
+	if h.Message == "" {
+		h.Message = r.obs.signal
+	}
+	if r.spanCtx.IsValid() {
+		h.TraceID, h.SpanID = r.spanCtx.TraceID().String(), r.spanCtx.SpanID().String()
+	}
+	return h
+}
+
+// json is the JSON line of a record in the form of internal/logline (ST-SUP-RP12-LC07, ST-SUP-RP12-LC22; walkthrough
+// 25, L-1). A built-in line carries no tenant, principal or operation (ST-SUP-RP12-LC22).
+func (s *consoleSink) json(b []byte, r *record) []byte {
+	b = logline.AppendHead(b, s.head(r))
+	attrs := s.attrs(r)
+	for i, a := range attrs {
+		b = logline.AppendKey(b, i, a.key)
+		switch {
+		case a.raw != nil:
+			b = append(b, a.raw...)
+		case a.value != nil:
+			b = appendJSONValue(b, *a.value)
+		default:
+			b = logline.AppendText(b, a.text)
+		}
+	}
+	return logline.AppendEnd(b, len(attrs))
+}
+
+// logfmt is the logfmt line of a record, with the keys of the JSON line and each attribute under its key.
 func (s *consoleSink) logfmt(b []byte, r *record) []byte {
 	pair := func(b []byte, key, value string) []byte {
 		if len(b) > 0 {
@@ -321,28 +387,26 @@ func (s *consoleSink) logfmt(b []byte, r *record) []byte {
 		b = append(b, '=')
 		return appendLogfmtValue(b, value)
 	}
-	b = pair(b, "timestamp", r.time.UTC().Format(time.RFC3339Nano))
-	b = pair(b, "severity", r.obs.severity.String())
-	b = pair(b, "service.name", s.service)
-	b = pair(b, "service.instance.id", s.instance)
-	b = pair(b, "event.name", r.obs.signal)
-	if r.outcome != "" {
-		b = pair(b, "stego.outcome", r.outcome)
+	h := s.head(r)
+	b = pair(b, "timestamp", h.Time.UTC().Format(time.RFC3339Nano))
+	b = pair(b, "severity", h.Severity)
+	b = pair(b, "service.name", h.Service)
+	b = pair(b, "service.instance.id", h.Instance)
+	b = pair(b, "event.name", h.Event)
+	b = pair(b, "message", h.Message)
+	if h.TraceID != "" {
+		b = pair(b, "trace_id", h.TraceID)
+		b = pair(b, "span_id", h.SpanID)
 	}
-	if text, ok := consoleValue(r); ok {
-		b = pair(b, "value", string(text))
-	}
-	if r.spanCtx.IsValid() {
-		b = pair(b, "trace_id", r.spanCtx.TraceID().String())
-		b = pair(b, "span_id", r.spanCtx.SpanID().String())
-	}
-	if r.obs.class == declared {
-		b = pair(b, "tenant", r.tenant)
-		b = pair(b, "principal", r.principal)
-		b = pair(b, "operation", r.operation)
-	}
-	for i, f := range r.obs.fields {
-		b = pair(b, "fields."+f.name, r.values[i].String())
+	for _, a := range s.attrs(r) {
+		switch {
+		case a.raw != nil:
+			b = pair(b, a.key, string(a.raw))
+		case a.value != nil:
+			b = pair(b, a.key, a.value.String())
+		default:
+			b = pair(b, a.key, a.text)
+		}
 	}
 	return append(b, '\n')
 }
@@ -368,43 +432,8 @@ func appendJSONValue(b []byte, v Value) []byte {
 	return appendJSONString(b, v.text)
 }
 
-// appendJSONString appends text as a JSON string. Text is valid UTF-8 here; an invalid byte becomes U+FFFD.
-func appendJSONString(b []byte, text string) []byte {
-	const hex = "0123456789abcdef"
-	b = append(b, '"')
-	for i := 0; i < len(text); {
-		c := text[i]
-		if c < utf8.RuneSelf {
-			switch {
-			case c == '"' || c == '\\':
-				b = append(b, '\\', c)
-			case c == '\n':
-				b = append(b, '\\', 'n')
-			case c == '\r':
-				b = append(b, '\\', 'r')
-			case c == '\t':
-				b = append(b, '\\', 't')
-			case c < 0x20 || c == 0x7f:
-				b = append(b, '\\', 'u', '0', '0', hex[c>>4], hex[c&0xf])
-			default:
-				b = append(b, c)
-			}
-			i++
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(text[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			b = append(b, `�`...)
-		case r == ' ' || r == ' ':
-			b = append(b, '\\', 'u', '2', '0', '2', hex[r&0xf])
-		default:
-			b = append(b, text[i:i+size]...)
-		}
-		i += size
-	}
-	return append(b, '"')
-}
+// appendJSONString appends text as a JSON string (logline.AppendText).
+func appendJSONString(b []byte, text string) []byte { return logline.AppendText(b, text) }
 
 // appendLogfmtValue appends a logfmt value, quoted when it is empty or holds a space, a quote, an equals sign or a
 // control character.

@@ -30,7 +30,9 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
@@ -612,9 +614,16 @@ func probeLines(output, name string) []map[string]any {
 		if json.Unmarshal([]byte(line), &document) != nil {
 			continue
 		}
+		// The fields of a line are under attributes with the prefix stego. (walkthrough 25, L-1): the checks read them
+		// by their names, such as change and value.
+		if attrs, _ := document["attributes"].(map[string]any); attrs != nil {
+			for key, value := range attrs {
+				document[strings.TrimPrefix(key, "stego.")] = value
+			}
+		}
 		// The tests of the backfill read the lines of the rename; the backfill of the retype of the same job reports
 		// under its own change.
-		if fields, _ := document["fields"].(map[string]any); fields != nil && fields["change"] != nil && fields["change"] != change {
+		if document["change"] != nil && document["change"] != change {
 			continue
 		}
 		lines = append(lines, document)
@@ -1260,7 +1269,7 @@ func TestContract(t *testing.T) {
 		// v1 can no longer start: its migration job refuses the ledger, and an api replica alerts the schema
 		// mismatch, as the start of a pod alerts and does not refuse (decision on finding F10, owner, 2026-11-13).
 		j := d.migrate("v1")
-		if err := j.wait(time.Minute); err == nil || !strings.Contains(j.out.String(), `"stage":"migrate.ledger_check"`) {
+		if err := j.wait(time.Minute); err == nil || !strings.Contains(j.out.String(), `"stego.stage":"migrate.ledger_check"`) {
 			t.Errorf("the migration job of v1 after the contract ends with %v:\n%s\nwant a refusal at its ledger check", err, j.out)
 		}
 		late := d.serve("v1")
@@ -1278,6 +1287,7 @@ func TestRelate(t *testing.T) {
 		if binary("v1r") == "" {
 			t.Fatal("the check needs STEGO_TD04_V1R: a missing result is not a pass")
 		}
+		unrelateV1R(t)
 		d := preparedWith(t, false)
 		owner, auditor := d.caller("u-owner", "t-00", "admin"), d.caller("u-auditor", "t-00")
 		create := func(a *api, name string) string {
@@ -1303,6 +1313,8 @@ func TestRelate(t *testing.T) {
 		rows = append(rows, create(v1api, "during-1"), create(v1api, "during-2"))
 		v1rapi, worker := d.serve("v1r"), d.start("v1r", "worker")
 		_ = worker
+		// A create of v1r is decided on create_organization of the service-level resource (ST-SUP-Q118).
+		d.relate(owner, "service", "user-management", "organization_creator")
 		rows = append(rows, create(v1rapi, "after-1"))
 		controller := d.start("v1r", "controller")
 		passLine := func(log *buffer, field string) bool {
@@ -1353,6 +1365,141 @@ func TestRelate(t *testing.T) {
 		}
 		if n := d.count(`SELECT count(*) FROM audit_event WHERE action = 'backfill-relation'`); n == 0 {
 			t.Error("the relate job wrote no audit row")
+		}
+	})
+}
+
+// unrelateV1R deletes the relationships of the relations and the definition that only v1r declares, which a check
+// of v1r before left in the SpiceDB that the checks share, so the migration job of v1 can write its schema again.
+func unrelateV1R(t *testing.T) {
+	t.Helper()
+	conn, err := grpc.NewClient(os.Getenv("STEGO_TEST_SPICEDB"), grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(bearer(os.Getenv("STEGO_TEST_SPICEDB_KEY"))))
+	must(t, err)
+	defer conn.Close()
+	for _, r := range [][2]string{{"organization", "tenant"}, {"organization", "approver"}, {"service", "organization_creator"}, {"tenant", ""}} {
+		_, err := v1.NewPermissionsServiceClient(conn).DeleteRelationships(context.Background(), &v1.DeleteRelationshipsRequest{
+			RelationshipFilter: &v1.RelationshipFilter{ResourceType: r[0], OptionalRelation: r[1]}})
+		// A schema of SpiceDB with no such definition or relation holds no such relationship.
+		if status.Code(err) != codes.FailedPrecondition {
+			must(t, err)
+		}
+	}
+}
+
+// relatePass tells whether a log holds the line command.relate.pass of the change with the attribute field true.
+func relatePass(log *buffer, change, field string) bool {
+	for _, line := range strings.Split(log.String(), "\n") {
+		if strings.Contains(line, "command.relate.pass") && strings.Contains(line, change) && strings.Contains(line, `"stego.`+field+`":true`) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRelateField runs the relate step of v1r that gives Organization the relation approver from the field approver
+// (decision ST-SUP-Q212 (a); walkthrough 25, P2-F), in a rolling deploy from v1. v1 sets and changes the field with no
+// tuple; v1r writes the tuple at its create and refuses a change of the field (ST-SUP-Q118). While both run, v1 moves
+// the approver of a row of v1r to another user and clears the approver of another, so the tuples are stale. After the
+// pass, each row grants view to the approver that it holds now, and to no former approver.
+func TestRelateField(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC58-T04 In a rolling deploy that relates a field, a former subject that the release before replaced loses its access, and the subject of the field gets it", func(t *testing.T) {
+		if binary("v1r") == "" {
+			t.Fatal("the check needs STEGO_TD04_V1R: a missing result is not a pass")
+		}
+		unrelateV1R(t)
+		d := preparedWith(t, false)
+		owner, anna, carl := d.caller("u-owner", "t-00", "admin"), d.caller("u-anna", "t-00"), d.caller("u-carl", "t-00")
+		create := func(a *api, name, approver string) string {
+			t.Helper()
+			r := d.send(a, owner, http.MethodPost, "/organizations", `{"name":"`+name+`","approver":"`+approver+`"}`)
+			if r.status != http.StatusCreated {
+				t.Fatalf("a create of %s through %s answered %d %s, want 201", name, a.release, r.status, r.body)
+			}
+			id, _ := r.object(t)["id"].(string)
+			// The owner of the row may edit it: the example declares no relationship owner, so the check writes it.
+			d.relate(owner, "organization", id, "owner")
+			return id
+		}
+		put := func(a *api, id, name, approver string) reply {
+			t.Helper()
+			body := `{"name":"` + name + `"}`
+			if approver != "" {
+				body = `{"name":"` + name + `","approver":"` + approver + `"}`
+			}
+			return d.send(a, owner, http.MethodPut, "/organizations/"+id, body)
+		}
+		sees := func(c caller, id string) bool {
+			t.Helper()
+			resource, err := authz.ResourceID(c.tenant, id)
+			must(t, err)
+			r, err := v1.NewPermissionsServiceClient(d.spice).CheckPermission(context.Background(), &v1.CheckPermissionRequest{
+				Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+				Resource:    &v1.ObjectReference{ObjectType: "organization", ObjectId: resource}, Permission: "view",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}})
+			must(t, err)
+			return r.Permissionship == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+		}
+		relayed := func() {
+			t.Helper()
+			for d.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND state <> 'done'`) != 0 {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		v1api := d.serve("v1")
+		// v1 has no relation approver: its create writes no tuple for the field.
+		before := create(v1api, "field-before", anna.subject)
+		if j := d.migrate("v1r"); j.wait(time.Minute) != nil {
+			t.Fatalf("the migration job of v1r failed:\n%s", j.out)
+		}
+		v1rapi, worker := d.serve("v1r"), d.start("v1r", "worker")
+		_ = worker
+		d.relate(owner, "service", "user-management", "organization_creator")
+		moved, cleared := create(v1rapi, "field-moved", anna.subject), create(v1rapi, "field-cleared", anna.subject)
+		relayed()
+		if !sees(anna, moved) || !sees(anna, cleared) || sees(anna, before) {
+			t.Fatalf("after the creates of v1r, anna sees moved %v, cleared %v and before %v; want true, true and false", sees(anna, moved), sees(anna, cleared), sees(anna, before))
+		}
+		// v1r refuses a change of the subject of the field: it is set at create only (ST-SUP-Q118).
+		if r := put(v1rapi, moved, "field-moved", carl.subject); r.status != http.StatusBadRequest {
+			t.Fatalf("a change of the approver through v1r answered %d %s, want 400", r.status, r.body)
+		}
+		// During the overlap, v1 moves the approver of one row of v1r to carl and clears the other, and changes no
+		// tuple: anna keeps her access, which is now stale.
+		for _, change := range []struct{ id, name, approver string }{{moved, "field-moved", carl.subject}, {cleared, "field-cleared", ""}} {
+			if r := put(v1api, change.id, change.name, change.approver); r.status != http.StatusOK {
+				t.Fatalf("an update of %s through v1 answered %d %s, want 200", change.name, r.status, r.body)
+			}
+		}
+		if !sees(anna, moved) || sees(carl, moved) {
+			t.Fatal("before the pass, the update of v1 changed a tuple of the relation approver")
+		}
+		controller := d.start("v1r", "controller")
+		for !relatePass(controller.log, "organization-approver-relate", "waits") {
+			time.Sleep(200 * time.Millisecond)
+		}
+		// v1 stops. Its last report and the row of the step are made old, and the controller starts again, which runs
+		// the relate job at its start.
+		v1api.stop()
+		controller.stop()
+		_, err := d.admin.Exec(`UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes' WHERE change_id = 'organization-approver-relate'`)
+		must(t, err)
+		_, err = d.admin.Exec(`UPDATE stego_schema.releases SET seen_at = seen_at - interval '1 minute' WHERE version = 'v1'`)
+		must(t, err)
+		controller = d.start("v1r", "controller")
+		for !relatePass(controller.log, "organization-approver-relate", "completed") {
+			time.Sleep(200 * time.Millisecond)
+		}
+		relayed()
+		for _, want := range []struct {
+			who  string
+			c    caller
+			id   string
+			sees bool
+		}{{"anna", anna, before, true}, {"anna", anna, moved, false}, {"carl", carl, moved, true}, {"anna", anna, cleared, false}, {"carl", carl, cleared, false}} {
+			if got := sees(want.c, want.id); got != want.sees {
+				t.Errorf("after the pass, %s sees the organization %s: %v, want %v", want.who, want.id, got, want.sees)
+			}
 		}
 	})
 }

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
 // Each running process of a release reports itself in the database, so that the contract step of a schema change
@@ -196,7 +198,7 @@ func (b *Beat) beat(parent context.Context) error {
 	if err == nil && !made {
 		// No step has made the function yet: the database has had no rename at expand, and no contract step reads
 		// the reports. The report is a quiet no-op until a step makes it.
-		slog.Debug("lease: the release report has no function yet", "release", b.release)
+		slog.Debug("lease: the release report has no function yet", otel.SlogEventKey, "lease.release_report.pending", "release", b.release)
 		return nil
 	}
 	if err == nil {
@@ -207,13 +209,13 @@ func (b *Beat) beat(parent context.Context) error {
 	case err != nil && errors.As(err, &state) && (state.SQLState() == "42883" || state.SQLState() == "3F000"):
 		// No step has made the function yet: the database has had no rename at expand, and no contract step reads
 		// the reports.
-		slog.Debug("lease: the release report has no function yet", "release", b.release)
+		slog.Debug("lease: the release report has no function yet", otel.SlogEventKey, "lease.release_report.pending", "release", b.release)
 	case err != nil && !b.failing:
 		b.failing = true
-		slog.Warn("lease: the release report failed; it is tried again", "release", b.release)
+		slog.Warn("lease: the release report failed; it is tried again", otel.SlogEventKey, "lease.release_report.failed", "release", b.release)
 	case err == nil && b.failing:
 		b.failing = false
-		slog.Info("lease: the release report works again", "release", b.release)
+		slog.Info("lease: the release report works again", otel.SlogEventKey, "lease.release_report.recovered", "release", b.release)
 	}
 	if err != nil && made {
 		return err

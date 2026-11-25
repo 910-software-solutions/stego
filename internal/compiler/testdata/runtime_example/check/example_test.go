@@ -508,7 +508,7 @@ CREATE UNIQUE INDEX org_settings_org_id_key_key ON public.org_settings (tenant_i
 				switch {
 				case change.healed && err != nil:
 					t.Fatalf("the migration job, whose texts make the object again, failed: %v\n%s", err, output)
-				case !change.healed && (err == nil || !strings.Contains(string(output), `"stage":"migrate.manifest_before_backfill"`)):
+				case !change.healed && (err == nil || !strings.Contains(string(output), `"stego.stage":"migrate.manifest_before_backfill"`)):
 					t.Fatalf("the migration job gave %v, want a refusal at the stage migrate.manifest_before_backfill:\n%s", err, output)
 				}
 			})
@@ -545,7 +545,7 @@ func TestStartFailure(t *testing.T) {
 			return kept
 		}
 		env := without(without(s.processEnv(freePort(t)), "DATABASE_URL"), "DATABASE_URL_FILE")
-		if output := run(env); !strings.Contains(output, `"stage":"service.start.setting.postgres-adapter.DATABASE_URL"`) {
+		if output := run(env); !strings.Contains(output, `"stego.stage":"service.start.setting.postgres-adapter.DATABASE_URL"`) {
 			t.Fatalf("a start with no DATABASE_URL does not name the setting in its failure record:\n%s", output)
 		}
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -553,7 +553,7 @@ func TestStartFailure(t *testing.T) {
 		closed := listener.Addr().String()
 		must(t, listener.Close())
 		unreachable := append(env, "DATABASE_URL=postgres://"+stegoruntime.RuntimeRole+":"+password+"@"+closed+"/app?sslmode=disable")
-		if output := run(unreachable); !strings.Contains(output, `"stage":"service.start.database"`) {
+		if output := run(unreachable); !strings.Contains(output, `"stego.stage":"service.start.database"`) {
 			t.Fatalf("a start on a closed database port does not name the database in its failure record:\n%s", output)
 		}
 	})

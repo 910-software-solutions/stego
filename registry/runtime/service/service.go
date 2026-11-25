@@ -223,6 +223,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		return nil, err
 	}
 	svc := &Service{parts: p}
+	identifyLog(p.Service, "")
 	defer func() {
 		// What a failed step left open is closed.
 		if err != nil {
@@ -291,6 +292,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.telemetry, err = otel.New(p.Service, probe.SpanNames()...); err != nil {
 		return nil, err
 	}
+	identifyLog(svc.telemetry.Service(), svc.telemetry.Instance())
 	builtins, err := probe.NewBuiltins(p.WorkerNames, nil)
 	if err != nil {
 		return nil, err
@@ -451,7 +453,7 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 	text := fmt.Sprintf("the migration ledger %s %s. Run the migration Job of this release (the service binary with the argument migrate, "+
 		"in Kubernetes the Job %s-migrate-<release> of the base) and wait until it completes; this process stops, and it starts again until then",
 		LedgerTable, state, service)
-	slog.ErrorContext(ctx, "service: "+text, "migration", release, "ledger", LedgerTable, "stage", "service.start.migration")
+	slog.ErrorContext(ctx, "service: "+text, otel.SlogEventKey, "service.start.migration_refused", "migration", release, "ledger", LedgerTable, "stage", "service.start.migration")
 	return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationPending, text), cause: cause}
 }
 
@@ -487,7 +489,7 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 			text := fmt.Sprintf("the migration ledger %s holds the digest %q for the migration %s, and this release gives the digest %q for its body. "+
 				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)
-			slog.ErrorContext(ctx, "service: "+text, "migration", name, "ledger", LedgerTable, "stage", "service.start.migration")
+			slog.ErrorContext(ctx, "service: "+text, otel.SlogEventKey, "service.start.migration_refused", "migration", name, "ledger", LedgerTable, "stage", "service.start.migration")
 			return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationChanged, text), cause: MigrationCauseDigest}
 		}
 	}
@@ -507,7 +509,7 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 	text := fmt.Sprintf("the migration ledger %s holds no row of the migration %s of this release, which the migration Job of this release applies "+
 		"before the release migration %s. Run the migration Job of this release and wait until it completes; this process stops, and it starts again until then",
 		LedgerTable, strings.Join(missing, ", "), release)
-	slog.ErrorContext(ctx, "service: "+text, "migration", missing[0], "ledger", LedgerTable, "stage", "service.start.migration")
+	slog.ErrorContext(ctx, "service: "+text, otel.SlogEventKey, "service.start.migration_refused", "migration", missing[0], "ledger", LedgerTable, "stage", "service.start.migration")
 	return &migrationError{err: fmt.Errorf("service: %w: %s", ErrMigrationPending, text), cause: MigrationCauseMissing}
 }
 
@@ -612,14 +614,14 @@ WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r
 				if slices.Contains(mismatch.Blocking, fault) {
 					text = "service: the database does not satisfy the schema manifest; the service starts not ready, and the migration job refuses it"
 				}
-				slog.ErrorContext(ctx, text, "class", class, "fault", fault)
+				slog.ErrorContext(ctx, text, otel.SlogEventKey, "service.schema_manifest.fault", "class", class, "fault", fault)
 			}
 			if !slices.Contains(classes, class) {
 				classes = append(classes, class)
 			}
 		}
 		if rest := len(mismatch.Faults) - MaxLoggedFaults; rest > 0 {
-			slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; more faults are not logged", "faults", rest)
+			slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; more faults are not logged", otel.SlogEventKey, "service.schema_manifest.faults_held", "faults", rest)
 		}
 		return classes, mismatch.Blocking, nil
 	}
@@ -665,7 +667,7 @@ func (svc *Service) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := svc.pool.PingContext(ctx); err != nil {
-		slog.WarnContext(ctx, "service: the database is not reachable", "mode", string(modes.API), "error", err)
+		slog.WarnContext(ctx, "service: the database is not reachable", otel.SlogEventKey, "service.database.unreachable", "mode", string(modes.API), "error", err)
 		return fmt.Errorf("%s: %w: %s", modes.API, modes.ErrNotReady, modes.DatabaseUnreachable)
 	}
 	return nil
@@ -962,6 +964,14 @@ func UseJSONLog() {
 		level = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(otel.NewSlogHandlerAt(os.Stderr, level)))
+}
+
+// identifyLog gives the handler of log/slog that UseJSONLog set the service name and the instance identity that its
+// lines name (walkthrough 25, L-1). It does nothing when another handler is the default.
+func identifyLog(service, instance string) {
+	if h, ok := slog.Default().Handler().(*otel.SlogHandler); ok {
+		h.SetIdentity(service, instance)
+	}
 }
 
 // StartStage gives the stage of a start that ReadSettings or New refused, for the failure record of the process,

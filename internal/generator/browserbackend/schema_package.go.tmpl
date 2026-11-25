@@ -56,6 +56,38 @@ type settingFault struct{ name string }
 
 func (f *settingFault) Error() string { return "browser session schema: invalid setting " + f.name }
 
+// FaultClass, FaultObject, FaultRemedy and CauseClass give the failure record the fault database.settings, the
+// object database, a fixed remedy and the cause invalid_setting, as the runtime of an api gives them for a refused
+// database setting (walkthrough 25, P3-11). None holds a value.
+func (f *settingFault) FaultClass() string { return "database.settings" }
+func (f *settingFault) FaultObject() string { return "database" }
+func (f *settingFault) FaultRemedy() string {
+ return "a setting of the migration job is refused: give the variable that the stage names one valid value (STEGO_MIGRATION_DATABASE_URL or its _FILE form, not the two, and a lower-case role name in STEGO_RUNTIME_DATABASE_ROLE); then run the migration Job again"
+}
+func (f *settingFault) CauseClass() string { return "invalid_setting" }
+
+// accessFault is an owner connection of the migration job that did not open, or an owner login that could not be
+// read. Its text is fixed and holds no value of the connection; it unwraps to the error of the driver, so the failure
+// record reads its SQLSTATE, such as 28P01, or its network class, and never its text. The failure record names the
+// fault database.connection, the object database and a fixed remedy, the fault and the remedy of the migration job of
+// an api for the same cause (walkthrough 25, P3-11). Stage gives database.access for it.
+type accessFault struct {
+ text string
+ err  error
+}
+
+func (f *accessFault) Error() string { return "browser session schema: " + f.text }
+func (f *accessFault) Unwrap() error { return f.err }
+func (f *accessFault) FaultClass() string { return "database.connection" }
+func (f *accessFault) FaultObject() string { return "database" }
+func (f *accessFault) FaultRemedy() string {
+ return "the migration job cannot open the database: check that PostgreSQL runs and takes connections, that the key url of the Secret <service>-database-owner names it, and that its login may connect; then run the migration Job again"
+}
+
+// CauseClass gives connection_failed, the class of a cause that the failure record cannot class from the SQLSTATE or
+// the standard library.
+func (f *accessFault) CauseClass() string { return "connection_failed" }
+
 // Stage gives the stage of a failure of Verify, Bootstrap or Migrate: database.schema for a schema fault,
 // service.start.setting.browser-backend.<variable> for a refused setting of the migration job, and database.access
 // for a connection that did not open or a login that could not be read (ST-SUP-RC02-OC57).
@@ -91,17 +123,17 @@ func Migrate(ctx context.Context) error {
  }
  ownerDB, err := storage.OpenDatabase(ownerURL)
  if err != nil {
-  return errors.New("browser session schema: the owner connection did not open")
+  return &accessFault{text: "the owner connection did not open", err: err}
  }
  defer ownerDB.Close()
  conn, err := ownerDB.Conn(ctx)
  if err != nil {
-  return errors.New("browser session schema: the owner connection did not open")
+  return &accessFault{text: "the owner connection did not open", err: err}
  }
  defer conn.Close()
  var owner, current string
  if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_userbyid(datdba), current_user FROM pg_catalog.pg_database WHERE datname=current_database()").Scan(&owner, &current); err != nil {
-  return errors.New("browser session schema: the owner login could not be read")
+  return &accessFault{text: "the owner login could not be read", err: err}
  }
  if owner != current {
   if _, err := conn.ExecContext(ctx, "SET ROLE "+quote(owner)); err != nil {

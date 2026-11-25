@@ -231,9 +231,12 @@ func start(telemetry *otel.Runtime, builtins *Builtins, setting string, stdout i
 	}
 	r := &Runtime{core: &core{builtins: builtins}, telemetry: telemetry}
 	r.console = newConsoleSink(stdout, format, telemetry.Service(), telemetry.Instance())
+	ticker := time.NewTicker(otel.ConsoleWindow / 6)
+	r.console.watch(ticker.C, ticker.Stop)
 	if telemetry.CollectorSet() {
 		otlp, err := newOTLPSink(telemetry, r.core, r.console)
 		if err != nil {
+			r.console.unwatch(context.Background())
 			r.console.queue.drain(context.Background())
 			r.console.builtins.drain(context.Background())
 			return nil, err

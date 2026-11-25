@@ -235,7 +235,7 @@ func(r *Runtime)Run(ctx context.Context)error{
  r.mu.Lock();if r.started||r.closed{r.mu.Unlock();return errors.New("gRPC runtime cannot run twice or after close")};r.started=true;r.mu.Unlock()
  defer r.Close()
  done:=make(chan error,1);go func(){done<-r.server.Serve(r.listener)}()
- slog.Info("gRPC server started","address",r.listener.Addr().String())
+ slog.Info("gRPC server started","event.name","service.listening","server","grpc","address",r.listener.Addr().String())
  select{
  case err:=<-done:if ctx.Err()!=nil||errors.Is(err,grpc.ErrServerStopped){return nil};return fmt.Errorf("gRPC serve: %w",err)
  case <-ctx.Done():

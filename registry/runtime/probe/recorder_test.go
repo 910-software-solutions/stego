@@ -62,7 +62,7 @@ func TestProbeRecorder(t *testing.T) {
 			}
 			next[worker]++
 		}
-		if got := stdout.all(); len(got) != 1 || !strings.Contains(got[0], `"seq":-1`) || other.Delivery() != (Delivery{}) {
+		if got := stdout.all(); len(got) != 1 || !strings.Contains(got[0], `"stego.field.seq":-1`) || other.Delivery() != (Delivery{}) {
 			t.Fatalf("the other runtime holds %q, want its own one emission and none of the recorder's", got)
 		}
 	})

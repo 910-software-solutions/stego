@@ -1813,7 +1813,7 @@ func TestWorkerLists(t *testing.T) {
 			!strings.Contains(read.Error(), "lists: of the command") {
 			t.Fatalf("a command handle gave %v and the run %v for an undeclared list", read, err)
 		}
-		if !strings.Contains(logs.String(), `msg="command: the call has an internal error" action=rank-users cause=internal reason="the command rank-users reads the list own of User, which its declaration does not declare`) {
+		if !strings.Contains(logs.String(), `msg="command: the call has an internal error" event.name=command.call.internal action=rank-users cause=internal reason="the command rank-users reads the list own of User, which its declaration does not declare`) {
 			t.Fatalf("the log does not name the refused list:\n%s", logs.String())
 		}
 	})
@@ -2045,7 +2045,7 @@ func TestCommandLists(t *testing.T) {
 					t.Fatalf("%s gave %v and the run %v; want 500 internal", c.action, listed, err)
 				}
 			}
-			want := fmt.Sprintf(`msg="command: a statement failed" action=%s step="read the list of-org" cause=%s sqlstate_class=%s held_back=0`, c.action, c.cause, c.class)
+			want := fmt.Sprintf(`msg="command: a statement failed" event.name=command.statement.failed action=%s step="read the list of-org" cause=%s sqlstate_class=%s held_back=0`, c.action, c.cause, c.class)
 			if got := strings.Count(logs.String(), want); got != 1 {
 				t.Fatalf("the log holds %d lines %q, want 1 (the second failure is held back):\n%s", got, want, logs.String())
 			}

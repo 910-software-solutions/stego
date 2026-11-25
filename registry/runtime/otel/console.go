@@ -11,11 +11,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 )
 
 // The bounds of the console lines of the log provider (ST-SUP-RP03-LC16).
@@ -48,19 +49,23 @@ const (
 const droppedMessage = "the console dropped lines of this event name in the last window of its rate limit"
 
 // console is the log processor that writes each record of severity WARN or higher as one JSON line to standard
-// output, whether or not an OTLP endpoint is set (ST-SUP-RP03-LC16). The line holds the timestamp, the severity,
-// the event name, the message and the attributes of the record. The records of the runtime hold no value of a
+// output, whether or not an OTLP endpoint is set (ST-SUP-RP03-LC16). The line has the one form of the lines of the
+// runtime (internal/logline; walkthrough 25, L-1): the timestamp in UTC, the severity, the service name, the instance
+// identity, the event name, the message, the trace and the span of the record, and the attributes under
+// attributes, each key with the prefix stego. or a name of the semantic conventions for HTTP and RPC. The records of the runtime hold no value of a
 // setting, no payload and no error text (ST-SUP-RP14-LC05), so the line holds none. A bounded queue takes the
 // lines: a full queue drops the line and counts it, and never blocks the record. One goroutine writes the lines and
 // keeps the rate limit of each event name.
 type console struct {
-	out   io.Writer
-	now   func() time.Time
-	skip  func(scope string) bool
-	queue chan consoleLine
-	flush chan chan struct{}
-	stop  chan struct{}
-	done  chan struct{}
+	out io.Writer
+	// service and instance name the writer on each line; they do not change after the start.
+	service, instance string
+	now               func() time.Time
+	skip              func(scope string) bool
+	queue             chan consoleLine
+	flush             chan chan struct{}
+	stop              chan struct{}
+	done              chan struct{}
 
 	dropped atomic.Uint64
 	failed  atomic.Uint64
@@ -77,6 +82,8 @@ type consoleLine struct {
 	severity otellog.Severity
 	event    string
 	message  string
+	trace    string
+	span     string
 	attrs    []attribute.KeyValue
 }
 
@@ -99,11 +106,11 @@ type consoleWindow struct {
 	dropped uint64
 }
 
-// newConsole starts the console on out. now is the clock of the rate limit; ticks tells the writer to close the
+// newConsole starts the console of the service and instance on out. now is the clock of the rate limit; ticks tells the writer to close the
 // windows that ended, and may be nil, as for a test that moves its own clock and calls ForceFlush. skip tells
 // whether the records of an instrumentation scope stay off the console.
-func newConsole(out io.Writer, now func() time.Time, ticks <-chan time.Time, skip func(scope string) bool) *console {
-	c := &console{out: out, now: now, skip: skip, queue: make(chan consoleLine, ConsoleQueue),
+func newConsole(out io.Writer, service, instance string, now func() time.Time, ticks <-chan time.Time, skip func(scope string) bool) *console {
+	c := &console{out: out, service: service, instance: instance, now: now, skip: skip, queue: make(chan consoleLine, ConsoleQueue),
 		flush: make(chan chan struct{}), stop: make(chan struct{}), done: make(chan struct{}),
 		windows: map[consoleBudget]*consoleWindow{}}
 	go c.run(ticks)
@@ -134,6 +141,9 @@ func (c *console) OnEmit(_ context.Context, record *sdklog.Record) error {
 		message: valueText(record.Body())}
 	if line.at.IsZero() {
 		line.at = record.ObservedTimestamp()
+	}
+	if record.TraceID().IsValid() && record.SpanID().IsValid() {
+		line.trace, line.span = record.TraceID().String(), record.SpanID().String()
 	}
 	if n := record.AttributesLen(); n > 0 {
 		line.attrs = make([]attribute.KeyValue, 0, n)
@@ -285,45 +295,34 @@ func (c *console) write(line []byte) {
 	}
 }
 
-// recordLine is the JSON line of a record: the timestamp, the severity, the event name, the message and the
-// attributes, in that order.
+// recordLine is the JSON line of a record in the form of internal/logline.
 func (c *console) recordLine(b []byte, line consoleLine) []byte {
-	b = appendHead(b, line.at, line.severity, line.event)
-	b = append(b, `,"message":`...)
-	b = appendJSONText(b, line.message)
-	if len(line.attrs) > 0 {
-		b = append(b, `,"attributes":{`...)
-		for i, kv := range line.attrs {
-			if i > 0 {
-				b = append(b, ',')
-			}
-			b = appendJSONText(b, string(kv.Key))
-			b = append(b, ':')
-			b = appendJSONValue(b, kv.Value)
+	b = logline.AppendHead(b, logline.Head{Time: line.at, Severity: consoleSeverity(line.severity), Service: c.service,
+		Instance: c.instance, Event: line.event, Message: line.message, TraceID: line.trace, SpanID: line.span})
+	// A key that the line has already, such as stego.x after x, is not written twice (security review of PR #496,
+	// I3): the first value stays.
+	n, seen := 0, make(map[string]bool, len(line.attrs))
+	for _, kv := range line.attrs {
+		key := logline.Key(string(kv.Key))
+		if seen[key] {
+			continue
 		}
-		b = append(b, '}')
+		seen[key] = true
+		b = logline.AppendKey(b, n, key)
+		b = appendJSONValue(b, kv.Value)
+		n++
 	}
-	return append(b, '}', '\n')
+	return logline.AppendEnd(b, n)
 }
 
 // droppedLine is the line of the lines of one event name and budget that the rate limit dropped in one window: the
-// event name, the severity of the budget and their count.
+// event name, the severity of the budget and their count, stego.dropped.
 func (c *console) droppedLine(b []byte, at time.Time, event string, severity otellog.Severity, dropped uint64) []byte {
-	b = appendHead(b, at, severity, event)
-	b = append(b, `,"message":`...)
-	b = appendJSONText(b, droppedMessage)
-	b = append(b, `,"dropped":`...)
+	b = logline.AppendHead(b, logline.Head{Time: at, Severity: consoleSeverity(severity), Service: c.service,
+		Instance: c.instance, Event: event, Message: droppedMessage})
+	b = logline.AppendKey(b, 0, "dropped")
 	b = strconv.AppendUint(b, dropped, 10)
-	return append(b, '}', '\n')
-}
-
-func appendHead(b []byte, at time.Time, severity otellog.Severity, event string) []byte {
-	b = append(b, `{"timestamp":`...)
-	b = appendJSONText(b, at.UTC().Format(time.RFC3339Nano))
-	b = append(b, `,"severity":`...)
-	b = appendJSONText(b, consoleSeverity(severity))
-	b = append(b, `,"event.name":`...)
-	return appendJSONText(b, event)
+	return logline.AppendEnd(b, 1)
 }
 
 // consoleSeverity is the severity name of a record of severity WARN or higher.
@@ -364,41 +363,5 @@ func appendJSONValue(b []byte, v attribute.Value) []byte {
 	return appendJSONText(b, valueText(v))
 }
 
-// appendJSONText appends text as a JSON string. An invalid UTF-8 byte becomes U+FFFD, and a control character, the
-// line separator and the paragraph separator are escaped, so the line is one line.
-func appendJSONText(b []byte, text string) []byte {
-	const hex = "0123456789abcdef"
-	b = append(b, '"')
-	for i := 0; i < len(text); {
-		c := text[i]
-		if c < utf8.RuneSelf {
-			switch {
-			case c == '"' || c == '\\':
-				b = append(b, '\\', c)
-			case c == '\n':
-				b = append(b, '\\', 'n')
-			case c == '\r':
-				b = append(b, '\\', 'r')
-			case c == '\t':
-				b = append(b, '\\', 't')
-			case c < 0x20 || c == 0x7f:
-				b = append(b, '\\', 'u', '0', '0', hex[c>>4], hex[c&0xf])
-			default:
-				b = append(b, c)
-			}
-			i++
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(text[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			b = append(b, `�`...)
-		case r == ' ' || r == ' ':
-			b = append(b, '\\', 'u', '2', '0', '2', hex[r&0xf])
-		default:
-			b = append(b, text[i:i+size]...)
-		}
-		i += size
-	}
-	return append(b, '"')
-}
+// appendJSONText appends text as a JSON string (logline.AppendText).
+func appendJSONText(b []byte, text string) []byte { return logline.AppendText(b, text) }

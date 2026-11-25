@@ -388,7 +388,7 @@ func (s *service) refusals(good map[string]any) {
 		"an http key set URL": authntest.Discovery(s.issuer, strings.Replace(s.provider.URL(), "https:", "http:", 1)),
 	} {
 		r := s.startFails(document)
-		if r.err == nil || !strings.Contains(r.output, `"stage":"service.start.authn.discovery"`) || strings.Contains(r.output, s.provider.Addr()) {
+		if r.err == nil || !strings.Contains(r.output, `"stego.stage":"service.start.authn.discovery"`) || strings.Contains(r.output, s.provider.Addr()) {
 			t.Errorf("the start with a discovery document of %s gave %v, want a refusal at the stage service.start.authn.discovery with no address:\n%s", name, r.err, r.output)
 		}
 	}

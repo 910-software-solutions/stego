@@ -37,7 +37,7 @@ func TestServiceLogsLocalAndOTLP(t *testing.T) {
 			t.Setenv("OTEL_SERVICE_NAME", "records-test")
 			before := slog.Default()
 			var output bytes.Buffer
-			runtime, err := newRuntime(&output)
+			runtime, err := newRuntime(formOf(&output))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -290,7 +290,7 @@ func TestLocalAccessLines(t *testing.T) {
 			}
 			t.Setenv("STEGO_LOG_LEVEL", "")
 			var output bytes.Buffer
-			runtime, err := newRuntime(&output)
+			runtime, err := newRuntime(formOf(&output))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -351,7 +351,7 @@ func TestLocalLogLevel(t *testing.T) {
 			t.Helper()
 			t.Setenv("STEGO_LOG_LEVEL", level)
 			var output bytes.Buffer
-			runtime, err := newRuntime(&output)
+			runtime, err := newRuntime(formOf(&output))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -452,7 +452,7 @@ func TestLocalLogReserveAndBudget(t *testing.T) {
 		// The budget: 25 answers 401 of one route and 25 answers 404 of another give AccessLimit lines each, and one
 		// line with the count of each at the end of the window.
 		var output bytes.Buffer
-		runtime, err = newRuntime(&output)
+		runtime, err = newRuntime(formOf(&output))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -490,7 +490,7 @@ func TestLocalAccessLineEdges(t *testing.T) {
 	t.Run("ST-SUP-RC17-OC20-T03 An access line of a route that no pattern matches has no route, and a method out of the fixed set is _OTHER", func(t *testing.T) {
 		traceEnvironment(t)
 		var output bytes.Buffer
-		runtime, err := newRuntime(&output)
+		runtime, err := newRuntime(formOf(&output))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -515,6 +515,193 @@ func TestLocalAccessLineEdges(t *testing.T) {
 		noRequestValue(t, output.Bytes())
 		if bytes.Contains(output.Bytes(), []byte("G\\u0001T")) {
 			t.Fatalf("the local output holds the method: %s", output.Bytes())
+		}
+	})
+}
+
+// formWriter takes the local lines of a runtime: it checks each line against the one form of the lines of the runtime
+// (CheckLine, the copy of registry/runtime/internal/logline; walkthrough 25, L-1), and a line of another form stops
+// the test binary. It writes each line to out with its attributes at the top level under the keys of localRecord,
+// so a check reads a field by its name.
+type formWriter struct{ out io.Writer }
+
+// formOf gives the formWriter of out.
+func formOf(out io.Writer) io.Writer { return formWriter{out: out} }
+
+// legacyKeys are the keys of localRecord of the attributes whose key on the line has the prefix stego.
+var legacyKeys = map[string]string{"stego.startup.stage": "startup.stage", "stego.operation": "operation", "stego.outcome": "outcome",
+	"stego.retry": "retry", "stego.dropped": "dropped", "stego.duration_seconds": "duration_seconds"}
+
+func (w formWriter) Write(line []byte) (int, error) {
+	if err := CheckLine(line); err != nil {
+		panic(fmt.Sprintf("the local line %q is not of the form of the lines of the runtime: %v", line, err))
+	}
+	flat := map[string]json.RawMessage{}
+	if err := json.Unmarshal(line, &flat); err != nil {
+		panic(err)
+	}
+	if raw, ok := flat["attributes"]; ok {
+		delete(flat, "attributes")
+		attrs := map[string]json.RawMessage{}
+		if err := json.Unmarshal(raw, &attrs); err != nil {
+			panic(err)
+		}
+		for key, value := range attrs {
+			if legacy, ok := legacyKeys[key]; ok {
+				key = legacy
+			}
+			flat[key] = value
+		}
+	}
+	data, err := json.Marshal(flat)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := w.out.Write(append(data, '\n')); err != nil {
+		return 0, err
+	}
+	return len(line), nil
+}
+
+// lockedBuffer is the output of a runtime whose watch writes from its own goroutine.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestLocalLineForm(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T04 Each local line has the one form of the lines of the runtime, with its fields under attributes", func(t *testing.T) {
+		traceEnvironment(t)
+		t.Setenv("STEGO_LOG_LEVEL", "debug")
+		var output lockedBuffer
+		runtime, err := newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := time.Date(2026, 11, 22, 2, 54, 43, 322614534, time.FixedZone("EST", -5*3600))
+		runtime.service.mu.Lock()
+		runtime.service.now = func() time.Time { return clock }
+		runtime.service.mu.Unlock()
+		runtime.LogServiceEvent(context.Background(), ServiceReady)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, _ *http.Request) {})
+		mux.HandleFunc("GET /fail", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) })
+		handler := runtime.Handler(runtime.Route(mux))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records/r1", nil))
+		for range AccessLimit + 2 {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/fail", nil))
+		}
+		_, finish := runtime.TraceRPC(context.Background(), "/sample.Records/Get")
+		finish(status.Error(grpccodes.NotFound, "private"))
+		_, done := TraceDatabase(runtime.Context(context.Background()), "query")
+		done("failure")
+		runtime.Close()
+		events := map[string]bool{}
+		for _, line := range strings.SplitAfter(output.String(), "\n") {
+			if line == "" {
+				continue
+			}
+			if err := CheckLine([]byte(line)); err != nil {
+				t.Fatalf("the line %q: %v", line, err)
+			}
+			var decoded struct {
+				Event      string         `json:"event.name"`
+				Timestamp  string         `json:"timestamp"`
+				Service    string         `json:"service.name"`
+				Attributes map[string]any `json:"attributes"`
+			}
+			if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			events[decoded.Event] = true
+			if decoded.Service != "records" || !strings.HasSuffix(decoded.Timestamp, "Z") {
+				t.Fatalf("the line %q has no service name or no UTC timestamp", line)
+			}
+			if decoded.Event == "http.server.request.completed" && decoded.Attributes["stego.dropped"] == nil &&
+				(decoded.Attributes["http.request.method"] != "GET" || decoded.Attributes["http.response.status_code"] == nil || decoded.Attributes["stego.duration_seconds"] == nil) {
+				t.Fatalf("the access line %q does not hold its fields under attributes", line)
+			}
+		}
+		for _, want := range []string{"service.ready", "http.server.request.completed", "rpc.server.call.completed", "db.client.operation.completed"} {
+			if !events[want] {
+				t.Fatalf("no line of %s: %v", want, events)
+			}
+		}
+	})
+	t.Run("ST-SUP-RC17-OC23-T04 The count line of an access window comes at the end of the window with no later request of its route and status", func(t *testing.T) {
+		traceEnvironment(t)
+		t.Setenv("STEGO_LOG_LEVEL", "")
+		var output lockedBuffer
+		runtime, err := newRuntime(&output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The test gives the ticks of the watch itself and moves its own clock, so no wall clock bounds it.
+		runtime.unwatchAccess()
+		var mu sync.Mutex
+		clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+		runtime.service.mu.Lock()
+		runtime.service.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+		runtime.service.mu.Unlock()
+		ticks := make(chan time.Time)
+		runtime.watchAccess(ticks, nil)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+		handler := runtime.Handler(runtime.Route(mux))
+		for range AccessLimit + 7 {
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
+		}
+		count := func() (float64, bool) {
+			for _, line := range strings.Split(output.String(), "\n") {
+				var decoded struct {
+					Attributes map[string]any `json:"attributes"`
+				}
+				if json.Unmarshal([]byte(line), &decoded) == nil {
+					if n, ok := decoded.Attributes["stego.dropped"].(float64); ok {
+						return n, true
+					}
+				}
+			}
+			return 0, false
+		}
+		ticks <- clock
+		ticks <- clock
+		if _, ok := count(); ok {
+			t.Fatal("a tick in the window wrote the count line")
+		}
+		mu.Lock()
+		clock = clock.Add(AccessWindow)
+		mu.Unlock()
+		ticks <- clock
+		ticks <- clock
+		// The second tick comes when the watch handled the first: the tick closed the window and queued its count
+		// line, so no window is left for the close to end.
+		runtime.service.mu.Lock()
+		left := len(runtime.service.windows)
+		runtime.service.mu.Unlock()
+		if left != 0 {
+			t.Fatalf("after a tick at the end of the window %d windows are open, want none: the count line waits for a later request", left)
+		}
+		// The local writer writes the queued count line before the close ends.
+		runtime.unwatchAccess()
+		runtime.Close()
+		if n, ok := count(); !ok || n != 7 {
+			t.Fatalf("after the window and a tick the output holds the count %v (%v), want 7 with no later request:\n%s", n, ok, output.String())
+		}
+		if strings.Count(output.String(), `"http.route":"/records"`) != AccessLimit+1 {
+			t.Fatalf("the output holds %d lines of the route, want %d and the count line", strings.Count(output.String(), `"http.route":"/records"`), AccessLimit)
 		}
 	})
 }

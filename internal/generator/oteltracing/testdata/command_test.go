@@ -19,7 +19,7 @@ func TestCommandSignals(t *testing.T) {
 			sink := collectorFixture(t, false)
 			t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
 			var local bytes.Buffer
-			r, err := newRuntime(&local)
+			r, err := newRuntime(formOf(&local))
 			if err != nil {
 				t.Fatal(err)
 			}

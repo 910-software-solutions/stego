@@ -2,7 +2,11 @@
 # TraceIdRatio rule of the browser runtime does not sample at that ratio (security review of PR #494, L1).
 kind: component
 name: otel-tracing
-version: 1.21.0
+# Version 1.22.0 writes each local JSON line in the one form of the lines of the runtime: the timestamp in UTC, the
+# service name, the event name and the message, and the fields under attributes (http.*, rpc.*, error.type and stego.*);
+# and closes the windows of the access lines at a tick, so the count line of a window comes at its end also when no
+# later request of its route and status comes (walkthrough 25, L-1, L-2; ST-SUP-RC17-OC20, ST-SUP-RC17-OC23).
+version: 1.22.0
 stage: ga
 output_namespace: tracing
 

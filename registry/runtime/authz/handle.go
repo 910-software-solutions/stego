@@ -24,6 +24,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/internal/catalogfirst"
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -1097,7 +1098,7 @@ const PendingPastCapEvent = "authz.revocation.pending_past_cap"
 // principal or identity of a revocation.
 func pendingPastCap(ctx context.Context, waitCap time.Duration) {
 	if ok, held := pendingLog.Allow(PendingPastCapEvent); ok {
-		slog.WarnContext(ctx, "authz: a revocation stayed pending past the wait cap; check that the relay runs (the worker mode) and that the destination authz is not parked",
+		slog.WarnContext(ctx, "authz: a revocation stayed pending past the wait cap; check that the relay runs (the worker mode) and that the destination authz is not parked", otel.SlogEventKey, "authz.revocation.pending_past_cap",
 			"event", PendingPastCapEvent, "wait_cap_seconds", waitCap.Seconds(), "held_back", held)
 	}
 }

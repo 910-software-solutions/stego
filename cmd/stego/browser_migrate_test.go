@@ -32,7 +32,7 @@ func TestBrowserServiceMigrateMode(t *testing.T) {
 			t.Fatalf("main.go does not run browser/schema.Verify at the stage database.schema before the access check:\n%s", main)
 		}
 		// The failure record names the fault class and the object of a refused schema check.
-		if !strings.Contains(main, "FaultClass()") || !strings.Contains(main, `json:"fault,omitempty"`) {
+		if !strings.Contains(main, "FaultClass()") || !strings.Contains(main, `{"stego.fault", fault}`) {
 			t.Fatal("the failure record of main.go names no fault class")
 		}
 		job := read("deploy/base/migration-job.yaml")

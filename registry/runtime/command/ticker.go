@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -221,7 +222,7 @@ func (k *Ticker) tick(ctx context.Context, due time.Time, held *lease.Held) {
 		// A tick that cannot read the tenant list runs no tenant: it is reported, with the cause named and no error
 		// text, so a worker that stops is seen (security review of PR #337, L2).
 		if ctx.Err() == nil {
-			slog.ErrorContext(ctx, "command: the tick of the worker did not read the tenant list", "worker", k.name, "cause", "tenant_list_read")
+			slog.ErrorContext(ctx, "command: the tick of the worker did not read the tenant list", otel.SlogEventKey, "command.worker.tick_failed", "worker", k.name, "cause", "tenant_list_read")
 			k.observe.TickFailed(context.WithoutCancel(ctx))
 		}
 		return

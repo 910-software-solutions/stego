@@ -7,10 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
@@ -75,7 +79,7 @@ func TestProbeConsole(t *testing.T) {
 			os.Exit(0)
 		}
 		sc := unsampledSpanContext()
-		common := []string{"timestamp", "severity", "service.name", "service.instance.id", "event.name", "stego.outcome", "trace_id", "span_id", "tenant", "principal", "operation"}
+		common := []string{"timestamp", "severity", "service.name", "service.instance.id", "event.name", "message", "stego.outcome", "trace_id", "span_id", "stego.tenant", "stego.principal", "stego.operation"}
 		for _, setting := range []string{"json", "logfmt"} {
 			stdout, stderr := runChild(t, "^TestProbeConsole$/^ST-SUP-RP12-LC07-T01_", childSetting+"=console", consoleSetting+"="+setting)
 			if stderr != "" {
@@ -94,9 +98,9 @@ func TestProbeConsole(t *testing.T) {
 						t.Fatalf("the line %q is not one JSON object: %v", line, err)
 					}
 					for k, v := range decoded {
-						if fields, ok := v.(map[string]any); ok {
-							for name, value := range fields {
-								values["fields."+name] = strings.Trim(strings.TrimSpace(jsonText(value)), `"`)
+						if attrs, ok := v.(map[string]any); ok {
+							for name, value := range attrs {
+								values[name] = strings.Trim(strings.TrimSpace(jsonText(value)), `"`)
 							}
 							continue
 						}
@@ -116,20 +120,20 @@ func TestProbeConsole(t *testing.T) {
 						t.Fatalf("%s: the line %q has no %s", setting, line, key)
 					}
 				}
-				if values["service.name"] != "orders" || values["tenant"] != "t1" || values["principal"] != "user:u-7" || values["operation"] != command || values["trace_id"] != sc.TraceID().String() || values["span_id"] != sc.SpanID().String() {
+				if values["service.name"] != "orders" || values["stego.tenant"] != "t1" || values["stego.principal"] != "user:u-7" || values["stego.operation"] != command || values["trace_id"] != sc.TraceID().String() || values["span_id"] != sc.SpanID().String() {
 					t.Fatalf("%s: the line %q has the wrong correlation", setting, line)
 				}
 				switch i {
 				case 0:
-					if values["event.name"] != "domain.reservation_refused" || values["severity"] != "WARN" || values["fields.sku"] != "A-1" || values["fields.reason"] != "short" {
+					if values["event.name"] != "domain.reservation_refused" || values["severity"] != "WARN" || values["stego.field.sku"] != "A-1" || values["stego.field.reason"] != "short" {
 						t.Fatalf("%s: the event line is %q", setting, line)
 					}
 				case 1:
-					if values["event.name"] != "domain.reservations_refused" || values["fields.reason"] != "expired" {
+					if values["event.name"] != "domain.reservations_refused" || values["stego.field.reason"] != "expired" {
 						t.Fatalf("%s: the counter line is %q", setting, line)
 					}
 				case 2:
-					if values["event.name"] != "domain.reservation_wait" || values["value"] != "12.5" {
+					if values["event.name"] != "domain.reservation_wait" || values["stego.value"] != "12.5" {
 						t.Fatalf("%s: the histogram line is %q", setting, line)
 					}
 				}
@@ -170,3 +174,129 @@ func jsonText(v any) string {
 }
 
 func unsampledSpanContext() trace.SpanContext { return trace.SpanContextFromContext(unsampled()) }
+
+func TestProbeLineForm(t *testing.T) {
+	t.Run("ST-SUP-RP12-LC22-T02 Each JSON line of the probe console has the one form of the lines of the runtime", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, []SchemaChange{{ID: "split-name", Open: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "json", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The built-in service, worker and backfill observations, a burst over the rate limit, whose count line the
+		// stop writes, and the declared event, counter and histogram of a call with its tenant and its trace.
+		r.Service(context.Background(), ServiceReady)
+		r.SchemaMismatch(context.Background(), "grant")
+		worker := r.Worker("ship-orders")
+		worker.RunCompleted(context.Background())
+		worker.TickSkipped()
+		worker.TenantUnreached()
+		for range otel.ConsoleLimit + 2 {
+			worker.RunFailedCause(context.Background(), WorkerUndecided, RelationsPendingCause)
+		}
+		r.Backfill().BackfillRows("split-name", 40)
+		r.Backfill().BackfillThrottled("split-name", "replica_lag")
+		call := r.Bind(trace.ContextWithSpanContext(context.Background(), unsampledSpanContext()), "t1", "user:u-7", command)
+		call.Probe().Emit(reservationRefused(t, CountsAttempt), Text("A-1"), Enum("short"))
+		call.Probe().Emit(reservationsRefused(t, CountsCommitted), Enum("expired"))
+		call.Probe().Emit(histogram(t, "reservation_wait", Milliseconds), Number(12.5))
+		call.Returned()
+		call.Commit()
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		events := map[string]bool{}
+		for _, line := range stdout.everything() {
+			if !strings.HasSuffix(line, "\n") {
+				line += "\n"
+			}
+			if err := logline.Check([]byte(line)); err != nil {
+				t.Fatalf("the line %q: %v", line, err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			events[decoded["event.name"].(string)] = true
+		}
+		for _, want := range []string{"service.ready", "schema.manifest.mismatch", "worker.run.completed", "worker.tick.skipped", "worker.tenant.unreached",
+			"worker.run.failed", "schema.backfill.rows", "schema.backfill.throttled", "domain.reservation_refused", "domain.reservations_refused",
+			"domain.reservation_wait", "telemetry.runtime.stopped"} {
+			if !events[want] {
+				t.Fatalf("the console has no line of %s: %v", want, events)
+			}
+		}
+	})
+}
+
+// blockedOut is a standard output that blocks each write until release closes, and tells when a write entered.
+type blockedOut struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w *blockedOut) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return len(p), nil
+}
+
+// endsAtThirdWait is a context whose Done channel closes at its third call: the drains of the two queues of the
+// console see it open, and the wait for the watch sees it closed, so the test needs no clock.
+type endsAtThirdWait struct {
+	context.Context
+	calls atomic.Int32
+	once  sync.Once
+	done  chan struct{}
+}
+
+func (c *endsAtThirdWait) Done() <-chan struct{} {
+	if c.calls.Add(1) >= 3 {
+		c.once.Do(func() { close(c.done) })
+	}
+	return c.done
+}
+
+func (c *endsAtThirdWait) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func TestProbeDrainBound(t *testing.T) {
+	t.Run("ST-SUP-RP12-LC12-T02 The stop does not wait past its limit for a watch that a blocked standard output holds", func(t *testing.T) {
+		out := &blockedOut{entered: make(chan struct{}, 1), release: make(chan struct{})}
+		defer close(out.release)
+		s := newConsoleSink(out, formatJSON, "orders", "instance-1")
+		clock := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+		s.mu.Lock()
+		s.now = func() time.Time { return clock }
+		s.windows[budget{event: "worker.run.failed", errors: true}] = &window{start: clock, dropped: 3}
+		s.mu.Unlock()
+		ticks := make(chan time.Time)
+		s.watch(ticks, nil)
+		s.mu.Lock()
+		clock = clock.Add(otel.ConsoleWindow)
+		s.mu.Unlock()
+		// The tick closes the window, and the watch blocks in the write of its count line, holding the lock.
+		ticks <- clock
+		<-out.entered
+		ctx := &endsAtThirdWait{Context: context.Background(), done: make(chan struct{})}
+		if s.drain(ctx, &record{obs: telemetryStopped, count: 1, time: clock}) {
+			t.Fatal("the drain wrote each line although standard output blocks")
+		}
+		if ctx.calls.Load() < 3 {
+			t.Fatalf("the drain ended after %d waits, before the wait for the watch", ctx.calls.Load())
+		}
+	})
+}

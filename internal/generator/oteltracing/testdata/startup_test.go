@@ -18,7 +18,7 @@ func TestStartupSignals(t *testing.T) {
 			sink := collectorFixture(t, false)
 			t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
 			var local bytes.Buffer
-			r, err := newRuntime(&local)
+			r, err := newRuntime(formOf(&local))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -142,7 +142,7 @@ func TestStartupSignals(t *testing.T) {
 func TestStartupLocalStagesAndClosedRuntime(t *testing.T) {
 	traceEnvironment(t)
 	var output bytes.Buffer
-	r, err := newRuntime(&output)
+	r, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}

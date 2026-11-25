@@ -43,7 +43,7 @@ func TestFailureRecordFaultClass(t *testing.T) {
 			var output bytes.Buffer
 			stegoReportFailure(&output, &stegoServiceFailure{stage: "database.schema", cause: c.cause})
 			var record map[string]any
-			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			if e := failureRecord(output.Bytes(), &record); e != nil {
 				t.Fatal(e)
 			}
 			fault, _ := record["fault"].(string)
@@ -81,7 +81,7 @@ func TestFailureRecordRemedy(t *testing.T) {
 			var output bytes.Buffer
 			stegoReportFailure(&output, &stegoServiceFailure{stage: "database.schema", cause: c.cause})
 			var record map[string]any
-			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			if e := failureRecord(output.Bytes(), &record); e != nil {
 				t.Fatal(e)
 			}
 			got, _ := record["remedy"].(string)
@@ -109,7 +109,7 @@ func TestFailureRecordCauseClass(t *testing.T) {
 		var output bytes.Buffer
 		stegoReportFailure(&output, &stegoServiceFailure{stage: "http.listen", cause: cause})
 		var record map[string]any
-		if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+		if e := failureRecord(output.Bytes(), &record); e != nil {
 			t.Fatal(e)
 		}
 		if record["stage"] != "http.listen" || record["cause"] != "address_in_use" || strings.Contains(output.String(), held.Addr().String()) {
@@ -140,7 +140,7 @@ func TestFailureRecordDatabaseCause(t *testing.T) {
 			cause := fmt.Errorf("migrate: tables: %w", sqlFailure{c.code})
 			stegoReportFailure(&output, &stegoServiceFailure{stage: "migrate.tables", cause: cause})
 			var record map[string]any
-			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			if e := failureRecord(output.Bytes(), &record); e != nil {
 				t.Fatal(e)
 			}
 			got, _ := record["cause"].(string)
@@ -181,7 +181,7 @@ func TestFailureRecordDatabaseCause(t *testing.T) {
 			var output bytes.Buffer
 			stegoReportFailure(&output, &stegoServiceFailure{stage: "browser.upstream", cause: c.cause})
 			var record map[string]any
-			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			if e := failureRecord(output.Bytes(), &record); e != nil {
 				t.Fatal(e)
 			}
 			got, _ := record["cause"].(string)
@@ -211,10 +211,10 @@ func TestFailureRecordDoesNotFormatCause(t *testing.T) {
 			var output bytes.Buffer
 			stegoReportFailure(&output, input)
 			var record map[string]any
-			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			if e := failureRecord(output.Bytes(), &record); e != nil {
 				t.Fatal(e)
 			}
-			if len(record) != 5 || record["event.name"] != "service.failed" || record["severity"] != "ERROR" || record["message"] != "Service failed" {
+			if len(record) != 6 || record["service.name"] != "unknown_service" || record["event.name"] != "service.failed" || record["severity"] != "ERROR" || record["message"] != "Service failed" {
 				t.Fatal("invalid failure record", record)
 			}
 			stage := "service.run"
@@ -232,10 +232,10 @@ func TestFailureRecordDoesNotFormatCause(t *testing.T) {
 		var output bytes.Buffer
 		stegoReportFailure(&output, &stegoServiceFailure{stage: "service.start.database", cause: cause, modes: []string{"api", "worker"}})
 		var record map[string]any
-		if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+		if e := failureRecord(output.Bytes(), &record); e != nil {
 			t.Fatal(e)
 		}
-		if modes, _ := json.Marshal(record["modes"]); len(record) != 6 || string(modes) != `["api","worker"]` || record["stage"] != "service.start.database" {
+		if modes, _ := json.Marshal(record["modes"]); len(record) != 7 || string(modes) != `["api","worker"]` || record["stage"] != "service.start.database" {
 			t.Fatal("invalid failure record with modes", record)
 		}
 	})
@@ -283,7 +283,7 @@ func TestFailureTaskNamesAreData(t *testing.T) {
 	t.Run("ST-GEN-INV16-T the stage names of the record are data", func(t *testing.T) {
 		var output bytes.Buffer
 		stegoReportFailure(&output, &stegoServiceFailure{stage: "service.run", tasks: []string{"worker[0]"}, cause: privateFailure{}})
-		if !strings.Contains(output.String(), `"tasks":["worker[0]"]`) {
+		if !strings.Contains(output.String(), `"stego.tasks":"worker[0]"`) {
 			t.Fatal("missing task name")
 		}
 	})
@@ -294,3 +294,29 @@ type classedFailure struct{ class string }
 
 func (c classedFailure) Error() string      { return "dial upstream.invalid: " + c.class }
 func (c classedFailure) CauseClass() string { return c.class }
+
+// failureRecord checks a record against the one form of the lines of the runtime (CheckLine; walkthrough 25, L-1) and
+// decodes it with its attributes at the top level by their names, such as stage for stego.stage, and the lists
+// stego.tasks, stego.aborted_tasks and stego.modes as lists.
+func failureRecord(data []byte, record *map[string]any) error {
+	if err := CheckLine(data); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, record); err != nil {
+		return err
+	}
+	attrs, _ := (*record)["attributes"].(map[string]any)
+	delete(*record, "attributes")
+	for key, value := range attrs {
+		name := strings.TrimPrefix(key, "stego.")
+		if text, ok := value.(string); ok && (name == "tasks" || name == "aborted_tasks" || name == "modes") {
+			var list []any
+			for _, item := range strings.Split(text, ",") {
+				list = append(list, item)
+			}
+			value = list
+		}
+		(*record)[name] = value
+	}
+	return nil
+}

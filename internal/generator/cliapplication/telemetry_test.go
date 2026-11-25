@@ -59,8 +59,8 @@ func testTelemetryProcess(t *testing.T, project string) {
 				var record map[string]any
 				if json.Unmarshal([]byte(line), &record) == nil && record["event.name"] == "cli.command.completed" {
 					count++
-					if record["outcome"] != outcome {
-						t.Fatal("wrong command outcome", record["outcome"])
+					if lineAttr(record, "stego.outcome") != outcome {
+						t.Fatal("wrong command outcome", lineAttr(record, "stego.outcome"))
 					}
 				}
 			}
@@ -133,4 +133,11 @@ func testTelemetryProcess(t *testing.T, project string) {
 			t.Fatal("CLI HTTP call has no local completion")
 		}
 	})
+}
+
+// lineAttr gives the attribute key of a local line, in the one form of the lines of the runtime: the fields are
+// under attributes with the prefix stego. (walkthrough 25, L-1).
+func lineAttr(record map[string]any, key string) any {
+	attrs, _ := record["attributes"].(map[string]any)
+	return attrs[key]
 }

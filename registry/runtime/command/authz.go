@@ -132,7 +132,7 @@ func (s *state) decisionError(ctx context.Context, step string, err error) error
 	// failed command is never an error that no log explains (walkthrough 3, G4; ST-SUP-Q140).
 	cause := authz.Cause(err)
 	if ok, held := decisionLog.Allow(cause); ok {
-		slog.WarnContext(otel.Security(ctx), "command: the authorization provider could not decide", "step", step, "cause", cause,
+		slog.WarnContext(otel.Security(ctx), "command: the authorization provider could not decide", otel.SlogEventKey, "command.authz.undecided", "step", step, "cause", cause,
 			"transient", authz.Transient(err), "held_back", held)
 	}
 	if authz.Transient(err) {

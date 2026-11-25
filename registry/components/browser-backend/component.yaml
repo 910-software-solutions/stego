@@ -1,8 +1,10 @@
 kind: component
 name: browser-backend
+# Version 4.15.0: the failure record of the migration Job and of a pool that does not open names the fault, the object,
+# a fixed remedy and the cause class (walkthrough 25, P3-11; ST-SUP-RC02-OC57).
 # Version 4.14.0: the common HTTPS client gives ErrTransport for a request that failed in transport or stopped
 # before the end of its answer, and ErrDeadline for a request whose time limit ended (security review of PR #447, I-2).
-version: 4.14.0
+version: 4.15.0
 stage: ga
 output_namespace: browser
 config:

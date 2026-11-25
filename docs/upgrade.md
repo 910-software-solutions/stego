@@ -179,6 +179,16 @@ runtime v0.165.0, except for the cases below.
   release. Until then, run an apply of a new document only once, and use
   `get` to see the resource before you apply the document again. A service
   that holds the name unique refuses the second create with 409.
+  A CLI before cli-application 1.30.0 (rest-crud 3.258.0) still fails a
+  second apply of a document that holds a secret field, such as with
+  `apply cannot change the field serial_ref`: it compares the secret field,
+  whose stored value can differ from the document, and puts it in the
+  write. The new release of the service does not change this, as the fault
+  is in the CLI.
+  In walkthrough 25, a CLI of the release before failed in this way against
+  the new release. Build the CLI again from the new release: from 1.30.0,
+  `apply` leaves each secret field of a resource that exists out of the
+  patch, and `--set-secret FIELD` sends a new value.
 - **An entity that a drop removes.** From the expand step of the drop, the
   new release serves no route of the entity and its collections, so a
   request to such a route gets 404. The release before still serves them
@@ -281,6 +291,7 @@ archetype does not have the change.
 | 3.258.0 | 1.258.0 | 1.258.0 | Runtime v0.192.0, command 1.28.0, postgres-adapter 6.31.0, rest-api 4.38.0 and cli-application 1.30.0. A command with `resets_attempts` gets the helper `<Command>Reset<Entity><Field>AttemptsByID`, which takes the ID of the row: the runtime decides only the reset permission and the reset guards on the row, and gives the fill no value, so a caller with only the reset permission can reset (decision ST-SUP-Q211 (a)). The schema change kind `relate` gives each row the tuple of a relation that a release adds: the relate job of the controller stages the tuple of each row through the authz outbox after the last pod of the release before stops, and first deletes the tuples of a field or a reference relation on the row, so a former subject loses its access (decision ST-SUP-Q212 (a)). A start that cannot reach SpiceDB fails at the stage `service.start.spicedb` with the fault `spicedb.connection` or `spicedb.settings`, and a start whose ledger lacks a migration of the release names the fault `migration.pending` or `migration.changed`; before, the first gave the stage `component.stego-runtime.constructor[0]` alone. A 503 while the database cannot serve says that the database cannot serve, not the authorization provider. `apply` of the CLI leaves each secret field of a resource that exists out of the write and names it as not compared, as the stored value can differ, so a document with a required secret applies again; `--set-secret FIELD` sends a new value from a private file, only of a field that the document holds. A command of the CLI names the required field that it lacks. | In a release that adds a relation that the runtime writes for each row, declare a relate step, and for a field or a reference check the stored values first (see [Give the rows that are there a new relation](#give-the-rows-that-are-there-a-new-relation)); after an earlier release that added one, declare it in your next release. Use the helper `...ByID` in a reset fill whose caller has no read permission of the row. A script that relied on `apply` to send a secret again adds `--set-secret <field>`. An alert on a failed start can read the new faults. |
 | 3.259.0 | 1.259.0 | 1.259.0 | Runtime v0.193.0 and browser-telemetry 1.4.0. A Provision or a Retire of a tenant whose change of the tenant list meets a database that cannot serve now, such as a server in recovery (SQLSTATE 57P03) or a lost connection before the COMMIT, answers 503 with the code `unavailable` and `Retry-After`. Before, it answered 500 `internal`. A COMMIT whose outcome is not known still answers 500. The browser telemetry runtime sends nothing on a page that has no `stego-runtime-config` meta element, also when the caller gives `sampleRatio`. Before, that option enabled traces, logs and metrics on such a page. | A client that provisions tenants tries again a 503 after `Retry-After` with the same `Idempotency-Key`. A page that uses `createBrowserTelemetry` outside a generated backend puts one `stego-runtime-config` meta element in its head to enable export. |
 | 3.260.0 | 1.260.0 | 1.260.0 | Runtime v0.194.0, otel-tracing 1.21.0 and browser-telemetry 1.5.0. The browser telemetry relay refuses traces when the deployment sets the trace ratio to 0, as it refuses logs and metrics that are off, and drops each browser span whose trace ID the ratio sampler of the browser runtime does not sample at the deployment ratio. Before, it forwarded such spans to the collector. `stego compat` and `stego plan` refuse a release that adds a relation that the runtime writes for each row of an entity of the base, such as `relation tenant: tenant`, with no relate step, and suggest the relate step; they read the schema of the base at its commit. The runtime changes only the names of two tests. | A release that adds such a relation declares a relate step (see [Give the rows that are there a new relation](#give-the-rows-that-are-there-a-new-relation)). A page that calls `beginTrace` gives it a random trace ID only. |
+| 3.261.0 | 1.261.0 | 1.261.0 | Runtime v0.195.0, otel-tracing 1.22.0, rest-api 4.39.0, browser-backend 4.15.0, controller 1.28.0 and grpc-application 2.5.0. The runtime and the generated tracing move to OpenTelemetry Go v1.47.0, which fixes GO-2026-6974. Each JSON line on standard output and standard error has one form: the timestamp in UTC with nanoseconds, `severity`, `service.name`, `event.name`, `message` and the fields under `attributes`, each with the prefix `stego.` or a name of the semantic conventions for HTTP and RPC (`http.route`, `http.response.status_code`, `rpc.method`, `error.type`). Before, the access lines had their fields at the top level and a timestamp of the local zone, the worker events had theirs under `fields` with no prefix, the failure record had its fields at the top level, and several lines had the event name `stego.log`. Each line of the runtime now has an event name of its own, and the line of the HTTP or gRPC listener is `service.listening`. The count line of dropped access lines comes at the end of the minute also when no later request of its route and status comes. A consumer run that waits for the relations of a row (cause `relations_pending`) is a WARN `worker.run.failed`; before, an ERROR. A 503 of the CRUD routes has the problem type `service-unavailable`; before, `internal-error` (the code does not change). The failure record of a browser service names a fault, an object, a remedy and a cause. | Change each log query, alert and dashboard that reads a field of a line: read it under `attributes` with its new key, such as `attributes."stego.worker"`, `attributes."http.route"`, `attributes."stego.stage"` or `attributes."stego.dropped"`, and the time in UTC. An alert on ERROR `worker.run.failed` no longer fires for a run that waits for relations; alert on `relations_pending` separately if you need it. A client that reads the problem type of a 503 accepts `service-unavailable`. See [Read the logs](operations.md#read-the-logs). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -880,11 +891,14 @@ fault names the entity and the relation, and suggests the relate step at
 expand. The check reads the schema of the base at its commit: the schema file
 that the base declaration names must be in the service folder of the base.
 
-A relate of a field or a reference, such as `relation approver` from
-`approver_id`, grants access from the values that the rows hold now, which
+A relate of a field or a reference, such as the relation `approver` from the
+field `approver`, grants access from the values that the rows hold now, which
 the release before wrote under its own rules. Before the release, check those
 values and correct each one that must not grant the relation; `stego
-validate` warns of each such relate.
+validate` warns of each such relate. A relationship whose subject is a field
+needs a create that decides a permission: generation refuses it on an entity
+with a public create, also under a parent. See [Relate a
+field](schema-changes.md#relate-a-field) for the forms that you can use.
 
 Then do the procedure as for each release:
 

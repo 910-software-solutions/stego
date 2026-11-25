@@ -39,6 +39,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
@@ -2033,7 +2034,12 @@ func TestTelemetryExport(t *testing.T) {
 			if err := json.Unmarshal([]byte(line), &record); err != nil {
 				t.Fatalf("a line is not JSON: %q", line)
 			}
-			if record["event.name"] == "controller.work.completed" && record["operation"] == "reconcile" {
+			if err := logline.Check([]byte(line + "\n")); err != nil {
+				t.Fatalf("the line %q is not of the form of the lines of the runtime: %v", line, err)
+			}
+			attrs, _ := record["attributes"].(map[string]any)
+			if record["event.name"] == "controller.work.completed" && attrs["stego.operation"] == "reconcile" {
+				record["outcome"], record["retry"] = attrs["stego.outcome"], attrs["stego.retry"]
 				reconciles = append(reconciles, record)
 			}
 		}

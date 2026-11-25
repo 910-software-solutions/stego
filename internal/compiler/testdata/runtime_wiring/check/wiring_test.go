@@ -748,7 +748,7 @@ func TestWiring(t *testing.T) {
 		if s.weakStart.err == nil {
 			t.Errorf("the service started with sslmode disable:\n%s", s.weakStart.output)
 		}
-		if s.weakMigration.err == nil || !strings.Contains(s.weakMigration.output, `"stage":"migrate.settings"`) {
+		if s.weakMigration.err == nil || !strings.Contains(s.weakMigration.output, `"stego.stage":"migrate.settings"`) {
 			t.Errorf("the migration job with sslmode prefer gave %v, want a refusal of its settings:\n%s", s.weakMigration.err, s.weakMigration.output)
 		}
 	})
@@ -758,13 +758,13 @@ func TestWiring(t *testing.T) {
 		if s.secondMigration.err != nil {
 			t.Errorf("the second run of the migration job failed: %v\n%s", s.secondMigration.err, s.secondMigration.output)
 		}
-		if s.foreignMigration.err == nil || !strings.Contains(s.foreignMigration.output, `"stage":"migrate.ledger_check"`) {
+		if s.foreignMigration.err == nil || !strings.Contains(s.foreignMigration.output, `"stego.stage":"migrate.ledger_check"`) {
 			t.Errorf("the migration job on a database with a table of the declaration and no ledger gave %v, want the refusal of the ledger check:\n%s", s.foreignMigration.err, s.foreignMigration.output)
 		}
 		if n := count(t, s.foreignDB, `SELECT count(*) FROM pg_namespace WHERE nspname IN ('stego_schema', 'stego_outbox')`); n != 0 {
 			t.Errorf("the refused migration job made %d schemas", n)
 		}
-		if s.legacyMigration.err == nil || !strings.Contains(s.legacyMigration.output, `"stage":"migrate.ledger_check"`) {
+		if s.legacyMigration.err == nil || !strings.Contains(s.legacyMigration.output, `"stego.stage":"migrate.ledger_check"`) {
 			t.Errorf("the migration job on a database whose ledger holds the name digest of a GORM release gave %v, want the refusal of the ledger check:\n%s", s.legacyMigration.err, s.legacyMigration.output)
 		}
 		if n := count(t, s.legacyDB, `SELECT count(*) FROM stego_schema.migrations WHERE digest = $1`, storage.Digest("001_initial")); n != 1 {
@@ -773,7 +773,7 @@ func TestWiring(t *testing.T) {
 		if n := count(t, s.legacyDB, `SELECT count(*) FROM pg_namespace WHERE nspname = 'stego_outbox'`); n != 0 {
 			t.Error("the refused migration job made the outbox schema")
 		}
-		if s.nextRelease.err == nil || !strings.Contains(s.nextRelease.output, `"stage":"migrate.ledger_check"`) {
+		if s.nextRelease.err == nil || !strings.Contains(s.nextRelease.output, `"stego.stage":"migrate.ledger_check"`) {
 			t.Errorf("the migration job of a release that adds an entity with no schema step gave %v, want the refusal of the ledger check:\n%s", s.nextRelease.err, s.nextRelease.output)
 		}
 		if n := count(t, s.admin, `SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'tags'`); n != 0 {
@@ -1328,12 +1328,12 @@ func TestWiring(t *testing.T) {
 		// The run with no Kafka setting has the environment of the service of the check, which runs, without the
 		// STEGO_KAFKA_ settings alone: its worker fails to start, and the failure record names the stage and the task,
 		// with no error text (ST-SUP-RP14-LC05).
-		if s.noKafka.err == nil || !strings.Contains(s.noKafka.output, `"stage":"service.run"`) || !strings.Contains(s.noKafka.output, `"stego-runtime[0]"`) {
+		if s.noKafka.err == nil || !strings.Contains(s.noKafka.output, `"stego.stage":"service.run"`) || !strings.Contains(s.noKafka.output, `stego-runtime[0]`) {
 			t.Fatalf("the worker mode with no Kafka setting gave %v, want a failed start of the runtime task:\n%s", s.noKafka.err, s.noKafka.output)
 		}
 		// With no topic, the start stops at the stage of the topic setting, before the HTTP listener and the runtime
 		// task, so no message goes to the topic of its event type (walkthrough 7, B7).
-		if s.noTopic.err == nil || !strings.Contains(s.noTopic.output, `"stage":"service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC"`) || strings.Contains(s.noTopic.output, "stego-runtime[0]") {
+		if s.noTopic.err == nil || !strings.Contains(s.noTopic.output, `"stego.stage":"service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC"`) || strings.Contains(s.noTopic.output, "stego-runtime[0]") {
 			t.Fatalf("the worker mode with no Kafka topic gave %v, want a refused start at the stage of STEGO_KAFKA_TOPIC:\n%s", s.noTopic.err, s.noTopic.output)
 		}
 		// The service of the check runs with the settings: its worker registered the destination kafka, and the
@@ -1787,10 +1787,11 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		// A refused start names its stage and the modes, with no error text and no value (ST-GEN-INV16).
 		refused := func(what string, r runResult, stage, modes string) {
 			t.Helper()
-			if r.err == nil || !strings.Contains(r.output, `"stage":"`+stage+`"`) {
+			if r.err == nil || !strings.Contains(r.output, `"stego.stage":"`+stage+`"`) {
 				t.Errorf("%s gave %v, want a refused start at the stage %s:\n%s", what, r.err, stage, r.output)
 			}
-			if modes != "" && !strings.Contains(r.output, `"modes":`+modes) {
+			// The record holds the modes as one text, joined by commas (walkthrough 25, L-1).
+			if text := strings.NewReplacer(`[`, ``, `]`, ``, `"`, ``).Replace(modes); modes != "" && !strings.Contains(r.output, `"stego.modes":"`+text+`"`) {
 				t.Errorf("%s gave a failure record with no modes %s:\n%s", what, modes, r.output)
 			}
 			if strings.Contains(r.output, "bogus") || strings.Contains(r.output, "postgres://") {

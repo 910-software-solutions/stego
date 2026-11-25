@@ -6,6 +6,7 @@ import (
  "io"
  "os"
  "os/signal"
+ "encoding/json"
  "syscall"
  "time"
  auth {{printf "%q" .Auth}}
@@ -40,7 +41,12 @@ func Main(open Open){
  stop()
  if code!=0{
   written:=make(chan struct{})
-  go func(){_,_=io.WriteString(os.Stderr,"{\"severity\":\"ERROR\",\"event.name\":\"rpc.process.failed\",\"message\":\"RPC process failed\"}\n");close(written)}()
+  // The one form of each line of the runtime (walkthrough 25, L-1).
+  service:={{printf "%q" .Service}};if service==""{service="unknown_service"}
+  // The name as a JSON string (security review of PR #496, I4).
+  name,_:=json.Marshal(service)
+  line:="{\"timestamp\":\""+time.Now().UTC().Format(time.RFC3339Nano)+"\",\"severity\":\"ERROR\",\"service.name\":"+string(name)+",\"event.name\":\"rpc.process.failed\",\"message\":\"RPC process failed\"}\n"
+  go func(){_,_=io.WriteString(os.Stderr,line);close(written)}()
   select{case <-written:case <-time.After(100*time.Millisecond):}
  }
  os.Exit(code)

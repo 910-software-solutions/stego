@@ -37,6 +37,21 @@ func stegoDatabaseStage(prefix string) string {
  return prefix + "DATABASE_URL"
 }
 
+// stegoDatabaseFault is a database pool of the process that did not open or did not answer the ping at start. Its
+// text is fixed; it unwraps to the error of the driver, so the failure record reads its SQLSTATE, such as 28P01, or
+// its network class, and never its text. The record names the fault database.connection, the object database and a
+// fixed remedy, as the runtime of an api names them for a pool that did not open (walkthrough 25, P3-11).
+type stegoDatabaseFault struct{ cause error }
+
+func (f *stegoDatabaseFault) Error() string { return "the database of the service did not accept the connection" }
+func (f *stegoDatabaseFault) Unwrap() error { return f.cause }
+func (f *stegoDatabaseFault) FaultClass() string { return "database.connection" }
+func (f *stegoDatabaseFault) FaultObject() string { return "database" }
+func (f *stegoDatabaseFault) FaultRemedy() string {
+ return "the database did not accept the connection or closed it, as while the database starts or after a restart of its server: the service starts again; when it does not pass, check DATABASE_URL and that the database runs"
+}
+func (f *stegoDatabaseFault) CauseClass() string { return "connection_failed" }
+
 func stegoDatabaseURL() (string,error) {
  value:=os.Getenv("DATABASE_URL")
  name:=os.Getenv("DATABASE_URL_FILE")

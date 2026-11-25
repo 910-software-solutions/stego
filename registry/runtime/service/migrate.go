@@ -309,6 +309,7 @@ const (
 // that is not a level at the step settings (decision on ST-SUP-Q210).
 func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	start := time.Now()
+	identifyLog(m.Service, "")
 	if err := migrate(parent, s, m); err != nil {
 		return err
 	}
@@ -660,6 +661,7 @@ func runBackfillsWithin(parent context.Context, db *sql.DB, m Migration, bound d
 	if err != nil {
 		return err
 	}
+	identifyLog(telemetry.Service(), telemetry.Instance())
 	defer telemetry.Close()
 	probes, err := probe.Start(telemetry, builtins)
 	if err != nil {

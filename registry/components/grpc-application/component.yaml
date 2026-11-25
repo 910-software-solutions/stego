@@ -1,10 +1,12 @@
+# Version 2.5.0 writes the line rpc.process.failed in the one form of the lines of the runtime, with the timestamp and
+# the service name, and the start line of the gRPC server as service.listening (walkthrough 25, L-1).
 # Version 2.4.0 states the gRPC TLS files as read by the api mode alone, so that the worker Deployment and the
 # migration Job do not mount the private key of the gRPC server (walkthrough 17, W17-D1).
 # Version 2.1.0 authenticates each call through the service runtime, which refuses a tenant that the tenant list does
 # not hold as active with PERMISSION_DENIED and the code tenant.not_provisioned (ST-SUP-RC27-OC11).
 kind: component
 name: grpc-application
-version: 2.4.0
+version: 2.5.0
 stage: ga
 output_namespace: grpcapi
 config:

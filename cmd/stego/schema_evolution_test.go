@@ -34,6 +34,16 @@ type evolution struct {
 // The declaration of v1 of ST-GEN-TD04, by the edit of the declaration of the example: the field OrgSetting.rank.
 var evolutionV1 = [2]string{"      - { name: generation, type: int64 }\n", "      - { name: generation, type: int64 }\n      - { name: rank, type: int64 }\n"}
 
+// The edits of v1 of ST-GEN-TD04 for the relate of a field: the optional field Organization.approver, which the
+// public create and the update of v1 can set and change, as a release before the relationship does (walkthrough 25,
+// P2-F).
+var evolutionV1Approver = [][2]string{
+	{"    permissions: {create: public, read: view, list: view, delete: edit}\n", "    permissions: {create: public, read: view, list: view, update: edit, delete: edit}\n"},
+	{"      - { name: description, type: string, optional: true, max_length: 1000 }\n",
+		"      - { name: description, type: string, optional: true, max_length: 1000 }\n      - { name: approver, type: string, optional: true, max_length: 255 }\n"},
+	{"    operations: [create, read, delete, list]\n", "    operations: [create, read, update, delete, list]\n"},
+}
+
 // The declaration of v2 of ST-GEN-TD04, by the edits of the declaration of v1: the add of User.nickname, the rename
 // of User.email to contact_email, the retype of OrgSetting.rank from int64 to string and the require of
 // User.locale, each at expand. The drop and the unique of ST-GEN-TD04 v2 wait for their builds (interim scope of the
@@ -89,10 +99,14 @@ func newEvolution(t *testing.T) *evolution {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(example), evolutionV1[0]) {
-		t.Fatalf("the declaration of the example has no %q to edit for v1", evolutionV1[0])
+	v1 := string(example)
+	for _, edit := range append([][2]string{evolutionV1}, evolutionV1Approver...) {
+		if !strings.Contains(v1, edit[0]) {
+			t.Fatalf("the declaration of the example has no %q to edit for v1", edit[0])
+		}
+		v1 = strings.Replace(v1, edit[0], edit[1], 1)
 	}
-	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(strings.Replace(string(example), evolutionV1[0], evolutionV1[1], 1)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(v1), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// No release of the example ran on the database of ST-GEN-TD04, so v1 is its first release, with no record, and
@@ -127,15 +141,19 @@ func newEvolution(t *testing.T) *evolution {
 	// ST-SUP-Q212 (a); walkthrough 24, P2-R2). Its build runs while v2 and v3 are made.
 	mainline := strings.TrimSpace(e.git(t, "rev-parse", "--abbrev-ref", "HEAD"))
 	e.git(t, "checkout", "-q", "-b", "relate", "v1")
-	for file, edit := range map[string][2]string{"service.yaml": evolutionV1R, filepath.Join("authz", "schema.zed"): evolutionV1RSchema} {
+	for file, edits := range map[string][][2]string{"service.yaml": evolutionV1R, filepath.Join("authz", "schema.zed"): evolutionV1RSchema} {
 		text, err := os.ReadFile(filepath.Join(e.repo, file))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(text), edit[0]) {
-			t.Fatalf("%s of v1 has no %q to edit for v1r", file, edit[0])
+		edited := string(text)
+		for _, edit := range edits {
+			if !strings.Contains(edited, edit[0]) {
+				t.Fatalf("%s of v1 has no %q to edit for v1r", file, edit[0])
+			}
+			edited = strings.Replace(edited, edit[0], edit[1], 1)
 		}
-		if err := os.WriteFile(filepath.Join(e.repo, file), []byte(strings.Replace(string(text), edit[0], edit[1], 1)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(e.repo, file), []byte(edited), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,12 +236,25 @@ func newEvolution(t *testing.T) *evolution {
 }
 
 // The edits of v1r of ST-GEN-TD04: the relate step of the relation tenant of Organization, and the relation in the
-// schema, through which the auditor of a tenant views each organization of the tenant.
+// schema, through which the auditor of a tenant views each organization of the tenant; and the relate step of the
+// relation approver from the field approver (walkthrough 25, P2-F). A field-sourced relationship needs a create that
+// decides a permission (ST-SUP-Q118), so the create of v1r is decided on create_organization of the service-level
+// resource, and the approver of an organization views it.
 var (
-	evolutionV1R = [2]string{"\ncollections:\n", "\nschema_changes:\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
-		"schema_history:\n  - {change: organization-tenant-relate, phase: expand}\n\ncollections:\n"}
-	evolutionV1RSchema = [2]string{"definition organization {\n\trelation owner: user\n\trelation viewer: user\n\tpermission view = owner + viewer\n",
-		"definition tenant {\n\trelation auditor: user\n}\n\ndefinition organization {\n\trelation owner: user\n\trelation viewer: user\n\trelation tenant: tenant\n\tpermission view = owner + viewer + tenant->auditor\n"}
+	evolutionV1R = [][2]string{
+		{"\ncollections:\n", "\nschema_changes:\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
+			"  - {id: organization-approver-relate, kind: relate, entity: Organization, relation: approver}\n" +
+			"schema_history:\n  - {change: organization-tenant-relate, phase: expand}\n  - {change: organization-approver-relate, phase: expand}\n\ncollections:\n"},
+		{"    permissions: {create: public, read: view, list: view, update: edit, delete: edit}\n    public_reasons: {create: a new organization has no resource to decide on before it exists}\n",
+			"    permissions: {create: create_organization, read: view, list: view, update: edit, delete: edit}\n" +
+				"    relationships:\n      - {relation: approver, subject_source: field, subject_field: approver, subject_type: user}\n"},
+	}
+	evolutionV1RSchema = [][2]string{
+		{"definition organization {\n\trelation owner: user\n\trelation viewer: user\n\tpermission view = owner + viewer\n",
+			"definition tenant {\n\trelation auditor: user\n}\n\ndefinition organization {\n\trelation owner: user\n\trelation viewer: user\n\trelation tenant: tenant\n" +
+				"\trelation approver: user\n\tpermission view = owner + viewer + tenant->auditor + approver\n"},
+		{"\tpermission list_tenants = operator\n", "\tpermission list_tenants = operator\n\trelation organization_creator: user\n\tpermission create_organization = organization_creator\n"},
+	}
 )
 
 // git runs git in the repository and gives its output.
@@ -464,6 +495,12 @@ func TestSchemaEvolution(t *testing.T) {
 			t.Fatalf("stego plan --base v1 of v1r (%s) does not list the relate step:\n%s", e.plans["v1r plan error"], plan)
 		}
 		result(t, "ST-SUP-RP10-LC58-T03")
+	})
+	t.Run("ST-SUP-RP10-LC58-T04 In a rolling deploy that relates a field, a former subject that the release before replaced loses its access, and the subject of the field gets it", func(t *testing.T) {
+		if plan := e.plans["v1r plan"]; !strings.Contains(plan, "organization-approver-relate: relate Organization#approver at expand; migration internal/storage/migrations/step_0002_organization-approver-relate_expand.sql") {
+			t.Fatalf("stego plan --base v1 of v1r does not list the relate step of the field:\n%s", plan)
+		}
+		result(t, "ST-SUP-RP10-LC58-T04")
 	})
 	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
 		plan := e.plans["v3 plan"]

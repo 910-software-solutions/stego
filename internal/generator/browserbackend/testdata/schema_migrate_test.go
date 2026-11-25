@@ -124,7 +124,7 @@ func TestBrowserSchemaFaultClass(t *testing.T) {
 				if class != c.class || object != c.object || schema.Stage(err) != "database.schema" || !errors.Is(err, schema.ErrSchema) {
 					t.Fatalf("Verify gave the class %q and the object %q at the stage %q, want %s %s at database.schema", class, object, schema.Stage(err), c.class, c.object)
 				}
-				if strings.Contains(err.Error(), fixture.user) {
+				if strings.Contains(err.Error(), "_private_none") {
 					t.Fatal("the fault names the login")
 				}
 			})
@@ -148,5 +148,55 @@ func TestBrowserSchemaFaultClass(t *testing.T) {
 				t.Fatalf("Verify on a closed pool gave %v at the stage %q, want database.access with no class", err, schema.Stage(err))
 			}
 		})
+	})
+}
+
+// TestBrowserSchemaAccessFault proves that the migration job names the fault of a database that it cannot open, as
+// the migration job of an api names it (walkthrough 25, P3-11).
+func TestBrowserSchemaAccessFault(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC57-T04 The migration job names the fault, the object, the remedy and the cause of a refused login", func(t *testing.T) {
+		db := database(t)
+		raw, _ := schemaFixtures.Load(db)
+		fixture := raw.(schemaFixture)
+		wrong, err := url.Parse(fixture.adminURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A login that the server does not know: 28P01 with password authentication, 28000 with trust.
+		wrong.User = url.UserPassword(fixture.user+"_private_none", "private-wrong-password")
+		t.Setenv("STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK", "1")
+		t.Setenv("DATABASE_URL", "")
+		t.Setenv("DATABASE_URL_FILE", "")
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL_FILE", "")
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", wrong.String())
+		t.Setenv("STEGO_RUNTIME_DATABASE_ROLE", fixture.user)
+		err = schema.Migrate(context.Background())
+		if err == nil || schema.Stage(err) != "database.access" {
+			t.Fatalf("the job with a wrong password gave %v at the stage %q, want database.access", err, schema.Stage(err))
+		}
+		var named interface {
+			FaultClass() string
+			FaultObject() string
+			FaultRemedy() string
+			CauseClass() string
+		}
+		if !errors.As(err, &named) || named.FaultClass() != "database.connection" || named.FaultObject() != "database" ||
+			!strings.Contains(named.FaultRemedy(), "<service>-database-owner") || named.CauseClass() != "connection_failed" {
+			t.Fatalf("the job with a wrong password gave no fault database.connection of the object database with its remedy: %v", err)
+		}
+		var coded interface{ SQLState() string }
+		if !errors.As(err, &coded) || !strings.HasPrefix(coded.SQLState(), "28") {
+			t.Fatalf("the failure record cannot read the SQLSTATE of class 28 (authentication_failed) of the refused login from %v", err)
+		}
+		if strings.Contains(err.Error(), "private-wrong-password") || strings.Contains(err.Error(), "_private_none") {
+			t.Fatal("the error of the job holds a value of the connection")
+		}
+		// A refused setting names the fault database.settings and the cause invalid_setting.
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", "")
+		err = schema.Migrate(context.Background())
+		if !errors.As(err, &named) || named.FaultClass() != "database.settings" || named.FaultObject() != "database" ||
+			named.FaultRemedy() == "" || named.CauseClass() != "invalid_setting" {
+			t.Fatalf("the job with no owner setting gave no fault database.settings: %v", err)
+		}
 	})
 }

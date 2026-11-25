@@ -2,10 +2,10 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 )
@@ -711,6 +712,12 @@ func newSignals(providers Providers, stderr io.Writer) (*signals, error) {
 	s := &signals{providers: providers, queues: make(map[*queueRegistration]func() QueueMetrics)}
 	if !providers.CollectorSet() && stderr != nil {
 		s.local = newLocalLog(stderr)
+		if named, ok := providers.(interface {
+			Service() string
+			Instance() string
+		}); ok {
+			s.local.service, s.local.instance = named.Service(), named.Instance()
+		}
 	}
 	if provider := providers.LoggerProvider(); provider != nil {
 		s.logger = provider.Logger(instrumentScope)
@@ -927,12 +934,14 @@ const LocalLogLimit = 256
 // writer keep a stalled standard error from blocking a worker: a line beyond the bound is dropped and counted, and
 // the close drains the queue within the shutdown limit.
 type localLog struct {
-	out     io.Writer
-	lines   chan []byte
-	dropped atomic.Uint64
-	mu      sync.Mutex
-	closed  bool
-	done    chan struct{}
+	out io.Writer
+	// service and instance name the writer on each line: those of the telemetry runtime, when it gives them.
+	service, instance string
+	lines             chan []byte
+	dropped           atomic.Uint64
+	mu                sync.Mutex
+	closed            bool
+	done              chan struct{}
 }
 
 func newLocalLog(out io.Writer) *localLog {
@@ -976,40 +985,46 @@ func (l *localLog) drain(ctx context.Context) {
 	}
 }
 
-type localRecord struct {
-	Time            string   `json:"time"`
-	Severity        string   `json:"severity"`
-	Event           string   `json:"event.name"`
-	Message         string   `json:"message"`
-	Operation       string   `json:"operation,omitempty"`
-	Outcome         string   `json:"outcome,omitempty"`
-	Retry           *bool    `json:"retry,omitempty"`
-	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
-	TraceID         string   `json:"trace_id,omitempty"`
-	SpanID          string   `json:"span_id,omitempty"`
-}
+// localKeys are the keys of the attributes of a controller log that its local line holds.
+var localKeys = map[string]bool{"operation": true, "outcome": true, "retry": true}
 
+// write queues the line of one controller log in the form of the lines of the runtime (internal/logline; walkthrough
+// 25, L-1): the timestamp in UTC, the severity, the service name and the instance identity of the telemetry runtime,
+// the event name, the message, the trace and span of ctx, and the attributes of the log with the prefix stego., such
+// as stego.operation, stego.outcome, stego.retry and stego.duration_seconds.
 func (l *localLog) write(ctx context.Context, now time.Time, event, message string, severity otellog.Severity, attrs []attribute.KeyValue, duration *float64) {
-	record := localRecord{Time: now.UTC().Format(time.RFC3339Nano), Severity: severityText(severity), Event: event, Message: message, DurationSeconds: duration}
-	for _, kv := range attrs {
-		switch kv.Key {
-		case "operation":
-			record.Operation = kv.Value.AsString()
-		case "outcome":
-			record.Outcome = kv.Value.AsString()
-		case "retry":
-			retry := kv.Value.AsBool()
-			record.Retry = &retry
-		}
-	}
+	head := logline.Head{Time: now, Severity: severityText(severity), Service: l.service, Instance: l.instance, Event: event, Message: message}
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-		record.TraceID, record.SpanID = sc.TraceID().String(), sc.SpanID().String()
+		head.TraceID, head.SpanID = sc.TraceID().String(), sc.SpanID().String()
 	}
-	line, err := json.Marshal(record)
-	if err != nil {
-		return
+	line := logline.AppendHead(make([]byte, 0, 256), head)
+	n := 0
+	for _, kv := range attrs {
+		// Only the fixed keys of a controller log reach standard error, as before (security review of PR #496, I2).
+		if !localKeys[string(kv.Key)] {
+			continue
+		}
+		switch kv.Value.Type() {
+		case attribute.STRING:
+			line = logline.AppendKey(line, n, string(kv.Key))
+			line = logline.AppendText(line, kv.Value.AsString())
+		case attribute.BOOL:
+			line = logline.AppendKey(line, n, string(kv.Key))
+			line = strconv.AppendBool(line, kv.Value.AsBool())
+		case attribute.INT64:
+			line = logline.AppendKey(line, n, string(kv.Key))
+			line = strconv.AppendInt(line, kv.Value.AsInt64(), 10)
+		default:
+			continue
+		}
+		n++
 	}
-	l.put(append(line, '\n'))
+	if duration != nil && !math.IsNaN(*duration) && !math.IsInf(*duration, 0) {
+		line = logline.AppendKey(line, n, "duration_seconds")
+		line = strconv.AppendFloat(line, *duration, 'g', -1, 64)
+		n++
+	}
+	l.put(logline.AppendEnd(line, n))
 }
 
 func severityText(severity otellog.Severity) string {

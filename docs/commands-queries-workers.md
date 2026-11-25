@@ -1666,6 +1666,45 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.195.0
+
+- Each JSON line of the runtime has one form (walkthrough 25, L-1; see
+  [Read the logs](operations.md#read-the-logs)): `timestamp` in UTC,
+  `severity`, `service.name`, `service.instance.id`, `event.name`,
+  `message`, `trace_id` and `span_id`, and `attributes`, each key with the
+  prefix `stego.` or a name of the semantic conventions for HTTP and RPC.
+  The console of the log provider now writes `service.name`, the instance,
+  the trace and the span, and gives each attribute the prefix, such as
+  `stego.worker` for `worker`. The probe console puts the fields of a
+  built-in event under `attributes` as `stego.<field>` (before, under
+  `fields` with no prefix), the fields of a declared observation as
+  `stego.field.<field>`, and `stego.tenant`, `stego.principal`,
+  `stego.operation` and `stego.value` there too, and gives each line a
+  fixed message. A count line holds `stego.dropped`. The log/slog handler
+  names the service and the instance (`otel.SlogHandler.SetIdentity`, which
+  the start and the migration job call), and each log/slog line of the
+  runtime names an event of its own, such as `command.database.unavailable`
+  or `lease.release_report.failed` in place of `stego.log`. A line of code
+  outside the runtime may name only an event that `otel.GeneratedEvent`
+  gives, and only from the generated package that writes it: main or the
+  gRPC transport for `service.listening`, the runtime wiring for
+  `service.audit_sink.selected`. A line names each key once.
+- The probe console closes the windows of its rate limit at a tick, so the
+  count line of the dropped lines of a window comes at the end of the
+  window also when no later event of its name comes (walkthrough 25, L-2).
+- `worker.run.failed` of a consumer run with the cause `relations_pending`
+  (`probe.RelationsPendingCause`) is a WARN, as the outbox dispatches the
+  message again; each other cause stays ERROR (walkthrough 25, L-3).
+- `schema.backfill.throttled` is sent with its reason
+  (`probe.BackfillThrottleReasons`). Before, each was dropped and counted.
+- OpenTelemetry Go v1.47.0 (the OTLP log exporter v0.23.0), which fixes
+  GO-2026-6974: a span or log attribute of U+FFFD runes could pass the limit
+  of the attribute value length. The code of otel-tracing 1.22.0 requires
+  the same versions.
+- apidiff against v0.194.0: compatible (added `otel.SlogHandler.SetIdentity`,
+  `otel.GeneratedEvent`, `probe.RelationsPendingCause` and
+  `probe.BackfillThrottleReasons`).
+
 ### Release notes for runtime v0.194.0
 
 - No change of the code. The tests of the relate job are now named for the

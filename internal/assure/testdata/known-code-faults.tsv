@@ -64,7 +64,6 @@ ST-STD-CODE-R04	internal/compiler/contracts_integration_test.go	internal/compile
 ST-STD-CODE-R04	internal/compiler/database_access_integration_test.go	internal/compiler/database_access_integration_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/database_access_test.go	internal/compiler/database_access_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/database_config_test.go	internal/compiler/database_config_test.go	the test file names no test record's ID in a test or subtest name
-ST-STD-CODE-R04	internal/compiler/database_opener_test.go	internal/compiler/database_opener_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/dependency_target_test.go	internal/compiler/dependency_target_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/filesystem_test.go	internal/compiler/filesystem_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/generator_inputs_test.go	internal/compiler/generator_inputs_test.go	the test file names no test record's ID in a test or subtest name

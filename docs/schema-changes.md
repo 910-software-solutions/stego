@@ -778,6 +778,76 @@ relate when:
 Generation refuses the relation `tenant` when `authz/schema.zed` does not give
 the resource type the relation `tenant` of the subject type `tenant`.
 
+### Relate a field
+
+A relationship whose subject is a field needs a create that decides a
+permission. Generation refuses a field relationship on an entity whose
+create is `public` (ST-SUP-Q118). The reason: a public create decides no
+permission, so the client of the create could select the subject and give
+access to a user of its choice. A collection under a parent always has a
+public create, so the limit applies to it too. Thus, before you relate a
+field, do one of these:
+
+- For an entity with no parent, give the create a permission on the
+  service-level resource, such as `create: create_organization`, and give
+  the `service` definition that permission. The caller of a create must then
+  hold it.
+- Make the rows in a declared command that has a permission. The runtime
+  writes the field relationship at the create of the command.
+- When the subject is a row of the service, use a reference with a relation
+  in place of the field. The create decides the permission of the reference
+  on the referenced row, and the relate gives the rows that are there the
+  relation of the reference.
+- When the subject is the caller of the create, take it from the caller
+  (`subject_source: caller`). A relate cannot give such a relation to the
+  rows that are there, because no row holds the caller.
+
+An example of the first form. The release before has the optional field
+`approver` and a public create; the release adds the relationship, the
+permission of the create and the relate step:
+
+```yaml
+entities:
+  - name: Organization
+    resource_type: organization
+    permissions: {create: create_organization, read: view, list: view, update: edit, delete: edit}
+    relationships:
+      - {relation: approver, subject_source: field, subject_field: approver, subject_type: user}
+    fields:
+      - { name: name, type: string, unique: true, min_length: 1, max_length: 255 }
+      - { name: approver, type: string, optional: true, max_length: 255 }
+
+schema_changes:
+  - {id: organization-approver-relate, kind: relate, entity: Organization, relation: approver}
+schema_history:
+  - {change: organization-approver-relate, phase: expand}
+```
+
+```text
+definition service {
+	relation operator: user
+	relation organization_creator: user
+	permission create_organization = organization_creator
+	...
+}
+
+definition organization {
+	relation owner: user
+	relation approver: user
+	permission view = owner + approver
+	permission edit = owner
+}
+```
+
+The field holds the subject ID of the user, as the authorization provider
+holds it for the caller. The runtime sets the subject of a field at the
+create only: an update or a patch that changes the field gets 400 with the
+name of the field. A pod of the release before can still change the field
+during the rollout, and it changes no tuple. The relate job removes the
+tuple of the former subject and writes the tuple of the subject that the row
+holds now (see below). ST-GEN-TD04 runs this example in a rolling deploy
+(ST-SUP-RP10-LC58-T04).
+
 A relate of a field or a reference grants access from the values that the
 rows hold now. The release before wrote those values under its own rules: it
 decided no permission of the new reference, and the head may let fewer

@@ -149,25 +149,31 @@ func stegoReportFailure(output io.Writer, err error) {
  if fault != "" && errors.As(err, &remedied) {
   if text := remedied.FaultRemedy(); stegoRemedyText(text) { remedy = text }
  }
- record := struct {
-  Timestamp string ` + "`json:\"timestamp\"`" + `
-  Severity string ` + "`json:\"severity\"`" + `
-  Event string ` + "`json:\"event.name\"`" + `
-  Message string ` + "`json:\"message\"`" + `
-  Stage string ` + "`json:\"stage\"`" + `
-  Tasks []string ` + "`json:\"tasks,omitempty\"`" + `
-  AbortedTasks []string ` + "`json:\"aborted_tasks,omitempty\"`" + `
-  Modes []string ` + "`json:\"modes,omitempty\"`" + `
-  Fault string ` + "`json:\"fault,omitempty\"`" + `
-  Object string ` + "`json:\"object,omitempty\"`" + `
-  Remedy string ` + "`json:\"remedy,omitempty\"`" + `
-  Cause string ` + "`json:\"cause,omitempty\"`" + `
-  SQLState string ` + "`json:\"sqlstate,omitempty\"`" + `
- }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, remedy, stegoCauseClass(err), stegoSQLState(err)}
+ // The record has the one form of each line of the runtime (walkthrough 25, L-1): the timestamp in UTC, the
+ // severity, the service name, the event name and the message, and its fields under attributes with the prefix
+ // stego.; a list is one text with its names joined by commas.
+ service := stegoServiceName
+ if service == "" { service = "unknown_service" }
+ text := func(b []byte, value string) []byte { encoded, _ := json.Marshal(value); return append(b, encoded...) }
+ line := append([]byte(` + "`" + `{"timestamp":` + "`" + `), text(nil, time.Now().UTC().Format(time.RFC3339Nano))...)
+ line = append(line, ` + "`" + `,"severity":"ERROR","service.name":` + "`" + `...)
+ line = text(line, service)
+ line = append(line, ` + "`" + `,"event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":` + "`" + `...)
+ line = text(line, stage)
+ for _, attr := range []struct{ key, value string }{{"stego.tasks", strings.Join(tasks, ",")}, {"stego.aborted_tasks", strings.Join(abortedTasks, ",")},
+  {"stego.modes", strings.Join(modes, ",")}, {"stego.fault", fault}, {"stego.object", object}, {"stego.remedy", remedy},
+  {"stego.cause", stegoCauseClass(err)}, {"stego.sqlstate", stegoSQLState(err)}} {
+  if attr.value == "" { continue }
+  line = append(line, ',')
+  line = text(line, attr.key)
+  line = append(line, ':')
+  line = text(line, attr.value)
+ }
+ line = append(line, "}}\n"...)
  done := make(chan struct{})
  go func() {
   defer close(done)
-  json.NewEncoder(output).Encode(record)
+  if _, werr := output.Write(line); werr != nil { return }
  }()
  timer := time.NewTimer(time.Second)
  defer timer.Stop()

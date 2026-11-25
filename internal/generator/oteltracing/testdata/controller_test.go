@@ -33,7 +33,7 @@ func testControllerSignals(t *testing.T, sample string, pending bool) {
 	t.Setenv("OTEL_TRACES_SAMPLER_ARG", sample)
 	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "1000")
 	var output bytes.Buffer
-	runtime, err := newRuntime(&output)
+	runtime, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestControllerQueueLimitAndRelease(t *testing.T) {
 func TestControllerWorkOutcomes(t *testing.T) {
 	traceEnvironment(t)
 	var output bytes.Buffer
-	runtime, err := newRuntime(&output)
+	runtime, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestControllerWorkOutcomes(t *testing.T) {
 func TestControllerPendingErrorPriority(t *testing.T) {
 	traceEnvironment(t)
 	var output bytes.Buffer
-	runtime, err := newRuntime(&output)
+	runtime, err := newRuntime(formOf(&output))
 	if err != nil {
 		t.Fatal(err)
 	}

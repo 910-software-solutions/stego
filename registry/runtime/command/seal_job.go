@@ -97,7 +97,7 @@ func (s *Sealing) resolve(ctx context.Context, ring *sealed.Ring, at sealed.Plac
 	}
 	plain, err := ring.Open(s.raw, at)
 	if err != nil {
-		slog.WarnContext(ctx, "command: a sealed value of an open seal step does not open; the clear value is read", "error", err.Error())
+		slog.WarnContext(ctx, "command: a sealed value of an open seal step does not open; the clear value is read", otel.SlogEventKey, "command.seal.unopened", "error", err.Error())
 		return
 	}
 	clear(plain)
@@ -222,7 +222,7 @@ func (e *Entity[T]) switchAfterSeal(ctx context.Context, db *sql.DB, err error, 
 		e.switchedAt.Store(sealSwitches.Add(1))
 		// The first attempt after the switch checks the catalog again (recheckSeal).
 		e.recheckAt.Store(0)
-		slog.InfoContext(ctx, "command: the contract step of a seal dropped the clear columns; the entity reads and writes its sealed columns alone",
+		slog.InfoContext(ctx, "command: the contract step of a seal dropped the clear columns; the entity reads and writes its sealed columns alone", otel.SlogEventKey, "command.seal.contracted",
 			"entity", e.spec.Name, "table", a.Table)
 	}
 	return true
@@ -264,14 +264,14 @@ func (e *Entity[T]) recheckSeal(ctx context.Context, db *sql.DB) {
 		}
 		if err := db.QueryRowContext(ctx, checkpointThereQuery, a.Changes[i]).Scan(&checkpoint); err != nil || !checkpoint {
 			if e.strayLogged.CompareAndSwap(false, true) {
-				slog.ErrorContext(ctx, "command: a clear column of a contracted seal is in its table with no seal checkpoint; the entity keeps writing the sealed column alone, so no secret goes to the clear column; drop the column, or restore the backup with its checkpoint",
+				slog.ErrorContext(ctx, "command: a clear column of a contracted seal is in its table with no seal checkpoint; the entity keeps writing the sealed column alone, so no secret goes to the clear column; drop the column, or restore the backup with its checkpoint", otel.SlogEventKey, "command.seal.clear_column_present",
 					"entity", e.spec.Name, "table", a.Table, "column", column, "change", a.Changes[i])
 			}
 			return
 		}
 		if e.contracted.CompareAndSwap(true, false) {
 			e.strayLogged.Store(false)
-			slog.WarnContext(ctx, "command: a clear column of an open seal is in its table again, as after a restore from before the contract step; the entity writes and reads the clear and the sealed columns again",
+			slog.WarnContext(ctx, "command: a clear column of an open seal is in its table again, as after a restore from before the contract step; the entity writes and reads the clear and the sealed columns again", otel.SlogEventKey, "command.seal.clear_column_restored",
 				"entity", e.spec.Name, "table", a.Table, "column", column, "change", a.Changes[i])
 		}
 		return
@@ -439,7 +439,7 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 			if there {
 				if !j.stray[c.Change] {
 					j.stray[c.Change] = true
-					slog.ErrorContext(ctx, "command: the seal of a secret column has no checkpoint while its clear column is there, so the seal job cannot run; run the migration job of this release, which makes the checkpoint",
+					slog.ErrorContext(ctx, "command: the seal of a secret column has no checkpoint while its clear column is there, so the seal job cannot run; run the migration job of this release, which makes the checkpoint", otel.SlogEventKey, "command.seal.checkpoint_missing",
 						"change", c.Change, "entity", c.Entity, "column", c.Clear)
 				}
 				failed = append(failed, fmt.Errorf("command: the seal of the column %s of %s: %w", c.Clear, c.Entity, ErrSealCheckpoint))
@@ -448,7 +448,7 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 			}
 			if !j.contracted[c.Change] {
 				j.contracted[c.Change] = true
-				slog.InfoContext(ctx, "command: the seal of a secret column has no checkpoint, as after its contract step; the seal job has no work for it",
+				slog.InfoContext(ctx, "command: the seal of a secret column has no checkpoint, as after its contract step; the seal job has no work for it", otel.SlogEventKey, "command.seal.no_work",
 					"change", c.Change, "entity", c.Entity)
 			}
 			results = append(results, SealResult{Change: c.Change, Completed: true})
@@ -469,7 +469,7 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 			continue
 		}
 		if !declared {
-			slog.ErrorContext(ctx, "command: the lease of the seal job is not in the lease table, so the seal job cannot run; run the migration job of this release, which makes it, and the job runs at its next tick",
+			slog.ErrorContext(ctx, "command: the lease of the seal job is not in the lease table, so the seal job cannot run; run the migration job of this release, which makes it, and the job runs at its next tick", otel.SlogEventKey, "command.seal.lease_missing",
 				"change", c.Change, "entity", c.Entity, "lease", SealLease(c.Change))
 			failed = append(failed, fmt.Errorf("command: the seal of the column %s of %s: %w: %s", c.Clear, c.Entity, ErrSealLease, SealLease(c.Change)))
 			continue
@@ -596,7 +596,7 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 	if errors.Is(err, lease.ErrSealStale) {
 		// A release before the step ran during the pass and can have written the clear column alone: the next run
 		// starts the pass again.
-		slog.WarnContext(ctx, "command: a release before the seal step ran during the pass; the pass starts again", "change", c.Change)
+		slog.WarnContext(ctx, "command: a release before the seal step ran during the pass; the pass starts again", otel.SlogEventKey, "command.seal.pass_restarted", "change", c.Change)
 		return result, nil
 	}
 	if err != nil {
@@ -792,7 +792,7 @@ func (j *RelateJob) Run(ctx context.Context) ([]RelateResult, error) {
 		result := RelateResult{Change: c.Change}
 		if _, err := lease.ReadSeal(ctx, j.cfg.DB, c.Change); err != nil {
 			if errors.Is(err, lease.ErrNoSeal) {
-				slog.ErrorContext(ctx, "command: the relate step has no checkpoint, so the relate job cannot run; run the migration job of this release, which makes it",
+				slog.ErrorContext(ctx, "command: the relate step has no checkpoint, so the relate job cannot run; run the migration job of this release, which makes it", otel.SlogEventKey, "command.relate.checkpoint_missing",
 					"change", c.Change, "entity", c.Entity, "relation", c.Relation)
 			}
 			failed = append(failed, fmt.Errorf("command: the relate step %s: read the checkpoint: %w", c.Change, err))
@@ -806,7 +806,7 @@ func (j *RelateJob) Run(ctx context.Context) ([]RelateResult, error) {
 			continue
 		}
 		if !declared {
-			slog.ErrorContext(ctx, "command: the lease of the relate job is not in the lease table, so the relate job cannot run; run the migration job of this release, which makes it",
+			slog.ErrorContext(ctx, "command: the lease of the relate job is not in the lease table, so the relate job cannot run; run the migration job of this release, which makes it", otel.SlogEventKey, "command.relate.lease_missing",
 				"change", c.Change, "lease", SealLease(c.Change))
 			failed = append(failed, fmt.Errorf("command: the relate step %s: %w: %s", c.Change, ErrSealLease, SealLease(c.Change)))
 			results = append(results, result)
@@ -914,7 +914,7 @@ func (j *RelateJob) pass(ctx context.Context, held *lease.Held, c RelateChange) 
 	if errors.Is(err, lease.ErrSealStale) {
 		// A release before the step ran during the pass and can have made a row with no tuple of the relation: the
 		// next run starts the pass again.
-		slog.WarnContext(ctx, "command: a release before the relate step ran during the pass; the pass starts again", "change", c.Change)
+		slog.WarnContext(ctx, "command: a release before the relate step ran during the pass; the pass starts again", otel.SlogEventKey, "command.relate.pass_restarted", "change", c.Change)
 		return result, nil
 	}
 	if err != nil {

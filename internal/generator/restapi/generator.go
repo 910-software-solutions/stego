@@ -743,6 +743,16 @@ func generateErrors(ns string, serviceName string, errorTypeBase string) (gen.Fi
 		fmt.Fprintf(&buf, "\t\treturn \"precondition-failed\"\n")
 		fmt.Fprintf(&buf, "\tcase http.StatusPreconditionRequired:\n")
 		fmt.Fprintf(&buf, "\t\treturn \"precondition-required\"\n")
+		// The names of the statuses that the problems with no code of the runtime use too (ST-SUP-RC32-OC19): a 503
+		// of a database that cannot serve now is service-unavailable, not internal-error (walkthrough 25, P1-16).
+		fmt.Fprintf(&buf, "\tcase http.StatusMethodNotAllowed:\n")
+		fmt.Fprintf(&buf, "\t\treturn \"method-not-allowed\"\n")
+		fmt.Fprintf(&buf, "\tcase http.StatusRequestEntityTooLarge:\n")
+		fmt.Fprintf(&buf, "\t\treturn \"content-too-large\"\n")
+		fmt.Fprintf(&buf, "\tcase http.StatusUnprocessableEntity:\n")
+		fmt.Fprintf(&buf, "\t\treturn \"unprocessable-content\"\n")
+		fmt.Fprintf(&buf, "\tcase http.StatusServiceUnavailable:\n")
+		fmt.Fprintf(&buf, "\t\treturn \"service-unavailable\"\n")
 		fmt.Fprintf(&buf, "\tdefault:\n")
 		fmt.Fprintf(&buf, "\t\treturn \"internal-error\"\n")
 		fmt.Fprintf(&buf, "\t}\n")

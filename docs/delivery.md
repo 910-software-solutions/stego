@@ -325,7 +325,10 @@ The image of the Job is the image of the base, so the `images` entry of the over
 ### When the Job fails
 
 A Job that fails writes one failure record, a JSON line with the event `service.failed`, to its error output. The
-record never holds the error text. It gives:
+record never holds the error text. From runtime v0.195.0 (rest-crud 3.261.0, rpc-service and browser-service
+1.261.0) the record has the one form of the lines of the runtime (see [Read the logs](operations.md#read-the-logs)):
+its fields are under `attributes`, each with the prefix `stego.`, such as `stego.stage`, and a list, such as the
+modes, is one string with its names joined by commas. Before, the fields were at the top level. It gives:
 
 - `stage`: the step that failed, such as `migrate.ledger_check` or `migrate.authorization_schema`.
 - `cause`: a fixed class of the cause, when the Job knows one. For the database, the class of its SQLSTATE, such as
@@ -375,9 +378,20 @@ was only on a separate log line:
 None of these fields holds an endpoint, a key, a migration name or a digest. The log line before the record still
 names the migration.
 
+From browser-backend 4.15.0 (browser-service 1.261.0) (walkthrough 25, P3-11) the failure record of a browser service gives a fault, an
+object, a remedy and a cause, as the record of an api does:
+
+| Stage | Fault | Object | Cause | When |
+|---|---|---|---|---|
+| `database.access` (migration Job) | `database.connection` | `database` | the class of the SQLSTATE, such as `authentication_failed` with `stego.sqlstate` `28P01`, or of the network, such as `connection_refused`; else `connection_failed` | The Job cannot open the owner connection of `STEGO_MIGRATION_DATABASE_URL`, or cannot read the owner login. |
+| `service.start.setting.browser-backend.<variable>` (migration Job) | `database.settings` | `database` | `invalid_setting` | `STEGO_MIGRATION_DATABASE_URL`, its `_FILE` form or `STEGO_RUNTIME_DATABASE_ROLE` is refused. |
+| `database.open`, `database.ping` (pod) | `database.connection` | `database` | the class of the SQLSTATE or of the network, else `connection_failed` | The pool of the pod does not open, or the database does not answer the ping. |
+
+The remedy is a fixed text. No field holds a connection string, a password, a login name or the text of the error.
+A refused schema check keeps the stage `database.schema` and its fault class, such as `table` or `grant`.
+
 For example, a Job whose SpiceDB refused the connection writes
-`{"severity":"ERROR","event.name":"service.failed","stage":"migrate.authorization_schema","fault":"spicedb.connection","object":"spicedb","remedy":"the migration job cannot reach SpiceDB: ...","cause":"unavailable"}`
-(with its time and message).
+`{"timestamp":"2026-11-22T07:20:01.000000000Z","severity":"ERROR","service.name":"orders","event.name":"service.failed","message":"Service failed","attributes":{"stego.stage":"migrate.authorization_schema","stego.fault":"spicedb.connection","stego.object":"spicedb","stego.remedy":"the migration job cannot reach SpiceDB: ...","stego.cause":"unavailable"}}`.
 
 A start whose key source the key set refused gives the stage
 `service.start.authn.keys`, or `service.start.authn.discovery` for the
@@ -460,6 +474,47 @@ The local tests run the migrate mode directly against the local PostgreSQL stand
 manifest of the Job with the kustomize library. To run the migration of a service by hand, run the binary with
 `migrate` and the variables of the Job, for example
 `STEGO_MIGRATION_DATABASE_URL=... STEGO_SPICEDB_ENDPOINT=... STEGO_SPICEDB_KEY_FILE=... ./service migrate`.
+
+## Size the PostgreSQL server
+
+Each process of a service keeps pools of database connections of its own.
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` (16 when it has no value) bounds each
+pool that reads the setting. At the defaults, one process can open at most:
+
+| Process | Pools | Most connections |
+|---|---|---|
+| api pod (`--mode=api`) | the main pool (16), the audit pool (16) and the pool of the charges of counted values (4) | 36 |
+| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role (16, and at least the concurrency of the outbox worker + 2) and the pool of the relay role (16) | 68 |
+| migration Job | the owner connection and the connections of its steps | a few |
+
+A pool opens a connection only when it needs one, so an idle service holds
+fewer. But a burst, a slow database or a restart of many pods at the same
+time can fill each pool. A PostgreSQL server that cannot take a connection
+refuses it with SQLSTATE 53300 (`too_many_connections`). A server that has
+too little memory for its connections can be stopped by the kernel: in
+walkthrough 25, a PostgreSQL with a limit of 768 MiB was killed three times
+when 34 to 38 processes of STEGO started, with about 86 connections.
+
+Size the server for the most connections, not for the mean:
+
+1. Add the most connections of each pod of each service that uses the
+   server, at the replicas of the rollout (the old and the new pods run
+   together), and add the migration Jobs and your own tools. For example, 3
+   services with 2 api pods and 1 worker pod each: 3 x (2 x 36 + 68) = 420.
+2. Set `max_connections` of PostgreSQL to that sum plus
+   `superuser_reserved_connections` (3 by default). Or lower
+   `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` in `<service>-config` until the sum
+   fits the server. A pool of 4 to 8 is enough for a small service; the pool
+   of the worker role keeps at least the concurrency of the outbox worker
+   + 2.
+3. Give the server memory for `shared_buffers` and for each connection.
+   Each connection is one server process, which takes some MiB when it is
+   idle and up to `work_mem` for each sort or hash of a statement. A start
+   value: `shared_buffers` 25% of the memory of the server, and about 10 MiB
+   for each connection of `max_connections`. For the 86 connections of
+   walkthrough 25 that is about 1 GiB, more than the 768 MiB of its limit.
+4. Watch the count of connections (`pg_stat_activity`) and the 53300
+   refusals while you change the replicas.
 
 ## Secrets as files
 

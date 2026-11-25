@@ -136,7 +136,7 @@ func processFiles(ctx gen.Context) ([]gen.File, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
-	data := struct{ Auth, Transport, Tracing string }{ctx.AuthPackage, path.Join(ctx.ModuleName, ctx.OutDirName, ctx.OutputNamespace, "transport"), path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"])}
+	data := struct{ Auth, Transport, Tracing, Service string }{ctx.AuthPackage, path.Join(ctx.ModuleName, ctx.OutDirName, ctx.OutputNamespace, "transport"), path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), ctx.ServiceName}
 	tmpl, err := template.New("process").Parse(processSource + gen.EnvironmentGuardSource)
 	if err != nil {
 		return nil, err

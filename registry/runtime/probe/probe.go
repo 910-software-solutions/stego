@@ -149,8 +149,11 @@ const (
 // Observation is the descriptor of one observation: the generated code makes it once with Declare and passes it to
 // Emit. It has no exported field, so only Declare makes one.
 type Observation struct {
-	name     string
-	signal   string
+	name   string
+	signal string
+	// message is the fixed message of the console line: of a built-in observation its text, and of a declared one
+	// its signal.
+	message  string
 	kind     Kind
 	severity Severity
 	counts   Counts

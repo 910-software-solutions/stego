@@ -808,7 +808,7 @@ var unavailableLog = authz.NewCauseLog(nil)
 // a 503 of an outage is never an answer that no log explains (walkthrough 10, B7).
 func logUnavailable(ctx context.Context, action, step string) {
 	if ok, held := unavailableLog.Allow(action + "/" + step); ok {
-		slog.WarnContext(ctx, "command: the database cannot serve now", "action", action, "step", step,
+		slog.WarnContext(ctx, "command: the database cannot serve now", otel.SlogEventKey, "command.database.unavailable", "action", action, "step", step,
 			"cause", "unavailable", "held_back", held)
 	}
 }

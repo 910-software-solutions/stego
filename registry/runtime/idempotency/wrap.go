@@ -298,7 +298,7 @@ func existing(ctx context.Context, tx Tx, req Request) (Result, error) {
 		// A sealed answer that does not open, such as of a key that the ring no longer holds, cannot be replayed: the
 		// client sends the request again with a new key (security review of PR #443, L3). The operator sees a key
 		// removed too early or a changed row; the log holds no key, principal or value (re-review N3).
-		slog.WarnContext(otel.Security(ctx), "idempotency: a stored answer does not open; the request is answered as a reused key", "step", "select")
+		slog.WarnContext(otel.Security(ctx), "idempotency: a stored answer does not open; the request is answered as a reused key", otel.SlogEventKey, "idempotency.answer.unopened", "step", "select")
 		return Result{Response: Response{Status: http.StatusUnprocessableEntity}, Problem: ProblemReused}, nil
 	}
 	h, err := decodeHeader(header)

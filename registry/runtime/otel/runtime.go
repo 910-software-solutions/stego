@@ -162,7 +162,7 @@ func newRuntime(service string, bound deadline, operations ...string) (_ *Runtim
 	// Each record of severity WARN or higher is also one console line, whether or not an endpoint is set
 	// (ST-SUP-RP03-LC16).
 	r.ticker = time.NewTicker(ConsoleWindow / 6)
-	r.console = newConsole(os.Stdout, time.Now, r.ticker.C, consoleSkip(values.endpoint != ""))
+	r.console = newConsole(os.Stdout, values.service, instance, time.Now, r.ticker.C, consoleSkip(values.endpoint != ""))
 	defer func() {
 		// A start that fails stops the console and what else it started.
 		if err != nil {
