@@ -1,0 +1,1310 @@
+{
+ "source": "@opentelemetry/sdk-trace-base 2.10.0 TraceIdRatioBasedSampler",
+ "cases": [
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000000003",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253664",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000003",
+   "ratio": 1e-9,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000004",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253663",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000004",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000000005",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253662",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000005",
+   "ratio": 1e-9,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000068db7",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef5623bbd0",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000068db7",
+   "ratio": 0.0001,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000068db8",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef5623bbdf",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000068db8",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000000068db9",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef5623bbde",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000068db9",
+   "ratio": 0.0001,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000019999998",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef4fbcafff",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000019999998",
+   "ratio": 0.1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000019999999",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef4fbcaffe",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000019999999",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000001999999a",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef4fbcaffd",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000001999999a",
+   "ratio": 0.1,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "0000000000000000000000003ffffffe",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef69dac999",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000003ffffffe",
+   "ratio": 0.25,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000003fffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef69dac998",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000003fffffff",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000040000000",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef16253667",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000040000000",
+   "ratio": 0.25,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.5,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.5,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000bffffffe",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefe9dac999",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000bffffffe",
+   "ratio": 0.75,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000bfffffff",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefe9dac998",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000bfffffff",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000c0000000",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef96253667",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000c0000000",
+   "ratio": 0.75,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffef37",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dad950",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffef37",
+   "ratio": 0.999999,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000ffffef38",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dad95f",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffef38",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "000000000000000000000000ffffef39",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dad95e",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffef39",
+   "ratio": 0.999999,
+   "sampled": false
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253667",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000000",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000001",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253666",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000001",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000000000010",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef56253677",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000000000010",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007ffffffe",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac999",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007ffffffe",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "0000000000000000000000007fffffff",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdef29dac998",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff000000007fffffff",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "00000000000000000000000080000000",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefd6253667",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff0000000080000000",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000fffffffe",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac999",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000fffffffe",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "000000000000000000000000ffffffff",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "deadbeef0123456789abcdefa9dac998",
+   "ratio": 1,
+   "sampled": true
+  },
+  {
+   "trace_id": "ffffffffffffffff00000000ffffffff",
+   "ratio": 1,
+   "sampled": true
+  }
+ ]
+}

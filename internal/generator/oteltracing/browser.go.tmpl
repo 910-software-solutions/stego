@@ -86,12 +86,13 @@ func RelayBrowserTelemetry(ctx context.Context,signal string,data []byte,service
 func browserID(value []byte,size int,optional bool)bool{if optional&&len(value)==0{return true};if len(value)!=size{return false};for _,b:=range value{if b!=0{return true}};return false}
 // browserSampled applies the TraceIdRatio rule of the browser runtime (@opentelemetry/sdk-trace-base
 // TraceIdRatioBasedSampler): the XOR of the four 32-bit words of the trace ID, big-endian, must be below
-// floor(ratio * 0xffffffff).
+// floor(ratio * 0xffffffff), or below 0x100000000 at the ratio 1, so the ratio 1 samples each trace ID.
 func browserSampled(traceID []byte,ratio float64)bool{
  if len(traceID)!=16||!(ratio>0){return false}
  var accumulation uint32
  for i:=0;i<16;i+=4{accumulation^=uint32(traceID[i])<<24|uint32(traceID[i+1])<<16|uint32(traceID[i+2])<<8|uint32(traceID[i+3])}
- return uint64(accumulation)<uint64(math.Floor(math.Min(ratio,1)*0xffffffff))
+ if ratio>=1{return true}
+ return uint64(accumulation)<uint64(math.Floor(ratio*0xffffffff))
 }
 func browserTime(value uint64)bool{now:=time.Now();return value>=uint64(now.Add(-24*time.Hour).UnixNano())&&value<=uint64(now.Add(5*time.Minute).UnixNano())}
 func boundedBrowserMessage(message protoreflect.Message,budget *int)bool{
