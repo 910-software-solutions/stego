@@ -1,9 +1,15 @@
 package kubernetesservice
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/jsell-rh/stego/internal/generator/kubernetesworkload"
 	"path"
 	"regexp"
 	"slices"
@@ -301,6 +307,179 @@ func TestAllocatorHasNoSecretAccess(t *testing.T) {
 					}
 				}
 			}
+		}
+	})
+}
+
+// stegoKeys gives each label or annotation key of the STEGO key space that the text holds: the keys that start with
+// stego. and a domain, in any quoting.
+var stegoKeyPattern = regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.{}-]*`)
+
+// oldPrefixAllowed are the only lines of the tracked files outside data/ that may hold the old key prefix: the
+// release note and the check of docs/upgrade.md, which tell an operator to look for namespaces with the old labels.
+// A line is named by its file and its text.
+var oldPrefixAllowed = map[string]bool{
+	"docs/upgrade.md:   kubectl --context <context> get ns -l stego" + ".dev/allocator":          true,
+	"docs/upgrade.md:   kubectl --context <context> get ns -l stego" + ".dev/allocation-profile": true,
+}
+
+// upgradeRowStart is the start of the release row of docs/upgrade.md for the new key prefix, which names the old
+// prefix in its text.
+const upgradeRowStart = "| - | - | STEGO commit of pull request #506 (the archetype versions stay 3.262.0, 1.262.0 and 1.262.0) | kubernetes-service 1.31.0 and kubernetes-workload 1.1.0"
+
+// upgradeRowText is the one text of that row after its start: an old key in a changed row is no longer the row.
+const upgradeRowText = ", which only browser-service holds, or a declaration that selects them. Each label and annotation key that STEGO writes starts with `stego.jsell-rh.github.io/` and not with `stego" + ".dev/`: `config-sha256`, `allocator`, `allocation-profile`, `allocation-network-endpoints`, `network-spec-sha256` and `service-account-<alias>`, and the capability paths of the namespace allocator. The admission policies and the allocator select only the new keys. A namespace that an allocator of an earlier release made keeps the old labels, and loses the protection of the policies and the ownership of the allocator. The Pods restart once, because the key of the configuration digest annotation changes. | [Upgrade over the old label keys](#upgrade-over-the-old-label-keys) |"
+
+// upgradeRow gives the exact release row, and fails the test unless docs/upgrade.md holds it once.
+func upgradeRow(t *testing.T, root string) string {
+	t.Helper()
+	row := upgradeRowStart + upgradeRowText
+	data, err := os.ReadFile(filepath.Join(root, "docs", "upgrade.md"))
+	if err != nil || strings.Count(string(data), row+"\n") != 1 {
+		t.Fatalf("docs/upgrade.md does not hold the release row of the new key prefix once, as written: %v", err)
+	}
+	return row
+}
+
+// oldPrefixLines gives each line of a tracked file of the checkout at root, outside data/, that holds the old key
+// prefix and that oldPrefixAllowed does not name, and the release row of docs/upgrade.md when it names the old
+// prefix in more than its stated places. It fails the test when git cannot read the checkout: git grep exits 1 when
+// no line matches and 0 when one does; any other end, such as 128 outside a checkout, is no reading.
+func oldPrefixLines(t *testing.T, root string) []string {
+	t.Helper()
+	list := exec.Command("git", "grep", "-I", "--no-color", "stego"+".dev", "--", ".", ":!data")
+	list.Dir = root
+	output, err := list.Output()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return nil
+	default:
+		t.Fatalf("git grep could not read the checkout at %s: %v", root, err)
+	}
+	var faults []string
+	for _, line := range strings.Split(strings.TrimRight(string(output), "\n"), "\n") {
+		if oldPrefixAllowed[line] || line == "docs/upgrade.md:"+upgradeRow(t, root) {
+			continue
+		}
+		faults = append(faults, line)
+	}
+	return faults
+}
+
+func TestKeyPrefix(t *testing.T) {
+	t.Run("ST-SUP-RC15-OC46-T01 The emitted manifests and scripts write and reserve only keys of the STEGO prefix", func(t *testing.T) {
+		contexts := map[string]gen.Context{"service": rpcContext(), "allocation": allocationContext(), "network": networkProfileContext(), "peer": peerAllocationContext(), "isolated": isolatedAllocationContext()}
+		keys := 0
+		for name, ctx := range contexts {
+			files, _, err := new(Generator).Generate(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				text := string(file.Content)
+				if strings.Contains(text, "stego"+".dev") {
+					t.Fatalf("%s: %s holds the old key prefix", name, file.Path)
+				}
+				for _, key := range stegoKeyPattern.FindAllString(text, -1) {
+					keys++
+					if !strings.HasPrefix(key, KeyPrefix) {
+						t.Fatalf("%s: %s writes the key %q, which is not under %s", name, file.Path, key, KeyPrefix)
+					}
+				}
+			}
+		}
+		// The kubernetes-workload component writes the configuration annotation of its Pods.
+		workload, _, err := new(kubernetesworkload.Generator).Generate(gen.Context{OutputNamespace: "workload"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workloadKeys := 0
+		for _, file := range workload {
+			if strings.Contains(string(file.Content), "stego"+".dev") {
+				t.Fatalf("kubernetes-workload: %s holds the old key prefix", file.Path)
+			}
+			for _, key := range stegoKeyPattern.FindAllString(string(file.Content), -1) {
+				workloadKeys++
+				if !strings.HasPrefix(key, KeyPrefix) {
+					t.Fatalf("kubernetes-workload: %s writes the key %q", file.Path, key)
+				}
+			}
+		}
+		// The cluster check scripts write and select by the same keys.
+		scripts, err := filepath.Glob(filepath.Join("..", "..", "..", "scripts", "*allocation*.py"))
+		if err != nil || len(scripts) == 0 {
+			t.Fatalf("no allocation check script: %v", err)
+		}
+		for _, script := range scripts {
+			data, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "stego"+".dev") {
+				t.Fatalf("%s holds the old key prefix", script)
+			}
+		}
+		if faults := oldPrefixLines(t, filepath.Join("..", "..", "..")); len(faults) > 0 {
+			t.Fatalf("tracked files hold the old key prefix: %v", faults)
+		}
+		// The prefix is one value: kubernetes-workload and the two Python constants of the cluster checks state the
+		// same prefix as this component.
+		if kubernetesworkload.KeyPrefix != KeyPrefix {
+			t.Fatalf("kubernetes-workload states the prefix %q, this component %q", kubernetesworkload.KeyPrefix, KeyPrefix)
+		}
+		// Each of the two defining scripts assigns KEY_PREFIX once, to the prefix, and no other script assigns it,
+		// also not through the module it loads (common.KEY_PREFIX = ...).
+		assignment := regexp.MustCompile(`(?m)^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*\.)*KEY_PREFIX[ \t]*(?::[^=]*)?=[^=]`)
+		defining := map[string]bool{"check-allocation-account-identity.py": true, "check-namespace-allocation.py": true}
+		allScripts, err := filepath.Glob(filepath.Join("..", "..", "..", "scripts", "*.py"))
+		if err != nil || len(allScripts) == 0 {
+			t.Fatalf("no script: %v", err)
+		}
+		for _, script := range allScripts {
+			data, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assignments := assignment.FindAllString(string(data), -1)
+			name := filepath.Base(script)
+			if !defining[name] {
+				if len(assignments) > 0 {
+					t.Fatalf("%s assigns KEY_PREFIX: %q; only the two defining scripts state it", name, assignments)
+				}
+				continue
+			}
+			found := regexp.MustCompile(`(?m)^KEY_PREFIX = "([^"]*)"$`).FindStringSubmatch(string(data))
+			if len(assignments) != 1 || found == nil || found[1] != KeyPrefix {
+				t.Fatalf("%s assigns KEY_PREFIX %d times, as %v, want once as %q", name, len(assignments), found, KeyPrefix)
+			}
+			delete(defining, name)
+		}
+		if len(defining) > 0 {
+			t.Fatalf("the defining scripts %v are missing", defining)
+		}
+		if keys == 0 || workloadKeys == 0 {
+			t.Fatalf("the emitted files hold %d STEGO keys and the workload files %d, so the test reads nothing", keys, workloadKeys)
+		}
+		// A declaration may not take a key under the STEGO prefix as the owner label of an allocation profile.
+		for _, owner := range []string{KeyPrefix + "owner", "team." + KeyPrefix + "owner"} {
+			ctx := allocationContext()
+			ctx.ComponentConfig["allocation_profiles"].([]any)[0].(object)["owner_label"] = owner
+			if _, _, err := new(Generator).Generate(ctx); err == nil {
+				t.Fatalf("the owner label %q under the STEGO prefix was accepted", owner)
+			}
+		}
+		// A namespace identity label may not take a key under the STEGO prefix or a subdomain of it either.
+		for _, key := range []string{KeyPrefix + "linked-id", "team." + KeyPrefix + "linked-id"} {
+			ctx := allocationContext()
+			ctx.ComponentConfig["allocation_profiles"].([]any)[0].(object)["identity_labels"] = []any{object{"field": "linked_id", "key": key}}
+			if _, _, err := new(Generator).Generate(ctx); err == nil {
+				t.Fatalf("the identity label %q under the STEGO prefix was accepted", key)
+			}
+		}
+		if !reservedKeyPrefix(KeyPrefix+"owner") || reservedKeyPrefix("example.test/owner") || reservedKeyPrefix("notstego.jsell-rh.github.io/owner") {
+			t.Fatal("the reserved prefix is not exactly the STEGO domain and its subdomains")
 		}
 	})
 }

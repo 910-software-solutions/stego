@@ -3,7 +3,7 @@
 The generated renderer accepts `Options.ConfigurationDigest` and the matching
 `--configuration-digest` command option. The value must be a lowercase SHA-256
 digest with 64 hexadecimal characters. The renderer sets the Pod template
-annotation `stego.dev/config-sha256` on its selected Deployment. Changed contents
+annotation `stego.jsell-rh.github.io/config-sha256` on its selected Deployment. Changed contents
 can then cause a rollout without application code that edits Kubernetes maps.
 
 The caller must verify the dependency names, namespace, ownership, credentials,

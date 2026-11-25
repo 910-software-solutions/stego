@@ -135,7 +135,7 @@ class Check(common.Check):
                      "metadata": {"name": common.CONTROL + ".test-installer"},
                      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": common.CONTROL + ".widget-queue.control-account-installer"},
                      "subjects": [{"kind": "ServiceAccount", "name": installer_name, "namespace": common.PEER}]})
-        capability = "/stego.dev/control-account-installation/" + common.CONTROL + "/widget-queue"
+        capability = "/" + common.KEY_PREFIX + "control-account-installation/" + common.CONTROL + "/widget-queue"
         for identity in [primary, common.actor(common.PEER), outsider]:
             self.expect_capability(identity, capability, False)
         self.expect_capability(installer, capability, True)

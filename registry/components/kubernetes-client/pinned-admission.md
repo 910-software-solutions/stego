@@ -49,7 +49,7 @@ can cause denial before those conditions run.
 
 The policies check an operator-owned namespace identity label and restricted
 Pod security. After namespace creation, the operator must set
-`PinnedNamespaceUIDLabel` (`stego.dev/pinned-namespace-uid`) to the observed
+`PinnedNamespaceUIDLabel` (`stego.jsell-rh.github.io/pinned-namespace-uid`) to the observed
 namespace UID. A recreated namespace needs its new UID and new policies. Never
 copy this label from an old namespace. Kubernetes does not expose the namespace
 UID through `namespaceObject` in CEL, so this check relies on that operator step. They
