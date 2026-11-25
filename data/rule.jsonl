@@ -167,8 +167,13 @@
 {"id":"ST-GEN-INV38-RL","title":"compiler.MigrationBodyFaults","invariant_id":"ST-GEN-INV38","file":"internal/compiler/base_compat.go"}
 {"id":"ST-GEN-INV39-RL","title":"compiler.eventFieldFaults","invariant_id":"ST-GEN-INV39","file":"internal/compiler/event_fields.go"}
 {"id":"ST-SUP-INV01-RL","title":"registry.LoadSources","invariant_id":"ST-SUP-INV01","file":"internal/registry/registry.go"}
+{"id":"ST-SUP-INV02-RL","title":"registry.WritesOwnNamespace","invariant_id":"ST-SUP-INV02","file":"internal/registry/namespace.go"}
 {"id":"ST-SUP-INV03-RL","title":"registry.checkExperimentPorts","invariant_id":"ST-SUP-INV03","file":"internal/registry/stage.go"}
+{"id":"ST-SUP-INV04-RL","title":"registry.Registry.CheckExtension","invariant_id":"ST-SUP-INV04","file":"internal/registry/mixin.go"}
+{"id":"ST-SUP-INV09-RL","title":"registry.statesPlace","invariant_id":"ST-SUP-INV09","file":"internal/registry/architecture.go"}
 {"id":"ST-SUP-INV10-RL","title":"registry.checkRuntimePin","invariant_id":"ST-SUP-INV10","file":"internal/registry/runtime.go"}
+{"id":"ST-SUP-INV13-RL","title":"registry.checkNamespace","invariant_id":"ST-SUP-INV13","file":"internal/registry/namespace.go"}
+{"id":"ST-SUP-INV16-RL","title":"registry.Registry.RequiredMixins","invariant_id":"ST-SUP-INV16","file":"internal/registry/mixin.go"}
 {"id":"ST-SUP-INV17-RL","title":"registry.Registry.checkAliases","invariant_id":"ST-SUP-INV17","file":"internal/registry/registry.go"}
 {"id":"ST-SUP-INV22-RL","title":"registry.declaresVariables","invariant_id":"ST-SUP-INV22","file":"internal/registry/environment.go"}
 {"id":"ST-SUP-INV23-RL","title":"registry.secretHasNoDefault","invariant_id":"ST-SUP-INV23","file":"internal/registry/environment.go"}
