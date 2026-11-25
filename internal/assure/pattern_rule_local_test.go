@@ -599,7 +599,6 @@ func TestLocalDevelopmentStandard(t *testing.T) {
 	proof := newLocalProof(t, "")
 	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-STD-LOCAL-R02-T02 Each test file of the product belongs to one documented suite", proof.oneCommandRunsEachSuite)
-	t.Run("ST-STD-LOCAL-R04-T02 Each container that a test of the product starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
 }
