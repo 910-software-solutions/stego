@@ -29,6 +29,10 @@ const (
 	fixtureChainsKeyName = "k8s://openshift-pipelines/signing-secrets"
 )
 
+// pipelineAcceptance accepts the ci-pipeline component of pipelineRegistry, which is alpha, until its sunset: a
+// declaration that names a CI provider reads its pins, so it accepts it by name (ST-DECL-EN07, sec-501 L1).
+const pipelineAcceptance = "experimental_acceptances:\n  - {component: ci-pipeline, accepted_until: 2027-06-30, reason: the CI pipeline pins}\n"
+
 // pipelineRegistry gives the registry copy of ST-DLV-TD01 with the ci-pipeline component and its test pins.
 func pipelineRegistry(t *testing.T) string {
 	t.Helper()
@@ -64,7 +68,7 @@ func TestPipelineApply(t *testing.T) {
 	}
 
 	t.Run("ST-DLV-UC06-R01-T01 For the hosted CI provider, applying the plan writes a CI file that only calls the shared pipeline by full commit and the STEGO checks by pin", func(t *testing.T) {
-		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n")
+		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n"+pipelineAcceptance)
 		printed := mustRunInProject(t, dir, env, "apply")
 		if !strings.Contains(printed, "generate: "+delivery.GitHubActionsFile) {
 			t.Fatalf("the plan does not list %s:\n%s", delivery.GitHubActionsFile, printed)
@@ -110,7 +114,7 @@ func TestPipelineApply(t *testing.T) {
 	})
 
 	t.Run("ST-DLV-UC06-R02-T01 A pull request run of the CI file has no write permission, and a push on a feature branch signs nothing", func(t *testing.T) {
-		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n")
+		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n"+pipelineAcceptance)
 		mustRunInProject(t, dir, env, "apply")
 		workflow := read(t, dir, delivery.GitHubActionsFile)
 		jobs, _ := workflow["jobs"].(map[string]any)
@@ -156,7 +160,7 @@ func TestPipelineApply(t *testing.T) {
 	})
 
 	t.Run("ST-DLV-UC06-R01-T02 For Konflux, applying the plan writes a PipelineRun that only references the standard pipeline bundle and the STEGO checks by digest", func(t *testing.T) {
-		dir := deliveryProject(t, "delivery:\n  ci: konflux\n")
+		dir := deliveryProject(t, "delivery:\n  ci: konflux\n"+pipelineAcceptance)
 		mustRunInProject(t, dir, env, "apply")
 		file := delivery.PipelineFile(delivery.Konflux, "orders")
 		run := read(t, dir, file)
@@ -218,7 +222,7 @@ func TestPipelineApply(t *testing.T) {
 
 	t.Run("ST-DLV-UC06-R01-T03 With no pins for the provider in the registry, applying the plan writes no CI file and says so", func(t *testing.T) {
 		shipped := requirementsRegistry(t)
-		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n")
+		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n"+pipelineAcceptance)
 		printed := mustRunInProject(t, dir, requirementsEnv(shipped), "apply")
 		if !strings.Contains(printed, "no CI file is written") {
 			t.Errorf("the plan does not say that no CI file is written:\n%s", printed)

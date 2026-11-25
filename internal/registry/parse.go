@@ -78,6 +78,11 @@ func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
 	if err := checkEnvironment(&component); err != nil {
 		return nil, err
 	}
+	// The registry refuses a component whose output namespace is not a valid Go import path, before any generator
+	// runs, and never rewrites it (ST-SUP-INV13).
+	if err := checkNamespace(&component); err != nil {
+		return nil, &parser.ParseError{Path: path, Err: err}
+	}
 	// The registry refuses a component that does not state its place, naming it and the statement
 	// (ST-SUP-UC01-R05).
 	if fault := statesPlace(&component); fault != nil {
