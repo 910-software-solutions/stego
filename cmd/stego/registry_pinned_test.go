@@ -119,7 +119,12 @@ func recordedDigest(t *testing.T, project string) string {
 // sourceState is the bytes, the mode and the time of change of each file of a folder, and its git status.
 func sourceState(t *testing.T, folder string) map[string]string {
 	t.Helper()
-	state := map[string]string{"git status": git(t, folder, "status", "--porcelain", "--ignored")}
+	// The Git metadata too, apart from the index that git status refreshes: every ref, the local configuration, and
+	// the list of objects with their sizes (review of #505, L2).
+	state := map[string]string{"git status": git(t, folder, "status", "--porcelain", "--ignored"),
+		"git refs":    git(t, folder, "for-each-ref", "--format=%(refname) %(objectname)"),
+		"git config":  git(t, folder, "config", "--local", "--list"),
+		"git objects": git(t, folder, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)")}
 	if err := filepath.WalkDir(folder, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -159,7 +164,11 @@ func TestRegistryReadAtPinnedContent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		commitRegistry(t, common, map[string]string{"archetypes/rest-crud/archetype.yaml": strings.Replace(string(data), "  cors: enabled\n", "  cors: disabled\n", 1)})
+		later := strings.Replace(string(data), "  cors: enabled\n", "  cors: disabled\n", 1)
+		if later == string(data) {
+			t.Fatal("the later commit does not change rest-crud")
+		}
+		commitRegistry(t, common, map[string]string{"archetypes/rest-crud/archetype.yaml": later})
 		if err := os.WriteFile(filepath.Join(common, "components", "rest-api", "component.yaml"), []byte("kind: broken\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
