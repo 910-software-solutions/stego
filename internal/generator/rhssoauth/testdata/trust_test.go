@@ -6,11 +6,13 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -324,5 +326,58 @@ func TestSSODeclaredTrustWins(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.Stop()
+	})
+}
+
+func TestSSOOneKeyRefreshTask(t *testing.T) {
+	t.Run("ST-SUP-RC21-OC11-T03 The service runs one key refresh task", func(t *testing.T) {
+		key := ssoFixture(t)
+		document, err := json.Marshal(map[string]any{"keys": []any{map[string]any{"kid": "test", "kty": "RSA", "alg": "RS256", "use": "sig", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var requests atomic.Int64
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(document)
+		}))
+		defer server.Close()
+		ca := filepath.Join(t.TempDir(), "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("JWK_CERT_FILE", "")
+		t.Setenv("JWK_CERT_URL", server.URL+"/keys")
+		t.Setenv("JWK_CA_FILE", ca)
+		h, err := NewJWTHandler()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Stop()
+		if got := requests.Load(); got != 1 {
+			t.Fatalf("startup made %d key requests, want one", got)
+		}
+		// The refresh interval of the common verifier is 30 seconds: a clock the test moves stands in for it, so the
+		// test needs no wall-clock wait. Each interval, ten requests with a key the cache does not hold ask for a
+		// refresh; the one task gives one key request per interval, not one per request or two per interval.
+		clock := time.Now()
+		h.verifier.now = func() time.Time { return clock }
+		unknown := ssoToken(t, key, ssoClaims(), jwt.SigningMethodRS256)
+		parts := strings.SplitN(unknown, ".", 2)
+		header, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "unknown"})
+		unknown = base64.RawURLEncoding.EncodeToString(header) + "." + parts[1]
+		next := h.Build()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+		for interval := 1; interval <= 3; interval++ {
+			clock = clock.Add(31 * time.Second)
+			for range 10 {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/records", nil)
+				request.Header.Set("Authorization", "Bearer "+unknown)
+				next.ServeHTTP(httptest.NewRecorder(), request)
+			}
+			if got := requests.Load(); got != int64(1+interval) {
+				t.Fatalf("after interval %d the server got %d key requests, want %d: one per interval", interval, got, 1+interval)
+			}
+		}
 	})
 }

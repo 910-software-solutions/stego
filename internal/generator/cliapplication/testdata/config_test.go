@@ -164,5 +164,8 @@ func TestAtomicConfigurationWrites(t *testing.T) {
 		if fault != nil {
 			t.Fatalf("after %d complete reads, a read saw a configuration that was not saved whole: %v", reads, fault)
 		}
+		if reads == 0 {
+			t.Fatal("the reader read no configuration while the saves ran, so the test shows nothing")
+		}
 	})
 }
