@@ -74,9 +74,10 @@ func (p localProof) packageFiles() map[string][]byte {
 	return all
 }
 
-// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD.
-// A record is automated when its state is automated, or when its kind has no state (a contract test of the
-// product's own kind) and it names a file.
+// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD;
+// with no domain, those of the whole product, also of the records that sit under no domain. A record is automated
+// when its state is automated, or when its kind has no state (a contract test of the product's own kind) and it
+// names a file.
 func newLocalProof(t *testing.T, domain string) localProof {
 	t.Helper()
 	workspace := checkedWorkspace(t)
@@ -89,7 +90,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 	_, tree := readHead(t)
 	proof := localProof{domain: domain, files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
 	for _, record := range workspace.Records {
-		if record.Domain != domain || !testKinds[record.Kind] {
+		if domain != "" && record.Domain != domain || !testKinds[record.Kind] {
 			continue
 		}
 		file, _ := record.Fields["file"].(string)
@@ -103,7 +104,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 		}
 	}
 	if len(proof.tests) == 0 {
-		t.Fatalf("the spec names no automated test of %s", domain)
+		t.Fatalf("the spec names no automated test of %q", domain)
 	}
 	return proof
 }
@@ -485,8 +486,12 @@ var hostWrite = regexp.MustCompile(`(os\.(WriteFile|Create|Mkdir|MkdirAll|OpenFi
 // second proof".
 var sharedCluster = regexp.MustCompile(`(?i)[^.]*\b(jshell|shared cluster|OpenShift cluster)\b[^.]*`)
 
-// needsCluster tells if the test record says that it needs a shared cluster.
+// needsCluster tells if the test record says that it needs a shared cluster. A test of a pattern rule or a standard
+// rule of local development reads records that name a cluster; it needs none itself.
 func (test localTest) needsCluster() bool {
+	if strings.HasPrefix(test.id, "ST-PAT-LOCAL-TEST-") || strings.HasPrefix(test.id, "ST-STD-LOCAL-") {
+		return false
+	}
 	for _, sentence := range sharedCluster.FindAllString(test.text(), -1) {
 		if !regexp.MustCompile(`(?i)\bMAY follow\b|\bsecond(,| and)? platform-level proof\b|\bas a second proof\b`).MatchString(sentence) {
 			return true
@@ -586,4 +591,15 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	t.Run("ST-PAT-LOCAL-TEST-R02-T08 Each test file of Supplying belongs to one documented suite", proof.oneCommandRunsEachSuite)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T08 Supplying's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
+}
+
+// TestLocalDevelopmentStandard runs the checks of the pattern ST-PAT-LOCAL-TEST on every automated test of the
+// product at once, so a test that no domain owns, such as a test of a shared generator library, is also held.
+func TestLocalDevelopmentStandard(t *testing.T) {
+	proof := newLocalProof(t, "")
+	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
+	t.Run("ST-STD-LOCAL-R02-T02 Each test file of the product belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-STD-LOCAL-R04-T02 Each container that a test of the product starts is pinned by digest", proof.startsPinnedServices)
+	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
+	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
 }

@@ -364,3 +364,32 @@ func TestRowsAreOwnedByTheirClaim(t *testing.T) {
 		report(t, "ST-STD-TXN-R14", faults)
 	})
 }
+
+// consoleSink is the variable that turns the console sink of the domain probes on (ST-SUP-RP12-LC16).
+const consoleSink = "STEGO_PROBE_CONSOLE"
+
+func TestDeploymentLeavesTheConsoleSinkOff(t *testing.T) {
+	_, tree := readHead(t)
+	t.Run("ST-STD-OBS-R03-T01 No Kubernetes base or GitOps object that STEGO wrote for an example sets the console sink", func(t *testing.T) {
+		var faults []string
+		read := 0
+		for _, name := range tree.paths() {
+			parts := strings.Split(name, "/")
+			if len(parts) < 4 || parts[0] != "examples" || parts[2] != "deploy" || parts[3] != "base" && parts[3] != "components" && parts[3] != "argocd" {
+				continue
+			}
+			if ext := path.Ext(name); ext != ".yaml" && ext != ".yml" {
+				continue
+			}
+			read++
+			data, _ := tree.File(name)
+			if strings.Contains(string(data), consoleSink) {
+				faults = append(faults, name+" names "+consoleSink)
+			}
+		}
+		if read == 0 {
+			faults = append(faults, "the tree holds no deploy/base file of an example, so the test reads nothing")
+		}
+		report(t, "ST-STD-OBS-R03", faults)
+	})
+}
