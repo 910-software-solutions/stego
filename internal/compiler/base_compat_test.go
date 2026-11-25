@@ -1107,6 +1107,36 @@ func TestBaseRelateFaults(t *testing.T) {
 				}
 			}
 		})
+		t.Run("ST-GEN-INV33-T A relation that the base takes from the caller and the head from a stored field needs a relate step", func(t *testing.T) {
+			t.Parallel()
+			reason := "    public_reasons: {create: an activity entry of a caller has no resource to decide on before it exists}\n"
+			base := edit(declared, reason, reason+"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n")
+			head := edit(declared, reason, reason+"    relationships:\n      - {relation: owner, subject_source: field, subject_field: source_id, subject_type: user}\n")
+			faults := faultsOf(t, base, schema, head, compile(string(schema)))
+			if len(faults) != 1 || faults[0].Entity != "ActivityEntry" || faults[0].Field != "source_id" || len(faults[0].Declare) != 1 || faults[0].Declare[0].ID != "activityentry-owner-relate" {
+				t.Fatalf("owner from the caller in the base and from source_id in the head: want one fault with the relate step activityentry-owner-relate, got %+v", faults)
+			}
+			related := withChanges(head, "  - {id: activityentry-owner-relate, kind: relate, entity: ActivityEntry, relation: owner}\n", "  - {change: activityentry-owner-relate, phase: expand}\n")
+			if faults := faultsOf(t, base, schema, related, compile(string(schema))); len(faults) != 0 {
+				t.Errorf("with the relate step: want no fault, got %+v", faults)
+			}
+			// The same relation from another stored field is a new relation too.
+			both := edit(declared, reason, reason+"    relationships:\n      - {relation: owner, subject_source: field, subject_field: action, subject_type: user}\n")
+			if faults := faultsOf(t, both, schema, head, compile(string(schema))); len(faults) != 1 || faults[0].Field != "source_id" {
+				t.Errorf("owner from action in the base and from source_id in the head: want one fault of source_id, got %+v", faults)
+			}
+		})
+		t.Run("ST-GEN-INV33-T A new relation on a field that the head renames needs a relate step", func(t *testing.T) {
+			t.Parallel()
+			memberSchema := edit(string(schema), "definition member {\n\trelation organization: organization\n\trelation owner: user\n", "definition member {\n\trelation organization: organization\n\trelation owner: user\n\trelation contact: user\n")
+			relationship := "    relationships:\n      - {relation: contact, subject_source: field, subject_field: contact_email, subject_type: user}\n"
+			head := withChanges(edit(edit(declared, "{ name: email, type: string", "{ name: contact_email, type: string"), "      org_id: {relation: organization, permission: edit}\n    fields:\n      - { name: contact_email", "      org_id: {relation: organization, permission: edit}\n"+relationship+"    fields:\n      - { name: contact_email"),
+				emailRename, emailRenameExpand)
+			faults := faultsOf(t, declared, []byte(memberSchema), head, compile(memberSchema))
+			if len(faults) != 1 || faults[0].Entity != "User" || faults[0].Field != "contact_email" || len(faults[0].Declare) != 1 || faults[0].Declare[0].Kind != "relate" {
+				t.Fatalf("a new relation on the renamed field contact_email: want one fault with a relate step, got %+v", faults)
+			}
+		})
 		t.Run("ST-GEN-INV33-T A head that binds an authorization schema that the base did not bind needs a relate step for each relation of the rows of the base", func(t *testing.T) {
 			t.Parallel()
 			unbound := edit(declared, "authorization:\n  provider: spicedb\n  schema_path: authz/schema.zed\n  subject_from_identity: user\n", "")
