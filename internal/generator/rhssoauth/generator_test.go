@@ -752,7 +752,11 @@ func declarationFaults(name string, file *ast.File, info *gotypes.Info, pkg *got
 		wrapper := function.Recv == nil && (function.Name.Name == "NewJWTHandler" || function.Name.Name == "NewJWTHandlerWithTelemetry")
 		returned := map[*ast.CallExpr]bool{}
 		if wrapper {
+			// A return of a function literal is the literal's, not the wrapper's: the walk does not go into one.
 			ast.Inspect(function.Body, func(node ast.Node) bool {
+				if _, literal := node.(*ast.FuncLit); literal {
+					return false
+				}
 				if ret, ok := node.(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
 					if call, ok := ret.Results[0].(*ast.CallExpr); ok {
 						returned[call] = true
@@ -761,6 +765,7 @@ func declarationFaults(name string, file *ast.File, info *gotypes.Info, pkg *got
 				return true
 			})
 		}
+		faults = append(faults, runFaults(name, function)...)
 		ast.Inspect(function, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
@@ -780,6 +785,14 @@ func declarationFaults(name string, file *ast.File, info *gotypes.Info, pkg *got
 			return true
 		})
 	}
+	// A package variable can keep a constructor or a closure that makes a verifier for a later call. The template
+	// declares none; its keys are constants.
+	for _, declaration := range file.Decls {
+		if general, ok := declaration.(*ast.GenDecl); ok && general.Tok == token.VAR {
+			faults = append(faults, name+": declares a package variable")
+		}
+	}
+	faults = append(faults, literalFaults(name, file)...)
 	// A constructor named as a value, not called, could be called elsewhere.
 	ast.Inspect(file, func(node ast.Node) bool {
 		if id, ok := node.(*ast.Ident); ok {
@@ -792,6 +805,112 @@ func declarationFaults(name string, file *ast.File, info *gotypes.Info, pkg *got
 		return true
 	})
 	return faults
+}
+
+// isConstructor tells whether the function declaration is one of the constructors of the handler.
+func isConstructor(function *ast.FuncDecl) bool {
+	return function.Recv == nil && strings.HasPrefix(function.Name.Name, "NewJWTHandler")
+}
+
+// runFaults holds the constructors to run their statements once: no label, goto, for or range in their bodies. The
+// one call of NewJWKSVerifier is a direct statement of the body of NewJWTHandlerWithContext, x, err :=
+// NewJWKSVerifier(...), never in a function literal, a loop, a branch or a labeled statement. A count of call sites
+// is not a count of runs; these rules make the two the same.
+func runFaults(name string, function *ast.FuncDecl) []string {
+	var faults []string
+	if !isConstructor(function) || function.Body == nil {
+		return nil
+	}
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.LabeledStmt:
+			faults = append(faults, name+": a label in "+function.Name.Name)
+		case *ast.BranchStmt:
+			if n.Tok == token.GOTO {
+				faults = append(faults, name+": a goto in "+function.Name.Name)
+			}
+		case *ast.ForStmt, *ast.RangeStmt:
+			faults = append(faults, name+": a loop in "+function.Name.Name)
+		}
+		return true
+	})
+	isVerifierCall := func(expression ast.Expr) bool {
+		call, ok := expression.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		callee, ok := call.Fun.(*ast.Ident)
+		return ok && callee.Name == "NewJWKSVerifier"
+	}
+	direct := 0
+	for _, statement := range function.Body.List {
+		if assign, ok := statement.(*ast.AssignStmt); ok && len(assign.Rhs) == 1 && isVerifierCall(assign.Rhs[0]) {
+			direct++
+		}
+	}
+	total := 0
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if expression, ok := node.(ast.Expr); ok && isVerifierCall(expression) {
+			total++
+		}
+		return true
+	})
+	want := 0
+	if function.Name.Name == "NewJWTHandlerWithContext" {
+		want = 1
+	}
+	if direct != want || total != want {
+		faults = append(faults, fmt.Sprintf("%s: %s calls NewJWKSVerifier %d times, %d as a direct statement of its body, want %d", name, function.Name.Name, total, direct, want))
+	}
+	return faults
+}
+
+// literalFaults refuses each function literal of the SSO files but the two of Build, by their place: the literal that
+// Build returns, func(next http.Handler) http.Handler, and the one it returns through http.HandlerFunc, func(w, r).
+// A literal elsewhere could hold a verifier and run it many times.
+func literalFaults(name string, file *ast.File) []string {
+	allowed := map[*ast.FuncLit]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Recv == nil || function.Name.Name != "Build" || function.Body == nil || len(function.Body.List) != 1 {
+			continue
+		}
+		outer := returnedLiteral(function.Body.List[0])
+		if outer == nil || len(outer.Body.List) != 1 {
+			continue
+		}
+		allowed[outer] = true
+		if ret, ok := outer.Body.List[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+			if call, ok := ret.Results[0].(*ast.CallExpr); ok && len(call.Args) == 1 {
+				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "HandlerFunc" {
+					if inner, ok := call.Args[0].(*ast.FuncLit); ok {
+						allowed[inner] = true
+					}
+				}
+			}
+		}
+	}
+	var faults []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.FuncLit); ok && !allowed[literal] {
+			faults = append(faults, name+": a function literal other than the two of Build")
+		}
+		if labeled, ok := node.(*ast.LabeledStmt); ok {
+			faults = append(faults, name+": the label "+labeled.Label.Name)
+		}
+		return true
+	})
+	return faults
+}
+
+// returnedLiteral gives the function literal that a statement return func(...) {...} returns, or nil.
+func returnedLiteral(statement ast.Stmt) *ast.FuncLit {
+	ret, ok := statement.(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return nil
+	}
+	literal, _ := ret.Results[0].(*ast.FuncLit)
+	return literal
 }
 
 // parentCall gives the call whose function is the identifier, when there is one.
