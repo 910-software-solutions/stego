@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -249,6 +250,38 @@ func TestUnverifiedAdmissionPrototypeIsNotGenerated(t *testing.T) {
 			if strings.Contains(file.Path, "pinned_admission") || bytes.Contains(file.Bytes(), []byte("PinnedAdmissionPolicies")) {
 				t.Fatal("unverified admission prototype reached generated output")
 			}
+		}
+	})
+}
+
+func TestClientKeyPrefix(t *testing.T) {
+	t.Run("ST-SUP-RC14-OC54-T01 Every key the client writes or selects by has the STEGO prefix", func(t *testing.T) {
+		ctx := gen.Context{ModuleName: "example.com/policy", OutDirName: "out", OutputNamespace: "kubernetes", PeerNamespaces: map[string]string{"http-application": "application"}}
+		files, _, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyPattern := regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.-]*`)
+		// The emitted client, and the pinned admission prototype that the client keeps for the namespace allocation,
+		// whose label pinned-namespace-uid it selects by.
+		texts := map[string]string{"testdata/pinned_admission.go.tmpl": pinnedAdmissionSource}
+		for _, file := range files {
+			texts[file.Path] = string(file.Content)
+		}
+		keys := 0
+		for name, text := range texts {
+			if strings.Contains(text, "stego.dev") {
+				t.Fatalf("%s holds stego.dev", name)
+			}
+			for _, key := range keyPattern.FindAllString(text, -1) {
+				keys++
+				if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
+					t.Fatalf("%s holds the key %q, which is not under stego.jsell-rh.github.io/", name, key)
+				}
+			}
+		}
+		if keys == 0 {
+			t.Fatal("no STEGO key was read, so the test reads nothing")
 		}
 	})
 }

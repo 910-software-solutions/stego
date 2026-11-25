@@ -27,6 +27,18 @@ var label = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var directory = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,62}$`)
 var labelValue = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 
+// KeyPrefix is the one prefix of every label and annotation key that this component writes or reserves: a DNS name
+// that STEGO controls (ST-SUP-RC15-OC46, decision of the Product owner of 2026-11-11).
+const KeyPrefix = "stego.jsell-rh.github.io/"
+
+// reservedKeyPrefix tells whether a key is under the STEGO prefix or a subdomain of it, which a declaration may not
+// use for a key of its own.
+func reservedKeyPrefix(key string) bool {
+	prefix, _, qualified := strings.Cut(key, "/")
+	domain := strings.TrimSuffix(KeyPrefix, "/")
+	return qualified && (prefix == domain || strings.HasSuffix(prefix, "."+domain))
+}
+
 func validLabelKey(key string) bool {
 	parts := strings.Split(key, "/")
 	if len(parts) > 2 || !labelValue.MatchString(parts[len(parts)-1]) {
@@ -208,7 +220,7 @@ func networkRulesForPorts(ctx gen.Context, ports map[int]bool, installation gen.
 			if !found {
 				return nil, fmt.Errorf("network peer requires a declared allocation profile")
 			}
-			namespaceLabels = object{"stego.dev/allocator": allocationMarker(config), "stego.dev/allocation-profile": profile}
+			namespaceLabels = object{"stego.jsell-rh.github.io/allocator": allocationMarker(config), "stego.jsell-rh.github.io/allocation-profile": profile}
 		}
 		selector := object{"namespaceSelector": object{"matchLabels": namespaceLabels}, "podSelector": object{"matchLabels": object{key: value}}}
 		rule := object{"ports": []any{object{"protocol": protocol, "port": port}}}

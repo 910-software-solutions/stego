@@ -60,7 +60,7 @@ func TestAllocationNetworkProfileValidation(t *testing.T) {
 		t.Fatal("related profile was not resolved", peer)
 	}
 	expression := allocationNetworkRulesCEL(p, "egress")
-	for _, part := range []string{"size(variables.o.spec.egress[0].to[0].namespaceSelector.matchLabels) == 4", `"stego.dev/allocator"`, `"stego.dev/allocation-profile"`, `"example.test/owner"`, `"peer-" + namespaceObject.metadata.name.substring(7)`} {
+	for _, part := range []string{"size(variables.o.spec.egress[0].to[0].namespaceSelector.matchLabels) == 4", `"stego.jsell-rh.github.io/allocator"`, `"stego.jsell-rh.github.io/allocation-profile"`, `"example.test/owner"`, `"peer-" + namespaceObject.metadata.name.substring(7)`} {
 		if !strings.Contains(expression, part) {
 			t.Fatal("related network guard lost a bound", part, expression)
 		}

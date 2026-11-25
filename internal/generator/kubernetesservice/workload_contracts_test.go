@@ -304,3 +304,46 @@ func TestAllocatorHasNoSecretAccess(t *testing.T) {
 		}
 	})
 }
+
+// stegoKeys gives each label or annotation key of the STEGO key space that the text holds: the keys that start with
+// stego. and a domain, in any quoting.
+var stegoKeyPattern = regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.{}-]*`)
+
+func TestKeyPrefix(t *testing.T) {
+	t.Run("ST-SUP-RC15-OC46-T01 The emitted manifests and scripts write and reserve only keys of the STEGO prefix", func(t *testing.T) {
+		contexts := map[string]gen.Context{"service": rpcContext(), "allocation": allocationContext(), "network": networkProfileContext(), "peer": peerAllocationContext(), "isolated": isolatedAllocationContext()}
+		keys := 0
+		for name, ctx := range contexts {
+			files, _, err := new(Generator).Generate(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				text := string(file.Content)
+				if strings.Contains(text, "stego.dev") {
+					t.Fatalf("%s: %s holds stego.dev", name, file.Path)
+				}
+				for _, key := range stegoKeyPattern.FindAllString(text, -1) {
+					keys++
+					if !strings.HasPrefix(key, KeyPrefix) {
+						t.Fatalf("%s: %s writes the key %q, which is not under %s", name, file.Path, key, KeyPrefix)
+					}
+				}
+			}
+		}
+		if keys == 0 {
+			t.Fatal("the emitted files hold no STEGO key, so the test reads nothing")
+		}
+		// A declaration may not take a key under the STEGO prefix as the owner label of an allocation profile.
+		for _, owner := range []string{KeyPrefix + "owner", "team." + KeyPrefix + "owner"} {
+			ctx := allocationContext()
+			ctx.ComponentConfig["allocation_profiles"].([]any)[0].(object)["owner_label"] = owner
+			if _, _, err := new(Generator).Generate(ctx); err == nil {
+				t.Fatalf("the owner label %q under the STEGO prefix was accepted", owner)
+			}
+		}
+		if !reservedKeyPrefix(KeyPrefix+"owner") || reservedKeyPrefix("example.test/owner") || reservedKeyPrefix("notstego.jsell-rh.github.io/owner") {
+			t.Fatal("the reserved prefix is not exactly the STEGO domain and its subdomains")
+		}
+	})
+}

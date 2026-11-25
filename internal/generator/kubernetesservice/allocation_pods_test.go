@@ -97,7 +97,7 @@ func TestAllocationPodPolicy(t *testing.T) {
 				t.Fatal("Pod restriction added a non-blocking binding")
 			}
 		}
-		if spec["failurePolicy"] != "Fail" || !reflect.DeepEqual(constraints["namespaceSelector"], object{"matchLabels": object{"stego.dev/allocator": allocationMarker(config), "stego.dev/allocation-profile": "tenant"}}) {
+		if spec["failurePolicy"] != "Fail" || !reflect.DeepEqual(constraints["namespaceSelector"], object{"matchLabels": object{"stego.jsell-rh.github.io/allocator": allocationMarker(config), "stego.jsell-rh.github.io/allocation-profile": "tenant"}}) {
 			t.Fatal("Pod policy must select one installation and fail closed")
 		}
 	})
@@ -109,7 +109,7 @@ func TestAllocationPodPolicy(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC15-OC27-T01 The Pod admission policy holds the account and token rules", func(t *testing.T) {
 		raw, _ := json.Marshal(spec["validations"])
-		for _, text := range []string{"namespaceObject != null", "'restricted'", "stego.dev/service-account-gateway", "automountServiceAccountToken", "object.spec.runtimeClassName", "kata.test", "example.test/owner"} {
+		for _, text := range []string{"namespaceObject != null", "'restricted'", "stego.jsell-rh.github.io/service-account-gateway", "automountServiceAccountToken", "object.spec.runtimeClassName", "kata.test", "example.test/owner"} {
 			if !strings.Contains(string(raw), text) {
 				t.Fatal("missing admission restriction", text)
 			}
