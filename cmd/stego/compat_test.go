@@ -408,6 +408,35 @@ func TestCompat(t *testing.T) {
 			t.Errorf("the head with the fill value of the base: exit %d, want 0:\n%s", code, output)
 		}
 	})
+	t.Run("ST-GEN-UC14-R03-T03 compat refuses a head that the declaration checks of validate refuse, which the base check alone accepts", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// Walkthrough 26, P3-CMP: a retype whose conversion is not total over the field before the change, with no
+		// fill value. The base check accepts it (it is a declared schema change), and validate, plan and apply refuse
+		// it (ST-DECL-INV63).
+		s.write(t, "service.yaml", noteFields("[{name: title, type: int64}]")+"schema_changes:\n  - {id: note-title-retype, kind: retype, entity: Note, field: title, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text}\nschema_history:\n  - {change: note-title-retype, phase: expand}\n")
+		output, code := s.compat(t, "--base", "HEAD")
+		if code != 1 || strings.Contains(output, "No fault") || !strings.Contains(output, "fault ST-DECL-UC01 declaration: stego validate refuses the head: [schema-change-total]") ||
+			!strings.Contains(output, "text_to_int64 is not total") {
+			t.Fatalf("compat of a head that validate refuses gave exit %d, want 1 and the fault of validate:\n%s", code, output)
+		}
+		if result, code := s.compatJSON(t); code != 1 || len(result.Faults) != 1 || result.Faults[0].Rule != "ST-DECL-UC01" {
+			t.Fatalf("compat --json gave exit %d and the faults %+v, want 1 and one fault of the rule ST-DECL-UC01", code, result.Faults)
+		}
+		// With a fill value, validate accepts it, and so does compat.
+		s.write(t, "service.yaml", noteFields("[{name: title, type: int64}]")+"schema_changes:\n  - {id: note-title-retype, kind: retype, entity: Note, field: title, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, fill_value: 0}\nschema_history:\n  - {change: note-title-retype, phase: expand}\n")
+		if output, code := s.compat(t, "--base", "HEAD"); code != 0 || !strings.Contains(output, "No fault") {
+			t.Fatalf("compat of the head with a fill value gave exit %d, want 0:\n%s", code, output)
+		}
+		// When the checks of validate cannot run, compat says that it checked only the compatibility with the base.
+		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
+		output, code = s.compat(t, "--base", "HEAD")
+		note := regexp.MustCompile(`(?m)^note: compat did not run the declaration checks of stego validate.*$`).FindString(output)
+		if code != 0 || !strings.Contains(output, "holds only the compatibility with the base; run stego validate") ||
+			!strings.Contains(note, "(cause: registry)") || strings.Contains(note, "s3cr3t-token") {
+			t.Fatalf("compat with a registry that does not resolve gave exit %d, want 0 and the plain note:\n%s", code, output)
+		}
+	})
 	t.Run("ST-GEN-UC14-FL-T An undeclared rename is refused against the base, and the same rename as a schema change is accepted", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)
