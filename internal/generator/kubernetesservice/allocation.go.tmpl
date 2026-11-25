@@ -36,8 +36,8 @@ type Allocator struct { client *kube.Client; namespace, marker string; config co
 
 var ErrPending = errors.New("allocation change is pending")
 
-const MarkerLabel = "stego.jsell-rh.github.io/allocator"
-const ProfileLabel = "stego.jsell-rh.github.io/allocation-profile"
+const MarkerLabel = "{{.KeyPrefix}}allocator"
+const ProfileLabel = "{{.KeyPrefix}}allocation-profile"
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var ownerValue = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 
@@ -105,7 +105,7 @@ func metadata(name string, owner kube.Owner) kube.Object {
  return kube.Object{"name":name, "labels":labels}
 }
 
-const serviceAccountAnnotation = "stego.jsell-rh.github.io/service-account-"
+const serviceAccountAnnotation = "{{.KeyPrefix}}service-account-"
 
 func hasServiceAccount(p profile, alias string)bool{
  for _,name:=range p.ServiceAccounts{if name==alias{return true}};return false
@@ -325,7 +325,7 @@ func (a *Allocator) networkSpec(p profile, name, ownerID string) networkSpec {
   }
   if peer.Namespace=="profile" {
    ns=peer.PeerPrefix+strings.TrimPrefix(name,p.Prefix)
-   target.NamespaceSelector.MatchLabels=map[string]string{"kubernetes.io/metadata.name":ns,"stego.jsell-rh.github.io/allocator":a.marker,"stego.jsell-rh.github.io/allocation-profile":peer.PeerProfile,p.OwnerLabel:ownerID}
+   target.NamespaceSelector.MatchLabels=map[string]string{"kubernetes.io/metadata.name":ns,"{{.KeyPrefix}}allocator":a.marker,"{{.KeyPrefix}}allocation-profile":peer.PeerProfile,p.OwnerLabel:ownerID}
   }
   rule:=networkRule{Ports:[]networkPort{ {Protocol:peer.Protocol,Port:peer.Port} }}
   if peer.Direction=="ingress"{rule.From=[]networkTarget{target};spec.Ingress=append(spec.Ingress,rule)}else{rule.To=[]networkTarget{target};spec.Egress=append(spec.Egress,rule)}
@@ -342,7 +342,7 @@ func (a *Allocator) networkSpec(p profile, name, ownerID string) networkSpec {
  return spec
 }
 
-const networkHashAnnotation = "stego.jsell-rh.github.io/network-spec-sha256"
+const networkHashAnnotation = "{{.KeyPrefix}}network-spec-sha256"
 
 // networkBytes normalizes API defaults and policy type order for comparisons.
 // Object keys use a stable order. The hash contains no credential and does not

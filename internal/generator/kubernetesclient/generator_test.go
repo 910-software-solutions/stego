@@ -262,26 +262,30 @@ func TestClientKeyPrefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		keyPattern := regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.-]*`)
-		// The emitted client, and the pinned admission prototype that the client keeps for the namespace allocation,
-		// whose label pinned-namespace-uid it selects by.
-		texts := map[string]string{"testdata/pinned_admission.go.tmpl": pinnedAdmissionSource}
+		// The emitted client writes and selects by no STEGO key of its own: it takes each label selector from its
+		// caller. The one key that the component holds, pinned-namespace-uid, is in the pinned admission prototype,
+		// which the client keeps for the namespace allocation and does not emit yet.
 		for _, file := range files {
-			texts[file.Path] = string(file.Content)
-		}
-		keys := 0
-		for name, text := range texts {
-			if strings.Contains(text, "stego.dev") {
-				t.Fatalf("%s holds stego.dev", name)
+			text := string(file.Content)
+			if strings.Contains(text, "stego"+".dev") {
+				t.Fatalf("%s holds the old key prefix", file.Path)
 			}
-			for _, key := range keyPattern.FindAllString(text, -1) {
-				keys++
-				if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
-					t.Fatalf("%s holds the key %q, which is not under stego.jsell-rh.github.io/", name, key)
+			if keys := keyPattern.FindAllString(text, -1); len(keys) > 0 {
+				for _, key := range keys {
+					if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
+						t.Fatalf("%s holds the key %q, which is not under stego.jsell-rh.github.io/", file.Path, key)
+					}
 				}
 			}
 		}
-		if keys == 0 {
-			t.Fatal("no STEGO key was read, so the test reads nothing")
+		prototype := keyPattern.FindAllString(pinnedAdmissionSource, -1)
+		if len(prototype) == 0 || strings.Contains(pinnedAdmissionSource, "stego"+".dev") {
+			t.Fatalf("the pinned admission prototype holds the keys %v", prototype)
+		}
+		for _, key := range prototype {
+			if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
+				t.Fatalf("the pinned admission prototype holds the key %q", key)
+			}
 		}
 	})
 }

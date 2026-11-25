@@ -118,7 +118,7 @@ class Check(common.Check):
             self.pod_probe(label, changed, writer, policy=policy)
         changed = copy.deepcopy(valid)
         del changed["spec"]["runtimeClassName"]
-        changed["metadata"]["labels"] = {"stego.dev/allocation-profile": "other", "stego.dev/allocator": "0" * 32}
+        changed["metadata"]["labels"] = {common.KEY_PREFIX + "allocation-profile": "other", common.KEY_PREFIX + "allocator": "0" * 32}
         self.pod_probe("Pod labels cannot escape namespace policy", changed, writer, policy=policy)
         self.create(common.namespace(UNRELATED))
         self.wait_account(UNRELATED, "default")

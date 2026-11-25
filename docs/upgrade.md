@@ -293,6 +293,7 @@ archetype does not have the change.
 | 3.260.0 | 1.260.0 | 1.260.0 | Runtime v0.194.0, otel-tracing 1.21.0 and browser-telemetry 1.5.0. The browser telemetry relay refuses traces when the deployment sets the trace ratio to 0, as it refuses logs and metrics that are off, and drops each browser span whose trace ID the ratio sampler of the browser runtime does not sample at the deployment ratio. Before, it forwarded such spans to the collector. `stego compat` and `stego plan` refuse a release that adds a relation that the runtime writes for each row of an entity of the base, such as `relation tenant: tenant`, with no relate step, and suggest the relate step; they read the schema of the base at its commit. The runtime changes only the names of two tests. | A release that adds such a relation declares a relate step (see [Give the rows that are there a new relation](#give-the-rows-that-are-there-a-new-relation)). A page that calls `beginTrace` gives it a random trace ID only. |
 | 3.261.0 | 1.261.0 | 1.261.0 | Runtime v0.195.0, otel-tracing 1.22.0, rest-api 4.39.0, browser-backend 4.15.0, controller 1.28.0 and grpc-application 2.5.0. The runtime and the generated tracing move to OpenTelemetry Go v1.47.0, which fixes GO-2026-6974. Each JSON line on standard output and standard error has one form: the timestamp in UTC with nanoseconds, `severity`, `service.name`, `event.name`, `message` and the fields under `attributes`, each with the prefix `stego.` or a name of the semantic conventions for HTTP and RPC (`http.route`, `http.response.status_code`, `rpc.method`, `error.type`). Before, the access lines had their fields at the top level and a timestamp of the local zone, the worker events had theirs under `fields` with no prefix, the failure record had its fields at the top level, and several lines had the event name `stego.log`. Each line of the runtime now has an event name of its own, and the line of the HTTP or gRPC listener is `service.listening`. The count line of dropped access lines comes at the end of the minute also when no later request of its route and status comes. A consumer run that waits for the relations of a row (cause `relations_pending`) is a WARN `worker.run.failed`; before, an ERROR. A 503 of the CRUD routes has the problem type `service-unavailable`; before, `internal-error` (the code does not change). The failure record of a browser service names a fault, an object, a remedy and a cause. | Change each log query, alert and dashboard that reads a field of a line: read it under `attributes` with its new key, such as `attributes."stego.worker"`, `attributes."http.route"`, `attributes."stego.stage"` or `attributes."stego.dropped"`, and the time in UTC. An alert on ERROR `worker.run.failed` no longer fires for a run that waits for relations; alert on `relations_pending` separately if you need it. A client that reads the problem type of a 503 accepts `service-unavailable`. See [Read the logs](operations.md#read-the-logs). |
 | 3.262.0 | 1.262.0 | 1.262.0 | Runtime v0.196.0 and otel-tracing 1.23.0. Each line of one process names one `service.instance.id`: the runtime of the service takes the identity of the HTTP telemetry. Before, the access lines and the lines of the runtime of one process named two identities. At the trace ratio 1 the browser telemetry relay keeps each span, as the browser runtime samples each trace ID there; before, it dropped a span whose trace ID words XOR to `0xffffffff`. `stego compat --base` and `stego plan --base` also refuse a new relation from the caller of the create on an entity of the base, a new relation of a field or a reference on a `shared` or `system` entity of the base, and a new `authorization` schema with no relate step for each relation that it gives the rows of the base. | A log query that joins the lines of one process on `service.instance.id` now finds each line of the process. When `stego compat` refuses a new relation that no relate step can give, give the permission another path. See [The check against the base](schema-changes.md#the-check-against-the-base). |
+| kubernetes-service 1.31.0, kubernetes-workload 1.1.0 | kubernetes-service 1.31.0, kubernetes-workload 1.1.0 | kubernetes-service 1.31.0, kubernetes-workload 1.1.0 | Each label and annotation key that STEGO writes starts with `stego.jsell-rh.github.io/` and not with `stego.dev/`: `config-sha256`, `allocator`, `allocation-profile`, `allocation-network-endpoints`, `network-spec-sha256` and `service-account-<alias>`, and the capability paths of the namespace allocator. The admission policies and the allocator select only the new keys. A namespace that an allocator of an earlier release made keeps the old labels, and loses the protection of the policies and the ownership of the allocator. The Pods restart once, because the key of the configuration digest annotation changes. | [Upgrade over the old label keys](#upgrade-over-the-old-label-keys) |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -921,6 +922,23 @@ A release before runtime v0.192.0 that added a relation left its rows with no
 tuple. To give them the tuple, declare a relate step of that relation in your
 next release: the relate job reads each row that is there, and a tuple that
 is there does not change.
+
+## Upgrade over the old label keys
+
+Do this before you apply kubernetes-service 1.31.0 or kubernetes-workload 1.1.0 to a cluster.
+
+1. List the namespaces that an allocator of an earlier release made:
+
+   ```sh
+   kubectl --context <context> get ns -l stego.dev/allocator
+   kubectl --context <context> get ns -l stego.dev/allocation-profile
+   ```
+
+2. Each command must give no namespace. The new release reads only the new keys, so it does not own or protect
+   a namespace with the old labels. If a namespace is in the list, release it with the earlier release before
+   the upgrade, and allocate it again after the upgrade.
+3. Apply the release. Each Pod of the service restarts one time, because the annotation of the configuration
+   digest has a new key.
 
 ## A Go build fails with "could not import log/slog"
 

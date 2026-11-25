@@ -249,7 +249,7 @@ func allocationConfig(ctx gen.Context) (allocationConfiguration, error) {
 				}
 				field, _ := m["field"].(string)
 				key, _ := m["key"].(string)
-				if !labelValue.MatchString(field) || !validLabelKey(key) || len(key) > 253 || fields[field] || seen[key] || key == owner || key == "app.kubernetes.io/managed-by" || key == "kubernetes.io/metadata.name" || strings.HasPrefix(key, "stego.jsell-rh.github.io/") || strings.HasPrefix(key, "pod-security.kubernetes.io/") {
+				if !labelValue.MatchString(field) || !validLabelKey(key) || len(key) > 253 || fields[field] || seen[key] || key == owner || key == "app.kubernetes.io/managed-by" || key == "kubernetes.io/metadata.name" || reservedKeyPrefix(key) || strings.HasPrefix(key, "pod-security.kubernetes.io/") {
 					return result, fmt.Errorf("invalid or reserved namespace identity field")
 				}
 				fields[field] = true
@@ -472,7 +472,7 @@ func allocationFiles(ctx gen.Context) ([]gen.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := struct{ Kubernetes, Configuration string }{path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["kubernetes-client"]), string(encoded)}
+	data := struct{ Kubernetes, Configuration, KeyPrefix string }{path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["kubernetes-client"]), string(encoded), KeyPrefix}
 	tmpl, err := template.New("allocation").Parse(allocationSource)
 	if err != nil {
 		return nil, err

@@ -35,10 +35,10 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 	isAllocator := "request.userInfo.username == " + celString(allocatorUser)
 	markerExpr := celString(marker)
 	marked := func(o string) string {
-		return "(" + o + " != null && has(" + o + ".metadata.labels) && 'stego.jsell-rh.github.io/allocator' in " + o + ".metadata.labels && " + o + ".metadata.labels['stego.jsell-rh.github.io/allocator'] == " + markerExpr + ")"
+		return "(" + o + " != null && has(" + o + ".metadata.labels) && '" + KeyPrefix + "allocator' in " + o + ".metadata.labels && " + o + ".metadata.labels['" + KeyPrefix + "allocator'] == " + markerExpr + ")"
 	}
 	owner := func(o string, p allocationProfile) string {
-		return "(" + marked(o) + " && 'stego.jsell-rh.github.io/allocation-profile' in " + o + ".metadata.labels && " + o + ".metadata.labels['stego.jsell-rh.github.io/allocation-profile'] == " + celString(p.Name) +
+		return "(" + marked(o) + " && '" + KeyPrefix + "allocation-profile' in " + o + ".metadata.labels && " + o + ".metadata.labels['" + KeyPrefix + "allocation-profile'] == " + celString(p.Name) +
 			" && " + celString(p.OwnerLabel) + " in " + o + ".metadata.labels && " + o + ".metadata.labels[" + celString(p.OwnerLabel) + "].matches('^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$') && 'app.kubernetes.io/managed-by' in " + o + ".metadata.labels && " + o + ".metadata.labels['app.kubernetes.io/managed-by'] == " + celString(p.Manager) + ")"
 	}
 	pattern := func(value string, p allocationProfile) string {
@@ -165,9 +165,9 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 	}
 	variables := []any{object{"name": "o", "expression": "object != null ? object : oldObject"}}
 	validate := func(expression, message string) object { return object{"expression": expression, "message": message} }
-	sameOwner := []string{"object.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] == oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile']", "object.metadata.labels['app.kubernetes.io/managed-by'] == oldObject.metadata.labels['app.kubernetes.io/managed-by']"}
+	sameOwner := []string{"object.metadata.labels['" + KeyPrefix + "allocation-profile'] == oldObject.metadata.labels['" + KeyPrefix + "allocation-profile']", "object.metadata.labels['app.kubernetes.io/managed-by'] == oldObject.metadata.labels['app.kubernetes.io/managed-by']"}
 	for _, p := range config.Profiles {
-		sameOwner = append(sameOwner, "(oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels["+celString(p.OwnerLabel)+"] == oldObject.metadata.labels["+celString(p.OwnerLabel)+"])")
+		sameOwner = append(sameOwner, "(oldObject.metadata.labels['"+KeyPrefix+"allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels["+celString(p.OwnerLabel)+"] == oldObject.metadata.labels["+celString(p.OwnerLabel)+"])")
 	}
 	checks := []any{
 		validate("request.operation != 'UPDATE' || ("+strings.Join(sameOwner, " && ")+")", "Allocator cannot change resource ownership"),
@@ -199,7 +199,7 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 
 	// Namespace identity cannot be added to an existing foreign namespace, removed,
 	// or changed. The policy applies to all actors, including a worker with a bug.
-	unchanged := []string{"object.metadata.labels['stego.jsell-rh.github.io/allocator'] == oldObject.metadata.labels['stego.jsell-rh.github.io/allocator']", "object.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] == oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile']", "object.metadata.labels['app.kubernetes.io/managed-by'] == oldObject.metadata.labels['app.kubernetes.io/managed-by']", "object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'"}
+	unchanged := []string{"object.metadata.labels['" + KeyPrefix + "allocator'] == oldObject.metadata.labels['" + KeyPrefix + "allocator']", "object.metadata.labels['" + KeyPrefix + "allocation-profile'] == oldObject.metadata.labels['" + KeyPrefix + "allocation-profile']", "object.metadata.labels['app.kubernetes.io/managed-by'] == oldObject.metadata.labels['app.kubernetes.io/managed-by']", "object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'"}
 	for _, p := range config.Profiles {
 		if p.PodSecurity == "isolated-runtime" {
 			unchanged[len(unchanged)-1] = "object.metadata.labels['pod-security.kubernetes.io/enforce'] == oldObject.metadata.labels['pod-security.kubernetes.io/enforce']"
@@ -207,15 +207,15 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 		}
 	}
 	for _, p := range config.Profiles {
-		unchanged = append(unchanged, "(oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels['pod-security.kubernetes.io/enforce'] == "+celString(allocationPodSecurityLevel(p))+")")
-		unchanged = append(unchanged, "(oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels["+celString(p.OwnerLabel)+"] == oldObject.metadata.labels["+celString(p.OwnerLabel)+"])")
+		unchanged = append(unchanged, "(oldObject.metadata.labels['"+KeyPrefix+"allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels['pod-security.kubernetes.io/enforce'] == "+celString(allocationPodSecurityLevel(p))+")")
+		unchanged = append(unchanged, "(oldObject.metadata.labels['"+KeyPrefix+"allocation-profile'] != "+celString(p.Name)+" || object.metadata.labels["+celString(p.OwnerLabel)+"] == oldObject.metadata.labels["+celString(p.OwnerLabel)+"])")
 	}
 	for _, p := range config.Profiles {
 		for _, alias := range allocationAccountIdentities(p) {
 			key := celString(allocationServiceAccountPrefix + alias)
 			oldHas := "(has(oldObject.metadata.annotations) && " + key + " in oldObject.metadata.annotations)"
 			newHas := "(has(object.metadata.annotations) && " + key + " in object.metadata.annotations)"
-			unchanged = append(unchanged, "(oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] != "+celString(p.Name)+" || ("+oldHas+" ? ("+newHas+" && object.metadata.annotations["+key+"] == oldObject.metadata.annotations["+key+"]) : ("+isAllocator+" && "+allocationServiceAccountAnnotationCEL(config, "object", alias)+")))")
+			unchanged = append(unchanged, "(oldObject.metadata.labels['"+KeyPrefix+"allocation-profile'] != "+celString(p.Name)+" || ("+oldHas+" ? ("+newHas+" && object.metadata.annotations["+key+"] == oldObject.metadata.annotations["+key+"]) : ("+isAllocator+" && "+allocationServiceAccountAnnotationCEL(config, "object", alias)+")))")
 		}
 	}
 	for _, p := range config.Profiles {
@@ -229,7 +229,7 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 				key := celString(field.Key)
 				oldHas := "(has(" + old + ") && " + key + " in " + old + ")"
 				newHas := "(has(" + next + ") && " + key + " in " + next + ")"
-				unchanged = append(unchanged, "(oldObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] != "+celString(p.Name)+" || ("+oldHas+" ? ("+newHas+" && "+next+"["+key+"] == "+old+"["+key+"]) : (!"+newHas+" || "+isAllocator+")))")
+				unchanged = append(unchanged, "(oldObject.metadata.labels['"+KeyPrefix+"allocation-profile'] != "+celString(p.Name)+" || ("+oldHas+" ? ("+newHas+" && "+next+"["+key+"] == "+old+"["+key+"]) : (!"+newHas+" || "+isAllocator+")))")
 			}
 		}
 	}
@@ -244,7 +244,7 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 	if len(networkCases) > 0 {
 		resourceRules = append(resourceRules, allocationRule("networking.k8s.io", "networkpolicies"))
 		reserved = "(request.resource.resource == 'networkpolicies' || (" + reserved + "))"
-		isolated := marked("namespaceObject") + " && 'stego.jsell-rh.github.io/allocation-profile' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] in [" + strings.Join(isolatedNames, ",") + "]"
+		isolated := marked("namespaceObject") + " && '" + KeyPrefix + "allocation-profile' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['" + KeyPrefix + "allocation-profile'] in [" + strings.Join(isolatedNames, ",") + "]"
 		resourceRule = "(request.resource.resource == 'networkpolicies' && has(request.name) && request.name != 'stego-allocation' && !(" + isolated + ")) || (" + resourceRule + ")"
 		message = "Only the allocator can change allocation limits, bindings, and isolated network policies"
 	}
@@ -259,7 +259,7 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 			}
 		}
 		selected := join(requestPatterns)
-		ownedProfile := "(" + marked("namespaceObject") + " && 'stego.jsell-rh.github.io/allocation-profile' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] in [" + strings.Join(serviceAccountProfiles, ",") + "])"
+		ownedProfile := "(" + marked("namespaceObject") + " && '" + KeyPrefix + "allocation-profile' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['" + KeyPrefix + "allocation-profile'] in [" + strings.Join(serviceAccountProfiles, ",") + "])"
 		// Kubernetes can maintain the default account and image pull references.
 		// Only the allocator can create a declared owner account. Updates must
 		// retain the owner, generated name, and explicit token opt-in default.
@@ -275,7 +275,7 @@ func allocationObjects(config allocationConfiguration) ([]any, error) {
 		// A different trusted installation must not create this installation's
 		// account names, even if its profile uses literal account names.
 		generatedAccount := "((has(variables.o.metadata.name) && variables.o.metadata.name.matches('^sa-[0-9a-f]{32}-[a-z2-7]{26}$')) || (has(variables.o.metadata.generateName) && variables.o.metadata.generateName.startsWith('sa-')))"
-		issuerCheck := "namespaceObject != null && (request.operation == 'DELETE' || !" + generatedAccount + " || (has(namespaceObject.metadata.labels) && 'stego.jsell-rh.github.io/allocator' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['stego.jsell-rh.github.io/allocator'].matches('^[0-9a-f]{32}$') && has(variables.o.metadata.name) && variables.o.metadata.name.startsWith('sa-' + namespaceObject.metadata.labels['stego.jsell-rh.github.io/allocator'] + '-')))"
+		issuerCheck := "namespaceObject != null && (request.operation == 'DELETE' || !" + generatedAccount + " || (has(namespaceObject.metadata.labels) && '" + KeyPrefix + "allocator' in namespaceObject.metadata.labels && namespaceObject.metadata.labels['" + KeyPrefix + "allocator'].matches('^[0-9a-f]{32}$') && has(variables.o.metadata.name) && variables.o.metadata.name.startsWith('sa-' + namespaceObject.metadata.labels['" + KeyPrefix + "allocator'] + '-')))"
 		guarded = append(guarded, allocationPolicy(base+".account-issuers", []any{allocationRule("", "serviceaccounts")}, selected, variables, []any{validate(issuerCheck, "ServiceAccount issuer must match its namespace allocator")})...)
 	}
 	// Install the policies before the allocator receives permissions.

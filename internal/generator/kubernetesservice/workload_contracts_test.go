@@ -1,9 +1,14 @@
 package kubernetesservice
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/jsell-rh/stego/internal/generator/kubernetesworkload"
 	"path"
 	"regexp"
 	"slices"
@@ -320,8 +325,8 @@ func TestKeyPrefix(t *testing.T) {
 			}
 			for _, file := range files {
 				text := string(file.Content)
-				if strings.Contains(text, "stego.dev") {
-					t.Fatalf("%s: %s holds stego.dev", name, file.Path)
+				if strings.Contains(text, "stego"+".dev") {
+					t.Fatalf("%s: %s holds the old key prefix", name, file.Path)
 				}
 				for _, key := range stegoKeyPattern.FindAllString(text, -1) {
 					keys++
@@ -331,8 +336,54 @@ func TestKeyPrefix(t *testing.T) {
 				}
 			}
 		}
-		if keys == 0 {
-			t.Fatal("the emitted files hold no STEGO key, so the test reads nothing")
+		// The kubernetes-workload component writes the configuration annotation of its Pods.
+		workload, _, err := new(kubernetesworkload.Generator).Generate(gen.Context{OutputNamespace: "workload"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workloadKeys := 0
+		for _, file := range workload {
+			if strings.Contains(string(file.Content), "stego"+".dev") {
+				t.Fatalf("kubernetes-workload: %s holds the old key prefix", file.Path)
+			}
+			for _, key := range stegoKeyPattern.FindAllString(string(file.Content), -1) {
+				workloadKeys++
+				if !strings.HasPrefix(key, KeyPrefix) {
+					t.Fatalf("kubernetes-workload: %s writes the key %q", file.Path, key)
+				}
+			}
+		}
+		// The cluster check scripts write and select by the same keys.
+		scripts, err := filepath.Glob(filepath.Join("..", "..", "..", "scripts", "*allocation*.py"))
+		if err != nil || len(scripts) == 0 {
+			t.Fatalf("no allocation check script: %v", err)
+		}
+		for _, script := range scripts {
+			data, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "stego"+".dev") {
+				t.Fatalf("%s holds the old key prefix", script)
+			}
+		}
+		// No tracked file of the repository holds the old prefix, apart from the records under data/ that state the
+		// decision, the tests that search for it on purpose, and the upgrade note that tells an operator to check for it.
+		list := exec.Command("git", "grep", "-l", "stego"+".dev", "--", ".", ":!data")
+		list.Dir = filepath.Join("..", "..", "..")
+		output, err := list.Output()
+		if err != nil && len(output) != 0 {
+			t.Fatal(err)
+		}
+		for _, name := range strings.Fields(string(output)) {
+			switch name {
+			case "internal/generator/kubernetesservice/workload_contracts_test.go", "internal/generator/kubernetesclient/generator_test.go", "docs/upgrade.md":
+			default:
+				t.Fatalf("%s holds the old key prefix", name)
+			}
+		}
+		if keys == 0 || workloadKeys == 0 {
+			t.Fatalf("the emitted files hold %d STEGO keys and the workload files %d, so the test reads nothing", keys, workloadKeys)
 		}
 		// A declaration may not take a key under the STEGO prefix as the owner label of an allocation profile.
 		for _, owner := range []string{KeyPrefix + "owner", "team." + KeyPrefix + "owner"} {
@@ -340,6 +391,14 @@ func TestKeyPrefix(t *testing.T) {
 			ctx.ComponentConfig["allocation_profiles"].([]any)[0].(object)["owner_label"] = owner
 			if _, _, err := new(Generator).Generate(ctx); err == nil {
 				t.Fatalf("the owner label %q under the STEGO prefix was accepted", owner)
+			}
+		}
+		// A namespace identity label may not take a key under the STEGO prefix or a subdomain of it either.
+		for _, key := range []string{KeyPrefix + "linked-id", "team." + KeyPrefix + "linked-id"} {
+			ctx := allocationContext()
+			ctx.ComponentConfig["allocation_profiles"].([]any)[0].(object)["identity_labels"] = []any{object{"field": "linked_id", "key": key}}
+			if _, _, err := new(Generator).Generate(ctx); err == nil {
+				t.Fatalf("the identity label %q under the STEGO prefix was accepted", key)
 			}
 		}
 		if !reservedKeyPrefix(KeyPrefix+"owner") || reservedKeyPrefix("example.test/owner") || reservedKeyPrefix("notstego.jsell-rh.github.io/owner") {

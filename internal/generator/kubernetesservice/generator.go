@@ -31,6 +31,9 @@ var labelValue = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9
 // that STEGO controls (ST-SUP-RC15-OC46, decision of the Product owner of 2026-11-11).
 const KeyPrefix = "stego.jsell-rh.github.io/"
 
+// KeyPrefixMarker marks the prefix in the emitted templates; the generator puts KeyPrefix in its place.
+const KeyPrefixMarker = "STEGO_KEY_PREFIX/"
+
 // reservedKeyPrefix tells whether a key is under the STEGO prefix or a subdomain of it, which a declaration may not
 // use for a key of its own.
 func reservedKeyPrefix(key string) bool {
@@ -220,7 +223,7 @@ func networkRulesForPorts(ctx gen.Context, ports map[int]bool, installation gen.
 			if !found {
 				return nil, fmt.Errorf("network peer requires a declared allocation profile")
 			}
-			namespaceLabels = object{"stego.jsell-rh.github.io/allocator": allocationMarker(config), "stego.jsell-rh.github.io/allocation-profile": profile}
+			namespaceLabels = object{KeyPrefix + "allocator": allocationMarker(config), KeyPrefix + "allocation-profile": profile}
 		}
 		selector := object{"namespaceSelector": object{"matchLabels": namespaceLabels}, "podSelector": object{"matchLabels": object{key: value}}}
 		rule := object{"ports": []any{object{"protocol": protocol, "port": port}}}
@@ -286,7 +289,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	manifest = bytes.ReplaceAll(manifest, []byte(`"{{.FSGroup}}"`), []byte(`{{.FSGroup}}`))
-	code, err := format.Source(renderer)
+	code, err := format.Source(bytes.ReplaceAll(renderer, []byte(KeyPrefixMarker), []byte(KeyPrefix)))
 	if err != nil {
 		return nil, nil, err
 	}

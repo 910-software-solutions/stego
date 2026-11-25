@@ -7,7 +7,7 @@ import (
 
 // This capability permits installation of fixed control account names. It is
 // separate from namespace allocation and is never granted to a runtime worker.
-const allocationControlAccountCapability = "/stego.jsell-rh.github.io/control-account-installation/"
+const allocationControlAccountCapability = "/" + KeyPrefix + "control-account-installation/"
 
 func allocationControlAccountObjects(config allocationConfiguration) []any {
 	base := "{{.Namespace}}." + config.Allocator
