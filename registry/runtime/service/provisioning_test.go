@@ -187,7 +187,7 @@ func TestTenantGate(t *testing.T) {
 			want   string
 		}{
 			{http.StatusForbidden, tenant.ErrNotProvisionedCode, base + "tenant-not-provisioned"},
-			{http.StatusServiceUnavailable, "unavailable", base + "unavailable"},
+			{http.StatusServiceUnavailable, "unavailable", base + "service-unavailable"},
 			{http.StatusInternalServerError, "internal", base + "internal"},
 		} {
 			w := httptest.NewRecorder()
