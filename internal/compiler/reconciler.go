@@ -220,12 +220,8 @@ func boundMixins(reg *registry.Registry, declared []string) ([]string, error) {
 			add(target)
 		}
 	}
-	for _, name := range mixins {
-		for _, required := range reg.Mixin(name).RequiresMixins {
-			if !slices.Contains(mixins, required) {
-				return nil, fmt.Errorf("mixin %q requires the mixin %q, which the declaration does not bind", name, required)
-			}
-		}
+	if err := reg.RequiredMixins(mixins); err != nil {
+		return nil, err
 	}
 	return mixins, nil
 }
@@ -502,7 +498,6 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	var wirings []ComponentWiring
 
 	for _, compName := range componentNames {
-		comp := components[compName]
 		generator := input.Generators[compName]
 
 		ctx := resolved.Contexts[compName]
@@ -529,7 +524,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 			}
 		}
 
-		if err := validateGeneratorNamespace(compName, comp, files); err != nil {
+		if err := validateGeneratorNamespace(compName, components, files); err != nil {
 			return nil, err
 		}
 		uses, err := runtimeImports("component "+compName, files, pin)
@@ -1206,6 +1201,9 @@ func collectComponentNames(archetype *registry.Archetype, svcDecl *types.Service
 		if mixin == nil {
 			return nil, fmt.Errorf("mixin %q not found in registry", mixinName)
 		}
+		if err := reg.CheckExtension(archetype, mixin); err != nil {
+			return nil, err
+		}
 		for _, compName := range mixin.AddsComponents {
 			if !seen[compName] {
 				seen[compName] = true
@@ -1285,10 +1283,16 @@ func generateSlotFiles(slotsPackage string, components map[string]*registry.Comp
 		// slot's proto file, relative to the captured registry root.
 		protoDir string
 	}
+	// One slot name has one definition: a second definition by another component, or by a mixin, is refused, so the
+	// contract that a fill is generated against never depends on the order of a map (sec-500 M1).
 	slotDefs := make(map[string]slotInfo)
-	for _, comp := range components {
+	for _, compName := range sortedKeys(components) {
+		comp := components[compName]
 		for _, sd := range comp.Slots {
 			if slotNames[sd.Name] {
+				if first, exists := slotDefs[sd.Name]; exists {
+					return nil, fmt.Errorf("slot %q is defined twice, in %s and in %s; one slot name has one contract", sd.Name, first.protoDir, filepath.Join("components", comp.Name))
+				}
 				slotDefs[sd.Name] = slotInfo{
 					definition: sd,
 					protoDir:   filepath.Join("components", comp.Name),
@@ -1304,11 +1308,12 @@ func generateSlotFiles(slotsPackage string, components map[string]*registry.Comp
 		}
 		for _, sd := range mixin.AddsSlots {
 			if slotNames[sd.Name] {
-				if _, exists := slotDefs[sd.Name]; !exists {
-					slotDefs[sd.Name] = slotInfo{
-						definition: sd,
-						protoDir:   filepath.Join("mixins", mixin.Name),
-					}
+				if first, exists := slotDefs[sd.Name]; exists {
+					return nil, fmt.Errorf("slot %q is defined twice, in %s and in %s; one slot name has one contract", sd.Name, first.protoDir, filepath.Join("mixins", mixin.Name))
+				}
+				slotDefs[sd.Name] = slotInfo{
+					definition: sd,
+					protoDir:   filepath.Join("mixins", mixin.Name),
 				}
 			}
 		}
@@ -1428,8 +1433,14 @@ func componentPins(components map[string]*registry.Component, reg *registry.Regi
 }
 
 // validateGeneratorNamespace holds ST-GEN-INV07: a component that generates
-// files declares an output namespace, and every file is inside it.
-func validateGeneratorNamespace(name string, component *registry.Component, files []gen.File) error {
+// files declares an output namespace, and every file is inside it. A file
+// outside it is refused by the rule of ST-SUP-INV02, which names each file and
+// the component of the active set whose namespace it is in.
+func validateGeneratorNamespace(name string, components map[string]*registry.Component, files []gen.File) error {
+	component := components[name]
+	if component == nil {
+		return fmt.Errorf("generator %q has no component in the active set", name)
+	}
 	if len(files) == 0 {
 		return nil
 	}
@@ -1437,8 +1448,23 @@ func validateGeneratorNamespace(name string, component *registry.Component, file
 		return fmt.Errorf("generator %q produced %d file(s) but component declares no output_namespace — "+
 			"all components that generate files must declare an output_namespace", name, len(files))
 	}
-	if err := gen.ValidateNamespace(component.OutputNamespace, files); err != nil {
+	paths := make([]string, len(files))
+	for i, file := range files {
+		paths[i] = file.Path
+	}
+	if err := registry.WritesOwnNamespace(name, components, paths); err != nil {
 		return fmt.Errorf("generator %q: %w", name, err)
+	}
+	// A component that emits a Go library at the top of its namespace is imported by the namespace, so the last
+	// element of the namespace is a usable package name: no keyword, no blank and no main (ST-SUP-INV13, sec-500
+	// L2). Each library generator checks it in its preflight too; this holds a generator that does not.
+	for _, file := range files {
+		if strings.HasSuffix(file.Path, ".go") && !strings.HasSuffix(file.Path, "_test.go") && path.Dir(file.Path) == component.OutputNamespace {
+			if err := gen.ValidateGoLibraryName(path.Base(component.OutputNamespace)); err != nil {
+				return fmt.Errorf("generator %q emits the Go library %s: %w", name, file.Path, err)
+			}
+			break
+		}
 	}
 	return nil
 }

@@ -152,7 +152,9 @@ func TestCommandsRejectInvalidGoPackageNamespaces(t *testing.T) {
 				name string
 				run  func([]string) error
 			}{{"validate", runValidate}, {"plan", runPlan}, {"apply", runApply}} {
-				if err := command.run(nil); err == nil || !strings.Contains(err.Error(), "validation failed") {
+				// A namespace that is no Go import path is refused when the registry is loaded (ST-SUP-INV13); one that
+				// is an import path with no usable package name is refused by checking.
+				if err := command.run(nil); err == nil || (!strings.Contains(err.Error(), "validation failed") && !strings.Contains(err.Error(), "is not a valid Go import path") && !strings.Contains(err.Error(), "which the go command ignores or treats as special")) {
 					t.Fatal(command.name, "accepted invalid Go package namespace", namespace, err)
 				}
 				for name, want := range files {

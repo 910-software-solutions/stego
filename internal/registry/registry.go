@@ -234,6 +234,15 @@ func LoadSources(sources ...Source) (*Registry, error) {
 	if err := r.checkAliases(); err != nil {
 		return nil, err
 	}
+	// Each mixin that an archetype names as compatible only adds to it (ST-SUP-INV04).
+	for _, name := range slices.Sorted(maps.Keys(r.archetypes)) {
+		archetype := r.archetypes[name]
+		for _, compatible := range archetype.CompatibleMixins {
+			if err := r.CheckExtension(archetype, r.mixins[compatible]); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := checkGoldenPaths(r); err != nil {
 		return nil, err
 	}

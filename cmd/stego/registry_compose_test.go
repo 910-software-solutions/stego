@@ -69,10 +69,11 @@ func localRegistryFiles() map[string]string {
 	}
 }
 
-// daysFromToday gives the date a number of days after today, as a sunset
-// date is written; a negative number gives a date before today.
+// daysFromToday gives the date a number of days after today in UTC, as a sunset
+// date is written and as checking reads today; a negative number gives a date
+// before today (sec-501 L4).
 func daysFromToday(days int) string {
-	return time.Now().AddDate(0, 0, days).Format(time.DateOnly)
+	return time.Now().UTC().AddDate(0, 0, days).Format(time.DateOnly)
 }
 
 // registryRepository writes files into a new Git repository and commits them.
