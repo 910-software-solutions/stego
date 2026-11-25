@@ -106,7 +106,7 @@ func TestAllocationNetworkIsolationManifest(t *testing.T) {
 								t.Fatal("namespace data used before admission validation")
 							}
 							validation := spec["validations"].([]any)[0].(object)["expression"].(string)
-							if !strings.Contains(validation, `namespaceObject.metadata.labels['stego.dev/allocation-profile'] in ["tenant"]`) || strings.Contains(validation, `"other"`) {
+							if !strings.Contains(validation, `namespaceObject.metadata.labels['stego.jsell-rh.github.io/allocation-profile'] in ["tenant"]`) || strings.Contains(validation, `"other"`) {
 								t.Fatal("network guard does not select the isolated profile")
 							}
 						}

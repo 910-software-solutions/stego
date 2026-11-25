@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -615,5 +616,78 @@ func TestMissingFieldNamed(t *testing.T) {
 		if calls.Load() != before {
 			t.Fatal("a refused create reached the server")
 		}
+	})
+}
+
+// limitCommand is one valid command whose name, path, request fields and success codes the test of
+// ST-SUP-RC04-OC02 sets.
+func limitCommand(name []string) Command {
+	return Command{Name: name, Method: "POST", Path: "/records", Success: []int{201}}
+}
+
+func TestDefinitionLimits(t *testing.T) {
+	refused := func(t *testing.T, app Application, want string) {
+		t.Helper()
+		if err := validate(app); err == nil || err.Error() != want {
+			t.Fatalf("validate gave %v, want the error %q", err, want)
+		}
+	}
+	accepted := func(t *testing.T, app Application) {
+		t.Helper()
+		if err := validate(app); err != nil {
+			t.Fatalf("validate refused a definition at the limit: %v", err)
+		}
+	}
+	application := func(commands ...Command) Application {
+		return Application{ConfigEnv: "TEST_CLI_CONFIG", ConfigName: "sample", Commands: commands}
+	}
+	t.Run("ST-SUP-RC04-OC02-T01 A definition holds at most 128 commands", func(t *testing.T) {
+		var commands []Command
+		for i := range 129 {
+			commands = append(commands, limitCommand([]string{fmt.Sprintf("c%03d", i)}))
+		}
+		accepted(t, application(commands[:128]...))
+		refused(t, application(commands...), "invalid CLI definition")
+	})
+	t.Run("ST-SUP-RC04-OC02-T02 A command holds at most 64 request fields", func(t *testing.T) {
+		command := limitCommand([]string{"create"})
+		for i := range 65 {
+			command.Fields = append(command.Fields, Field{Flag: fmt.Sprintf("f%02d", i), Key: fmt.Sprintf("f%02d", i), Type: "string"})
+		}
+		full := command
+		full.Fields = command.Fields[:64]
+		accepted(t, application(full))
+		refused(t, application(command), "invalid CLI command limits")
+	})
+	t.Run("ST-SUP-RC04-OC02-T03 A command name has one through four words", func(t *testing.T) {
+		accepted(t, application(limitCommand([]string{"create"})))
+		accepted(t, application(limitCommand([]string{"create", "one", "big", "record"})))
+		refused(t, application(limitCommand(nil)), "invalid CLI command name")
+		refused(t, application(limitCommand([]string{"create", "one", "big", "new", "record"})), "invalid CLI command name")
+	})
+	t.Run("ST-SUP-RC04-OC02-T04 A command has at most four success codes", func(t *testing.T) {
+		for codes, ok := range map[int]bool{1: true, 4: true, 5: false} {
+			command := limitCommand([]string{"create"})
+			command.Success = []int{200, 201, 202, 203, 204}[:codes]
+			if ok {
+				accepted(t, application(command))
+			} else {
+				refused(t, application(command), "invalid CLI command limits")
+			}
+		}
+	})
+	t.Run("ST-SUP-RC04-OC02-T05 A command has at most eight named path parameters", func(t *testing.T) {
+		withParameters := func(count int) Command {
+			command := limitCommand([]string{"create"})
+			command.Path = ""
+			for i := range count {
+				key := fmt.Sprintf("p%d", i)
+				command.Path += "/" + key + "/{" + key + "}"
+				command.PathParameters = append(command.PathParameters, PathParameter{Flag: key, Key: key})
+			}
+			return command
+		}
+		accepted(t, application(withParameters(8)))
+		refused(t, application(withParameters(9)), "too many CLI path parameters")
 	})
 }

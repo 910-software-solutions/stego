@@ -55,7 +55,7 @@ func TestAllocationValidation(t *testing.T) {
 		"large suffix":                func(c *gen.Context, p, w object) { p["suffix_length"] = 64 },
 		"identity without source":     func(c *gen.Context, p, w object) { delete(p, "identity_config_map") },
 		"identity reserved label": func(c *gen.Context, p, w object) {
-			p["identity_labels"].([]any)[0].(object)["key"] = "stego.dev/allocator"
+			p["identity_labels"].([]any)[0].(object)["key"] = "stego.jsell-rh.github.io/allocator"
 		},
 		"identity repeated field": func(c *gen.Context, p, w object) {
 			p["identity_annotations"].([]any)[0].(object)["field"] = "linked_id"
@@ -67,7 +67,7 @@ func TestAllocationValidation(t *testing.T) {
 		"owner exceeds client limit": func(c *gen.Context, p, w object) {
 			p["owner_label"] = strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61) + "/id"
 		},
-		"reserved owner":             func(c *gen.Context, p, w object) { p["owner_label"] = "stego.dev/allocator" },
+		"reserved owner":             func(c *gen.Context, p, w object) { p["owner_label"] = "stego.jsell-rh.github.io/allocator" },
 		"security owner":             func(c *gen.Context, p, w object) { p["owner_label"] = "pod-security.kubernetes.io/warn" },
 		"missing bounds":             func(c *gen.Context, p, w object) { p["quota"] = []any{} },
 		"negative bound":             func(c *gen.Context, p, w object) { p["quota"].([]any)[0].(object)["value"] = "-1" },

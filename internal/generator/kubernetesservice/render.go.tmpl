@@ -53,7 +53,9 @@ func RenderCommand(args []string, output io.Writer) error {
 type EndpointBinding struct{Name string;Address netip.AddrPort}
 
 // ConfigurationAnnotation holds the digest that triggers configuration rollouts.
-const ConfigurationAnnotation = "stego.dev/config-sha256"
+// keyPrefix is the prefix of every label and annotation key that STEGO writes (ST-SUP-RC15-OC46).
+const keyPrefix = "STEGO_KEY_PREFIX/"
+const ConfigurationAnnotation = keyPrefix+"config-sha256"
 
 // Options selects one generated workload and its deployment context. FSGroup
 // must be explicit and nonzero. An empty Scope selects all generated resources.
@@ -304,7 +306,7 @@ func completeExternalPeers(input []byte, values endpointFlags)([]byte,error){
 func completeAllocationEndpointItem(item map[string]json.RawMessage,bindings map[string][]netip.AddrPort)([]string,error){
  var metadata struct{Annotations map[string]string `json:"annotations"`}
  if json.Unmarshal(item["metadata"],&metadata)!=nil{return nil,fmt.Errorf("invalid generated metadata")}
- declaration,selected:=metadata.Annotations["stego.dev/allocation-network-endpoints"]
+ declaration,selected:=metadata.Annotations[keyPrefix+"allocation-network-endpoints"]
  if !selected{return nil,nil}
  var refs map[string][]string
  if json.Unmarshal([]byte(declaration),&refs)!=nil||len(refs)==0||len(refs)>16{return nil,fmt.Errorf("invalid generated allocation endpoint references")}
@@ -425,7 +427,7 @@ func validateOwnerLabels(labels map[string]string)error{
  for key,value:=range labels{
   prefix,suffix,qualified:=strings.Cut(key,"/")
   if len(key)>253||!qualified||!name.MatchString(suffix)||!name.MatchString(value){return fmt.Errorf("owner labels require qualified keys and bounded values")}
-  for _,reserved:=range []string{"kubernetes.io","k8s.io","stego.dev"}{if prefix==reserved||strings.HasSuffix(prefix,"."+reserved){return fmt.Errorf("owner label prefix is reserved")}}
+  for _,reserved:=range []string{"kubernetes.io","k8s.io",strings.TrimSuffix(keyPrefix,"/")}{if prefix==reserved||strings.HasSuffix(prefix,"."+reserved){return fmt.Errorf("owner label prefix is reserved")}}
   for _,segment:=range strings.Split(prefix,"."){if !part.MatchString(segment){return fmt.Errorf("invalid owner label prefix")}}
  }
  return nil
