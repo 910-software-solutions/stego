@@ -1283,7 +1283,7 @@ func TestContract(t *testing.T) {
 // walkthrough 24, P2-R2), in a rolling deploy from v1: the rows of the data set and the rows that v1 makes before and
 // during the rollout must all get the tuple of the relation in SpiceDB, so the auditor of the tenant sees each.
 func TestRelate(t *testing.T) {
-	t.Run("ST-SUP-RP10-LC50-T08 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC58-T03 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
 		if binary("v1r") == "" {
 			t.Fatal("the check needs STEGO_TD04_V1R: a missing result is not a pass")
 		}

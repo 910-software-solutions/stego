@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/types"
@@ -72,6 +74,9 @@ func runCompat(args []string, stdout io.Writer) error {
 	}
 	check, err := compiler.CheckBase(base, head)
 	if err != nil {
+		return err
+	}
+	if err := relateFaults(&check, base, head); err != nil {
 		return err
 	}
 	// compat generates nothing, so it takes the generated files of the head from the record of the head, which
@@ -164,7 +169,46 @@ func readBase(ref string) (compiler.BaseSource, error) {
 			*file.target = data
 		}
 	}
+	// The schema that the base declaration binds, which the check of the relations reads (compiler.RelateFaults). A
+	// declaration that does not parse is left to the check, which refuses it; a path that is not clean is not read.
+	if base.Declaration != nil {
+		if declared, err := parser.ParseServiceDeclarationFromBytes(base.Declaration, "service.yaml at "+ref); err == nil && declared.Authorization != nil {
+			if schemaPath := declared.Authorization.SchemaPath; schemaPath != "" && fs.ValidPath(schemaPath) && path.Clean(schemaPath) == schemaPath {
+				data, found, err := readBaseFile(base.Commit, folder+schemaPath)
+				if err != nil {
+					return base, fmt.Errorf("read %s at the base ref %s (commit %s): %w", folder+schemaPath, ref, base.Commit, err)
+				}
+				if found {
+					base.Schema = data
+				}
+			}
+		}
+	}
 	return base, nil
+}
+
+// relateFaults adds to the check the faults of the relations that the head writes for the rows of the base and the
+// base does not, with no relate step (compiler.RelateFaults), from the schema that the head binds in the working
+// folder. With no release at the base there is no row, so it reads no schema.
+func relateFaults(check *compiler.BaseCheck, base compiler.BaseSource, head *types.ServiceDeclaration) error {
+	if !check.Released {
+		return nil
+	}
+	root, err := os.OpenRoot(".")
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	schema, err := declaration.ReadAuthzSchema(head, root.FS())
+	if err != nil {
+		return err
+	}
+	faults, err := compiler.RelateFaults(*check, base, head, schema)
+	if err != nil {
+		return err
+	}
+	check.Faults = append(check.Faults, faults...)
+	return nil
 }
 
 // readBaseFile reads one file of a commit by its path from the root of the repository, and tells whether the
@@ -482,8 +526,12 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 	if err != nil {
 		return gate, err
 	}
-	check, err := compiler.CheckBase(base, compiler.WithSchemaSteps(head, steps))
+	stepped := compiler.WithSchemaSteps(head, steps)
+	check, err := compiler.CheckBase(base, stepped)
 	if err != nil {
+		return gate, err
+	}
+	if err := relateFaults(&check, base, stepped); err != nil {
 		return gate, err
 	}
 	gate.checked = true

@@ -1697,9 +1697,16 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   message again; each other cause stays ERROR (walkthrough 25, L-3).
 - `schema.backfill.throttled` is sent with its reason
   (`probe.BackfillThrottleReasons`). Before, each was dropped and counted.
-- apidiff against v0.193.0: compatible (added `otel.SlogHandler.SetIdentity`,
+- apidiff against v0.194.0: compatible (added `otel.SlogHandler.SetIdentity`,
   `otel.GeneratedEvent`, `probe.RelationsPendingCause` and
   `probe.BackfillThrottleReasons`).
+
+### Release notes for runtime v0.194.0
+
+- No change of the code. The tests of the relate job are now named for the
+  record of the relate job: ST-SUP-RP10-LC58-T01 and T02 (before,
+  ST-SUP-RP10-LC50-T06 and T07), so the sum of the module moves.
+- apidiff against v0.193.0: compatible (no change of the exported API).
 
 ### Release notes for runtime v0.193.0
 
@@ -1713,6 +1720,56 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   may not be known. A retry with the same `Idempotency-Key` gives the stored
   answer when the first call committed.
 - apidiff against v0.192.0: compatible (no change of the exported API).
+
+### Release notes for runtime v0.192.0
+
+- New `command.ResetAttemptsByID`: the reset of a count of wrong attempts
+  for the ID of a row, which the fill does not read. The runtime only checks
+  that the row is there, gives the fill no value of it, and decides the
+  reset permission and the reset guards on the row, not the read permission
+  of the entity. A row that is not there and a deny both give
+  `command.ErrNotFound`. So a caller with only the reset permission can
+  reset (decision ST-SUP-Q211 (a), walkthrough 24, U-R). The generator of
+  command 1.28.0 gives the helper `<Command>Reset<Entity><Field>AttemptsByID`.
+  The audit row is that of `ResetAttempts`. A refused reset writes no reset
+  row, but the outcome row of the call (`denied`, or `failed` with
+  `not_found`) stays.
+- The relate step (decision ST-SUP-Q212 (a), walkthrough 24, P2-R2): new
+  `command.RelateChange`, `command.NewRelateJob` and `command.RelateJob`, and
+  the field `service.Parts.Relate`. The controller mode runs the job
+  `relate` at start and each 10 minutes. For each relate change it holds the
+  lease `stego.backfill.<change ID>` and stages the tuple of the relation of
+  each row through the authz outbox. For a field or a reference relation, it
+  first deletes each tuple of the relation on the row, so a former subject
+  loses its access. A pass completes only after no process of a release
+  before the step reports itself. Each batch writes one audit row
+  `backfill-relation`, and each run writes the line `command.relate.pass`.
+  See [Give the rows that are there a new relation](upgrade.md#give-the-rows-that-are-there-a-new-relation).
+- A start that cannot use SpiceDB fails at the stage `service.start.spicedb`
+  with the fault `spicedb.connection` or `spicedb.settings`, the object
+  `spicedb`, a fixed remedy and a cause class, such as `unavailable` or
+  `not_serving` (walkthrough 24, D-m). Before, the failure record had only
+  the stage `component.stego-runtime.constructor[0]`. The error text names
+  only the setting, never the endpoint, the key or the text of the cause.
+- A start whose migration ledger lacks a migration of the release, or holds
+  another digest of one, names the fault `migration.pending` or
+  `migration.changed`, the object `migration_ledger`, a fixed remedy and a
+  cause class (`ledger_missing`, `ledger_not_granted`,
+  `migration_missing` or `digest_changed`) in its failure record
+  (walkthrough 24, D-l). Before, the reason was only in a separate log line.
+- Not in the runtime, in the same release: `apply` of the CLI
+  (cli-application 1.30.0) leaves each secret field of a resource that
+  exists out of the write and names it as not compared, so a document with
+  a required secret applies again. `--set-secret FIELD` sends a new value
+  from a private file, only of a field that the document holds. A command
+  of the CLI names the required field that it lacks.
+- New constants: `command.RelateCommand`, `command.RelateEvent`, the kinds
+  `command.RelateTenant`, `RelateField` and `RelateReference`,
+  `service.RelateJobName`, `service.SpiceDBConnectionFault`,
+  `service.SpiceDBSettingsFault`, `service.MigrationPendingFault`,
+  `service.MigrationChangedFault` and the four `service.MigrationCause...`
+  classes.
+- apidiff against v0.191.0: compatible (21 additions, no other change).
 
 ### Release notes for runtime v0.191.0
 

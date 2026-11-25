@@ -33,6 +33,9 @@ type BaseSource struct {
 	Commit      string
 	Declaration []byte
 	Record      []byte
+	// Schema is the .zed schema that the base declaration binds, at its schema path in the service folder of the
+	// base, or nil when the base binds none or the commit does not hold it. RelateFaults reads it.
+	Schema []byte
 }
 
 // BaseCheck is the result of the check against the base (ST-GEN-QRY04): the base it took as the version that runs
@@ -1892,4 +1895,96 @@ func createDifference(before, after postgresadapter.BaselineTable, changes []typ
 		fmt.Fprintf(&text, "Cause: the head takes the field %s before the change from the definition %q of the %s %s. Give in it each setting of the field as the base declares it, such as its default and its limits.\n", name, change.Definition, change.Kind, change.ID)
 	}
 	return text.String()
+}
+
+// RelateFaults gives the faults of ST-GEN-INV33 for the relations of the authorization schema (decision ST-SUP-Q212
+// (a)): for each entity of the base with rows that a tenant owns, each relation that the head writes for each row and
+// the base does not write, with no schema change of kind relate for the entity and the relation. The runtime writes the
+// tuple of a relation only for the rows that a release that writes it makes, so the rows that the base made, and the
+// rows that it makes during the rollout, get no tuple, and a permission through the relation denies them. The base
+// writes a relation as the head does: the relation tenant when its schema gives the resource type of the entity the
+// relation tenant of the subject type tenant, the relation of a relationship whose subject is a field, and the
+// relation of a reference to an entity with a resource type. A relation whose subject is a field that the base entity
+// does not store has no value on the rows that are there, so it needs no relate step. It gives no fault when the check
+// refused the base record, no release ran, or the base or the head binds no schema. headSchema is the schema that the
+// head binds, or nil.
+func RelateFaults(check BaseCheck, base BaseSource, head *types.ServiceDeclaration, headSchema *declaration.AuthzSchema) ([]BaseFault, error) {
+	if !check.Released || headSchema == nil || base.Declaration == nil || slices.ContainsFunc(check.Faults, func(f BaseFault) bool { return f.Rule == BaseRecordRule }) {
+		return nil, nil
+	}
+	declared, err := parser.ParseServiceDeclarationFromBytes(base.Declaration, "service.yaml at "+base.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if declared.Authorization == nil || declared.Authorization.SchemaPath == "" {
+		return nil, nil
+	}
+	schemaPath := declared.Authorization.SchemaPath
+	if base.Schema == nil {
+		return nil, fmt.Errorf("the base ref %s (commit %s) binds the authorization schema %s, which the commit does not hold in the service folder", base.Ref, base.Commit, schemaPath)
+	}
+	if len(base.Schema) > declaration.MaxSchemaBytes {
+		return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s) is larger than %d bytes", schemaPath, base.Ref, base.Commit, declaration.MaxSchemaBytes)
+	}
+	baseSchema, err := declaration.CompileAuthzSchema(schemaPath, base.Schema)
+	if err != nil {
+		return nil, fmt.Errorf("the authorization schema %s at the base ref %s (commit %s): %w", schemaPath, base.Ref, base.Commit, err)
+	}
+	var faults []BaseFault
+	for _, entity := range head.Entities {
+		before, ok := findStoredEntity(declared, entity.Name)
+		if !ok || entity.ResourceType == "" || (entity.Tenant != "" && entity.Tenant != "owned") {
+			continue
+		}
+		written := writtenRelations(head, entity, headSchema)
+		was := map[string]string{}
+		if before.ResourceType == entity.ResourceType {
+			was = writtenRelations(declared, before, baseSchema)
+		}
+		for _, relation := range slices.Sorted(maps.Keys(written)) {
+			if _, ok := was[relation]; ok {
+				continue
+			}
+			if field := written[relation]; field != "" && !slices.ContainsFunc(before.Fields, func(f types.Field) bool { return f.Name == field }) {
+				continue
+			}
+			if slices.ContainsFunc(head.SchemaChanges, func(c types.SchemaChange) bool {
+				return c.Kind == "relate" && c.Entity == entity.Name && c.Relation == relation
+			}) {
+				continue
+			}
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: written[relation],
+				Message: fmt.Sprintf("the head writes the relation %s#%s for each row of %s, and the base does not write it: the runtime writes its tuple only for the rows that the head makes, so the rows that the base made, and the rows that it makes during the rollout, get none, and a permission through %s denies them. Declare a schema change of kind relate for %s and the relation %s, with its expand step at the end of the schema history; its relate job gives each row the tuple", entity.ResourceType, relation, entity.Name, relation, entity.Name, relation),
+				Declare: []SuggestedChange{{ID: kebab(entity.Name) + "-" + kebab(relation) + "-relate", Kind: "relate", Entity: entity.Name, Needs: "relation: " + relation, Phase: "expand"}}})
+		}
+	}
+	return faults, nil
+}
+
+// writtenRelations gives each relation that the runtime writes for each row of the entity, as the command generator
+// writes the tuples of a row, with the field that holds its subject, or empty for the relation tenant: the relation
+// of a relationship whose subject is a field, the relation of a reference to an entity with a resource type, and the
+// relation tenant when the schema gives the resource type of the entity the relation tenant of the subject type tenant.
+func writtenRelations(service *types.ServiceDeclaration, entity types.Entity, schema *declaration.AuthzSchema) map[string]string {
+	written := map[string]string{}
+	for _, r := range entity.Relationships {
+		if r.SubjectSource == types.SubjectSourceField && r.Relation != "" {
+			written[r.Relation] = r.SubjectField
+		}
+	}
+	for _, f := range entity.Fields {
+		ref, ok := entity.References[f.Name]
+		if f.Type != types.FieldTypeRef || !ok || ref.Relation == "" {
+			continue
+		}
+		if to, ok := findStoredEntity(service, f.To); ok && to.ResourceType != "" {
+			if _, taken := written[ref.Relation]; !taken {
+				written[ref.Relation] = f.Name
+			}
+		}
+	}
+	if _, taken := written["tenant"]; !taken && schema.RelationAdmits(entity.ResourceType, "tenant", "tenant") {
+		written["tenant"] = ""
+	}
+	return written
 }

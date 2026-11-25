@@ -490,11 +490,11 @@ func TestSchemaEvolution(t *testing.T) {
 	t.Run("ST-GEN-UC15-R02-T01 After contract the old column and the trigger are gone and the contract release does not need them", func(t *testing.T) {
 		result(t, "ST-GEN-UC15-R02-T01")
 	})
-	t.Run("ST-SUP-RP10-LC50-T08 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC58-T03 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
 		if plan := e.plans["v1r plan"]; e.plans["v1r plan error"] != "" || !strings.Contains(plan, "organization-tenant-relate: relate Organization#tenant at expand; migration internal/storage/migrations/step_0001_organization-tenant-relate_expand.sql; trigger none; backfill the relate job of the controller under the lease stego.backfill.organization-tenant-relate") {
 			t.Fatalf("stego plan --base v1 of v1r (%s) does not list the relate step:\n%s", e.plans["v1r plan error"], plan)
 		}
-		result(t, "ST-SUP-RP10-LC50-T08")
+		result(t, "ST-SUP-RP10-LC58-T03")
 	})
 	t.Run("ST-SUP-RP10-LC58-T04 In a rolling deploy that relates a field, a former subject that the release before replaced loses its access, and the subject of the field gets it", func(t *testing.T) {
 		if plan := e.plans["v1r plan"]; !strings.Contains(plan, "organization-approver-relate: relate Organization#approver at expand; migration internal/storage/migrations/step_0002_organization-approver-relate_expand.sql") {
