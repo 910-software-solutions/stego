@@ -8,17 +8,12 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestResourceArgumentsUseTheSelectedDatabase(t *testing.T) {
 	t.Parallel()
-	dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("PostgreSQL is required")
-		}
-		t.Skip("set STEGO_TEST_POSTGRES_DSN to test runtime resources")
-	}
+	dsn := localtest.PostgresDSN(t)
 	for _, backend := range []string{"sql"} {
 		t.Run(backend, func(t *testing.T) {
 			wiring := &gen.Wiring{Imports: []string{"probe"}, Constructors: []string{"probe.NewProbe()"}, ConstructorResources: map[int][]gen.Resource{0: {gen.ServiceContext, gen.SQLDatabase, gen.OptionalSQLDatabase}}, ConstructorReturnsError: map[int]bool{0: true}, BackgroundTasks: []int{0}, NeedsDB: true}
@@ -62,7 +57,7 @@ func TestResources(t *testing.T){if err:=run();!errors.Is(err,probe.ErrDone){t.F
 			for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "-timeout=20s", "./..."}} {
 				command := exec.Command("go", args...)
 				command.Dir = project
-				command.Env = append(os.Environ(), "GOWORK=off", "DATABASE_URL="+dsn)
+				command.Env = localtest.GoEnv("DATABASE_URL=" + dsn)
 				if output, err := command.CombinedOutput(); err != nil {
 					t.Fatalf("generated %s resource test: %v\n%s", backend, err, output)
 				}

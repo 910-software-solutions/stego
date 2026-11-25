@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,7 +94,7 @@ func verifyDiamondConstructors(t *testing.T, files []gen.File) {
 	}
 	cmd := exec.Command("go", "test", "-race", "-mod=readonly", "./...")
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated constructor references: %v\n%s", err, output)
 	}

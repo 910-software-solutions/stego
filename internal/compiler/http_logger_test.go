@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestHTTPLoggerSelectionMustBeUnambiguous(t *testing.T) {
@@ -79,7 +80,7 @@ func(*Handle)HTTPErrorLog()*log.Logger{return log.New(io.Discard,"",0)}
 			}
 			command := exec.Command("go", "test", "-race", "-mod=readonly", "./...")
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("generated logger assembly: %v\n%s", err, output)
 			}

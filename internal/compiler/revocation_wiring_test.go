@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 // The service tests of the revocation wiring (ST-SUP-RC29-OC16 to OC19, ST-SUP-RC20-OC41, ST-SUP-RC33-OC10): a service generated with
@@ -129,7 +131,7 @@ queries:
 
 // TestRevocationWiring generates the service of revocationService with stego apply, builds it with the pinned Go,
 // reads its emitted table and router, and runs the check of testdata/revocation_wiring/check in its module once,
-// against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN. A missing server fails the test: a missing result
+// against the local PostgreSQL server of localtest (STEGO_TEST_POSTGRES_DSN, else a container that the test binary starts). A missing server fails the test: a missing result
 // is not a pass.
 func TestRevocationWiring(t *testing.T) {
 	if testing.Short() {
@@ -139,9 +141,7 @@ func TestRevocationWiring(t *testing.T) {
 	// so it does not run at the same time as them: the test runs in parallel, and its check holds postgresTLS
 	// (runTLSCheck).
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	p := newRegistryProject(t, stegoBinary(t), runtimeArchetype)
 	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join(revocationFixture, "project"))); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestRevocationWiring(t *testing.T) {
 	p.goCommand("build", "-o", binary, "./out")
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRevocationWiring$", "./out/revocationcheck")
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_REVOCATION_BINARY=" + binary)
+	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_REVOCATION_BINARY="+binary)
 	output, runErr := runTLSCheck(cmd)
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {

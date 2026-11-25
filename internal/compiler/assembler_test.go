@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -29,7 +30,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fixtureRoot = root
-	code := m.Run()
+	// localtest.Main removes the PostgreSQL container that a test started (ST-STD-LOCAL-R04, R05).
+	code := localtest.Main(m)
 	// A go command can keep read-only files; make the folders writable to remove them.
 	_ = filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
 		if err == nil && entry.IsDir() {

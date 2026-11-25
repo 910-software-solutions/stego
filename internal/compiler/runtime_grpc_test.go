@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 // The proof of the gRPC application on the runtime data path (ST-SUP-RC07-OC19, ST-SUP-RC33-OC08): a service of the
@@ -56,7 +58,7 @@ var grpcCheckIDs = []string{
 
 // TestRuntimeGRPC generates the gRPC test service with stego apply, reads its routes and its gRPC registration, builds
 // it with the pinned Go, and runs the check of testdata/runtime_grpc/check in its module once against the local
-// PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container. A missing server fails the test: a
+// PostgreSQL server of localtest and a local SpiceDB container. A missing server fails the test: a
 // missing result is not a pass.
 func TestRuntimeGRPC(t *testing.T) {
 	if testing.Short() {
@@ -66,9 +68,7 @@ func TestRuntimeGRPC(t *testing.T) {
 	// check of TestRuntimeWiring does, so the two must not run at the same time: the test runs in parallel, and its
 	// check holds postgresTLS (runTLSCheck).
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	p := newGRPCProject(t, stegoBinary(t))
 	t.Run("ST-DECL-INV92-T stego validate refuses a collection of the rpc-service, which no component serves", func(t *testing.T) {
 		declared := p.read("service.yaml")
@@ -110,7 +110,7 @@ func TestRuntimeGRPC(t *testing.T) {
 	endpoint, key := startWiringSpiceDB(t)
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestGRPC$", "./out/grpccheck")
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_GRPC_BINARY="+binary)
+	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_GRPC_BINARY="+binary)
 	output, runErr := runTLSCheck(cmd)
 	for _, id := range grpcCheckIDs {
 		t.Run(id, func(t *testing.T) {

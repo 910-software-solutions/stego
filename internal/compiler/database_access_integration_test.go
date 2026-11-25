@@ -10,6 +10,7 @@ import (
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 //go:embed testdata/database_access_test.go
@@ -39,9 +40,7 @@ func NewHandler(db *sql.DB) http.Handler {
 
 func TestGeneratedDatabaseAccess(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" && os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("database access checks require PostgreSQL")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	// The database access contract is the compiler's (ST-GL16): it serves every component that declares its
 	// database objects. The GORM store and the former outbox that declared them before are gone
 	// (ST-SUP-RC20-OC39), so a fixture component declares the objects that the test database holds, and the
@@ -87,7 +86,7 @@ func TestGeneratedDatabaseAccess(t *testing.T) {
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "-count=1", "-timeout=180s", "-v", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(postgres, "STEGO_REQUIRE_POSTGRES=1")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated database access: %v\n%s", err, output)

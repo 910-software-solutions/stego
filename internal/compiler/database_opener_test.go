@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestDatabaseOpenerValidation(t *testing.T) {
@@ -143,7 +144,7 @@ func(*Reader)Run(ctx context.Context)error{<-ctx.Done();return ctx.Err()}
 	for _, args := range [][]string{{"mod", "tidy"}, {"build", "-race", "-o", binary, "."}} {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("pool assembly: %v %s", err, output)
 		}
@@ -271,7 +272,7 @@ func(connection)Ping(context.Context)error{return refused{}}
 		for _, args := range [][]string{{"mod", "tidy"}, {"build", "-o", binary, "."}} {
 			command := exec.Command("go", args...)
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("ping assembly: %v %s", err, output)
 			}

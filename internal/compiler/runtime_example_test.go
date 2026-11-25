@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 	"time"
 )
 
@@ -17,7 +19,7 @@ const exampleFixture = "testdata/runtime_example"
 // TestRuntimeExample copies the example user-management as it is committed, with its generated output and its
 // record, builds it with the pinned Go against the runtime module of this repository, and runs the check of
 // testdata/runtime_example/check in its module once: the check runs the migration job and the service binary
-// against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container, and calls the
+// against the local PostgreSQL server of localtest (STEGO_TEST_POSTGRES_DSN, else a container that the test binary starts) and a local SpiceDB container, and calls the
 // example's collections over HTTP; then it changes the migrated database once for each kind of object of the schema
 // manifest and sees each start refused, and starts the service with no DATABASE_URL and on a closed database port and
 // reads the stage of each failure record; last it provisions a tenant through the generated route, creates and reads
@@ -28,9 +30,7 @@ func TestRuntimeExample(t *testing.T) {
 		t.Skip("builds and runs the example service")
 	}
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	p := &wiringProject{t: t, dir: t.TempDir()}
 	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join("..", "..", "examples", "user-management"))); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestRuntimeExample(t *testing.T) {
 	endpoint, key := startWiringSpiceDB(t)
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout="+innerTimeout(t).String(), "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure|TestProvisionRetire)$", "./out/examplecheck")
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
+	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
 	// The inner run and each process it starts are in a process group of their own, which the cleanup stops.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	brokers := kafkaContainers(t)

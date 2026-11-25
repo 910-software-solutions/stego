@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 // The system tests of ST-DECL-UC06-R04 on a running service: the service generated from the declaration of
@@ -59,7 +61,7 @@ func td03OnRuntimePath(t *testing.T) string {
 
 // TestRelationshipOutbox generates the service of ST-DECL-TD03 with stego apply, builds it with the pinned Go, and
 // runs the check of testdata/relationship_outbox/check in its module once, against the local PostgreSQL server of
-// STEGO_TEST_POSTGRES_DSN. A missing server fails the test: a missing result is not a pass.
+// localtest (STEGO_TEST_POSTGRES_DSN, else a container that the test binary starts). A missing server fails the test: a missing result is not a pass.
 func TestRelationshipOutbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs a generated service")
@@ -68,9 +70,7 @@ func TestRelationshipOutbox(t *testing.T) {
 	// so it does not run at the same time as them: the test runs in parallel, and its check holds postgresTLS
 	// (runTLSCheck).
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	p := newRegistryProject(t, stegoBinary(t), runtimeArchetype)
 	schema, err := os.ReadFile(filepath.Join(td03Folder, "authz", "schema.zed"))
 	if err != nil {
@@ -93,7 +93,7 @@ func TestRelationshipOutbox(t *testing.T) {
 	p.goCommand("build", "-o", binary, "./out")
 	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRelationshipOutbox$", "./out/relationshipcheck")
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_RELATIONSHIP_BINARY=" + binary)
+	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_RELATIONSHIP_BINARY="+binary)
 	output, runErr := runTLSCheck(cmd)
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {
