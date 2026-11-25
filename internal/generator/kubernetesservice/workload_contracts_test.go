@@ -323,6 +323,24 @@ var oldPrefixAllowed = map[string]bool{
 	"docs/upgrade.md:   kubectl --context <context> get ns -l stego" + ".dev/allocation-profile": true,
 }
 
+// upgradeRowStart is the start of the release row of docs/upgrade.md for the new key prefix, which names the old
+// prefix in its text.
+const upgradeRowStart = "| - | - | STEGO commit of pull request #506 (the archetype versions stay 3.262.0, 1.262.0 and 1.262.0) | kubernetes-service 1.31.0 and kubernetes-workload 1.1.0"
+
+// upgradeRowText is the one text of that row after its start: an old key in a changed row is no longer the row.
+const upgradeRowText = ", which only browser-service holds, or a declaration that selects them. Each label and annotation key that STEGO writes starts with `stego.jsell-rh.github.io/` and not with `stego" + ".dev/`: `config-sha256`, `allocator`, `allocation-profile`, `allocation-network-endpoints`, `network-spec-sha256` and `service-account-<alias>`, and the capability paths of the namespace allocator. The admission policies and the allocator select only the new keys. A namespace that an allocator of an earlier release made keeps the old labels, and loses the protection of the policies and the ownership of the allocator. The Pods restart once, because the key of the configuration digest annotation changes. | [Upgrade over the old label keys](#upgrade-over-the-old-label-keys) |"
+
+// upgradeRow gives the exact release row, and fails the test unless docs/upgrade.md holds it once.
+func upgradeRow(t *testing.T, root string) string {
+	t.Helper()
+	row := upgradeRowStart + upgradeRowText
+	data, err := os.ReadFile(filepath.Join(root, "docs", "upgrade.md"))
+	if err != nil || strings.Count(string(data), row+"\n") != 1 {
+		t.Fatalf("docs/upgrade.md does not hold the release row of the new key prefix once, as written: %v", err)
+	}
+	return row
+}
+
 // oldPrefixLines gives each line of a tracked file of the checkout at root, outside data/, that holds the old key
 // prefix and that oldPrefixAllowed does not name, and the release row of docs/upgrade.md when it names the old
 // prefix in more than its stated places. It fails the test when git cannot read the checkout: git grep exits 1 when
@@ -342,7 +360,7 @@ func oldPrefixLines(t *testing.T, root string) []string {
 	}
 	var faults []string
 	for _, line := range strings.Split(strings.TrimRight(string(output), "\n"), "\n") {
-		if oldPrefixAllowed[line] || (strings.HasPrefix(line, "docs/upgrade.md:| ") && strings.Contains(line, "[Upgrade over the old label keys]")) {
+		if oldPrefixAllowed[line] || line == "docs/upgrade.md:"+upgradeRow(t, root) {
 			continue
 		}
 		faults = append(faults, line)
@@ -411,15 +429,35 @@ func TestKeyPrefix(t *testing.T) {
 		if kubernetesworkload.KeyPrefix != KeyPrefix {
 			t.Fatalf("kubernetes-workload states the prefix %q, this component %q", kubernetesworkload.KeyPrefix, KeyPrefix)
 		}
-		for _, script := range []string{"check-allocation-account-identity.py", "check-namespace-allocation.py"} {
-			data, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", script))
+		// Each of the two defining scripts assigns KEY_PREFIX once, to the prefix, and no other script assigns it,
+		// also not through the module it loads (common.KEY_PREFIX = ...).
+		assignment := regexp.MustCompile(`(?m)^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*\.)*KEY_PREFIX[ \t]*(?::[^=]*)?=[^=]`)
+		defining := map[string]bool{"check-allocation-account-identity.py": true, "check-namespace-allocation.py": true}
+		allScripts, err := filepath.Glob(filepath.Join("..", "..", "..", "scripts", "*.py"))
+		if err != nil || len(allScripts) == 0 {
+			t.Fatalf("no script: %v", err)
+		}
+		for _, script := range allScripts {
+			data, err := os.ReadFile(script)
 			if err != nil {
 				t.Fatal(err)
 			}
-			found := regexp.MustCompile(`(?m)^KEY_PREFIX = "([^"]*)"$`).FindStringSubmatch(string(data))
-			if found == nil || found[1] != KeyPrefix {
-				t.Fatalf("%s states the prefix %v, want %q", script, found, KeyPrefix)
+			assignments := assignment.FindAllString(string(data), -1)
+			name := filepath.Base(script)
+			if !defining[name] {
+				if len(assignments) > 0 {
+					t.Fatalf("%s assigns KEY_PREFIX: %q; only the two defining scripts state it", name, assignments)
+				}
+				continue
 			}
+			found := regexp.MustCompile(`(?m)^KEY_PREFIX = "([^"]*)"$`).FindStringSubmatch(string(data))
+			if len(assignments) != 1 || found == nil || found[1] != KeyPrefix {
+				t.Fatalf("%s assigns KEY_PREFIX %d times, as %v, want once as %q", name, len(assignments), found, KeyPrefix)
+			}
+			delete(defining, name)
+		}
+		if len(defining) > 0 {
+			t.Fatalf("the defining scripts %v are missing", defining)
 		}
 		if keys == 0 || workloadKeys == 0 {
 			t.Fatalf("the emitted files hold %d STEGO keys and the workload files %d, so the test reads nothing", keys, workloadKeys)
