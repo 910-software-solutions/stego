@@ -44,8 +44,9 @@ names it by its declared name and STEGO does not map that name to the
 column. These parts are: a reference (`references`, or a field of type
 `ref`), a `unique_composite`, an invariant, the `scope`, the `implicit`
 fields or the `upsert_key` of a collection, and the context fields or the
-generation fields of the entity. The same parts, and also `patchable`, stop
-a retype. `stego validate` and `stego plan` refuse such a change. The fault
+generation fields of the entity. The same parts stop a retype. From
+rest-crud 3.264.0, `patchable` does not stop a retype: the patch request
+takes the field by its name, as the create and the update do. `stego validate` and `stego plan` refuse such a change. The fault
 names the entity, the field and the part that names it, such as `the entity
 Cart: generation does not rename the field customer_ref yet, because the
 collection carts names it by its declared name`. To change the name of such
@@ -1007,6 +1008,49 @@ and a text neither field has a `min`, a `max`, a `min_length`, a
 before the change, with its constraints, in `definition`, such as
 `string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
 a comma.
+
+### Widen an int32 to an int64
+
+A widening from `int32` to `int64` loses no value. From rest-crud 3.264.0
+you can declare it with the same bounds on the two sides, also with no
+`max`, and also for a field that `patchable` names (ST-DECL-Q48):
+
+```yaml
+entities:
+  - name: Item
+    fields:
+      - { name: lead_days, type: int64, min: 0, default: 0 }
+
+schema_changes:
+  - {id: item-lead-days-retype, kind: retype, entity: Item, field: lead_days,
+     from: int32, definition: "int32, min 0, default 0",
+     conversion: integer_to_int64, inverse_conversion: int64_to_integer}
+schema_history:
+  - {change: item-lead-days-retype, phase: expand}
+```
+
+Checking compares the bounds within the range of `int32`, because each side
+holds only such values while the change is open. A missing `min` or `max`
+is the bound of its type. Thus `min 0` and no `max` on the two sides are
+the same bounds, and the inverse conversion `int64_to_integer` is total.
+
+The steps are the steps of each other retype:
+
+1. The release of the expand step adds the column `lead_days_int64` and
+   the sync trigger. Each write of the release before goes to the two
+   columns, and each write of the new release goes back to the old column.
+   The migration job of the new release copies the rows there before the
+   rollout.
+2. While the expand step is open, the new release takes at most
+   2147483647 for the field, in its API and in each command. A larger value
+   gets 400, because the column of the release before cannot hold it. Its
+   OpenAPI document gives `maximum: 2147483647`.
+3. A later release with the contract step drops the old column. That
+   release takes the whole `int64` range, with the bounds that the
+   declaration gives.
+
+The JSON type of the field stays a number. Thus a client of the release
+before keeps working, and needs no change.
 
 The field keeps its name in the API, but its JSON type in the API changes with
 its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
