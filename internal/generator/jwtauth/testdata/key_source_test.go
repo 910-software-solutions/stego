@@ -2,11 +2,19 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"math/big"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"net"
 	"net/http"
+	"os/exec"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -284,6 +292,98 @@ func TestRemoteKeyInputLimits(t *testing.T) {
 					t.Fatal("provider details reached the startup error")
 				}
 			})
+		}
+	})
+}
+
+// outboundAddress gives an IP address of this host that is not loopback, which Go's proxy rule does not exempt, or
+// "" when the host has none.
+func outboundAddress() string {
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, address := range addresses {
+		if prefix, ok := address.(*net.IPNet); ok && !prefix.IP.IsLoopback() && prefix.IP.To4() != nil && !prefix.IP.IsLinkLocalUnicast() {
+			return prefix.IP.String()
+		}
+	}
+	return ""
+}
+
+// proxyChild names the environment variable under which the test runs again as a child process: Go reads the proxy
+// settings of the environment once per process, so the child takes them from its start, whatever test of the parent
+// read them first.
+const proxyChild = "STEGO_TEST_PROXY_CHILD"
+
+func TestKeySourceSendsNoRequestThroughAProxy(t *testing.T) {
+	t.Run("ST-SUP-RC11-OC14-T01 The key source fetches keys directly while proxy settings are set", func(t *testing.T) {
+		if os.Getenv(proxyChild) == "" {
+			var proxied atomic.Int32
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				proxied.Add(1)
+				http.Error(w, "the recording proxy forwards nothing", http.StatusBadGateway)
+			}))
+			defer proxy.Close()
+			child := exec.Command(os.Args[0], "-test.run", "^TestKeySourceSendsNoRequestThroughAProxy$", "-test.count=1")
+			child.Env = append(os.Environ(), proxyChild+"=1", "HTTP_PROXY="+proxy.URL, "HTTPS_PROXY="+proxy.URL, "http_proxy="+proxy.URL,
+				"https_proxy="+proxy.URL, "NO_PROXY=", "no_proxy=")
+			output, err := child.CombinedOutput()
+			if err != nil || proxied.Load() != 0 {
+				t.Fatalf("the key source with proxy settings: %v, the proxy got %d requests\n%s", err, proxied.Load(), output)
+			}
+			if !strings.Contains(string(output), "PASS") {
+				t.Fatalf("the child ran no test:\n%s", output)
+			}
+			return
+		}
+		host := outboundAddress()
+		if host == "" {
+			t.Fatal("the host has no address that is not loopback, which the test needs: Go exempts a loopback host from every proxy")
+		}
+		key := keyForTest(t)
+		var direct atomic.Int32
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			direct.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(keyDocument(t, "first", key))
+		}))
+		listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.Listener = listener
+		// The certificate of httptest names 127.0.0.1 and ::1 only: the server takes one for the address of the host,
+		// which the key source trusts through its CA file.
+		caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(1), IPAddresses: []net.IP{net.ParseIP(host)}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: caKey}}}
+		server.StartTLS()
+		defer server.Close()
+		ca := filepath.Join(t.TempDir(), "ca.pem")
+		if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0600); err != nil {
+			t.Fatal(err)
+		}
+		config := JWKSConfig{Trust: Config{Issuer: "https://issuer.example", Audience: "example-api"}, URL: server.URL + "/keys", CAFile: ca}
+		v, err := NewJWKSVerifier(context.Background(), config)
+		if err != nil {
+			t.Fatalf("the key source did not fetch the keys directly: %v", err)
+		}
+		defer v.Stop()
+		// A refresh after the cooldown fetches again, directly.
+		now := time.Now().Add(time.Hour)
+		v.now = func() time.Time { return now }
+		_, _ = v.Verify(context.Background(), signed(t, validClaims(), jwt.SigningMethodRS256, keyForTest(t), map[string]any{"kid": "unknown"}))
+		if direct.Load() != 2 {
+			t.Fatalf("the key server got %d direct requests, want 2", direct.Load())
 		}
 	})
 }
