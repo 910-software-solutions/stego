@@ -192,26 +192,43 @@ func NewCounter(spec CounterSpec) (*Counter, error) {
 		return nil, fmt.Errorf("command: the counter of %s.%s unlocks after %s; give none, or whole seconds from %s to %s", spec.Entity, spec.Field, u, MinUnlockAfter, MaxUnlockAfter)
 	}
 	c := &Counter{spec: spec}
-	declaredCounters.Store(c.name(), spec.Entity)
+	declaredCounters.Store(c, c)
 	return c, nil
 }
 
-// declaredCounters holds each counter, as <entity>.<field>, that NewCounter took, with its entity. The generated
+// declaredCounters holds each counter that NewCounter took. The generated
 // counters are package variables, so each is known before the first call; a delete of a row of the entity deletes
 // the counts of each (decision ST-SUP-Q216 (a)).
 var declaredCounters sync.Map
 
 // countersOf gives the counters of the entity, as <entity>.<field>, in byte order.
 func countersOf(entity string) []string {
+	seen := map[string]bool{}
 	var out []string
-	declaredCounters.Range(func(name, of any) bool {
-		if of.(string) == entity {
-			out = append(out, name.(string))
+	declaredCounters.Range(func(_, c any) bool {
+		if counter := c.(*Counter); counter.spec.Entity == entity && !seen[counter.name()] {
+			seen[counter.name()] = true
+			out = append(out, counter.name())
 		}
 		return true
 	})
 	sort.Strings(out)
 	return out
+}
+
+// markPurged records that the delete of the row id of entity deleted the count of each counter of the entity. The
+// caller holds the lock of the state.
+func (s *state) markPurged(entity, id string) {
+	if s.purged == nil {
+		s.purged = map[attemptKey]bool{}
+	}
+	row := strings.ToLower(id)
+	declaredCounters.Range(func(_, c any) bool {
+		if counter := c.(*Counter); counter.spec.Entity == entity {
+			s.purged[attemptKey{counter: counter, row: row}] = true
+		}
+		return true
+	})
 }
 
 // purgeRowStatement deletes the counts of one row of the counters $2 in the tenant $1: a delete of the row runs it in
@@ -691,6 +708,13 @@ func (s *state) bindCounted(t *countedTarget) {
 		k.stored = sha256.Sum256([]byte(stored))
 	}
 	*t.into = sealed.CountedByKey(*t.into, k, storeKey)
+}
+
+// purgedBinding tells whether the stored counted value c is bound, by a read of this handle, to a count that a delete
+// of this transaction deleted.
+func (s *state) purgedBinding(c sealed.Compared) bool {
+	k, ok := c.CounterBy(storeKey).(*rowCounter)
+	return ok && k.s == s && s.purged[k.key]
 }
 
 // boundTo tells whether the stored counted value c was bound, by a read of this handle, to the count of key.

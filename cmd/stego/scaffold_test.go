@@ -332,22 +332,21 @@ func walkthroughFirstBuild(t *testing.T) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The guard runs before any copy: a copy is the same project only when no file of the project names the
-		// folder that it was made in.
-		if err := sameProjectInCopy(folder); err != nil {
-			t.Fatal(err)
-		}
 		// Each attempt copies into a new folder, which it removes when a copy fails, so a later attempt never copies
-		// into what an earlier one left.
+		// into what an earlier one left. The guard runs before the copy, and the links of the copy are checked after
+		// it: a copy is the same project only when no file names the folder that it was made in and each link of the
+		// copy stays in the copy.
 		keep, err := os.MkdirTemp(fixtureRoot, "walkthrough-first-build-")
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, copy := range [][2]string{{folder, filepath.Join(keep, "service")}, {binary, filepath.Join(keep, "inventory")}} {
-			if output, err := exec.Command("cp", "-a", copy[0], copy[1]).CombinedOutput(); err != nil {
-				_ = os.RemoveAll(keep)
-				t.Fatalf("keep the first build of the walkthrough: %v\n%s", err, output)
-			}
+		if err := copyProject(folder, filepath.Join(keep, "service")); err != nil {
+			_ = os.RemoveAll(keep)
+			t.Fatalf("keep the first build of the walkthrough: %v", err)
+		}
+		if output, err := exec.Command("cp", "-a", binary, filepath.Join(keep, "inventory")).CombinedOutput(); err != nil {
+			_ = os.RemoveAll(keep)
+			t.Fatalf("keep the binary of the first build of the walkthrough: %v\n%s", err, output)
 		}
 		walkthroughBuild.project, walkthroughBuild.binary = filepath.Join(keep, "service"), filepath.Join(keep, "inventory")
 		return binary
@@ -422,8 +421,40 @@ func sameProjectInCopy(folder string) error {
 	})
 }
 
+// copyProject copies the project in folder to target with cp -a, and gives an error when the copy is not the same
+// project: the guard sameProjectInCopy refuses the folder, or a link of the copy resolves out of the copy. A link
+// whose target climbs out of the folder and back in by its base name, such as ../../project/inside, resolves in the
+// folder, but in the copy it resolves in the folder too, not in the copy, so only a check of the copy finds it
+// (security review of PR #511, L3).
+func copyProject(folder, target string) error {
+	if err := sameProjectInCopy(folder); err != nil {
+		return err
+	}
+	if output, err := exec.Command("cp", "-a", folder, target).CombinedOutput(); err != nil {
+		return fmt.Errorf("copy the project %s: %w\n%s", folder, err, output)
+	}
+	root, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(target, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.Type()&fs.ModeSymlink == 0 {
+			return err
+		}
+		end, err := filepath.EvalSymlinks(name)
+		if err != nil {
+			return fmt.Errorf("the link %s of the copy does not resolve: %w", name, err)
+		}
+		inside, err := filepath.Rel(root, end)
+		if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) || filepath.IsAbs(inside) {
+			return fmt.Errorf("the link %s of the copy resolves to %s out of the copy, so the copy of the project %s is not the same project", name, end, folder)
+		}
+		return nil
+	})
+}
+
 func TestWalkthroughCopyGuard(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R05-T04 The walkthrough copy guard refuses a project link that resolves out of the project folder or does not resolve", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R05-T04 The walkthrough copy guard refuses a project link that resolves out of the project folder, does not resolve, or leaves the copy", func(t *testing.T) {
 		project := func(t *testing.T) string {
 			t.Helper()
 			root := t.TempDir()
@@ -462,8 +493,22 @@ func TestWalkthroughCopyGuard(t *testing.T) {
 		link(t, "deep", filepath.Join(folder, "down"))
 		link(t, "../inside", filepath.Join(folder, "deep", "up"))
 		link(t, "down/up", filepath.Join(folder, "chain"))
-		if err := sameProjectInCopy(folder); err != nil {
+		if err := copyProject(folder, filepath.Join(t.TempDir(), "service")); err != nil {
 			t.Fatalf("the guard refused links that resolve in the folder: %v", err)
+		}
+		// The two cases of the security review of PR #511 (L3): a link that climbs out of the folder and back in by
+		// its base name resolves in the folder, but in the copy it resolves in the folder and not in the copy.
+		for _, c := range []struct{ name, target string }{{"plain", "../../project/inside"}, {"through a link", "b/../project/inside"}} {
+			folder := project(t)
+			if c.name == "through a link" {
+				link(t, "..", filepath.Join(folder, "deep", "b"))
+			}
+			link(t, c.target, filepath.Join(folder, "deep", "a"))
+			// The copy is beside the folder, so the link of the copy reaches the file of the folder, as in the probe
+			// of the review.
+			if err := copyProject(folder, filepath.Join(filepath.Dir(folder), "copy")); err == nil || !strings.Contains(err.Error(), "out of the copy") {
+				t.Fatalf("the guard gave %v for the link %s (%s), which leaves the copy by the base name of the folder", err, c.target, c.name)
+			}
 		}
 	})
 }

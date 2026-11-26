@@ -155,12 +155,17 @@ func TestProvisioning(t *testing.T) {
 			counts := func(tenantID string) int {
 				return e.count(`SELECT count(*) FROM attempt_counts WHERE tenant_id = $1`, tenantID)
 			}
-			// A Retire that the hook refuses rolls back with its delete: the counts stay with the active tenant.
-			e.exec("REVOKE INSERT ON audit_event FROM " + e.roles[0])
+			// A Retire whose COMMIT fails, after the hook ran the delete, rolls back with its delete: the counts stay with
+			// the active tenant. A deferred constraint trigger on the tenant list refuses the retire of org-a at the
+			// COMMIT (security review of PR #511, L2).
+			e.exec(`CREATE FUNCTION public.refuse_retire() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'the test refuses the commit of the retire'; END $$`,
+				`CREATE CONSTRAINT TRIGGER refuse_retire AFTER UPDATE ON public.stego_tenants DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW.tenant_id = 'org-a' AND NEW.retired_at IS NOT NULL) EXECUTE FUNCTION public.refuse_retire()`)
 			if got := send(op, "/stego/tenants/org-a/retire", ""); got < 500 || counts("org-a") != 2 {
-				t.Fatalf("the Retire that cannot write its audit row answered %d and left %d counts of org-a, want 5xx and 2", got, counts("org-a"))
+				t.Fatalf("the Retire whose COMMIT fails answered %d and left %d counts of org-a, want 5xx and 2", got, counts("org-a"))
 			}
-			e.exec("GRANT INSERT ON audit_event TO " + e.roles[0])
+			e.exec("DROP TRIGGER refuse_retire ON public.stego_tenants", "DROP FUNCTION public.refuse_retire()")
 			if got := send(op, "/stego/tenants/org-a/retire", ""); got != http.StatusOK {
 				t.Fatalf("the retire of org-a by the operator answered %d, want 200", got)
 			}

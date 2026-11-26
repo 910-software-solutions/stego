@@ -660,7 +660,14 @@ gives to the count of its row:
   row of an entity. The contract step of a drop deletes the counts of the
   dropped field, or of each field of the dropped entity, in each tenant of the
   tenant list (postgres-adapter 6.32.0). A count that a release before left
-  for a row that it deleted stays until the retire of its tenant.
+  for a row that it deleted stays until the retire of its tenant. A database
+  that ran the contract step of a drop before postgres-adapter 6.32.0 keeps
+  the counts of the dropped field or entity; no code reads them.
+- A fill that deletes a row and creates a row with the same ID in one
+  command cannot give the new row the PIN that the read of the deleted row
+  gave: the command gets an internal error and commits nothing, so the count
+  stays. Give the new row a new PIN with `sealed.ComparedOf` (security review
+  of PR #511, L1).
 
 The runtime keeps the stored hash of a counted PIN from the fill with a store
 key: a Go value of the runtime package that fill code cannot name. The store

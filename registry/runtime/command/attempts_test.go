@@ -1990,4 +1990,56 @@ func TestAttemptsPurge(t *testing.T) {
 			t.Fatalf("the delete changed the counts %v of the same row ID in another tenant", got)
 		}
 	})
+	// recreate deletes the wallet otherID and creates it again with the same ID in one fill, with the PIN that the
+	// read gave or with a new PIN.
+	recreate := func(key string, pin func(old sealed.Compared) sealed.Compared) error {
+		_, err := e.runOn(rt, cmd, e.request("t1", u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.GetForDelete(ctx, otherID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if err := r.Delete(ctx, w); err != nil {
+				return idempotency.Response{}, err
+			}
+			v := w.Value()
+			v.PIN = pin(v.PIN)
+			if _, err := r.Create(ctx, v); err != nil {
+				return idempotency.Response{}, err
+			}
+			return ok, nil
+		})
+		return err
+	}
+	hash := func() string {
+		t.Helper()
+		var stored string
+		if err := e.admin.QueryRowContext(e.ctx, `SELECT pin FROM pin_wallets WHERE tenant_id = 't1' AND id = $1`, otherID).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	t.Run("ST-SUP-RP10-LC54-T25 A delete and a create of the same ID in one command cannot carry the stored PIN of a locked row to a count of 0", func(t *testing.T) {
+		// The wallet otherID is locked: its count is at the cap of its failures (FailureCap(3) = 30).
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE attempt_counts SET checks = 3, failures = 27 WHERE tenant_id = 't1' AND counter = 'PinWallet.pin' AND row_id = $1`, otherID); err != nil {
+			t.Fatal(err)
+		}
+		before := hash()
+		if err := recreate("carry-1", func(old sealed.Compared) sealed.Compared { return old }); err == nil {
+			t.Fatal("a create of the deleted ID with the PIN that the read gave committed")
+		}
+		if got := counts("t1", otherID); got["PinWallet.pin"] != 3 || hash() != before {
+			t.Fatalf("after the refused re-create the count is %v and the hash changed %v; want the count 3 and the same hash", got, hash() != before)
+		}
+		// A re-create with a new PIN gives the row a new value, as a new PIN does: its count is 0.
+		if err := recreate("carry-2", func(sealed.Compared) sealed.Compared { return sealed.ComparedOf("2468") }); err != nil {
+			t.Fatalf("a re-create with a new PIN: %v", err)
+		}
+		if got := counts("t1", otherID); len(got) != 0 || hash() == before {
+			t.Fatalf("after the re-create with a new PIN the counts are %v and the hash is the same %v; want no count and a new hash", got, hash() == before)
+		}
+	})
 }
