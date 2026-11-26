@@ -1371,6 +1371,8 @@ gives each of their errors as a fault of the rule `ST-DECL-UC01`. When it
 cannot run them, it says that its result holds only the compatibility with
 the base (see [stego compat](compat.md)):
 
+From STEGO 3.269.0, it exits 2 with the cause class `fill` or `declaration`, not `No fault`, when such a check cannot run for a cause other than the registry.
+
 ```text
 fault ST-GEN-INV39 Transaction.amount: the change events of Transaction carry the event fields of version 1 in the base, which a consumer reads as a contract, and the head leaves out the field amount; keep the field with its type, or raise events.version to 2, which tells each consumer of a breaking change (ST-GEN-INV39)
 ```

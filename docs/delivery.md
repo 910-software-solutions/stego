@@ -460,6 +460,8 @@ of the release, such as a shared preview database that ran the build of a branch
 before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
 migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
 kubectl rollout status -n <namespace> deployment/<service>
