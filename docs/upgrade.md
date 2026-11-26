@@ -38,6 +38,8 @@ Do these steps for each upgrade. Do them in this order.
    stego deps
    ```
 
+   From STEGO 3.269.0, `stego compat` exits 2 with a cause class when it cannot run the checks of `stego validate` for a cause other than the registry; run `stego validate` to see the cause.
+
    Before `stego apply`, `stego compat` can warn that `migrate.go`, or its
    digest in `.stego/state.yaml`, `is not what a new generation of the head
    gives`. In an upgrade, this warning is expected: the new `stego` generates

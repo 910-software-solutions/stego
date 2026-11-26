@@ -962,6 +962,8 @@ base on a database with rows. Nothing checks a rollback of two or more
 releases. Such a rollback can start, but a contract step of a later release
 can remove what the older release uses.
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 At start, a pod reads the migration ledger. It accepts a ledger row of a
 newer release only when the row is a schema step and the pod holds each
 migration that the row needs:
