@@ -54,7 +54,17 @@ func (f *Fill) UnmarshalYAML(value *yaml.Node) error {
 // ParseFill reads and parses a fill YAML file. It refuses evidence or a
 // sign-off with a field missing, and names the field.
 func ParseFill(path string) (*Fill, error) {
-	f, err := parser.ReadKind(path, "fill", func(f *Fill) string { return f.Kind })
+	data, err := parser.ReadDocument(path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeFill(data, path)
+}
+
+// decodeFill decodes data, the fill manifest at path, as ParseFill does. The
+// path is for the errors only.
+func decodeFill(data []byte, path string) (*Fill, error) {
+	f, err := parser.ParseKind(data, path, "fill", func(f *Fill) string { return f.Kind })
 	if err != nil {
 		return nil, err
 	}
@@ -71,21 +81,24 @@ func ParseFill(path string) (*Fill, error) {
 	return f, nil
 }
 
-// ReadCollection reads the fill manifest at path and gives the collection
-// the fill serves. It is the compiler's compiler.FillReader: cmd/stego gives
-// it to the compiler, which may not import Extending (ST-STD-CODE-R03).
-func ReadCollection(path string) (string, error) {
-	f, err := ParseFill(path)
+// DecodeCollection decodes data, the fill manifest that the compiler read at
+// path, and gives the collection the fill serves. It is the compiler's
+// compiler.FillReader: cmd/stego gives it to the compiler, which may not
+// import Extending (ST-STD-CODE-R03). It opens no file: the compiler reads the
+// manifest inside the project folder.
+func DecodeCollection(data []byte, path string) (string, error) {
+	f, err := decodeFill(data, path)
 	if err != nil {
 		return "", err
 	}
 	return f.Collection, nil
 }
 
-// ReadImplements reads the fill manifest at path and gives the slot the fill
-// implements, as component.slot. It is the compiler's compiler.FillSlotReader.
-func ReadImplements(path string) (string, error) {
-	f, err := ParseFill(path)
+// DecodeImplements decodes data, the fill manifest that the compiler read at
+// path, and gives the slot the fill implements, as component.slot. It is the
+// compiler's compiler.FillSlotReader.
+func DecodeImplements(data []byte, path string) (string, error) {
+	f, err := decodeFill(data, path)
 	if err != nil {
 		return "", err
 	}

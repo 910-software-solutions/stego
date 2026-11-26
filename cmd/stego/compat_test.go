@@ -437,6 +437,28 @@ func TestCompat(t *testing.T) {
 			t.Fatalf("compat with a registry that does not resolve gave exit %d, want 0 and the plain note:\n%s", code, output)
 		}
 	})
+	t.Run("ST-GEN-UC14-R03-T04 compat exits 2 with a fixed cause class when the declaration checks of validate fail for a cause other than the registry", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// Security review of PR #499, L2: a fill manifest that does not parse stopped the checks of validate, and
+		// compat said No fault with the note of a registry that does not resolve.
+		s.write(t, "service.yaml", smallServiceDeclaration+"slots:\n  - {slot: before_create, collection: notes, gate: [broken]}\n")
+		s.write(t, "fills/broken/fill.yaml", "kind: fill\nname: broken\nimplements: rest-api.before_create\ncollection: notes\nMARKED-FILL-TEXT: [\n")
+		output, code := s.compat(t, "--base", "HEAD")
+		if code != compatUsage || strings.Contains(output, "No fault") || strings.Contains(output, "holds only the compatibility with the base") ||
+			!strings.Contains(output, "(cause: fill)") || strings.Contains(output, "MARKED-FILL-TEXT") {
+			t.Fatalf("compat with a fill manifest that does not parse gave exit %d, want %d, the cause class fill and no text of the manifest:\n%s", code, compatUsage, output)
+		}
+		if _, code := s.compat(t, "--base", "HEAD", "--json"); code != compatUsage {
+			t.Fatalf("compat --json with a fill manifest that does not parse gave exit %d, want %d", code, compatUsage)
+		}
+		// The registry stays the one soft cause: the same head with a registry that does not resolve gives the note.
+		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "absent"))
+		output, code = s.compat(t, "--base", "HEAD")
+		if code != 0 || !strings.Contains(output, "(cause: registry)") || !strings.Contains(output, "holds only the compatibility with the base") {
+			t.Fatalf("compat with a registry that does not resolve gave exit %d, want 0 and the note of the registry:\n%s", code, output)
+		}
+	})
 	t.Run("ST-GEN-UC14-FL-T An undeclared rename is refused against the base, and the same rename as a schema change is accepted", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

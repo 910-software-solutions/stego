@@ -104,6 +104,44 @@ not fail is DEBUG, so it shows only at the level `debug`. A call that fails is
 ERROR. A request makes several database calls, so the access line of the
 request is the INFO line.
 
+### Alert on a full disk or no memory of the database
+
+When the database cannot serve a command now, the command answers 503 with
+`Retry-After`, and the runtime writes one WARN line
+`command.database.unavailable` for each action and step in 10 seconds. The
+line has `stego.action`, `stego.step` and `stego.sqlstate_class`: the class
+of the SQLSTATE only, never the full code and never the message. From runtime
+v0.202.0 (rest-crud 3.269.0, rpc-service and browser-service 1.269.0):
+
+| `stego.sqlstate_class` | Cause | Action |
+|---|---|---|
+| `53` | The server has no resources: a full disk (53100), no memory (53200) or too many connections (53300). | Page the database operator. A retry does not help until the operator adds disk or memory, or lowers the load. |
+| `57` | The server shuts down or restarts, such as for a failover (57P01, 57P03). | Wait for the failover. Page when the lines continue past it. |
+| `08` | A connection was lost or refused by the server. | Look at the network and at the server. |
+| `55` | The database takes no new connection, such as after `ALTER DATABASE ... ALLOW_CONNECTIONS false`. | See the runbook line on an interrupted tenant-database delete below. |
+| `none` | No SQLSTATE, such as a refused TCP connection or a lost socket. | Look at the network and at the server. |
+
+Make an alert on `event.name` `command.database.unavailable` with
+`attributes."stego.sqlstate_class"` `53` a page of its own. A disk or memory
+fault does not end when the clients retry, and the 503 lines alone look like
+an outage. The volume of the database and the memory of its host also need
+alerts of their own in the database platform, so that the operator acts
+before the class 53 lines start.
+
+### An interrupted tenant-database delete
+
+The delete of a tenant database (`DeleteDatabase` of `postgres-client`) sets
+`ALLOW_CONNECTIONS false` on the database before it drops it. When the delete
+stops between the two steps, such as for a lost connection or a stopped
+process, the database stays, and it takes no new connection. Each client of
+that database then gets 503 with `Retry-After`, with
+`stego.sqlstate_class` `55` on the WARN line, until an operator acts. A retry
+of the client does not help.
+
+To end it, run the delete again: it reads its ledger, finds the state
+`deleting` and continues. Do not set `ALLOW_CONNECTIONS true` by hand on a
+database whose ledger row is `deleting`.
+
 No line holds a value of a request: no path value, query, header, body,
 token, tenant, principal, resource ID or error text. The route is the
 template, never the path. A line also holds no IP address and no user agent

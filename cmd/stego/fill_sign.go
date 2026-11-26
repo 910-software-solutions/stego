@@ -63,7 +63,7 @@ func runFillSign(args []string) error {
 	}
 	dir := filepath.Join(input.ProjectDir, "fills", name)
 	manifest := filepath.Join(dir, fill.ManifestFile)
-	f, err := fill.ReadManifest(manifest, check)
+	f, err := fill.ReadManifest(check, name)
 	if err != nil {
 		return err
 	}
