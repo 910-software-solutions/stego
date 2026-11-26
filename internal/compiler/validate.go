@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"go/version"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	querygen "github.com/jsell-rh/stego/internal/generator/query"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	workergen "github.com/jsell-rh/stego/internal/generator/worker"
+	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/ports"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -230,7 +233,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		if len(fillErrs) == 0 && (len(check.Bindings) > 0 || len(check.CommandFills) > 0 || len(check.QueryFills) > 0 || len(check.WorkerFills) > 0) && input.QualifyFills != nil {
 			faults, err := input.QualifyFills(check)
 			if err != nil {
-				return nil, fmt.Errorf("checking the bound fills: %w", err)
+				return nil, &FillError{fmt.Errorf("checking the bound fills: %w", err)}
 			}
 			var contractFaults []ValidationError
 			faults, contractFaults = contractFailureFaults(check, faults, svcDecl.Archetype, result.Errors)
@@ -507,26 +510,31 @@ func validateFillsExist(slots []types.SlotDeclaration, collections []types.Colle
 
 	var errs []ValidationError
 	for _, name := range fillNames {
-		fillPath := filepath.Join(projectDir, "fills", name, "fill.yaml")
-		if _, err := os.Stat(fillPath); err != nil {
-			if os.IsNotExist(err) {
-				errs = append(errs, ValidationError{
-					Category: "fill", Rule: "fill-exists", Path: fillReference(slots, name), Found: name,
-					Message: fmt.Sprintf("fill %q referenced in slot bindings but fills/%s/fill.yaml does not exist", name, name),
-				})
-			} else {
-				return nil, fmt.Errorf("checking fill %q at %s: %w", name, fillPath, err)
-			}
+		// A name outside the fill-name form, such as ../../x, names no folder under fills: checking refuses it with
+		// its path (ST-DECL-INV86), and the read skips it (security review of PR #499, I1).
+		if !declaration.ValidFillName(name) {
 			continue
+		}
+		fillPath := filepath.Join(projectDir, "fills", name, "fill.yaml")
+		data, err := readProjectFill(projectDir, name)
+		if errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, ValidationError{
+				Category: "fill", Rule: "fill-exists", Path: fillReference(slots, name), Found: name,
+				Message: fmt.Sprintf("fill %q referenced in slot bindings but fills/%s/fill.yaml does not exist", name, name),
+			})
+			continue
+		}
+		if err != nil {
+			return nil, &FillError{fmt.Errorf("checking fill %q at %s: %w", name, fillPath, err)}
 		}
 
 		// Parse the fill and validate its Collection field.
 		if readFill == nil {
-			return nil, fmt.Errorf("parsing fill %q at %s: the compiler was given no fill reader", name, fillPath)
+			return nil, &FillError{fmt.Errorf("parsing fill %q at %s: the compiler was given no fill reader", name, fillPath)}
 		}
-		collection, err := readFill(fillPath)
+		collection, err := readFill(data, fillPath)
 		if err != nil {
-			return nil, fmt.Errorf("parsing fill %q at %s: %w", name, fillPath, err)
+			return nil, &FillError{fmt.Errorf("parsing fill %q at %s: %w", name, fillPath, err)}
 		}
 		if collection != "" && !collectionNames[collection] {
 			var names []string
@@ -541,6 +549,30 @@ func validateFillsExist(slots []types.SlotDeclaration, collections []types.Colle
 		}
 	}
 	return errs, nil
+}
+
+// readProjectFill reads fills/<name>/fill.yaml of the project folder through os.OpenRoot, so that no link in the path
+// takes the read out of the project folder, and reads at most parser.MaxDocumentBytes (security review of PR #499,
+// I1). A manifest that does not exist gives an error that matches fs.ErrNotExist.
+func readProjectFill(projectDir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(path.Join("fills", name, "fill.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, parser.MaxDocumentBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > parser.MaxDocumentBytes {
+		return nil, fmt.Errorf("the fill manifest exceeds the %d byte limit", parser.MaxDocumentBytes)
+	}
+	return data, nil
 }
 
 // validateOperationRoutes checks that the route of each command and query conflicts with no route of the
@@ -617,19 +649,22 @@ func compositionFacts(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 		if _, read := facts.FillSlots[name]; read || name == "" || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
 			continue
 		}
+		// The name guard above holds the read in a folder under fills. A fill folder that is a link is read here,
+		// so that the fill rules refuse the link and the code behind it with their own faults (ST-EXT-UC01-R03-T14).
 		path := filepath.Join(input.ProjectDir, "fills", name, "fill.yaml")
-		if _, err := os.Stat(path); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return facts, fmt.Errorf("checking fill %q at %s: %w", name, path, err)
+		data, err := parser.ReadDocument(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return facts, &FillError{fmt.Errorf("checking fill %q at %s: %w", name, path, err)}
 		}
 		if input.ReadFillSlot == nil {
-			return facts, fmt.Errorf("reading fill %q at %s: the compiler was given no fill slot reader", name, path)
+			return facts, &FillError{fmt.Errorf("reading fill %q at %s: the compiler was given no fill slot reader", name, path)}
 		}
-		slot, err := input.ReadFillSlot(path)
+		slot, err := input.ReadFillSlot(data, path)
 		if err != nil {
-			return facts, fmt.Errorf("reading fill %q at %s: %w", name, path, err)
+			return facts, &FillError{fmt.Errorf("reading fill %q at %s: %w", name, path, err)}
 		}
 		facts.FillSlots[name] = slot
 	}

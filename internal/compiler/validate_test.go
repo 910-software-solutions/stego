@@ -4459,11 +4459,11 @@ message SlotResult { bool ok = 1; }
 	})
 }
 
-// readTestFill reads a fill manifest through the strict decoder, as
-// fill.ReadCollection does, and gives the collection it serves. The compiler's
+// readTestFill decodes a fill manifest through the strict decoder, as
+// fill.DecodeCollection does, and gives the collection it serves. The compiler's
 // tests use it because Generating may not import Extending (ST-STD-CODE-R03);
-// the tests of cmd/stego run the compiler with fill.ReadCollection.
-func readTestFill(path string) (string, error) {
+// the tests of cmd/stego run the compiler with fill.DecodeCollection.
+func readTestFill(data []byte, path string) (string, error) {
 	type manifest struct {
 		Kind        string    `yaml:"kind"`
 		Name        string    `yaml:"name"`
@@ -4472,7 +4472,7 @@ func readTestFill(path string) (string, error) {
 		QualifiedBy string    `yaml:"qualified_by"`
 		QualifiedAt time.Time `yaml:"qualified_at"`
 	}
-	m, err := parser.ReadKind(path, "fill", func(m *manifest) string { return m.Kind })
+	m, err := parser.ParseKind(data, path, "fill", func(m *manifest) string { return m.Kind })
 	if err != nil {
 		return "", err
 	}
@@ -4502,6 +4502,65 @@ func TestValidateOwnRoutes(t *testing.T) {
 			routes: []gen.HTTPRoute{{Pattern: "POST /widgets"}, {Pattern: "GET /stegosaurus"}}}
 		if result, err := Validate(input); err != nil || result.HasErrors() {
 			t.Fatalf("the routes beside /stego/ were refused: %v\n%s", err, FormatValidation(result))
+		}
+	})
+}
+
+func TestFillNameStaysInFills(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T04 A slot binding fill name outside the fill-name form or a linked fill folder reads no file outside the project", func(t *testing.T) {
+		// Security review of PR #499, I1: the check built fills/<name>/fill.yaml from the bound name, so the name
+		// ../../outside read a manifest outside the project folder.
+		parent := t.TempDir()
+		projectDir, registryDir, input := setupValidateProject(t)
+		_ = registryDir
+		outside := filepath.Join(parent, "outside")
+		mkdirAll(t, outside)
+		writeFile(t, filepath.Join(outside, "fill.yaml"), "kind: fill\nname: outside\nimplements: stub-api.before_create\ncollection: secret-collection\n")
+		escape, err := filepath.Rel(filepath.Join(projectDir, "fills", "x"), outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		escape = filepath.ToSlash(filepath.Join("x", escape))
+		var read []string
+		input.ReadFill = func(data []byte, path string) (string, error) {
+			read = append(read, path)
+			return readTestFill(data, path)
+		}
+		service, err := os.ReadFile(filepath.Join(projectDir, "service.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(projectDir, "service.yaml"), string(service)+"slots:\n  - slot: before_create\n    collection: widgets\n    gate: [\""+escape+"\"]\n")
+		result, err := Validate(input)
+		if err != nil {
+			t.Fatalf("Validate returned an error: %v", err)
+		}
+		if len(read) != 0 {
+			t.Fatalf("the check read the fill manifests %v, want none for the name %q", read, escape)
+		}
+		named := false
+		for _, fault := range result.Errors {
+			if strings.Contains(fault.Message, "secret-collection") {
+				t.Fatalf("a fault quotes the manifest outside the project: %s", fault.Prose())
+			}
+			if fault.Rule == "name-form" && fault.Found == escape && fault.Path == "slots[0].gate[0]" {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("no name-form fault names %q at slots[0].gate[0]:\n%s", escape, FormatValidation(result))
+		}
+
+		// A fill folder under fills that is a link to a folder outside the project is not read through.
+		writeFile(t, filepath.Join(projectDir, "service.yaml"), string(service)+"slots:\n  - slot: before_create\n    collection: widgets\n    gate: [linked]\n")
+		mkdirAll(t, filepath.Join(projectDir, "fills"))
+		if err := os.Symlink(outside, filepath.Join(projectDir, "fills", "linked")); err != nil {
+			t.Fatal(err)
+		}
+		read = nil
+		result, err = Validate(input)
+		if err == nil || len(read) != 0 || strings.Contains(err.Error(), "secret-collection") {
+			t.Fatalf("a linked fill folder gave the error %v and the reads %v, want an error and no read; result:\n%s", err, read, FormatValidation(result))
 		}
 	})
 }

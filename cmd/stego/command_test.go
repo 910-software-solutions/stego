@@ -27,7 +27,7 @@ func checkInProcess(t *testing.T, project string) []declaration.ValidationError 
 	result, err := compiler.Validate(compiler.ReconcilerInput{
 		ProjectDir: project, RegistryDir: resolved.Dir, RegistryDirs: resolved.Dirs, Generators: defaultGenerators(),
 		GoVersion: goVersion, ModuleName: module, RegistrySHA: resolved.Ref, OutDir: filepath.Join(project, "out"),
-		ReadFill: fill.ReadCollection, ReadFillSlot: fill.ReadImplements, QualifyFills: fill.QualificationFaults,
+		ReadFill: fill.DecodeCollection, ReadFillSlot: fill.DecodeImplements, QualifyFills: fill.QualificationFaults,
 	})
 	if err != nil {
 		t.Fatal(err)
