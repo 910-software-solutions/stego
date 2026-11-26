@@ -261,17 +261,22 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off", "STEGO_TEST_MARKER_BEFORE="+string(before[1]))
 	output, _ := run.CombinedOutput()
 	passed := map[string]bool{}
+	// The output of the module is collected in a local builder and kept as a string. A strings.Builder that holds
+	// text keeps its own address, which can be a stack address, so a copy of it in a value that the caller keeps
+	// points into a stack that can be freed: the garbage collector then stops the process with "found pointer to
+	// free object" (the first CI run of #521).
 	out := tableOutput{tests: map[string]*strings.Builder{}, actions: map[string]string{}}
+	var module strings.Builder
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	scanner.Buffer(make([]byte, 1<<20), 1<<24)
 	for scanner.Scan() {
 		var event tableEvent
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			out.module.WriteString(scanner.Text() + "\n")
+			module.WriteString(scanner.Text() + "\n")
 			continue
 		}
 		if event.Test == "" {
-			out.module.WriteString(event.Output)
+			module.WriteString(event.Output)
 			continue
 		}
 		own := out.tests[event.Test]
@@ -289,6 +294,7 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 			passed[event.Test] = true
 		}
 	}
+	out.module = module.String()
 	return passed, out
 }
 
@@ -299,7 +305,7 @@ type tableOutput struct {
 	tests   map[string]*strings.Builder
 	actions map[string]string
 	order   []string
-	module  strings.Builder
+	module  string
 }
 
 // of gives the output of the generated subtest name and of each of its own subtests, each with the action that ended
@@ -317,7 +323,7 @@ func (o tableOutput) of(name string) string {
 		fmt.Fprintf(&text, "--- %s (%s)\n%s", test, action, o.tests[test].String())
 	}
 	if text.Len() == 0 {
-		fmt.Fprintf(&text, "the generated module ran no subtest %s; the output of the module:\n%s", name, o.module.String())
+		fmt.Fprintf(&text, "the generated module ran no subtest %s; the output of the module:\n%s", name, o.module)
 	}
 	return text.String()
 }
