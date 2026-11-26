@@ -1365,7 +1365,11 @@ against the base of `stego plan` and `stego apply`, refuse a head that removes
 a field from the list of the base, gives it another type, removes a value of
 an enum field, lowers the version or removes `events`. A field that you add is
 accepted. To make one of the other changes, raise `version`, such as to 2, and
-tell the consumers. The fault is `ST-GEN-INV39`:
+tell the consumers. The fault is `ST-GEN-INV39`. From STEGO 3.264.0,
+`stego compat` also runs the declaration checks of `stego validate`, and
+gives each of their errors as a fault of the rule `ST-DECL-UC01`. When it
+cannot run them, it says that its result holds only the compatibility with
+the base (see [stego compat](compat.md)):
 
 ```text
 fault ST-GEN-INV39 Transaction.amount: the change events of Transaction carry the event fields of version 1 in the base, which a consumer reads as a contract, and the head leaves out the field amount; keep the field with its type, or raise events.version to 2, which tells each consumer of a breaking change (ST-GEN-INV39)

@@ -1718,12 +1718,19 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	if f.Pattern != "" {
 		s.Pattern = f.Pattern
 	}
-	// Propagate numeric constraint attributes.
+	// Propagate numeric constraint attributes. A field that an open retype from int32 widens holds the int32 bounds
+	// until the contract step (gen.HeldBounds, ST-DECL-Q48).
 	if f.Min != nil {
 		s.Minimum = f.Min
 	}
 	if f.Max != nil {
 		s.Maximum = f.Max
+	}
+	if f.HeldMin != nil {
+		s.Minimum = f.HeldMin
+	}
+	if f.HeldMax != nil {
+		s.Maximum = f.HeldMax
 	}
 	if f.Default != nil {
 		s.Default = f.Default

@@ -1666,6 +1666,25 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.198.0
+
+- A database that takes no new connection is unavailable (walkthrough 26,
+  U-503). `tenant.Unavailable` now counts SQLSTATE 55000 when the
+  connection is made, such as after `ALTER DATABASE ... ALLOW_CONNECTIONS
+  false`, 57P05 (an idle session that the server ended) and 53000, 53100
+  and 53200 beside 53300. Thus such a request gets 503 with `Retry-After`
+  and the code `unavailable`, not 500 `internal`. A 55000 of a statement,
+  such as `currval` before `nextval`, stays 500.
+- Each 503 has the one problem type `<error_type_base>service-unavailable`,
+  from the command runtime, the query runtime, the tenant check and the
+  CRUD routes. Before, a 503 of the command or query runtime or of the
+  tenant check had the type of its code, `.../unavailable` or
+  `.../undecided`. The codes do not change.
+- `http.route` may hold a colon, so a declared command route such as
+  `/jobs/{job_id}/status:convert` has its template on the span, the metric
+  and the access line (walkthrough 26, L-ROUTE).
+- apidiff against v0.196.0: compatible (no change of the exported API).
+
 ### Release notes for runtime v0.196.0
 
 - Each line of one process names one `service.instance.id` (core49

@@ -95,6 +95,10 @@ func TestGeneratedDatabasePoolTelemetry(t *testing.T) {
 	testGeneratedTracing(t, "^TestDatabasePoolMetrics")
 }
 
+func TestGeneratedCommandRoute(t *testing.T) {
+	testGeneratedTracing(t, "^TestLocalCommandRoute")
+}
+
 func TestGeneratedOutboxTelemetry(t *testing.T) {
 	testGeneratedTracing(t, "^TestOutboxMetrics")
 }

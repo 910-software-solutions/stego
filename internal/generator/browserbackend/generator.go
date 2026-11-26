@@ -46,8 +46,17 @@ type asset struct{ Source, Path, Hash string }
 // STEGO_BROWSER_API_URLS gives for its name at start (ST-SUP-RC02-OC58).
 type api struct{ Name, Prefix string }
 
-// MaxAPIs is the most entries of the setting apis.
-const MaxAPIs = 8
+// MaxAPIs is the most entries of the setting apis (decision ST-SUP-Q213). The bound is the pool of the backend, not
+// a header or the CSP: the backend has MaxConcurrentRequests (16) permits for all APIs together, and each of the
+// 1+MaxAPIs APIs, api_prefix included, keeps at least one permit of its own, so 1+MaxAPIs is at most 16. The CSP
+// does not grow with apis (connect-src 'self': each API is under the origin of the console), and the table of the
+// APIs is read once at start. The cost of more APIs is a smaller share for each: from 8 APIs in apis, each API has
+// one permit and one waiting read, so its second request at one time gets 503 with Retry-After: 1.
+const MaxAPIs = maxConcurrentRequests - 1
+
+// maxConcurrentRequests is client.MaxConcurrentRequests of the generated HTTP client (httpclient), the bound of the
+// permits of the backend that the APIs share.
+const maxConcurrentRequests = 16
 
 var apiName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 

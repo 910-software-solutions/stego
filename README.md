@@ -323,7 +323,17 @@ names must match in letter case. A patch refuses each other member with a
 400 validation problem that names the member (rest-api 4.24.0), such as a
 field that is not patchable or the new name of a renamed field, and changes
 nothing. The OpenAPI document gives the body of the patch as the schema
-`<Collection>PatchRequest`, with `additionalProperties: false`. The `apply` command of the
+`<Collection>PatchRequest`, with `additionalProperties: false`.
+
+A patch only sets values. It does not clear an optional field: `null` gets
+400 `Value is not nullable`, and an empty text gets 400 when the field has a
+`min_length` (decision ST-SUP-Q214, open). To clear an optional field, send
+an update (`PUT <path>/{id}`) with the whole row and leave the field out:
+an update replaces the row, so the field becomes empty. Thus a collection
+whose optional fields a client must clear needs `update` in its
+`operations`. A field that is the subject of a relationship
+(`subject_source: field`) is set at the create only: an update or a patch
+that changes it, also to empty, gets 400 with the name of the field. The `apply` command of the
 generated CLI changes a resource that it finds with this patch, so a
 collection is an apply resource only when it has `create`, `list` and
 `patch`, has no scope, and both the create and `patchable` hold a text field

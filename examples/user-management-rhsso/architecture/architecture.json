@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.265.0",
+    "archetype_version": "3.264.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -57,7 +57,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -116,7 +116,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -172,7 +172,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "architecture.layer"
         }
       }
@@ -237,7 +237,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -301,7 +301,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "architecture.layer"
         }
       }
@@ -328,7 +328,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -380,7 +380,7 @@
     {
       "id": "component:command",
       "name": "command",
-      "version": "1.28.0",
+      "version": "1.30.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared command in the transaction of the caller's tenant.",
@@ -403,7 +403,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "architecture"
         }
       }
@@ -494,7 +494,7 @@
     {
       "id": "component:otel-tracing",
       "name": "otel-tracing",
-      "version": "1.23.0",
+      "version": "1.25.0",
       "stage": "ga",
       "layer": "outside call",
       "flow_part": "Exports a trace span of each request to the OpenTelemetry collector.",
@@ -512,7 +512,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "architecture"
         }
       }
@@ -546,7 +546,7 @@
     {
       "id": "component:postgres-adapter",
       "name": "postgres-adapter",
-      "version": "6.32.0",
+      "version": "6.31.0",
       "stage": "ga",
       "layer": "repository",
       "flow_part": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
@@ -564,7 +564,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "architecture"
         }
       }
@@ -603,7 +603,7 @@
     {
       "id": "component:rest-api",
       "name": "rest-api",
-      "version": "4.39.0",
+      "version": "4.41.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Decodes the request of a collection operation and calls its command or query.",
@@ -702,7 +702,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "architecture"
         }
       }
@@ -869,7 +869,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "requires"
         }
       }
@@ -917,7 +917,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "provides"
         }
       }
@@ -999,7 +999,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "provides"
         }
       }
@@ -1015,7 +1015,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "provides"
         }
       }
@@ -1051,7 +1051,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "requires"
         }
       }
@@ -1083,7 +1083,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "provides"
         }
       }
@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.265.0",
+          "version": "3.264.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1113,7 +1113,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.265.0",
+          "version": "3.264.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.265.0",
+          "version": "3.264.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1150,7 +1150,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.265.0",
+          "version": "3.264.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1768,7 +1768,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -1785,7 +1785,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -1801,7 +1801,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -1912,7 +1912,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -1929,7 +1929,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -1945,7 +1945,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2056,7 +2056,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2073,7 +2073,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -2089,7 +2089,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2159,7 +2159,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2244,7 +2244,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2272,7 +2272,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -2288,7 +2288,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2361,7 +2361,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2465,7 +2465,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2482,7 +2482,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -2498,7 +2498,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2662,7 +2662,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2679,7 +2679,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -2695,7 +2695,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2806,7 +2806,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -2823,7 +2823,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -2839,7 +2839,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -2920,7 +2920,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3016,7 +3016,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3033,7 +3033,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3049,7 +3049,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3168,7 +3168,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3185,7 +3185,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3201,7 +3201,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3282,7 +3282,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3367,7 +3367,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3395,7 +3395,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3411,7 +3411,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3473,7 +3473,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3577,7 +3577,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3594,7 +3594,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3610,7 +3610,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3763,7 +3763,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3780,7 +3780,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3796,7 +3796,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3907,7 +3907,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "architecture"
             }
           }
@@ -3924,7 +3924,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture"
             }
           }
@@ -3940,7 +3940,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "architecture.store"
             }
           }
@@ -3987,7 +3987,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -4053,7 +4053,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -4154,7 +4154,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -4171,7 +4171,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "needs"
         }
       }
@@ -4295,7 +4295,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "environment"
         }
       }
@@ -4314,7 +4314,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "environment"
         }
       }
@@ -4332,7 +4332,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.39.0",
+          "version": "4.41.0",
           "field": "environment"
         }
       }
@@ -4350,7 +4350,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -4368,7 +4368,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -4386,7 +4386,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -4405,7 +4405,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -4423,7 +4423,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -4441,7 +4441,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -4460,7 +4460,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -4478,7 +4478,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4496,7 +4496,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4514,7 +4514,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4532,7 +4532,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4550,7 +4550,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4568,7 +4568,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4586,7 +4586,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4604,7 +4604,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4622,7 +4622,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4640,7 +4640,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4658,7 +4658,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4676,7 +4676,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4694,7 +4694,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4712,7 +4712,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4730,7 +4730,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4748,7 +4748,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4766,7 +4766,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4784,7 +4784,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4802,7 +4802,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4820,7 +4820,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4838,7 +4838,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4856,7 +4856,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4874,7 +4874,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4892,7 +4892,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4910,7 +4910,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4928,7 +4928,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4946,7 +4946,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4964,7 +4964,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -4982,7 +4982,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5001,7 +5001,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5020,7 +5020,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5038,7 +5038,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5056,7 +5056,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5074,7 +5074,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5092,7 +5092,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5110,7 +5110,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5128,7 +5128,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5146,7 +5146,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5219,7 +5219,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5237,7 +5237,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5256,7 +5256,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5275,7 +5275,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5294,7 +5294,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5313,7 +5313,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5331,7 +5331,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5350,7 +5350,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -5368,7 +5368,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5386,7 +5386,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5404,7 +5404,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5422,7 +5422,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5440,7 +5440,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5458,7 +5458,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5476,7 +5476,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5494,7 +5494,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5512,7 +5512,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5530,7 +5530,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5548,7 +5548,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5566,7 +5566,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5584,7 +5584,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5602,7 +5602,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5620,7 +5620,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5638,7 +5638,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5656,7 +5656,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5674,7 +5674,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5692,7 +5692,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5710,7 +5710,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5728,7 +5728,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5746,7 +5746,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5764,7 +5764,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5782,7 +5782,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -5819,7 +5819,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -5837,7 +5837,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -6130,7 +6130,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6149,7 +6149,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6168,7 +6168,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6186,7 +6186,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6205,7 +6205,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6570,7 +6570,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6588,7 +6588,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6607,7 +6607,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -6625,7 +6625,7 @@
         "registry": {
           "part": "component",
           "name": "otel-tracing",
-          "version": "1.23.0",
+          "version": "1.25.0",
           "field": "environment"
         }
       }
@@ -6698,7 +6698,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6716,7 +6716,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6734,7 +6734,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -6807,7 +6807,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6825,7 +6825,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.32.0",
+          "version": "6.31.0",
           "field": "environment"
         }
       }
@@ -6843,7 +6843,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.28.0",
+          "version": "1.30.0",
           "field": "environment"
         }
       }
@@ -8388,7 +8388,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8403,7 +8403,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8418,7 +8418,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8433,7 +8433,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8448,7 +8448,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8463,7 +8463,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8478,7 +8478,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8493,7 +8493,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8508,7 +8508,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8523,7 +8523,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8538,7 +8538,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.39.0",
+              "version": "4.41.0",
               "field": "environment"
             }
           }
@@ -8553,7 +8553,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8568,7 +8568,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8583,7 +8583,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8598,7 +8598,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8613,7 +8613,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8628,7 +8628,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -8643,7 +8643,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8658,7 +8658,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8673,7 +8673,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8688,7 +8688,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8703,7 +8703,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8718,7 +8718,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8733,7 +8733,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8748,7 +8748,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8763,7 +8763,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8778,7 +8778,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8793,7 +8793,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8808,7 +8808,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8823,7 +8823,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8838,7 +8838,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8853,7 +8853,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8868,7 +8868,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8883,7 +8883,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -8898,7 +8898,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8913,7 +8913,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8928,7 +8928,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8943,7 +8943,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8958,7 +8958,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8973,7 +8973,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -8988,7 +8988,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9003,7 +9003,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9018,7 +9018,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9033,7 +9033,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9048,7 +9048,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9063,7 +9063,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9078,7 +9078,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9093,7 +9093,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9108,7 +9108,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9123,7 +9123,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9138,7 +9138,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9153,7 +9153,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9168,7 +9168,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9183,7 +9183,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9198,7 +9198,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9213,7 +9213,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9228,7 +9228,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9243,7 +9243,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9258,7 +9258,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9273,7 +9273,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9288,7 +9288,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9303,7 +9303,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9318,7 +9318,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9333,7 +9333,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9348,7 +9348,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9363,7 +9363,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9378,7 +9378,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9393,7 +9393,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9408,7 +9408,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9423,7 +9423,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9438,7 +9438,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9453,7 +9453,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9468,7 +9468,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9483,7 +9483,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9498,7 +9498,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9513,7 +9513,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9528,7 +9528,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9543,7 +9543,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9558,7 +9558,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9573,7 +9573,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9588,7 +9588,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9603,7 +9603,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9618,7 +9618,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9633,7 +9633,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9648,7 +9648,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9663,7 +9663,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9678,7 +9678,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9693,7 +9693,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9708,7 +9708,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9723,7 +9723,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9738,7 +9738,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9753,7 +9753,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9768,7 +9768,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9783,7 +9783,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9798,7 +9798,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9813,7 +9813,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9828,7 +9828,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9843,7 +9843,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9858,7 +9858,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9873,7 +9873,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9888,7 +9888,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9903,7 +9903,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9918,7 +9918,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9933,7 +9933,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9948,7 +9948,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9963,7 +9963,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9978,7 +9978,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -9993,7 +9993,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10008,7 +10008,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10023,7 +10023,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10038,7 +10038,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10053,7 +10053,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10068,7 +10068,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10083,7 +10083,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10098,7 +10098,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10113,7 +10113,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10128,7 +10128,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10143,7 +10143,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10158,7 +10158,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10173,7 +10173,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10188,7 +10188,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10203,7 +10203,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10218,7 +10218,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10233,7 +10233,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10248,7 +10248,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10263,7 +10263,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10278,7 +10278,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10293,7 +10293,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10308,7 +10308,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10323,7 +10323,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10338,7 +10338,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10353,7 +10353,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10368,7 +10368,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10383,7 +10383,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10398,7 +10398,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10413,7 +10413,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10428,7 +10428,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10443,7 +10443,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10458,7 +10458,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10473,7 +10473,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10488,7 +10488,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10503,7 +10503,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10518,7 +10518,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10533,7 +10533,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10548,7 +10548,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10563,7 +10563,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10578,7 +10578,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10593,7 +10593,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -10608,7 +10608,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -10623,7 +10623,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -10788,7 +10788,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10803,7 +10803,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10818,7 +10818,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10833,7 +10833,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10848,7 +10848,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10863,7 +10863,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10878,7 +10878,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10893,7 +10893,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10908,7 +10908,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10923,7 +10923,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10938,7 +10938,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10953,7 +10953,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10968,7 +10968,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10983,7 +10983,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -10998,7 +10998,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11013,7 +11013,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11028,7 +11028,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11043,7 +11043,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11058,7 +11058,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11073,7 +11073,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11088,7 +11088,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11103,7 +11103,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11118,7 +11118,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11133,7 +11133,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11148,7 +11148,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11163,7 +11163,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11178,7 +11178,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11193,7 +11193,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11208,7 +11208,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -11223,7 +11223,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11238,7 +11238,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11253,7 +11253,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11268,7 +11268,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11283,7 +11283,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11298,7 +11298,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11313,7 +11313,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11328,7 +11328,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11343,7 +11343,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11358,7 +11358,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11373,7 +11373,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11388,7 +11388,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11403,7 +11403,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11418,7 +11418,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11433,7 +11433,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11448,7 +11448,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11463,7 +11463,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11478,7 +11478,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11493,7 +11493,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11508,7 +11508,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11523,7 +11523,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11538,7 +11538,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11553,7 +11553,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11568,7 +11568,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11583,7 +11583,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11598,7 +11598,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11613,7 +11613,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11628,7 +11628,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11643,7 +11643,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11658,7 +11658,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11673,7 +11673,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11688,7 +11688,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11703,7 +11703,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11718,7 +11718,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11733,7 +11733,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11748,7 +11748,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11763,7 +11763,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11778,7 +11778,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11793,7 +11793,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11808,7 +11808,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11823,7 +11823,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11838,7 +11838,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11853,7 +11853,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11868,7 +11868,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11883,7 +11883,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11898,7 +11898,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11913,7 +11913,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11928,7 +11928,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11943,7 +11943,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11958,7 +11958,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11973,7 +11973,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -11988,7 +11988,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12003,7 +12003,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12018,7 +12018,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12033,7 +12033,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12048,7 +12048,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12063,7 +12063,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12078,7 +12078,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12093,7 +12093,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12108,7 +12108,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12123,7 +12123,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12138,7 +12138,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12153,7 +12153,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12168,7 +12168,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12183,7 +12183,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12198,7 +12198,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12213,7 +12213,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12228,7 +12228,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12243,7 +12243,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12258,7 +12258,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12273,7 +12273,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12288,7 +12288,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -12363,7 +12363,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -12378,7 +12378,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -12393,7 +12393,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -12408,7 +12408,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -12423,7 +12423,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -12438,7 +12438,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -13188,7 +13188,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13203,7 +13203,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13218,7 +13218,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13233,7 +13233,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13248,7 +13248,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13263,7 +13263,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13278,7 +13278,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13293,7 +13293,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13308,7 +13308,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13323,7 +13323,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13338,7 +13338,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13353,7 +13353,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13368,7 +13368,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13383,7 +13383,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13398,7 +13398,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13413,7 +13413,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13428,7 +13428,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13443,7 +13443,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -13458,7 +13458,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14373,7 +14373,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14388,7 +14388,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14403,7 +14403,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14418,7 +14418,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14433,7 +14433,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14448,7 +14448,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14463,7 +14463,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14478,7 +14478,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14493,7 +14493,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14508,7 +14508,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14523,7 +14523,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -14538,7 +14538,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -14553,7 +14553,7 @@
             "registry": {
               "part": "component",
               "name": "otel-tracing",
-              "version": "1.23.0",
+              "version": "1.25.0",
               "field": "environment"
             }
           }
@@ -14718,7 +14718,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14733,7 +14733,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14748,7 +14748,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14763,7 +14763,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14778,7 +14778,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14793,7 +14793,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -14808,7 +14808,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14823,7 +14823,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -14838,7 +14838,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -15003,7 +15003,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15018,7 +15018,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15033,7 +15033,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15048,7 +15048,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15063,7 +15063,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15078,7 +15078,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.32.0",
+              "version": "6.31.0",
               "field": "environment"
             }
           }
@@ -15093,7 +15093,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -15108,7 +15108,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }
@@ -15123,7 +15123,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.28.0",
+              "version": "1.30.0",
               "field": "environment"
             }
           }

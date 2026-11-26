@@ -90,7 +90,7 @@ name: rest-api
 # Version 4.39.0 gives a problem that the status sets at run time the slug of its status: service-unavailable for a
 # 503, such as of a database that cannot serve now, method-not-allowed, content-too-large and unprocessable-content
 # (walkthrough 25, P1-16; ST-SUP-RC20-OC04).
-version: 4.39.0
+version: 4.41.0
 stage: ga
 output_namespace: internal/api
 

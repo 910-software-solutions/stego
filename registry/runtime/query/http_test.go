@@ -546,7 +546,8 @@ func TestProblemForm(t *testing.T) {
 			{http.StatusNotFound, "", base + "not-found"},
 			{http.StatusBadRequest, "", base + "bad-request"},
 			{http.StatusInternalServerError, ErrorCodeInternal, base + "internal"},
-			{http.StatusServiceUnavailable, ErrorCodeUnavailable, base + "unavailable"},
+			{http.StatusServiceUnavailable, ErrorCodeUnavailable, base + "service-unavailable"},
+			{http.StatusServiceUnavailable, "", base + "service-unavailable"},
 			{http.StatusConflict, "order.closed", base + "order-closed"},
 		} {
 			w := httptest.NewRecorder()

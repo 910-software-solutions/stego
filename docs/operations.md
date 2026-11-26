@@ -19,7 +19,17 @@ probe runtime and the console of the log provider write on standard output.
 
 From runtime v0.195.0 (rest-crud 3.261.0, rpc-service and browser-service
 1.261.0), each line of the runtime has one form. A query that reads one
-member reads it on each line. A line holds these members, in this order:
+member reads it on each line.
+During the rollout to this release, the pods of the old release still write
+the old shapes: the fields of an access line at the top level, the fields of
+a worker event under `fields` with no prefix, and a timestamp with the offset
+of the local zone, such as `-05:00`. Until the last pod of the old release
+stops, make each query read both shapes, such as `attributes."http.route"`
+or `http.route`, and `attributes."stego.worker"` or `fields.worker`. Compare
+the times as instants, not as text. After the old release stops, remove the
+old shape from the query.
+
+A line holds these members, in this order:
 
 | Member | Value | On each line |
 |---|---|---|
@@ -67,7 +77,7 @@ the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
 | `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
 | `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
 | `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
@@ -755,6 +765,58 @@ Do these steps in this order:
 
 9. Start the api Deployment: scale it back, or start the sync of Argo CD again.
 10. Do the checks below for the outbox, SpiceDB and the audit sink.
+
+### Drill a restore beside the live database
+
+A drill proves that the backup and the backup of the key ring open together.
+It restores the dump into a second database of the same server, and it does
+not stop the service.
+
+1. Make the drill database, owned by the owner role, and restore the dump
+   into it with no `--create`:
+
+   ```sh
+   psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE <service>_drill OWNER <service>_owner' postgres
+   pg_restore --no-owner --role=<service>_owner --dbname=<service>_drill <service>.dump
+   ```
+
+2. Copy the environment of the worker Deployment. Change only the database
+   name in `DATABASE_URL` and the other database URLs to `<service>_drill`,
+   and set `STEGO_SECRET_KEY_RING_FILE` to the backup of the key ring.
+3. Start one process of the release with `--mode=controller` alone, on a
+   host or pod that no Service and no client reaches. Do not start
+   `--mode=worker`: its relay would send the outbox of the dump to SpiceDB
+   and Kafka of the live service.
+4. Wait for the line `command.reseal.pass` of each secret column. The
+   controller runs the re-seal job at start. The job opens each value that
+   is not on the first key of the ring, and seals it again:
+   - `failed=0` and `moved` plus `left` equal to the values on earlier keys:
+     the ring opens the dump. When each value of the dump is on the first
+     key, the job moves nothing. Then put the key of the dump second in a
+     copy of the ring with a new first key, and run the drill again.
+   - `failed` above 0, with `command.reseal.skipped` for each row that does
+     not open (or `command.reseal.unopened` with the count after the first
+     three): the ring does not hold the key of those values. The backup of the
+     ring is not usable with this dump.
+
+   For a negative proof, run the drill again with a ring that does not hold
+   the key of the dump. Each value then counts in `failed`.
+5. Stop the process, and drop the drill database:
+
+   ```sh
+   psql -v ON_ERROR_STOP=1 -c 'DROP DATABASE <service>_drill' postgres
+   ```
+
+The drill process logs `service.schema_manifest.fault` with the classes
+`owner` and `trigger`, such as `function stego_outbox.claim has another
+owner`. These faults are expected in the drill. `pg_restore --no-owner`
+gives each object to the role of `--role`, but the schema manifest wants
+some functions owned by other roles of the service, such as the relay role.
+The process starts, and the migration Job would refuse that database. The
+faults do not change the result of the re-seal job. Do not run the
+migration Job on the drill database, and do not use a drill database as the
+database of the service: for a real restore, use `--create` as in
+[Restore](#restore).
 
 ### The offsets of a consumer group
 
