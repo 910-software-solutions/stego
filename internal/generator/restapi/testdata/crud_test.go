@@ -1869,6 +1869,47 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC06-T03 A create, its replay, a read, a list, an update and a patch answer an int64 above 2^53 and the int64 bounds exactly", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		// tally reads the member as its JSON text: a float64 of 9007199254740993 is 9007199254740992 (walkthrough 27,
+		// W-PREC).
+		tally := func(what string, r reply, want string) {
+			t.Helper()
+			if r.status != http.StatusOK && r.status != http.StatusCreated {
+				t.Fatalf("%s answered %d %s, want 200 or 201", what, r.status, r.body)
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(r.body, &members); err != nil || string(members["tally"]) != want {
+				t.Errorf("%s answered tally %s in %s, want %s", what, members["tally"], r.body, want)
+			}
+		}
+		for _, value := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+			key := "k-" + uuid.NewString()
+			created := e.send(a, http.MethodPost, "/api/v1/todos", key, `{"title":"big","tally":`+value+`}`)
+			tally("the create of "+value, created, value)
+			// The second request of the key gets the stored response, which holds the value exactly too.
+			tally("the replay of the create of "+value, e.send(a, http.MethodPost, "/api/v1/todos", key, `{"title":"big","tally":`+value+`}`), value)
+			id := created.member(t, "id")
+			e.own(a, "todo", id)
+			if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND tally = $2::bigint`, id, value); n != 1 {
+				t.Errorf("%d rows with the tally %s, want 1", n, value)
+			}
+			tally("the read of "+value, e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""), value)
+			tally("the update of "+value, e.send(a, http.MethodPut, "/api/v1/todos/"+id, "", `{"title":"put","tally":`+value+`}`), value)
+			tally("the patch of "+value, e.send(a, http.MethodPatch, "/api/v1/todos/"+id, "k-"+uuid.NewString(), `{"title":"patched"}`), value)
+		}
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		selected := e.send(a, http.MethodGet, "/api/v1/todos?fields=tally", "", "")
+		for what, r := range map[string]reply{"the list": list, "the list with fields=tally": selected} {
+			for _, value := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+				if r.status != http.StatusOK || !strings.Contains(string(r.body), `"tally":`+value+`,`) && !strings.Contains(string(r.body), `"tally":`+value+`}`) {
+					t.Errorf("%s answered %d %s, want the tally %s exactly", what, r.status, r.body, value)
+				}
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
