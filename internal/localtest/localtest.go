@@ -37,12 +37,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -51,6 +53,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/sumdb/dirhash"
 )
 
 // PostgresImage is the pinned PostgreSQL server image: postgres:18.6-alpine, by the digest of the image that the CI job
@@ -339,6 +342,15 @@ func SumsChecked(dir string) error {
 			}
 		}
 	}
+	// The runtime pins of the shipped registry: stego deps stages the pin from registry/runtime, whose zip hash the
+	// archetype states and whose go.mod hash is that of registry/runtime/go.mod, and a test serves the same folder.
+	pins, err := runtimePins(root)
+	if err != nil {
+		return err
+	}
+	for _, line := range pins {
+		known[line] = true
+	}
 	if moduleCache != "" {
 		data, err := os.ReadFile(filepath.Join(moduleCache, checkedSumsFile))
 		if err != nil {
@@ -612,6 +624,35 @@ func fillEnvironment() []string {
 	return append(fillEnv, "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
 		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
 		"GOTOOLCHAIN=local")
+}
+
+// runtimePins gives the go.sum lines of each runtime pin of the archetypes of the shipped registry in root: the zip
+// hash that the archetype states, and the hash of the go.mod of registry/runtime at that version.
+func runtimePins(root string) ([]string, error) {
+	archetypes, err := filepath.Glob(filepath.Join(root, "registry", "archetypes", "*", "archetype.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	modData, err := os.ReadFile(filepath.Join(root, "registry", "runtime", "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(modData)), nil })
+	if err != nil {
+		return nil, err
+	}
+	pin := regexp.MustCompile(`(?m)^runtime:\s*\n\s+module:\s*(\S+)\s*\n\s+version:\s*(\S+)\s*\n\s+sum:\s*(\S+)`)
+	var lines []string
+	for _, name := range archetypes {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range pin.FindAllStringSubmatch(string(data), -1) {
+			lines = append(lines, match[1]+" "+match[2]+" "+match[3], match[1]+" "+match[2]+"/go.mod "+modSum)
+		}
+	}
+	return lines, nil
 }
 
 // cacheFolder gives the module cache of localtest, and makes it: localtest-modules in STEGO_TEST_RUNS when that
