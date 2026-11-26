@@ -38,7 +38,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -80,26 +79,13 @@ var (
 )
 
 // Main runs the tests of m, removes the PostgreSQL container that a test started, if any, and gives the exit code
-// for os.Exit. It also removes it when the process gets SIGINT. It does not watch SIGTERM, which tests of a shutdown
-// send to their own process; the reaper and the time limit of the container cover a process that is killed.
+// for os.Exit. It watches no signal: tests of the root module send SIGINT and SIGTERM to their own process, as the
+// interrupt tests of stego build download do, and a handler would end the binary. A binary that a signal ends is
+// covered by the reaper of the container, in its own process group, and by the time limit of the container.
 //
 //	func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 func Main(m *testing.M) int {
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
-	done := make(chan struct{})
-	go func() {
-		select {
-		case s := <-signals:
-			remove()
-			fmt.Fprintf(os.Stderr, "localtest: %v: the PostgreSQL container is removed\n", s)
-			os.Exit(2)
-		case <-done:
-		}
-	}()
 	code := m.Run()
-	close(done)
-	signal.Stop(signals)
 	remove()
 	return code
 }
