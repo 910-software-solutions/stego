@@ -1068,7 +1068,17 @@ The steps are the steps of each other retype:
    declaration gives.
 
 The JSON type of the field stays a number. Thus a client of the release
-before keeps working, and needs no change.
+before keeps working, but only until a value above the `int32` range
+(2147483647) is written. After the contract step, a client that holds the
+field as an `int32`, such as the Go SDK of the release before, cannot read
+a row with such a value: a read of the row fails, and so does each list
+that holds it (walkthrough 27, W-OLD). Do one of these:
+
+- Move each typed client, such as a Go SDK and a TypeScript client, to the
+  release of the expand step before the contract step.
+- Or keep the maximum of the release before (2147483647) in the
+  declaration after the contract step, until all clients use the new
+  release.
 
 The field keeps its name in the API, but its JSON type in the API changes with
 its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
