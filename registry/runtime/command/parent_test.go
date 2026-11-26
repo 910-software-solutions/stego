@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc/codes"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 // The entities of the reference test: an order that refers to a customer and a product, and a node of a tree whose

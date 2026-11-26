@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 // readCharges is a fill that reads the charges ch-1 and ch-2 and returns their amounts.
@@ -375,7 +375,7 @@ func typeCheck(t *testing.T) (*types.Package, *types.Info, *token.FileSet) {
 		t.Fatalf("the scan reads %d files, want the package's source files", len(files))
 	}
 	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	pkg, err := (&types.Config{Importer: imp}).Check("github.com/jsell-rh/stego/registry/runtime/query", fset, files, info)
+	pkg, err := (&types.Config{Importer: imp}).Check("github.com/910-software-solutions/stego/registry/runtime/query", fset, files, info)
 	if err != nil {
 		t.Fatalf("type-check the package: %v", err)
 	}

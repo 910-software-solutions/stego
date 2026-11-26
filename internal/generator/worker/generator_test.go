@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/domainprobe"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -214,7 +214,7 @@ func newProject(t *testing.T, ctx gen.Context, extra ...map[string][]byte) *proj
 	}
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module "+testModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -245,7 +245,7 @@ func handleOf(typ gotypes.Type) bool {
 		return false
 	}
 	named, _ := gotypes.Unalias(pointer.Elem()).(*gotypes.Named)
-	return named != nil && named.Obj().Pkg().Path() == "github.com/jsell-rh/stego/registry/runtime/command" && named.Obj().Name() == "Handle"
+	return named != nil && named.Obj().Pkg().Path() == "github.com/910-software-solutions/stego/registry/runtime/command" && named.Obj().Name() == "Handle"
 }
 
 // forbidden tells whether typ names a type of database/sql, net, os or an authorization provider client.
@@ -582,7 +582,7 @@ func TestContractRuntimeImports(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, spec := range file.Imports {
-					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/910-software-solutions/stego/registry/runtime/") {
 						found[path] = true
 					}
 				}
@@ -705,7 +705,7 @@ func TestWorkerReads(t *testing.T) {
 		if strings.Contains(selectRow, "api_key") || strings.Contains(selectRow, "pin") {
 			t.Errorf("the Select of the view reads a secret column: %s", selectRow)
 		}
-		if strings.Contains(entities, "WalletRepository") || strings.Contains(entities, "\"github.com/jsell-rh/stego/registry/runtime/sealed\"") {
+		if strings.Contains(entities, "WalletRepository") || strings.Contains(entities, "\"github.com/910-software-solutions/stego/registry/runtime/sealed\"") {
 			t.Errorf("the entity file gives a repository of Wallet, which no worker writes, or imports the sealed package:\n%s", entities)
 		}
 		list := contract[strings.Index(contract, "var SumBalancesFunded"):]

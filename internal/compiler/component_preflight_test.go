@@ -4,17 +4,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/controller"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
-	"github.com/jsell-rh/stego/internal/generator/kafkaproducer"
-	"github.com/jsell-rh/stego/internal/generator/keycloakprovider"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesclient"
-	"github.com/jsell-rh/stego/internal/generator/outbox"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/postgresclient"
-	"github.com/jsell-rh/stego/internal/generator/restapi"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/controller"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/generator/kafkaproducer"
+	"github.com/910-software-solutions/stego/internal/generator/keycloakprovider"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesclient"
+	"github.com/910-software-solutions/stego/internal/generator/outbox"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/postgresclient"
+	"github.com/910-software-solutions/stego/internal/generator/restapi"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func TestComponentPreflightMatchesDirectGeneration(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // validateSecretFields enforces ST-DECL-INV101 (decision ST-DECL-Q44): a field of sensitivity secret is of type

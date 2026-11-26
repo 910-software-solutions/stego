@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 )
 
 // provider opens the CI provider's attestation store and the check of its signed bundles, from the job's

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // probeType is the typed probe of a command: the domain probe of the command when the service has the
@@ -100,17 +100,17 @@ func renderContract(m *model) []byte {
 	}
 	w.f("\n")
 	if m.usesAudit() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/audit\"\n")
 	}
 	if m.hasRelations() || m.hasServiceLevel() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/authz\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/authz\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if m.usesSealed() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/sealed\"\n")
 	}
 	if m.hasServiceLevel() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/tenant\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/tenant\"\n")
 	}
 	if m.probeImport != "" {
 		w.f("\n\tprobes %q\n", m.probeImport)
@@ -276,11 +276,11 @@ func EntityFileWithViews(pkg string, names, views []string, entities []types.Ent
 	}
 	w.f("\n")
 	if all.usesAudit() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/audit\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if m.usesSealed() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/sealed\"\n")
 	}
 	w.f(")\n\n")
 	for _, e := range m.entities {
@@ -312,11 +312,11 @@ func renderHandlers(m *model) []byte {
 	w.f("// and one gRPC handler for each declared command, each bound to the one fill that the command names, served by\n// command.Serve and command.ServeRPC of the runtime library.\n")
 	w.f("package %s\n\nimport (\n\t\"context\"\n\t\"net/http\"\n\t\"time\"\n\n", handlersFolder)
 	if m.hasRelations() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/authz\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/authz\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if m.probeImport == "" {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/probe\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/probe\"\n")
 	}
 	w.f("\n\tcommands %q\n", m.contractImport)
 	if m.probeImport != "" {

@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/910-software-solutions/stego/internal/appbuild"
 	"github.com/google/go-containerregistry/pkg/registry"
-	"github.com/jsell-rh/stego/internal/appbuild"
 )
 
 // The shared fixture of the tests that run the stego command from outside,

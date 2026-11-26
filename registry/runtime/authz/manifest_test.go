@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 func TestManifest(t *testing.T) {

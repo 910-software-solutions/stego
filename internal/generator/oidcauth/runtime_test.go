@@ -239,7 +239,7 @@ func (p *project) build() string {
 		t.Fatal(err)
 	}
 	mod := filepath.Join(p.dir, "go.mod")
-	p.write(mod, p.read(mod)+"\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n")
+	p.write(mod, p.read(mod)+"\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n")
 	check, err := os.ReadFile(filepath.Join("testdata", "oidc_test.go"))
 	if err != nil {
 		t.Fatal(err)

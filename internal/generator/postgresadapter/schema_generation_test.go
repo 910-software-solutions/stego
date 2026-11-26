@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 //go:embed testdata/schema_generation_test.go
@@ -183,10 +183,10 @@ go 1.26.11
 require (
  github.com/google/uuid v1.6.0
  github.com/jackc/pgx/v5 v5.11.0
- github.com/jsell-rh/stego/registry/runtime v0.203.0
+ github.com/910-software-solutions/stego/registry/runtime v0.203.0
 )
 
-replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
+replace github.com/910-software-solutions/stego/registry/runtime => ` + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(module), 0644); err != nil {
 		t.Fatal(err)
 	}

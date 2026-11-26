@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/controller"
-	"github.com/jsell-rh/stego/internal/generator/httpclient"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/controller"
+	"github.com/910-software-solutions/stego/internal/generator/httpclient"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 )
 
 func fixture() gen.Context {

@@ -13,12 +13,12 @@ import (
 	"example.com/tenancy-check/storage"
 	"example.com/tenancy-check/tenancy"
 	"example.com/tenancy-check/tenancyb"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
 )
 
 // owned are the tables of the owned entities Widget and Order, and others the tables of the shared entity

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/httpapplication"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 )
 
 //go:embed testdata/secret_state_test.go

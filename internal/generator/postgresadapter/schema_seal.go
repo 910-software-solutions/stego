@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The seal step of the runtime data path (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50; decision ST-DECL-Q44). A seal moves a
@@ -826,7 +826,7 @@ func generateRelateChanges(ctx gen.Context) (gen.File, bool, error) {
 		return gen.File{}, false, err
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
+	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/910-software-solutions/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
 	out.WriteString("// RelateChanges are the relate steps of the service: the relate job of the controller stages the tuple of the\n// relation of each row through the authz outbox under the backfill lease of the change (decision ST-SUP-Q212 (a)).\nvar RelateChanges = []command.RelateChange{\n")
 	out.WriteString(source)
 	out.WriteString("}\n")

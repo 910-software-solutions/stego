@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/txhold"
 )
 
 // SettingName is the transaction-local setting that holds the tenant of a transaction. The row-level security

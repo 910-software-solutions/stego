@@ -1,4 +1,4 @@
-// Package tenancy generates the tenant wall of a pooled service on top of github.com/jsell-rh/stego/registry/runtime/tenant
+// Package tenancy generates the tenant wall of a pooled service on top of github.com/910-software-solutions/stego/registry/runtime/tenant
 // (ST-SUP-RC27): the row-level security migration of the owned tables and the role migration. The tenant column
 // and its keys are the PostgreSQL adapter's (ST-SUP-RC01-OC40), the grants of the runtime role come from the
 // database access contract, and the transaction of each read and write is the command and query runtime's.
@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Generator is the generator of the tenancy component.

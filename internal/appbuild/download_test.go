@@ -178,7 +178,7 @@ func TestRuntimeFolderSuppliesOnlyTheMatchingPin(t *testing.T) {
 		if err != nil || served == nil || *served != *pin {
 			t.Fatalf("the matching folder served %v: %v", served, err)
 		}
-		versions := filepath.Join(proxy, "github.com", "jsell-rh", "stego", "registry", "runtime", "@v")
+		versions := filepath.Join(proxy, "github.com", "910-software-solutions", "stego", "registry", "runtime", "@v")
 		found, err := dirhash.HashZip(filepath.Join(versions, version+".zip"), dirhash.Hash1)
 		if err != nil || found != sum {
 			t.Fatalf("the served zip hashes to %s, expected %s: %v", found, sum, err)
@@ -282,7 +282,7 @@ func TestRuntimeFolderSuppliesOnlyTheMatchingPin(t *testing.T) {
 				}
 				continue
 			}
-			found, hashErr := dirhash.HashZip(filepath.Join(proxy, "github.com", "jsell-rh", "stego", "registry", "runtime", "@v", version+".zip"), dirhash.Hash1)
+			found, hashErr := dirhash.HashZip(filepath.Join(proxy, "github.com", "910-software-solutions", "stego", "registry", "runtime", "@v", version+".zip"), dirhash.Hash1)
 			if hashErr != nil || found != sum {
 				t.Fatalf("%s: the stage served a zip that hashes to %s, not the pin %s: %v", name, found, sum, hashErr)
 			}

@@ -71,7 +71,7 @@ const RuntimeFolder = "registry/runtime"
 // Supplying (ST-STD-CODE-R03), so the path is stated here again; the system
 // tests of ST-BLD-UC02-R05 build their fixture from RuntimeModule,
 // so a difference fails them.
-const RuntimeModule = "github.com/jsell-rh/stego/registry/runtime"
+const RuntimeModule = "github.com/910-software-solutions/stego/registry/runtime"
 
 // runtimePins are the runtime pins of STEGO's own registry, by version: the
 // go.sum hash of the module zip that each archetype in registry/archetypes
@@ -80,7 +80,7 @@ const RuntimeModule = "github.com/jsell-rh/stego/registry/runtime"
 // zip hash fixes it. A test holds this table equal to the archetypes'
 // pins; a moved pin changes it in the same change (ST-BLD-UC02-R05).
 var runtimePins = map[string]string{
-	"v0.203.0": "h1:oyRfZy2TOqG3QybA+GKUKZ2s+jyuOWCS6f0GpUu1zbA=",
+	"v0.203.0": "h1:xRcbNj2gfrnY2gKw0mM02tbltv7nrBr5MWbqvRd2EAI=",
 }
 
 // RuntimePins gives a copy of the runtime pins that this binary trusts, by

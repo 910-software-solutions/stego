@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Header is the required comment header for all generated files.

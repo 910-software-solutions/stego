@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-const trustedWorkflowRef = "jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main"
+const trustedWorkflowRef = "910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main"
 
 // fixtureData is the spec of the fixture repository: test records of two kinds, three of them automated, and a
 // table that holds no tests.
@@ -138,7 +138,7 @@ func (f fixture) record(t *testing.T, commit, predicate string, env ...string) a
 		"GITHUB_RUN_ID=35950507614",
 		"GITHUB_RUN_ATTEMPT=1",
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 		"GITHUB_WORKFLOW_REF=" + trustedWorkflowRef,
 	}, env...)
 	var stdout, stderr bytes.Buffer
@@ -309,7 +309,7 @@ class Fix(unittest.TestCase):
 		}
 		sum := sha256.Sum256([]byte(head))
 		name, digest := workflowSubject(t, head)
-		if name != "git+https://github.com/jsell-rh/stego@"+head || digest != "sha256:"+hex.EncodeToString(sum[:]) {
+		if name != "git+https://github.com/910-software-solutions/stego@"+head || digest != "sha256:"+hex.EncodeToString(sum[:]) {
 			t.Fatalf("the attest job names the subject %s (%s), not the commit %s", name, digest, head)
 		}
 	})
@@ -505,7 +505,7 @@ class Fix(unittest.TestCase):
 		}
 
 		f := newFixture(t, goFixture, pythonFixture)
-		other := f.record(t, f.commit, f.predicate, "GITHUB_WORKFLOW_REF=jsell-rh/stego/.github/workflows/checks.yml@refs/heads/main")
+		other := f.record(t, f.commit, f.predicate, "GITHUB_WORKFLOW_REF=910-software-solutions/stego/.github/workflows/checks.yml@refs/heads/main")
 		f.refusedWithNothingWritten(t, other, f.predicate, "trusted signer")
 		inside := filepath.Join(f.repository, "proof-run.json")
 		f.refusedWithNothingWritten(t, f.record(t, f.commit, inside), inside, "inside the repository")
@@ -601,7 +601,7 @@ func runSubjectStep(t *testing.T, commit string) (string, string, error) {
 		"PATH=" + os.Getenv("PATH"),
 		"COMMIT=" + commit,
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 		"GITHUB_OUTPUT=" + outputs,
 	}
 	if out, err := command.CombinedOutput(); err != nil {

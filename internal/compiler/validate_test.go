@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // setupValidateProject creates a temporary project with a valid service.yaml
@@ -49,7 +49,7 @@ collections:
 	archDir := filepath.Join(registryDir, "archetypes", "test-arch")
 	mkdirAll(t, archDir)
 	writeFile(t, filepath.Join(archDir, "archetype.yaml"), `kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: test-arch
 language: go
 version: 1.0.0
@@ -260,7 +260,7 @@ func TestValidate_MissingComponent(t *testing.T) {
 	// Modify archetype to reference a non-existent component.
 	archPath := filepath.Join(registryDir, "archetypes", "test-arch", "archetype.yaml")
 	writeFile(t, archPath, `kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: test-arch
 language: go
 version: 1.0.0
@@ -3944,7 +3944,7 @@ overrides:
 	// Update archetype to have cors: enabled.
 	archDir := filepath.Join(registryDir, "archetypes", "test-arch")
 	archYAML := `kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: test-arch
 language: go
 version: 1.0.0
@@ -4008,7 +4008,7 @@ overrides:
 
 	archDir := filepath.Join(registryDir, "archetypes", "test-arch")
 	archYAML := `kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: test-arch
 language: go
 version: 1.0.0
@@ -4084,7 +4084,7 @@ overrides:
 
 	archDir := filepath.Join(registryDir, "archetypes", "test-arch")
 	archYAML := `kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: test-arch
 language: go
 version: 1.0.0

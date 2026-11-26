@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	stegoidempotency "github.com/jsell-rh/stego/registry/runtime/idempotency"
+	stegoidempotency "github.com/910-software-solutions/stego/registry/runtime/idempotency"
 )
 
 // This file runs inside a module that holds the emitted idempotency package of the test declaration: the

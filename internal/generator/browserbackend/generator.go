@@ -17,13 +17,13 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/browserapplication"
-	"github.com/jsell-rh/stego/internal/browserassets"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/browserdom"
-	"github.com/jsell-rh/stego/internal/generator/browseridentity"
-	"github.com/jsell-rh/stego/internal/generator/httpclient"
-	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
+	"github.com/910-software-solutions/stego/internal/browserapplication"
+	"github.com/910-software-solutions/stego/internal/browserassets"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/browserdom"
+	"github.com/910-software-solutions/stego/internal/generator/browseridentity"
+	"github.com/910-software-solutions/stego/internal/generator/httpclient"
+	"github.com/910-software-solutions/stego/internal/generator/typescriptsdk"
 )
 
 //go:embed *.tmpl

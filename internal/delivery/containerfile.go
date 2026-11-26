@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild"
 )
 
 // ContainerFile is the path, in the project folder, of the offline Containerfile (ST-DLV-INV07). The build context

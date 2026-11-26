@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild"
 )
 
 // signatureFlags adds the flags that check an image signature to a flag set:

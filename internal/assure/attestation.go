@@ -10,18 +10,18 @@ import (
 
 // ProofRunPredicateType is the predicate type of the proof run statement. STEGO owns it: it is a URI under the
 // STEGO repository, and version 1 is the document that encodeProofRun writes.
-const ProofRunPredicateType = "https://github.com/jsell-rh/stego/assure/proof-run/v1"
+const ProofRunPredicateType = "https://github.com/910-software-solutions/stego/assure/proof-run/v1"
 
 // ReleaseDecisionPredicateType is the predicate type of a passed release decision's statement. STEGO owns it, as
 // it owns ProofRunPredicateType, and version 1 is the document that encodeDecision writes, the decision.json
 // table (ST-ASR-EN03-TB).
-const ReleaseDecisionPredicateType = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
+const ReleaseDecisionPredicateType = "https://github.com/910-software-solutions/stego/assure/release-decision/v1"
 
 // Attestation is a reference to a signed statement about one commit (ST-VO56): its predicate type, the commit
 // it is about, who signed it, and the transparency log entry that holds it when the signer is keyless.
 //
 // The predicate type of a proof run is ProofRunPredicateType,
-// https://github.com/jsell-rh/stego/assure/proof-run/v1. The subject is always a full 40-character commit ID
+// https://github.com/910-software-solutions/stego/assure/proof-run/v1. The subject is always a full 40-character commit ID
 // (ST-VO56-C01). An attestation store indexes the statement by SubjectDigest of that commit.
 type Attestation struct {
 	PredicateType string

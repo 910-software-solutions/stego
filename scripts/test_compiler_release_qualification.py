@@ -23,19 +23,19 @@ BINARY = qualification.BINARY
 SIGNATURE_RESULT = json.loads("""[{"verificationResult": {
   "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
   "signature": {"certificate": {
-    "subjectAlternativeName": "https://github.com/jsell-rh/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
+    "subjectAlternativeName": "https://github.com/910-software-solutions/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
     "issuer": "https://token.actions.githubusercontent.com",
     "githubWorkflowTrigger": "workflow_dispatch",
     "githubWorkflowSHA": "94d285d7a13466d4bb53a3ddf8737888f29fea5a",
     "githubWorkflowRef": "refs/heads/main",
-    "buildSignerURI": "https://github.com/jsell-rh/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
+    "buildSignerURI": "https://github.com/910-software-solutions/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
     "buildSignerDigest": "94d285d7a13466d4bb53a3ddf8737888f29fea5a",
     "runnerEnvironment": "github-hosted",
-    "sourceRepositoryURI": "https://github.com/jsell-rh/stego",
+    "sourceRepositoryURI": "https://github.com/910-software-solutions/stego",
     "sourceRepositoryDigest": "94d285d7a13466d4bb53a3ddf8737888f29fea5a",
     "sourceRepositoryRef": "refs/heads/main",
     "buildTrigger": "workflow_dispatch",
-    "runInvocationURI": "https://github.com/jsell-rh/stego/actions/runs/36128796855/attempts/1"}},
+    "runInvocationURI": "https://github.com/910-software-solutions/stego/actions/runs/36128796855/attempts/1"}},
   "statement": {"predicateType": "https://slsa.dev/provenance/v1"}}}]""")
 
 
@@ -53,17 +53,17 @@ def signature_result(revision, run, attempt=1):
 def signer_policy(gh, path, revision, bundle):
     source = [] if bundle is None else ["--bundle", str(bundle)]
     return [str(gh), "attestation", "verify", str(path), *source,
-            "--hostname", "github.com", "--repo", "jsell-rh/stego",
+            "--hostname", "github.com", "--repo", "910-software-solutions/stego",
             "--signer-digest", revision,
             "--cert-identity",
-            "https://github.com/jsell-rh/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
+            "https://github.com/910-software-solutions/stego/.github/workflows/compiler-artifact.yml@refs/heads/main",
             "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
             "--source-ref", "refs/heads/main", "--source-digest", revision,
             "--predicate-type", "https://slsa.dev/provenance/v1", "--digest-alg", "sha256",
             "--deny-self-hosted-runners", "--format", "json"]
 
 
-DECISION_PREDICATE = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
+DECISION_PREDICATE = "https://github.com/910-software-solutions/stego/assure/release-decision/v1"
 
 
 def decision_result(revision, **predicate):
@@ -71,7 +71,7 @@ def decision_result(revision, **predicate):
     result = json.loads(json.dumps(SIGNATURE_RESULT[0]))
     certificate = result["verificationResult"]["signature"]["certificate"]
     for name in ["subjectAlternativeName", "buildSignerURI"]:
-        certificate[name] = ("https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
+        certificate[name] = ("https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
                              "@refs/heads/main")
     for name in ["githubWorkflowSHA", "buildSignerDigest", "sourceRepositoryDigest"]:
         certificate[name] = revision
@@ -84,10 +84,10 @@ def decision_result(revision, **predicate):
 
 def decision_policy(gh, path, revision):
     return [str(gh), "attestation", "verify", str(path),
-            "--hostname", "github.com", "--repo", "jsell-rh/stego",
+            "--hostname", "github.com", "--repo", "910-software-solutions/stego",
             "--signer-digest", revision,
             "--cert-identity",
-            "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main",
+            "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main",
             "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
             "--source-ref", "refs/heads/main", "--source-digest", revision,
             "--predicate-type", DECISION_PREDICATE, "--digest-alg", "sha256",

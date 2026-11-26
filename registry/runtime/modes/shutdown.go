@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // Pinger is the part of *sql.DB that the readiness of the worker and controller modes reads.

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
 )
 
 // The fixed names of the settings of the process environment (ST-SUP-RP14-LC01).

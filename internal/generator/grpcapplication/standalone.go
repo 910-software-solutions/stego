@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // ProcessGenerator supplies RPC contracts and executables without API storage.

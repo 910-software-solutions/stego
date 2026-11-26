@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"go/format"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // GenerateOperators generates gate, chain, and fan-out operator wrapper types

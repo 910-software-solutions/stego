@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -141,7 +141,7 @@ if args[:2] != ["attestation", "verify"]:
 digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
 policy = {"--source-digest": state["revision"], "--signer-digest": state["revision"],
           "--source-ref": "refs/heads/main", "--predicate-type": "https://slsa.dev/provenance/v1",
-          "--cert-identity": "https://github.com/jsell-rh/stego/.github/workflows/compiler-artifact.yml@refs/heads/main"}
+          "--cert-identity": "https://github.com/910-software-solutions/stego/.github/workflows/compiler-artifact.yml@refs/heads/main"}
 if any(value(k) != v for k, v in policy.items()) or value("--bundle") is None or digest(value("--bundle")) != state["bundle"]:
     sys.exit("the signer policy or the bundle does not verify")
 if digest(args[2]) not in state["trusted"]:

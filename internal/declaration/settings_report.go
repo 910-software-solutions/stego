@@ -1,7 +1,7 @@
 package declaration
 
 import (
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The audit values that STEGO always gives audit that is on: a SHA-256 hash chain over the redacted records, an

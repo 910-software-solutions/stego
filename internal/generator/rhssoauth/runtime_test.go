@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 )
 
 func TestGeneratedSSOTrustPolicy(t *testing.T) {

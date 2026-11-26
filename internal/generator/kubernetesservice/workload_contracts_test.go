@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesworkload"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesworkload"
 	"path"
 	"regexp"
 	"slices"
@@ -17,7 +17,7 @@ import (
 	"testing"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // field reads a nested field of a decoded object by the keys given.

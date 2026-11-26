@@ -170,7 +170,7 @@ jobs:
             generators) go list -mod=readonly $(printf './%s ' $generators) > "$list" ;;
             rest)
               go list -mod=readonly ./... > "$RUNNER_TEMP/part/packages-root.txt"
-              grep -v -x -F -e github.com/jsell-rh/stego/cmd/stego $(printf -- '-e github.com/jsell-rh/stego/%s ' $generators) \
+              grep -v -x -F -e github.com/910-software-solutions/stego/cmd/stego $(printf -- '-e github.com/910-software-solutions/stego/%s ' $generators) \
                 "$RUNNER_TEMP/part/packages-root.txt" > "$list" ;;
             assure)
               : > "$out"
@@ -389,7 +389,7 @@ jobs:
         with:
           subject-name: ${{ steps.subject.outputs.name }}
           subject-digest: ${{ steps.subject.outputs.digest }}
-          predicate-type: https://github.com/jsell-rh/stego/assure/proof-run/v1
+          predicate-type: https://github.com/910-software-solutions/stego/assure/proof-run/v1
           predicate-path: ${{ runner.temp }}/proof-run/proof-run.json
 
   gate:
@@ -639,7 +639,7 @@ jobs:
         with:
           subject-name: ${{ steps.subject.outputs.name }}
           subject-digest: ${{ steps.subject.outputs.digest }}
-          predicate-type: https://github.com/jsell-rh/stego/assure/release-decision/v1
+          predicate-type: https://github.com/910-software-solutions/stego/assure/release-decision/v1
           predicate-path: ${{ runner.temp }}/decision/decision.json
 
   # Publish a compiler release (ST-DIS-UC11). The publish-release job hears Release decided (ST-DIS-PO06): it needs
@@ -672,7 +672,7 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      REPOSITORY: jsell-rh/stego
+      REPOSITORY: 910-software-solutions/stego
     outputs:
       release: ${{ steps.publish.outputs.release }}
     steps:
@@ -692,7 +692,7 @@ jobs:
             --cert-identity "https://github.com/$REPOSITORY/.github/workflows/proof-run.yml@refs/heads/main" \
             --cert-oidc-issuer https://token.actions.githubusercontent.com \
             --source-ref refs/heads/main --source-digest "$COMMIT" \
-            --predicate-type https://github.com/jsell-rh/stego/assure/release-decision/v1 \
+            --predicate-type https://github.com/910-software-solutions/stego/assure/release-decision/v1 \
             --digest-alg sha256 --deny-self-hosted-runners --format json > "$work/decision.json"; then
             echo "::error::No release decision attested at $COMMIT by proof-run.yml at refs/heads/main verifies. Nothing is published."
             exit 1
@@ -899,7 +899,7 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
-      REPOSITORY: jsell-rh/stego
+      REPOSITORY: 910-software-solutions/stego
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

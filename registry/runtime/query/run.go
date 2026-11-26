@@ -11,16 +11,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 
 	"go.opentelemetry.io/otel/metric"
 )
 
 // instrumentation is the instrumentation scope of the metrics of the query runtime.
-const instrumentation = "github.com/jsell-rh/stego/registry/runtime/query"
+const instrumentation = "github.com/910-software-solutions/stego/registry/runtime/query"
 
 // Config is what the query runtime of a service needs.
 type Config struct {

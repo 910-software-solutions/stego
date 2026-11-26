@@ -19,10 +19,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/domainprobe"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -453,11 +453,11 @@ func TestContract(t *testing.T) {
 		}
 		handle, ok := params.At(2).Type().(*gotypes.Pointer)
 		named, _ := gotypes.Unalias(handle.Elem()).(*gotypes.Named)
-		if !ok || named == nil || named.Obj().Pkg().Path() != "github.com/jsell-rh/stego/registry/runtime/command" || named.Obj().Name() != "Handle" {
+		if !ok || named == nil || named.Obj().Pkg().Path() != "github.com/910-software-solutions/stego/registry/runtime/command" || named.Obj().Name() != "Handle" {
 			t.Errorf("the third parameter is %s, want *command.Handle", params.At(2).Type())
 		}
 		for i := 0; i < params.Len(); i++ {
-			for _, refused := range []string{"database/sql", "net", "net/http", "github.com/jsell-rh/stego/registry/runtime/authz.Runtime", "github.com/authzed", "github.com/jackc"} {
+			for _, refused := range []string{"database/sql", "net", "net/http", "github.com/910-software-solutions/stego/registry/runtime/authz.Runtime", "github.com/authzed", "github.com/jackc"} {
 				if strings.Contains(params.At(i).Type().String(), refused) {
 					t.Errorf("the parameter %s has a type of %s", params.At(i).Type(), refused)
 				}
@@ -736,7 +736,7 @@ func newProject(t *testing.T, ctx gen.Context, extra map[string][]byte) *project
 	}
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -750,7 +750,7 @@ func TestRelationHelpers(t *testing.T) {
 			`authz.NewResource(h.Tenant(), "order", on.ID())`,
 			`h.Authz().Relate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
 			`h.Authz().Unrelate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
-			"\"github.com/jsell-rh/stego/registry/runtime/authz\"",
+			"\"github.com/910-software-solutions/stego/registry/runtime/authz\"",
 		} {
 			if !strings.Contains(contract, want) {
 				t.Fatalf("the command contract does not hold %q", want)
@@ -792,7 +792,7 @@ func contractRuntime(t *testing.T, files map[string][]byte, namespace string) ma
 			t.Fatal(err)
 		}
 		for _, spec := range file.Imports {
-			if path := strings.Trim(spec.Path.Value, `"`); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+			if path := strings.Trim(spec.Path.Value, `"`); strings.HasPrefix(path, "github.com/910-software-solutions/stego/registry/runtime/") {
 				found[path] = true
 			}
 		}
@@ -1130,7 +1130,7 @@ func buildEntityFile(t *testing.T, source []byte) {
 	}
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module example.com/wallets\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.write("data/entities.go", source)
 	p.mustGo("mod", "tidy")
 	p.mustGo("vet", "./...")

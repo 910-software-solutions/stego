@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // TestRun runs the tests of the fill in the folder and gives an error when

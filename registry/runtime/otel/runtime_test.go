@@ -47,7 +47,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/spanevent"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/spanevent"
 )
 
 // collector is a fake OTLP gRPC collector on loopback with TLS. With hold set, each export waits until release or

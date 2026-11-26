@@ -12,8 +12,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Generator produces the rest-api component's generated code.
@@ -889,7 +889,7 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
 	fmt.Fprintf(&buf, "\tlegacyrouter \"github.com/getkin/kin-openapi/routers/legacy\"\n")
 	fmt.Fprintf(&buf, "\n")
-	fmt.Fprintf(&buf, "\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
+	fmt.Fprintf(&buf, "\t\"github.com/910-software-solutions/stego/registry/runtime/idempotency\"\n")
 	fmt.Fprintf(&buf, ")\n\n")
 
 	// Embedded OpenAPI spec.
@@ -3269,7 +3269,7 @@ type idempotencyHeader struct {
 }
 
 // idempotencyKeys reads the declaration's idempotency setting when the idempotency component is in the service,
-// and gives nil otherwise. The problem types join the slugs of github.com/jsell-rh/stego/registry/runtime/idempotency to the problem base.
+// and gives nil otherwise. The problem types join the slugs of github.com/910-software-solutions/stego/registry/runtime/idempotency to the problem base.
 func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 	if ctx.Idempotency == nil || ctx.PeerNamespaces["idempotency"] == "" {
 		return nil

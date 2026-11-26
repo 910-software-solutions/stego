@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
 )
 
 func TestGeneratedTimestampConversions(t *testing.T) {

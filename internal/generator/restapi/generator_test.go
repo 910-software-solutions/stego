@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // onRuntime gives ctx with what the runtime data path, the one data path (ST-SUP-RC20-OC39), needs and ctx does not

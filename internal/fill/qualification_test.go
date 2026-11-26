@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func TestIsQualified(t *testing.T) {

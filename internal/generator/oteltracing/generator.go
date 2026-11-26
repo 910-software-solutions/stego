@@ -5,7 +5,7 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 	"go/format"
 	"path"
 	"strings"

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	trustedWorkflow = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
+	trustedWorkflow = "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
 	changeRef       = "refs/pull/7/merge"
 )
 
@@ -101,11 +101,11 @@ func proofRunStatement(t *testing.T, commit, reference string, logIndex int64, o
 		source = mergeOf(commit)
 	}
 	return SignedStatement{
-		Subjects:         []StatementSubject{{Name: "git+https://github.com/jsell-rh/stego@" + commit, Digest: SubjectDigest(commit)}},
+		Subjects:         []StatementSubject{{Name: "git+https://github.com/910-software-solutions/stego@" + commit, Digest: SubjectDigest(commit)}},
 		PredicateType:    ProofRunPredicateType,
 		Predicate:        predicate,
 		Signer:           Signer{Issuer: GitHubIssuer, Subject: trustedWorkflow + "@" + reference},
-		SourceRepository: "https://github.com/jsell-rh/stego",
+		SourceRepository: "https://github.com/910-software-solutions/stego",
 		SourceRef:        reference,
 		SourceDigest:     source,
 		LogIndex:         logIndex,
@@ -220,9 +220,11 @@ func TestVerify(t *testing.T) {
 
 		refused := map[string]func(*SignedStatement){
 			"a subject digest of another commit": func(s *SignedStatement) { s.Subjects[0].Digest = SubjectDigest(other) },
-			"a subject name of another commit":   func(s *SignedStatement) { s.Subjects[0].Name = "git+https://github.com/jsell-rh/stego@" + other },
+			"a subject name of another commit": func(s *SignedStatement) {
+				s.Subjects[0].Name = "git+https://github.com/910-software-solutions/stego@" + other
+			},
 			"a second subject": func(s *SignedStatement) {
-				s.Subjects = append(s.Subjects, StatementSubject{Name: "git+https://github.com/jsell-rh/stego@" + other, Digest: SubjectDigest(other)})
+				s.Subjects = append(s.Subjects, StatementSubject{Name: "git+https://github.com/910-software-solutions/stego@" + other, Digest: SubjectDigest(other)})
 			},
 			"no subject":             func(s *SignedStatement) { s.Subjects = nil },
 			"another predicate type": func(s *SignedStatement) { s.PredicateType = "https://slsa.dev/provenance/v1" },
@@ -231,7 +233,7 @@ func TestVerify(t *testing.T) {
 			},
 			"a predicate that is not JSON": func(s *SignedStatement) { s.Predicate = []byte("not JSON") },
 			"another workflow": func(s *SignedStatement) {
-				s.Signer.Subject = "https://github.com/jsell-rh/stego/.github/workflows/checks.yml@" + MainRef
+				s.Signer.Subject = "https://github.com/910-software-solutions/stego/.github/workflows/checks.yml@" + MainRef
 			},
 			"another repository's workflow": func(s *SignedStatement) {
 				s.Signer.Subject = "https://github.com/someone/stego/.github/workflows/proof-run.yml@" + MainRef

@@ -815,7 +815,7 @@ func Fill(ctx context.Context, req queries.OpenOrdersRequest, h *queries.OpenOrd
 }
 ```
 
-`query` is the package `github.com/jsell-rh/stego/registry/runtime/query`, and
+`query` is the package `github.com/910-software-solutions/stego/registry/runtime/query`, and
 `Item` is a type of the fill. The handler writes `Items` as JSON.
 
 The request of a get query has one field for the member: `req.OrderID` for
@@ -1692,6 +1692,10 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   roots are the system roots, as before. spicedb-authz 1.7.0 states the
   variable; rest-crud 3.271.0, rpc-service 1.271.0 and browser-service
   1.271.0 pin this runtime. It holds each change of v0.202.0 too.
+- From rest-crud 3.272.0, rpc-service 1.272.0 and browser-service 1.272.0, the
+  module path is `github.com/910-software-solutions/stego/registry/runtime`.
+  The tag `registry/runtime/v0.203.0` of the repository
+  github.com/910-software-solutions/stego holds the new path.
 - apidiff against v0.202.0: compatible (added `service.SpiceDB.Roots` and
   `service.SpiceDBCAFileSetting`).
 

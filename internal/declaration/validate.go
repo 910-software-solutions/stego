@@ -11,9 +11,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ValidationError is one fault of a declaration as structured data (ST-DECL-RM01): the rule it breaks, the path in

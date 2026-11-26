@@ -211,7 +211,7 @@ class OnlyTheMainBranchSigningJobSigns(unittest.TestCase):
         with self.subTest("ST-DIS-INV11-T Only the main-branch signing job signs, and only the bytes it fetched"):
             provenance = self.jobs["provenance"]
             condition = provenance["if"]
-            base = {"github.repository": "jsell-rh/stego"}
+            base = {"github.repository": "910-software-solutions/stego"}
             events = [
                 ("a pull request", {"github.event_name": "pull_request", "github.ref": "refs/pull/7/merge"}, False),
                 ("a push to another branch", {"github.event_name": "push", "github.ref": "refs/heads/topic"}, False),

@@ -22,11 +22,11 @@ import (
 	"example.com/tables-check/within"
 	"example.com/tables-check/withinbase"
 	"example.com/tables-check/withinfresh"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
 )
 
 func TestTableSteps(t *testing.T) {

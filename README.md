@@ -47,7 +47,7 @@ the fills is essential complexity.
 
 Every service with data access runs on the runtime data path, the only data
 path: its commands, its queries and its collection operations run on the
-runtime library github.com/jsell-rh/stego/registry/runtime. Its archetype must
+runtime library github.com/910-software-solutions/stego/registry/runtime. Its archetype must
 hold the command and query components; a service that declares entities,
 commands or queries without them is refused. Its main reads the deployment settings from the environment:
 `DATABASE_URL` or `DATABASE_URL_FILE` for the runtime role, `STEGO_SPICEDB_ENDPOINT`
@@ -130,7 +130,7 @@ workflows through the generated runtime.
 ## Build from source
 
 ```bash
-git clone https://github.com/jsell-rh/stego.git
+git clone https://github.com/910-software-solutions/stego.git
 cd stego
 go build -o stego ./cmd/stego/
 go test ./...

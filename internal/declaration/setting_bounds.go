@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The ranges of the numeric and duration settings of a ledger and a controller (ST-DECL-INV87). Each bound comes

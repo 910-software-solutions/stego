@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	stegoidempotency "github.com/jsell-rh/stego/registry/runtime/idempotency"
+	stegoidempotency "github.com/910-software-solutions/stego/registry/runtime/idempotency"
 )
 
 // FingerprintTodosCreate is the fingerprint of a create request of the collection todos: the method, the path without

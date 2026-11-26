@@ -10,10 +10,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/openapicontract"
-	"github.com/jsell-rh/stego/internal/responsemapping"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/openapicontract"
+	"github.com/910-software-solutions/stego/internal/responsemapping"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 type responsePlan struct {

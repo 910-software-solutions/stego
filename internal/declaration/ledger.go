@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // currencyCodes is the set of the ISO 4217 alphabetic codes that checking accepts: list one as of 2025, with the

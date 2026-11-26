@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/fill"
 )
 
 // yamlBlockPattern is a fenced YAML block of a Markdown doc, with its body.

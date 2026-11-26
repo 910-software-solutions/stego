@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 func TestReadAuditCode(t *testing.T) {

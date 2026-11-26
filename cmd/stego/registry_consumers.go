@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // runRegistryConsumers implements `stego registry consumers <component>

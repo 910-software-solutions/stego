@@ -16,7 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/logline"
 )
 
 // SlogEvent is the event name of a log/slog line whose message is a text and that names no event of its own.
@@ -325,7 +325,7 @@ func limitText(text string) string {
 }
 
 // runtimePackages is the prefix of the functions of the packages of the runtime.
-const runtimePackages = "github.com/jsell-rh/stego/registry/runtime/"
+const runtimePackages = "github.com/910-software-solutions/stego/registry/runtime/"
 
 // fromRuntime tells whether a record is of a function of a package of the runtime, by its source (slog.Record.Source,
 // with no import of the package runtime, which the fill rules refuse in the closure of a fill). A record with no

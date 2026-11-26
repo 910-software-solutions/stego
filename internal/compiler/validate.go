@@ -15,17 +15,17 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/capability"
-	commandgen "github.com/jsell-rh/stego/internal/generator/command"
-	querygen "github.com/jsell-rh/stego/internal/generator/query"
-	"github.com/jsell-rh/stego/internal/generator/tenancy"
-	workergen "github.com/jsell-rh/stego/internal/generator/worker"
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/ports"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/capability"
+	commandgen "github.com/910-software-solutions/stego/internal/generator/command"
+	querygen "github.com/910-software-solutions/stego/internal/generator/query"
+	"github.com/910-software-solutions/stego/internal/generator/tenancy"
+	workergen "github.com/910-software-solutions/stego/internal/generator/worker"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/ports"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ValidationError is one fault of the check, as Declaring's fault list holds it (ST-DECL-RM01).

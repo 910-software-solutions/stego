@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 func captureGeneratorInputs(project, out string, files []gen.InputFile, snapshots map[string]fileSnapshot) (map[string][]byte, error) {

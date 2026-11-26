@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The drop step of the runtime data path (ST-SUP-RC01-OC34, ST-SUP-RC01-OC47; ST-GEN-Q47). A drop removes a field or
