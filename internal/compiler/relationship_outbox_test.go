@@ -2,7 +2,6 @@ package compiler
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,10 +90,8 @@ func TestRelationshipOutbox(t *testing.T) {
 	p.goCommand("mod", "tidy")
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRelationshipOutbox$", "./out/relationshipcheck")
-	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_RELATIONSHIP_BINARY=" + binary)
-	output, runErr := runTLSCheck(cmd)
+	output, runErr := runTLSCheck(p.dir, "./out/relationshipcheck", wiringGoEnv("STEGO_RELATIONSHIP_BINARY="+binary),
+		"-test.count=1", "-test.timeout=300s", "-test.v", "-test.run", "^TestRelationshipOutbox$")
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {
 		name := strings.TrimPrefix(t.Name(), "TestRelationshipOutbox/")

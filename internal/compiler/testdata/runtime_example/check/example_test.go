@@ -550,10 +550,18 @@ CREATE UNIQUE INDEX org_settings_org_id_key_key ON public.org_settings (tenant_i
 				s := migrated(t)
 				execAll(t, s.admin, change.statement)
 				s.serve()
-				// serve waits for /livez; the alert is written before the service answers.
+				// serve waits for /livez. The fault lines come from slog before the service answers, but the probe
+				// console writes the line of schema.manifest.mismatch from its own queue, so that line can come
+				// after /livez answers (CI run 45760106512 of PR #511). The check waits for it at most 10 s.
+				alerted := func(log string) bool {
+					return strings.Contains(log, "the database does not satisfy the schema manifest") && strings.Contains(log, change.fault) &&
+						strings.Contains(log, `"event.name":"schema.manifest.mismatch"`)
+				}
 				log := s.log.String()
-				if !strings.Contains(log, "the database does not satisfy the schema manifest") || !strings.Contains(log, change.fault) ||
-					!strings.Contains(log, `"event.name":"schema.manifest.mismatch"`) {
+				for deadline := time.Now().Add(10 * time.Second); !alerted(log) && time.Now().Before(deadline); log = s.log.String() {
+					time.Sleep(100 * time.Millisecond)
+				}
+				if !alerted(log) {
 					t.Fatalf("the start does not alert %q with schema.manifest.mismatch:\n%s", change.fault, log)
 				}
 				if strings.Contains(log, password) || strings.Contains(log, "postgres://") {

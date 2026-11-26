@@ -77,7 +77,7 @@ the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. The router sets `http.route`, so an answer that comes before the router has no `http.route`, also on a path that a route matches: a 401 of the authentication; a 403 `tenant.not_provisioned` and a 503 of the tenant check, such as when the database takes no connection; a 503 of a process that does not run the api mode; and a 400 or 413 of the request check of a collection body, such as a body that is not JSON or a missing `Idempotency-Key` (walkthrough 27, R-ROUTE). A path that no route matches has none too. To find such lines of one route, filter on the status and the method. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
 | `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
 | `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
 | `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
@@ -111,7 +111,7 @@ When the database cannot serve a command now, the command answers 503 with
 `command.database.unavailable` for each action and step in 10 seconds. The
 line has `stego.action`, `stego.step` and `stego.sqlstate_class`: the class
 of the SQLSTATE only, never the full code and never the message. From runtime
-v0.201.0 (rest-crud 3.267.0, rpc-service and browser-service 1.267.0):
+v0.202.0 (rest-crud 3.269.0, rpc-service and browser-service 1.269.0):
 
 | `stego.sqlstate_class` | Cause | Action |
 |---|---|---|

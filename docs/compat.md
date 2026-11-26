@@ -78,7 +78,7 @@ and apply refuse it. When compat cannot run these checks because the
 registry does not resolve or load, it writes a note with the cause class
 `registry` on standard error, and after `No fault` it says that the result
 holds only the compatibility with the base. Then run `stego validate`.
-From STEGO 3.267.0, when compat cannot run these checks for any other
+From STEGO 3.269.0, when compat cannot run these checks for any other
 cause, such as a `fill.yaml` that does not parse, it exits 2 with the cause
 class `fill` or `declaration`, and never says `No fault`. The error text
 stays out of its output; run `stego validate` to see the cause.
