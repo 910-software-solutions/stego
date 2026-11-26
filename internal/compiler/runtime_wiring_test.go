@@ -303,6 +303,10 @@ func (p *wiringProject) goRun(args ...string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
+	// A tidy takes only modules that a checked go.sum of the repository names (localtest.SumsChecked).
+	if len(args) >= 2 && args[0] == "mod" && args[1] == "tidy" {
+		return localtest.SumsChecked(p.dir)
+	}
 	return nil
 }
 

@@ -445,6 +445,9 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 		if err != nil {
 			t.Fatalf("generated runtime %v: %v\n%s", args, err, out)
 		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
+		}
 		t.Logf("%s", out)
 	}
 }

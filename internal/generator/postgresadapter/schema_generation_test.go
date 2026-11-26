@@ -207,6 +207,7 @@ replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
 		}
 		t.Log(string(result))
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestFunctionMigrationDigestCoversBody(t *testing.T) {

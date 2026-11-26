@@ -241,6 +241,7 @@ func TestMigrations(t *testing.T) {
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=120s", "./check")
 	run.Dir, run.Env = project, localtest.GoEnv(postgres...)
 	output, _ := run.CombinedOutput()

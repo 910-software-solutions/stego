@@ -261,6 +261,7 @@ type Record struct {ID,Title,Creator string; CreatedTime time.Time; Count int64;
 		t.Log("generated response checks passed:", required)
 		results = passed
 	}
+	localtest.CheckSums(t, root)
 	return results
 }
 

@@ -251,6 +251,7 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 		if err != nil {
 			t.Fatalf("provider dependencies: %v\n%s", err, output)
 		}
+		localtest.CheckSums(t, project)
 	}
 	budget := 60 * time.Second
 	args := []string{"test", "-p=1", "-race", "-count=1", "-timeout=30s", "-v"}

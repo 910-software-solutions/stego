@@ -247,6 +247,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	// The marker digest that a release before ST-SUP-RC01-OC42 wrote for the boards service, which the generated
 	// test writes into a database to stand for one that such a release made.
 	boardsMarker, err := os.ReadFile(filepath.Join(project, "boards", "schema_generation.go"))

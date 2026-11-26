@@ -97,6 +97,7 @@ func Commands()command.Application{return command.Application{VersionCommand:tru
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("CLI dependencies: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	command := exec.Command("go", "test", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./...")
 	command.Dir = project
 	command.Env = localtest.GoEnv()

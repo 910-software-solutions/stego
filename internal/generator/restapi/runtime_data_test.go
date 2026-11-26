@@ -377,6 +377,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.196.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
@@ -621,6 +622,7 @@ func (p *crudProject) addCLI() string {
 	p.write("cliapp/openapi.json", document)
 	p.write("cliapp/app.go", []byte(crudCLIFactory))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(p.t, p.dir)
 	program := filepath.Join(p.dir, "bin", "crud-cli")
 	p.mustGo("build", "-o", program, "./out/cli/cmd")
 	return program

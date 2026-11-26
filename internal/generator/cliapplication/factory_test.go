@@ -160,6 +160,7 @@ func TestFactoryFromDocument(t *testing.T) {
 				t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 			}
 		}
+		localtest.CheckSums(t, project)
 		ctx.ServiceOpenAPI = nil
 		if err := new(cliapplication.Generator).ValidateContext(ctx); err == nil || !strings.Contains(err.Error(), "the setting factory_package, or the rest-api component") {
 			t.Errorf("with no factory and no service document the CLI gives %v, want a refusal that names the setting", err)

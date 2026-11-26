@@ -81,6 +81,7 @@ func TraceDatabase(ctx context.Context,call string)(context.Context,func(string)
 			t.Fatalf("database driver: %v %s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestDatabasePeerValidation(t *testing.T) {
