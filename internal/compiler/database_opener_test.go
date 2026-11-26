@@ -148,6 +148,9 @@ func(*Reader)Run(ctx context.Context)error{<-ctx.Done();return ctx.Err()}
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("pool assembly: %v %s", err, output)
 		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
+		}
 	}
 	for _, source := range []string{"environment", "file"} {
 		t.Run(source, func(t *testing.T) {
@@ -275,6 +278,9 @@ func(connection)Ping(context.Context)error{return refused{}}
 			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("ping assembly: %v %s", err, output)
+			}
+			if args[0] == "mod" {
+				localtest.CheckSums(t, project)
 			}
 		}
 		command := exec.Command(binary)
