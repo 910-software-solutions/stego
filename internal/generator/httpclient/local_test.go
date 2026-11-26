@@ -101,6 +101,8 @@ func TestLocalApplicationTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=20s", "-v", "./...")

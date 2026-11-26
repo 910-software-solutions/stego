@@ -431,6 +431,8 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 	// where STEGO_REQUIRE_POSTGRES=1 is set, as in CI.
 	postgres := localtest.PostgresEnv(t)
 	for _, args := range checks {
+		// The module cache is filled once, before the time limit of the command starts.
+		localtest.RequireModules(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = project
