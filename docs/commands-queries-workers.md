@@ -1666,6 +1666,20 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.200.0
+
+- `STEGO_SPICEDB_CA_FILE` names a PEM file of certificate authorities that
+  the connection to SpiceDB adds to the system roots, for a SpiceDB whose
+  certificate a private authority signs (jsell-rh/stego#514, decision
+  ST-SUP-Q217 (a), ST-SUP-RP14-LC14). `ReadSettings` and
+  `ReadMigrationSettings` read it with the checks of the key files, and
+  `DialSpiceDB` verifies SpiceDB with `SpiceDB.Roots`. With no value the
+  roots are the system roots, as before. spicedb-authz 1.7.0 states the
+  variable; rest-crud 3.266.0, rpc-service 1.266.0 and browser-service
+  1.266.0 pin this runtime.
+- apidiff against v0.198.0: compatible (added `service.SpiceDB.Roots` and
+  `service.SpiceDBCAFileSetting`).
+
 ### Release notes for runtime v0.198.0
 
 - A database that takes no new connection is unavailable (walkthrough 26,

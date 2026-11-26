@@ -872,13 +872,14 @@ func (e *spiceDBError) CauseClass() string {
 	return "connection_failed"
 }
 
-// DialSpiceDB connects to SpiceDB with its preshared key, over verified TLS 1.2 or later, or without TLS to a
-// loopback address when the settings allow it for a local test.
+// DialSpiceDB connects to SpiceDB with its preshared key, over TLS 1.2 or later that the roots of the settings verify
+// (the system roots, with the CA file added; ST-SUP-RP14-LC14), or without TLS to a loopback address when the
+// settings allow it for a local test.
 func DialSpiceDB(s SpiceDB) (*grpc.ClientConn, error) {
 	if s.Endpoint == "" || s.Key == "" {
 		return nil, fmt.Errorf("service: SpiceDB needs the settings %s and %s", SpiceDBEndpointSetting, SpiceDBKeyFileSetting)
 	}
-	transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
+	transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: s.Roots})
 	if s.InsecureLoopback {
 		transport = insecure.NewCredentials()
 	}
