@@ -139,6 +139,51 @@ This produces a `stego` binary in the repo root.
 not a folder, and the Go toolchain (1.26) then records no version control data, so `vcs` and `revision` are
 `unknown`. The CI and the release builds run in a clone with `-buildvcs=true`, and they record the commit.
 
+### Run the tests that need PostgreSQL
+
+Some tests of `go test ./...` need a PostgreSQL server. Set `STEGO_TEST_POSTGRES_DSN`
+to the address of the server. Without it, these tests skip or fail. A missing
+result is not a pass. These folders have such tests:
+
+- `cmd/stego`
+- `internal/compiler`
+- `internal/generator` (auditlog, browserbackend, command, idempotency, oidcauth,
+  outbox, postgresadapter, postgresclient, query, restapi, spicedbauthz, tenancy,
+  worker)
+- `registry/runtime` (audit, lease, ledger, modes, outbox, tenant). These tests
+  start a server themselves when the variable is not set.
+
+Start a local server from the image that CI uses (postgres 18.6-alpine, pinned by
+digest). The container is not privileged, and its port is bound to 127.0.0.1 only:
+
+```bash
+docker run -d --rm --name stego-test-postgres \
+  --security-opt no-new-privileges --cap-drop ALL \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
+  -e POSTGRES_PASSWORD=stego_test \
+  -e POSTGRES_INITDB_ARGS='--auth-host=scram-sha-256 --auth-local=trust' \
+  -p 127.0.0.1:5432:5432 \
+  postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+export STEGO_TEST_POSTGRES_DSN='postgres://postgres:stego_test@127.0.0.1:5432/postgres?sslmode=disable'
+export STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1
+go test ./...
+docker rm -f stego-test-postgres
+```
+
+The DSN has the form
+`postgres://<user>:<password>@127.0.0.1:<port>/<database>?sslmode=disable`.
+`STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1` lets the generated code connect
+without TLS to a server on the loopback address. Set
+`STEGO_REQUIRE_POSTGRES=1` to make a test fail, not skip, when
+`STEGO_TEST_POSTGRES_DSN` is not set.
+
+The tests of `internal/generator/command` and of `internal/compiler` also need
+SpiceDB. They start a SpiceDB container
+(`authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd`)
+when `STEGO_TEST_SPICEDB` is not set. To use a server that runs already, set
+`STEGO_TEST_SPICEDB` to its gRPC address (for example `127.0.0.1:50051`) and
+`STEGO_TEST_SPICEDB_KEY` to its preshared key.
+
 ## Quick start
 
 Set up environment and initialize a new project:
