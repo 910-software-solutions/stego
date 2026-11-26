@@ -144,6 +144,12 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 				return nil, sealedf("command: a counted compare-only value of %s is written to another field or row than the one it was read from",
 					a.counter.spec.Entity)
 			}
+			// A stored counted value whose count a delete of this transaction deleted is not written again: a create
+			// of the same ID would carry the old PIN to a count of 0 (security review of PR #511, L1).
+			if a.value.IsCounted() && s.purgedBinding(a.value) {
+				return nil, sealedf("command: a counted compare-only value of %s is written to another field or row than the one it was read from",
+					a.counter.spec.Entity)
+			}
 			// A new value of a counted field resets the count of its row when the call commits (security review of
 			// PR #451, L2).
 			if a.value.IsNew() {

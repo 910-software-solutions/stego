@@ -799,6 +799,13 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 			if err := unrelateAdmins(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
 			}
+			// A Retire deletes the counts of wrong attempts of the tenant in its transaction, so they go only with the
+			// retire; it deletes no row of an entity (decision ST-SUP-Q216 (a), ST-SUP-RC27-OC12).
+			if spec.Action == tenant.RetireAction {
+				if _, err := tx.ExecContext(ctx, PurgeTenantStatement, t.ID()); err != nil {
+					return idempotency.Response{}, fmt.Errorf("command: the counts of wrong attempts of the tenant were not deleted: %w", err)
+				}
+			}
 			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the
 			// key stages none again (ST-SUP-RC35-OC13).
 			if err := relateWorkers(ctx, rt, spec, tx, req, t); err != nil {

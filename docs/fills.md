@@ -434,6 +434,21 @@ fill that tries to read `w.Value().ApiKey` does not compile. An entity is in
 `writes` or in `reads`, not in both. Give a worker `writes` only for the
 entities that it changes.
 
+The `reads` limit is a limit of the generated code, not of the database
+(decision ST-SUP-Q215). All workers of a service connect to the database as
+one role, the worker role. When one consuming worker writes an entity and
+another consuming worker reads it, the worker role has `SELECT` on each column
+of the table of that entity, also the hash of a compare-only secret and the
+sealed bytes of a readable secret. The writer needs these columns, because its
+repository reads and writes them. PostgreSQL cannot give the reader less than
+the writer, because both use the same role. Only when no consuming worker
+writes the entity does the worker role get `SELECT` on the columns of the view
+alone. The fill of the reader still cannot get these columns: its value has
+no secret field, and a fill cannot send SQL, because the fill rules refuse
+`database/sql`, `net`, `os`, `unsafe` and `reflect` (ST-EXT-UC01-R03, see [The
+imports of a fill](#the-imports-of-a-fill)). A hash is a slow hash, and sealed
+bytes need the key ring to open.
+
 Put a secret in the response message of a command only when the command
 issues it, such as an API key that the client gets one time, and only in a
 member that the proto file marks `debug_redact` (see [A secret
@@ -638,6 +653,21 @@ gives to the count of its row:
 - The count is not a field of the entity: the runtime keeps it in a table of
   its own, `attempt_counts`, which the migration job makes. A count never
   changes the row, its version, an audit row or a change event.
+- The count goes with its row (decision ST-SUP-Q216, runtime v0.199.0). A
+  delete of the row deletes the counts of its fields in the transaction of the
+  delete, so a delete that rolls back keeps them. The retire of a tenant
+  deletes each count of that tenant in the transaction of the retire, and no
+  row of an entity. The contract step of a drop deletes the counts of the
+  dropped field, or of each field of the dropped entity, in each tenant of the
+  tenant list (postgres-adapter 6.32.0). A count that a release before left
+  for a row that it deleted stays until the retire of its tenant. A database
+  that ran the contract step of a drop before postgres-adapter 6.32.0 keeps
+  the counts of the dropped field or entity; no code reads them.
+- A fill that deletes a row and creates a row with the same ID in one
+  command cannot give the new row the PIN that the read of the deleted row
+  gave: the command gets an internal error and commits nothing, so the count
+  stays. Give the new row a new PIN with `sealed.ComparedOf` (security review
+  of PR #511, L1).
 
 The runtime keeps the stored hash of a counted PIN from the fill with a store
 key: a Go value of the runtime package that fill code cannot name. The store

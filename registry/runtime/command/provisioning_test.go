@@ -149,6 +149,30 @@ func TestProvisioning(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-a' AND outcome = 'denied' AND action = $1`, ProvisionCommand); n != 1 || rt.UnlistedOutcomes() != 2 {
 			t.Fatalf("the denied call of bob left %d denied rows in org-a and the counter at %d, want one row and 2", n, rt.UnlistedOutcomes())
 		}
+		t.Run("ST-SUP-RC27-OC12-T07 A Retire deletes the counts of wrong attempts of the tenant in its transaction, and no count of another tenant", func(t *testing.T) {
+			e.exec(`INSERT INTO attempt_counts (tenant_id, counter, row_id, checks, failures) VALUES
+  ('org-a', 'Wallet.pin', 'w1', 2, 3), ('org-a', 'Card.pin', 'c1', 1, 0), ('org-b', 'Wallet.pin', 'w1', 2, 3)`)
+			counts := func(tenantID string) int {
+				return e.count(`SELECT count(*) FROM attempt_counts WHERE tenant_id = $1`, tenantID)
+			}
+			// A Retire whose COMMIT fails, after the hook ran the delete, rolls back with its delete: the counts stay with
+			// the active tenant. A deferred constraint trigger on the tenant list refuses the retire of org-a at the
+			// COMMIT (security review of PR #511, L2).
+			e.exec(`CREATE FUNCTION public.refuse_retire() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'the test refuses the commit of the retire'; END $$`,
+				`CREATE CONSTRAINT TRIGGER refuse_retire AFTER UPDATE ON public.stego_tenants DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW.tenant_id = 'org-a' AND NEW.retired_at IS NOT NULL) EXECUTE FUNCTION public.refuse_retire()`)
+			if got := send(op, "/stego/tenants/org-a/retire", ""); got < 500 || counts("org-a") != 2 {
+				t.Fatalf("the Retire whose COMMIT fails answered %d and left %d counts of org-a, want 5xx and 2", got, counts("org-a"))
+			}
+			e.exec("DROP TRIGGER refuse_retire ON public.stego_tenants", "DROP FUNCTION public.refuse_retire()")
+			if got := send(op, "/stego/tenants/org-a/retire", ""); got != http.StatusOK {
+				t.Fatalf("the retire of org-a by the operator answered %d, want 200", got)
+			}
+			if counts("org-a") != 0 || counts("org-b") != 1 {
+				t.Fatalf("after the retire org-a has %d counts and org-b %d, want 0 and 1", counts("org-a"), counts("org-b"))
+			}
+		})
 	})
 
 	t.Run("ST-SUP-RC27-OC09-T06 A Provision, a Retire and a tenant list that the provider cannot decide now are 503 undecided with Retry-After", func(t *testing.T) {
