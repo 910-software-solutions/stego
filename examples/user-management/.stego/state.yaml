@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261126135712-5ad97fde34af
+        module_version: v0.0.0-20261126154436-a801377e0083
         vcs: git
-        revision: 5ad97fde34af9c59e6cfa22c2a90b57287779366
+        revision: a801377e008383b54c10b2608d58221f8711bc14
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 8d36b90401fcbe12046aa84f16aa36b3508595101c9ea8fce9e62ac3b54769c6
+    registry_content_sha256: 191022df9e8ed2b122a02087891db93772b9e6bdbf24a66b98db754e51983cd8
     components:
         audit-log:
             version: 1.2.0
@@ -74,8 +74,8 @@ last_applied:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.41.0
-            sha: 0a7b7e104b5bbe6693c90fdec81b034f0a3c91830728c83ea871c1f7530174cb
+            version: 4.42.0
+            sha: 65d48de03c84ecfb2e5dd470a4c4e9d0074f5e16f3c2f051a0bfeda8d9dd542a
         spicedb-authz:
             version: 1.6.0
             sha: 8e673da669682a9d722ae8bc79b26b1a17dbc35a9ad11f773d8f4f1c2dd46b5c
@@ -151,7 +151,7 @@ last_applied:
         internal/api/org_settings_handler.go: 5049484a022609e6d2990077e72d93ef48c2f4fe673af0162c2dc4572cdb3a92
         internal/api/org_users_handler.go: 753e7f4b04b0c995ca6480df15d8f8dfd25074314b387578c05212b7455424ee
         internal/api/organizations_handler.go: f78f13f660b6c693a268dd45bc94accb477f733c690473e61b8821c5eb0a042a
-        internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
+        internal/api/router.go: 16c0203868ae2d5edf260804d7e9c7cf0e2893d83df39550f48e1fdf49496cab
         internal/api/runtime.go: 22508d8b96e4e3a3b91f259600edce4c42806e977c670538729e2fbf827ec0ef
         internal/api/user_activity_handler.go: f0c8c175db9141193de72b625d76a1c9bd33768cca9bf517d94e2aa5d86bd67f
         internal/api/validation.go: 63eaff98f3a0074d19526ac4fa64d7e490e18080f417a78f454274e279856431
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 35ff90f16c0c17b2b2c3f2f86be09522b260c2b8e04b8df030e1abf068cdb2bf
-        architecture/index.html: 9a40b6418f9eac48803d3a17ccdb75fe5cbe3ab90eb1ce819474271d8de49d59
+        architecture/architecture.json: d3da7894e777b1ada446c12ad72062beb9c1309ee74fffab10c3411f1111680f
+        architecture/index.html: 72e4c6d948149a5a3e48f9eaf893453a2f9a22dab4dba510075942af8f8e9d88
         deploy/base/deployment.yaml: c85ccf5796ed5120cdc45f9475e37dfb8b7137834bfa65e17a828d11cc3a3d28
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: b403fb5432911ddac01e7c6749d700b1d3224e0555d84ca09845c15acf4f6c39
@@ -234,7 +234,7 @@ last_applied:
         deploy/platform-requirements.yaml: 6957ae332c73f29a1b6e7916d6d69cedb7e9f428b4070b64b0588a66361fea14
     archetype:
         name: rest-crud
-        version: 3.265.0
+        version: 3.268.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.199.0
