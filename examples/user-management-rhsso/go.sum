@@ -1,5 +1,7 @@
 buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 h1:s6hzCXtND/ICdGPTMGk7C+/BFlr2Jg5GyH0NKf4XGXg=
 buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1/go.mod h1:tvtbpgaVXZX4g6Pn+AnzFycuRK3MOz5HJfEGeEllXYM=
+github.com/910-software-solutions/stego/registry/runtime v0.203.0 h1:xRcbNj2gfrnY2gKw0mM02tbltv7nrBr5MWbqvRd2EAI=
+github.com/910-software-solutions/stego/registry/runtime v0.203.0/go.mod h1:9VjEJSHPiVOGNeDDzro1pjVXL52l+unPnDs2jqf0c90=
 github.com/authzed/authzed-go v1.11.0 h1:D2WVK5T51cXknawOIqcDDYPkmbT7rObupRvelGbn/Gs=
 github.com/authzed/authzed-go v1.11.0/go.mod h1:gZsVWPwYoHCRA917aOI022U26ftvp9q2FP1gPlAsPeQ=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
@@ -42,8 +44,6 @@ github.com/jackc/pgx/v5 v5.11.0 h1:IzBBtyK9AHqf98cctWFifYSci2hgQR/cd56wB4p+ogg=
 github.com/jackc/pgx/v5 v5.11.0/go.mod h1:mal1tBGAFfLHvZzaYh77YS/eC6IX9OWbRV1QIIM0Jn4=
 github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
 github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
-github.com/jsell-rh/stego/registry/runtime v0.203.0 h1:oyRfZy2TOqG3QybA+GKUKZ2s+jyuOWCS6f0GpUu1zbA=
-github.com/jsell-rh/stego/registry/runtime v0.203.0/go.mod h1:SDWqMLoBxbXdHYd+LJfnmOVPJVE1QY6cckElhqIyElk=
 github.com/klauspost/compress v1.20.3 h1:zWNoFqq/lSuYQRim3dUXlXeA0IqwuZGicdG5ZTfY5j4=
 github.com/klauspost/compress v1.20.3/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=

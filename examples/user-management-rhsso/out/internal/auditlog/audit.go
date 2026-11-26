@@ -7,7 +7,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 // Settings are the audit settings of the service declaration (ST-DECL-EN10). Both pii settings redact the

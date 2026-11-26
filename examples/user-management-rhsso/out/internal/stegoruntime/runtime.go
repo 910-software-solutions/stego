@@ -22,12 +22,12 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	stegoauthz "github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/modes"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/service"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	stegoauthz "github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/modes"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/service"
 
 	api "github.com/example/service/out/internal/api"
 	svcaudit "github.com/example/service/out/internal/auditlog"
