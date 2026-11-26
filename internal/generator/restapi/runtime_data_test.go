@@ -26,9 +26,14 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/cliapplication"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/slot"
 	"github.com/jsell-rh/stego/internal/types"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 //go:embed testdata/crud_test.go
 var crudChecks []byte
@@ -334,7 +339,7 @@ func (p *crudProject) goCommand(env []string, args ...string) (string, error) {
 	p.t.Helper()
 	cmd := exec.Command(crudPinnedGo(), args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local"), env...)
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, env...)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -390,11 +395,9 @@ type crudRun struct {
 // fails the test: a missing result is not a pass.
 func (run *crudRun) passed(t *testing.T, p *crudProject, endpoint, key, id string) {
 	t.Helper()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	run.once.Do(func() {
-		run.output, run.err = p.goCommand([]string{"STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key, "STEGO_TEST_CLI=" + run.cli},
+		run.output, run.err = p.goCommand([]string{postgres, "STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key, "STEGO_TEST_CLI=" + run.cli},
 			"test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCrud$", "./check")
 	})
 	if !ownPass(run.output, "TestCrud", id) {

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 //go:embed testdata/local_test.go
@@ -103,7 +105,7 @@ func TestLocalApplicationTransport(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=20s", "-v", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1", "NO_PROXY=")
+	cmd.Env = localtest.GoEnv("HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1", "NO_PROXY=")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("local application transport: %v\n%s", err, output)

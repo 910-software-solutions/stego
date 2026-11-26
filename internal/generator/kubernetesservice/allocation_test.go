@@ -16,6 +16,7 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/httpapplication"
 	"github.com/jsell-rh/stego/internal/generator/kubernetesclient"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func allocationContext() gen.Context {
@@ -336,7 +337,7 @@ func testGeneratedAllocationRuntime(t *testing.T, filter string) {
 	}
 	command := exec.Command("go", append(args, "./...")...)
 	command.Dir = dir
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	output, err := command.CombinedOutput()
 	if dir := os.Getenv("STEGO_ALLOCATION_ARTIFACTS"); dir != "" {
 		if err := os.MkdirAll(dir, 0700); err != nil {

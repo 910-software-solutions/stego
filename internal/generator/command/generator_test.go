@@ -22,6 +22,7 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/domainprobe"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -686,7 +687,7 @@ func (p *project) goCommand(args ...string) (string, error) {
 	p.t.Helper()
 	cmd := exec.Command(pinnedGo(), args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }

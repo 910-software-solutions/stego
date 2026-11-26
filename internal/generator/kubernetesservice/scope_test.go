@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 //go:embed testdata/render_library_test.go
@@ -74,7 +76,7 @@ func TestGeneratedDeploymentScopes(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-v", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./out/deploy")
 	command.Dir = dir
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	output, commandErr := command.CombinedOutput()
 	if evidence := os.Getenv("STEGO_DEPLOYMENT_ARTIFACTS"); evidence != "" {
 		if err := os.MkdirAll(evidence, 0700); err != nil {

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -226,7 +227,7 @@ type Record struct {ID,Title,Creator string; CreatedTime time.Time; Count int64;
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		output, err := cmd.Output()

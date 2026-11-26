@@ -14,7 +14,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 // The end-to-end proof of oidc-auth and of rh-sso-auth as its configuration: the stego binary of this commit
 // generates the service of internal/compiler/testdata/runtime_wiring/project on the runtime data path with each auth
@@ -40,8 +46,7 @@ func pinnedGo() string {
 // goEnv is the environment of a go command and of the stego binary: no workspace, the pinned Go first on the path,
 // and no toolchain switch.
 func goEnv(extra ...string) []string {
-	return append(append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local",
-		"PATH="+filepath.Dir(pinnedGo())+string(os.PathListSeparator)+os.Getenv("PATH")), extra...)
+	return localtest.GoEnv(append([]string{"PATH=" + filepath.Dir(pinnedGo()) + string(os.PathListSeparator) + os.Getenv("PATH")}, extra...)...)
 }
 
 // command runs a command in dir with env and fails the test when it fails.
@@ -292,13 +297,16 @@ func startSpiceDB(t *testing.T) (string, string) {
 	return "", ""
 }
 
+// postgresDSN is the superuser URL of the local PostgreSQL server of localtest, which TestOIDCService takes.
+var postgresDSN string
+
 // checkRuns runs the check of the service's module for the provider, and fails each check ID that did not run and
 // pass.
 func (p *project) checkRuns(binary, provider, issuerPath, endpoint, key string, ids ...string) {
 	t := p.t
 	cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestOIDC$", "./out/oidccheck")
 	cmd.Dir = p.dir
-	cmd.Env = goEnv("GOFLAGS=-mod=mod", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_OIDC_BINARY="+binary,
+	cmd.Env = goEnv("GOFLAGS=-mod=mod", "STEGO_TEST_POSTGRES_DSN="+postgresDSN, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_OIDC_BINARY="+binary,
 		"STEGO_OIDC_ADDRESS="+p.address, "STEGO_OIDC_ISSUER_PATH="+issuerPath, "STEGO_OIDC_FORM="+provider)
 	output, runErr := cmd.CombinedOutput()
 	for _, id := range ids {
@@ -317,9 +325,8 @@ func TestOIDCService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs generated services")
 	}
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	// The checks of the generated module read the local PostgreSQL server of localtest from STEGO_TEST_POSTGRES_DSN.
+	postgresDSN = localtest.PostgresDSN(t)
 	stego := filepath.Join(t.TempDir(), "stego")
 	command(t, filepath.Join("..", "..", ".."), goEnv(), pinnedGo(), "build", "-o", stego, "./cmd/stego")
 	endpoint, key := startSpiceDB(t)

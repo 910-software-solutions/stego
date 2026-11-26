@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -199,7 +200,7 @@ replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "-count=1", "-timeout=90s", "-v", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(localtest.PostgresEnv(t)...)
 		result, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated schema test: %v\n%s", err, result)

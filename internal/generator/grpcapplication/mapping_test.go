@@ -14,6 +14,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -254,7 +255,7 @@ func checkGeneratedResponseMappings(t *testing.T, context func(*testing.T) gen.C
 			for _, args := range [][]string{{"mod", "tidy"}, {"vet", "-mod=readonly", "./..."}, {"test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./out/" + namespace + "/mapping"}} {
 				command := exec.Command("go", args...)
 				command.Dir = project
-				command.Env = append(os.Environ(), "GOWORK=off")
+				command.Env = localtest.GoEnv()
 				output, err := command.CombinedOutput()
 				if err != nil {
 					t.Fatalf("generated mapping: %v\n%s", err, output)
@@ -385,7 +386,7 @@ func checkMappingFixtureModules(t *testing.T, project string, versions map[strin
 	required := map[string]bool{"google.golang.org/protobuf": true}
 	command := exec.Command("go", "list", "-mod=readonly", "-m", "-json", "google.golang.org/protobuf")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("fixture module selection: %v\n%s", err, output)

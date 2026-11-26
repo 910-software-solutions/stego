@@ -25,7 +25,12 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/kubernetesservice"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/browser-test", OutDirName: "out", OutputNamespace: "browser", PeerNamespaces: map[string]string{"postgres-adapter": "store", "otel-tracing": "tracing", "health-check": "health"}, ComponentConfig: map[string]any{"api_prefix": "/api/records/v1", "routes": []any{"/", "/records/{id}"}, "assets": []any{map[string]any{"source": "ui/index.html", "path": "/index.html"}, map[string]any{"source": "ui/main.js", "path": "/assets/main.js"}, map[string]any{"source": "ui/symbols.ttf", "path": "/assets/symbols.ttf"}}}, Inputs: map[string][]byte{"ui/index.html": []byte(`<!doctype html><html><head></head><body><script src="/assets/main.js"></script><script>window.ready=true;</script></body></html>`), "ui/main.js": []byte(`"use strict";`), "ui/symbols.ttf": {0, 1, 0, 0, 255, 128}}}
@@ -421,11 +426,18 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 	if local && os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
 		checks = append(checks, []string{"run", "golang.org/x/vuln/cmd/govulncheck@v1.4.0", "./..."})
 	}
+	// The tests of the generated module run against the local PostgreSQL server of localtest. govulncheck reads the
+	// vulnerability database of vuln.go.dev, a hosted service, so it keeps the environment of the test and runs only
+	// where STEGO_REQUIRE_POSTGRES=1 is set, as in CI.
+	postgres := localtest.PostgresEnv(t)
 	for _, args := range checks {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(postgres...)
+		if args[0] == "run" {
+			cmd.Env = append(os.Environ(), "GOWORK=off")
+		}
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {

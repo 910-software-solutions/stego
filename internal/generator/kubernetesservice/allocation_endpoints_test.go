@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestAllocationEndpointValidation(t *testing.T) {
@@ -88,7 +90,7 @@ func TestGeneratedAllocationEndpointRenderer(t *testing.T) {
 	}
 	cmd := exec.Command("go", "test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./out/deploy/render")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated endpoint renderer: %v\n%s", err, output)
 	}

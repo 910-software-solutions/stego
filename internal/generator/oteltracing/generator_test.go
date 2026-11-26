@@ -7,6 +7,7 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/httpclient"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,7 +158,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	for _, args := range commands {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("generated tracing %v: %v\n%s", args, err, output)
 		} else if controllerCheck && args[0] == "test" {
@@ -175,7 +176,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	if os.Getenv("STEGO_BENCH_DATABASE") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkDatabaseSignals$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("database benchmark: %v %s", err, output)
@@ -185,7 +186,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	if os.Getenv("STEGO_BENCH_CLIENT") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^Benchmark(ClientSignals|HTTPClientSignals|HTTPTracing|CommandSignals)$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("client benchmark: %v %s", err, output)
@@ -195,7 +196,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	if os.Getenv("STEGO_BENCH_TRACING") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^Benchmark(HTTPTracing|RequestSignals|ServiceLogs|ControllerSignals)$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("tracing benchmark: %v %s", err, output)

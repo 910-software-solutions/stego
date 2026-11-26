@@ -22,7 +22,12 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/domainprobe"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 // The service test of the generated query component: testdata/query_test.go runs in the module of the generated
 // test service, with the fills of testdata/fills, against a local PostgreSQL server and a local SpiceDB container.
@@ -50,7 +55,7 @@ func goCommand(t *testing.T, project string, env []string, args ...string) strin
 	t.Helper()
 	cmd := exec.Command(pinnedGo(), args...)
 	cmd.Dir = project
-	cmd.Env = append(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local"), env...)
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, env...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go %v: %v\n%s", args, err, output)
@@ -183,17 +188,11 @@ func TestService(t *testing.T) {
 		checkSlotTypes(t, project)
 	})
 
-	dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("the service test requires STEGO_TEST_POSTGRES_DSN")
-		}
-		t.Skip("STEGO_TEST_POSTGRES_DSN is not set")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	endpoint, key := startSpiceDB(t)
 	cmd := exec.Command(pinnedGo(), "test", "-json", "-count=1", "-timeout=300s", "-run", "^TestService$", "./e2e")
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local",
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod", postgres,
 		"STEGO_TEST_SPICEDB_ENDPOINT="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
 	output, _ := cmd.CombinedOutput()
 	passed, log := map[string]bool{}, map[string]*bytes.Buffer{}

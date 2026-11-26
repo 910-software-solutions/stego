@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -231,7 +232,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 	if telemetry {
 		cmd := exec.Command("go", "mod", "tidy")
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("resolve telemetry modules: %v %s", err, output)
 		}
@@ -247,7 +248,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 		cmd.Args = append(cmd.Args, "-v")
 	}
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated controller: %v\n%s", err, output)
 	} else if runCheck {
@@ -286,7 +287,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 		for _, procs := range []string{"1", "4"} {
 			stress := exec.Command("go", "test", "-race", "-count=100", "-timeout=30s", "-run=^TestKeyedWatchReconnectJoinsActionsAndRepeatsDiscovery$", "./controller")
 			stress.Dir = project
-			stress.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS="+procs)
+			stress.Env = localtest.GoEnv("GOMAXPROCS=" + procs)
 			if output, err := stress.CombinedOutput(); err != nil {
 				t.Fatalf("reconnect stress with GOMAXPROCS=%s: %v\n%s", procs, err, output)
 			}
@@ -296,7 +297,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 	if os.Getenv("STEGO_BENCH_CONTROLLER") == "1" {
 		bench := exec.Command("go", "test", "-run=^$", "-bench=^Benchmark(KeyQueueWorkers|KeyAdmission|StreamScan|ControllerMetrics|KeyReconnect)$", "-benchtime=200ms", "-count=3", "./...")
 		bench.Dir = project
-		bench.Env = append(os.Environ(), "GOWORK=off")
+		bench.Env = localtest.GoEnv()
 		output, err := bench.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated controller benchmark: %v\n%s", err, output)
@@ -306,7 +307,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 	if os.Getenv("STEGO_BENCH_OBSERVATION") == "1" {
 		bench := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkObservation$", "-benchtime=200ms", "-count=3", "./...")
 		bench.Dir = project
-		bench.Env = append(os.Environ(), "GOWORK=off")
+		bench.Env = localtest.GoEnv()
 		output, err := bench.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated observation benchmark: %v\n%s", err, output)
@@ -342,7 +343,7 @@ func TestNestedControllerLibraryCanBeImported(t *testing.T) {
 			}
 			command := exec.Command("go", "build", "-mod=readonly", "./...")
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("nested library import failed: %v\n%s", err, output)
 			}

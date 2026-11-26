@@ -12,6 +12,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestGeneratedSSOTrustPolicy(t *testing.T) {
@@ -77,7 +78,7 @@ func testGeneratedSSOTrustPolicy(t *testing.T, telemetry bool) {
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=45s", "./..."}} {
 		command := exec.CommandContext(ctx, "go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=1", "GOMEMLIMIT=384MiB")
+		command.Env = localtest.GoEnv("GOMAXPROCS=1", "GOMEMLIMIT=384MiB")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("SSO runtime: %v\n%s", err, output)
 		}

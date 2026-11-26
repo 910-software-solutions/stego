@@ -11,6 +11,7 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/httpapplication"
 	"github.com/jsell-rh/stego/internal/generator/kubernetesclient"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 //go:embed testdata/workload_test.go
@@ -76,13 +77,13 @@ func TestGeneratedWorkloadConstruction(t *testing.T) {
 	}
 	deps := exec.Command("go", "mod", "tidy")
 	deps.Dir = project
-	deps.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=2")
+	deps.Env = localtest.GoEnv("GOMAXPROCS=2")
 	if output, err := deps.CombinedOutput(); err != nil {
 		t.Fatalf("API test dependencies: %v\n%s", err, output)
 	}
 	cmd := exec.Command("go", "test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./workload")
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=2")
+	cmd.Env = localtest.GoEnv("GOMAXPROCS=2")
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestGeneratedAuthenticationRuntime(t *testing.T) {
@@ -93,7 +94,7 @@ func testGeneratedAuthenticationRuntime(t *testing.T, telemetry bool) {
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "./..."}} {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("generated authentication checks: %v\n%s", err, output)
 		}
@@ -101,7 +102,7 @@ func testGeneratedAuthenticationRuntime(t *testing.T, telemetry bool) {
 	if os.Getenv("STEGO_BENCH_AUTH") == "1" {
 		command := exec.Command("go", "test", "-run", "^$", "-bench", "^Benchmark(Verify|GrantPolicy)$", "-benchtime=1s", "-benchmem", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("authentication benchmark: %v\n%s", err, output)

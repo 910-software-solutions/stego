@@ -19,6 +19,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/domainprobe"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -167,7 +168,7 @@ func (p *project) mustGo(args ...string) string {
 	p.t.Helper()
 	cmd := exec.Command("go", args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		p.t.Fatalf("go %v: %v\n%s", args, err, output)

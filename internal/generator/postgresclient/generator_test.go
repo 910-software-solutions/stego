@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 //go:embed testdata/client_test.go
 var tests []byte
@@ -94,7 +99,7 @@ func testGeneratedPostgresClient(t *testing.T, pattern string) {
 	for _, args := range commands {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(localtest.PostgresEnv(t)...)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated SQL client: %v\n%s", err, output)

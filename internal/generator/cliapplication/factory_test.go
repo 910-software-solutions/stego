@@ -11,6 +11,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/cliapplication"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -154,7 +155,7 @@ func TestFactoryFromDocument(t *testing.T) {
 		}
 		for _, args := range [][]string{{"mod", "tidy"}, {"test", "-count=1", "-mod=readonly", "./out/cli/app"}} {
 			cmd := exec.Command("go", args...)
-			cmd.Dir, cmd.Env = project, append(os.Environ(), "GOWORK=off")
+			cmd.Dir, cmd.Env = project, localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 			}

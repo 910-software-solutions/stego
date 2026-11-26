@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,7 @@ func testStreams(t *testing.T, options bool) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-v", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "-run="+pattern, "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("generated stream limits: %v\n%s", err, output)
@@ -85,7 +86,7 @@ func TestIdempotencyKeyClients(t *testing.T) {
 			}
 			cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^TestIdempotencyKeyHeader$", "./...")
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GOWORK=off")
+			cmd.Env = localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("the %s client: %v\n%s", kind, err, output)
 			}
@@ -128,7 +129,7 @@ func runTrustTest(t *testing.T, name string) {
 	}
 	cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^"+name+"$", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the CLI client: %v\n%s", err, output)
 	}
@@ -178,7 +179,7 @@ func TestLeafSymbolicLink(t *testing.T){
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-mod=readonly", "-timeout=30s", "./...")
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("generated credential link policy: %v\n%s", err, output)
 		}
@@ -216,7 +217,7 @@ func TestCacheResponse(t *testing.T){
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated cache response: %v\n%s", err, out)
 	}

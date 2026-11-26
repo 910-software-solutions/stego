@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -104,7 +105,7 @@ func (s *service) goTool(args ...string) ([]byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	return cmd.CombinedOutput()
 }
 
@@ -117,7 +118,7 @@ func (s *service) goOutput(args ...string) ([]byte, []byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

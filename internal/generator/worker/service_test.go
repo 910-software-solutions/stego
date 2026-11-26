@@ -10,7 +10,12 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
+
+// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
+// (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
 
 //go:embed testdata/worker_test.go
 var serviceChecks []byte
@@ -98,13 +103,11 @@ type checkRun struct {
 // not a pass.
 func runCheck(t *testing.T, p *project, run *checkRun, id string) {
 	t.Helper()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	run.once.Do(func() {
 		cmd := exec.Command("go", "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestWorker$", "./check")
 		cmd.Dir = p.dir
-		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+		cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod", postgres)
 		output, err := cmd.CombinedOutput()
 		run.output, run.err = string(output), err
 	})

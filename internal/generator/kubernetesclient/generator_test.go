@@ -16,6 +16,7 @@ import (
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/httpapplication"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 //go:embed testdata/secret_state_test.go
@@ -155,7 +156,7 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	if telemetry {
 		cmd := exec.Command("go", "mod", "tidy")
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("telemetry dependencies: %v\n%s", err, output)
 		}
@@ -170,7 +171,7 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	}
 	cmd := exec.Command("go", append(arguments, "./...")...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if !telemetry {
 		cmd.Env = append(cmd.Env, "STEGO_KUBERNETES_LIVE_ROTATION=0")
 	}
@@ -229,7 +230,7 @@ func TestPinnedAdmissionTemplate(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-p=1", "-count=1", "-timeout=15s", "./...")
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("pinned policy renderer: %v\n%s", err, output)
 	}

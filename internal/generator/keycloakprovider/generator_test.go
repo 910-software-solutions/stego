@@ -22,6 +22,7 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/httpclient"
 	"github.com/jsell-rh/stego/internal/generator/jwtauth"
 	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func fixture() gen.Context {
@@ -242,7 +243,7 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		output, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
@@ -262,7 +263,7 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", append(args, "./...")...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	output, err := cmd.CombinedOutput()
 	if live {
 		if destination := os.Getenv("STEGO_KEYCLOAK_PROVIDER_ARTIFACTS"); destination != "" {
