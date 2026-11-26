@@ -14,15 +14,18 @@
 // reaper of the runtime module's pgtest does. When neither podman nor docker is on PATH, each test that needs the
 // server fails with the reason: a missing result is not a pass.
 //
-// Modules (ST-STD-LOCAL-R03): the first call of GoEnv downloads, once per test binary, each module that testdata/
-// modules and testdata/modules-other pin in their go.sum: the runtime library's modules, each module that a generator
-// of STEGO requires, and each module that a test writes into a generated module at another version. Its
-// go command uses the proxy of the environment, as the go command of the test binary itself does. Each go command of a
-// generated module then has as its only module proxy the download folder of the module cache, as a file URL, and no
-// sum database (GOSUMDB=off), so a go mod tidy or a -mod=mod reaches no host: the proxy answers a query for the latest
-// version of a module with the versions that the cache holds. Each module in the cache came there under the go.sum of
-// testdata, which the go command checks, so its hash is already verified; a module that the cache does not hold fails
-// the command, which names it.
+// Modules (ST-STD-LOCAL-R03): localtest keeps a module cache of its own, apart from the GOMODCACHE of the developer,
+// which other tools and tests fill with modules that no sum database checked. It is the folder localtest-modules in
+// STEGO_TEST_RUNS when that variable names a folder, else in the user cache folder (os.UserCacheDir); never in the
+// shared GOMODCACHE and never in the temporary folder. The first call of GoEnv fills it, once per test binary, with each
+// module that testdata/modules, testdata/modules-other and the build of ./cmd/stego need: through the module proxy
+// of the environment, with the sum database sum.golang.org on and GONOSUMDB, GOPRIVATE, GONOPROXY, GOINSECURE and
+// GOSUMDB set, not read from the environment or the go env file, so the go command checks each module against go.sum
+// or the sum database before it writes it. Each go command of a generated module then has that cache as its
+// GOMODCACHE and its download folder as its only module proxy (GOPROXY=file://...,off), with no sum database
+// (GOSUMDB=off, as no host can be reached), no private or insecure module and no version control, so it reaches no
+// host. CheckSums is the second check: after a go mod tidy of a generated module, it fails the test when the module's
+// go.sum holds a line that the go.sum files of testdata and of the root module do not hold.
 package localtest
 
 import (
@@ -75,9 +78,12 @@ var (
 
 	modulesOnce sync.Once
 	modulesWhy  string
-	// cacheProxy is the download folder of the module cache, as a file URL.
-	cacheProxy string
+	// moduleCache is the module cache of localtest, and cacheProxy its download folder, as a file URL.
+	moduleCache, cacheProxy string
 )
+
+// checkedSumsFile is the file in the module cache of localtest that holds the go.sum lines that its last fill checked.
+const checkedSumsFile = "checked-sums.txt"
 
 // Main runs the tests of m, removes the PostgreSQL container that a test started, if any, and gives the exit code
 // for os.Exit. It also removes it when the process gets SIGINT. It does not watch SIGTERM, which tests of a shutdown
@@ -180,7 +186,8 @@ func runPostgres(path string) (string, error) {
 		"--tmpfs", "/var/lib/postgresql:rw,size=1536m,mode=1777",
 		"--tmpfs", "/var/run/postgresql:rw,size=8m,mode=1777",
 		"--publish", "127.0.0.1::5432",
-		"--env", "POSTGRES_PASSWORD=" + password,
+		// The password is in the environment of the tool, not in its arguments, which any local user can read.
+		"--env", "POSTGRES_PASSWORD",
 		"--env", "POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=trust",
 		"--entrypoint", "timeout",
 		PostgresImage,
@@ -193,7 +200,7 @@ func runPostgres(path string) (string, error) {
 	mu.Lock()
 	tool, container, stop = path, name, r
 	mu.Unlock()
-	if _, err := command(ctx, path, args...); err != nil {
+	if _, err := commandEnv(ctx, append(os.Environ(), "POSTGRES_PASSWORD="+password), path, args...); err != nil {
 		return "", err
 	}
 	out, err := command(ctx, path, "port", name, "5432/tcp")
@@ -279,24 +286,88 @@ func remove() {
 }
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
-// environment of the test with no work file, no toolchain switch and GOFLAGS cleared, the download folder of the
-// module cache as the only module proxy (GOPROXY=file://...,off) and no sum database (GOSUMDB=off), then the
-// entries extra. The first call downloads the modules of testdata/modules into the module cache, once per test binary.
-// It takes no test, so a build in a goroutine can call it: a failed download is written to standard error, and
-// RequireModules fails a test with it.
+// environment of the test with no work file, no toolchain switch, GOFLAGS cleared and the go env file not read
+// (GOENV=off); the module cache of localtest as GOMODCACHE and its download folder as the only module proxy, no sum
+// database, no private, insecure or direct module and no version control, as internal/fill sets them; then the
+// entries extra. The first call fills the module cache, once per test binary. It takes no test, so a build in a
+// goroutine can call it: a failed fill is written to standard error, and RequireModules fails a test with it.
 func GoEnv(extra ...string) []string {
 	modulesOnce.Do(downloadModules)
 	env := []string{}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "GOPROXY", "GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GONOPROXY", "GOFLAGS", "GOWORK", "GOTOOLCHAIN":
+		if innerSettings[key] {
 			continue
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GOPROXY="+cacheProxy+",off", "GOSUMDB=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
+	env = append(env, "GOMODCACHE="+moduleCache, "GOPROXY="+cacheProxy+",off", "GOSUMDB=off", "GONOSUMDB=none", "GONOSUMCHECK=",
+		"GOPRIVATE=", "GONOPROXY=none", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off",
+		"GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
 	return append(env, extra...)
+}
+
+// innerSettings are the go settings that GoEnv sets, which it takes from no other source.
+var innerSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSUMDB": true, "GONOSUMDB": true, "GONOSUMCHECK": true,
+	"GOPRIVATE": true, "GONOPROXY": true, "GOINSECURE": true, "GOVCS": true, "GOAUTH": true, "GIT_TERMINAL_PROMPT": true,
+	"GOENV": true, "GOFLAGS": true, "GOWORK": true, "GOTOOLCHAIN": true}
+
+// CheckSums fails the test when the go.sum of the generated module in dir holds a line that is not checked: no go.sum
+// of testdata/modules, testdata/modules-other, the root module or registry/runtime holds it, and the fill of the
+// module cache of localtest did not check it against go.sum or sum.golang.org (checkedSumsFile). It is the second check of the module cache, after a go mod tidy in
+// dir.
+func CheckSums(t testing.TB, dir string) {
+	t.Helper()
+	if err := SumsChecked(dir); err != nil {
+		t.Fatal("localtest: " + err.Error())
+	}
+}
+
+// SumsChecked is CheckSums as an error, for a step that runs in a goroutine of its own.
+func SumsChecked(dir string) error {
+	known := map[string]bool{}
+	root := filepath.Join(filepath.Dir(ModulesFolder()), "..", "..", "..")
+	for _, name := range []string{filepath.Join(ModulesFolder(), "go.sum"), filepath.Join(filepath.Dir(ModulesFolder()), "modules-other", "go.sum"),
+		filepath.Join(root, "go.sum"), filepath.Join(root, "registry", "runtime", "go.sum")} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				known[line] = true
+			}
+		}
+	}
+	if moduleCache != "" {
+		data, err := os.ReadFile(filepath.Join(moduleCache, checkedSumsFile))
+		if err != nil {
+			return fmt.Errorf("read the checked lines of the module cache of localtest: %w", err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				known[line] = true
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "go.sum"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the go.sum of %s: %w", dir, err)
+	}
+	var unknown []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !known[line] {
+			unknown = append(unknown, line)
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("the go.sum of %s holds lines that no checked go.sum of the repository holds, so their modules came from the module cache unchecked:\n%s",
+			dir, strings.Join(unknown, "\n"))
+	}
+	return nil
 }
 
 // RequireModules downloads the modules of testdata/modules, as the first call of GoEnv does, and fails the test with
@@ -324,13 +395,32 @@ func downloadModules() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	cache, err := exec.CommandContext(ctx, goTool, "env", "GOMODCACHE").Output()
-	if err != nil || strings.TrimSpace(string(cache)) == "" {
-		modulesWhy = fmt.Sprintf("read GOMODCACHE with %s: %v", goTool, err)
+	folder, err := cacheFolder(goTool)
+	if err != nil {
+		modulesWhy = err.Error()
 		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
 		return
 	}
-	cacheProxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(strings.TrimSpace(string(cache)), "cache", "download"))}).String()
+	moduleCache = folder
+	cacheProxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(moduleCache, "cache", "download"))}).String()
+	// The fill reads modules through the module proxy of the environment, and each module is checked: against the
+	// go.sum of the folder, else against sum.golang.org. No setting of the environment or of the go env file can turn
+	// a check off: GOENV=off, and each sum and private setting is set here.
+	fillEnv := []string{}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if innerSettings[key] {
+			continue
+		}
+		fillEnv = append(fillEnv, entry)
+	}
+	proxy := os.Getenv("GOPROXY")
+	if proxy == "" || proxy == "off" {
+		proxy = "https://proxy.golang.org"
+	}
+	fillEnv = append(fillEnv, "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
+		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
+		"GOTOOLCHAIN=local")
 	// testdata/modules pins the runtime library's modules and each module that a generator requires; testdata/
 	// modules-other pins the modules that a test writes into a generated module at another version.
 	//
@@ -347,7 +437,7 @@ func downloadModules() {
 	// that provides a package of that build, in the root module.
 	root := filepath.Join(filepath.Dir(ModulesFolder()), "..", "..", "..")
 	list := exec.CommandContext(ctx, goTool, "list", "-mod=readonly", "-deps", "-f", "{{with .Module}}{{if not .Main}}{{.Path}}@{{.Version}}{{end}}{{end}}", "./cmd/stego")
-	list.Dir, list.Env = root, append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=")
+	list.Dir, list.Env = root, append(fillEnv, "GOFLAGS=")
 	if out, err := list.Output(); err != nil {
 		fail(root, err, out)
 		return
@@ -359,8 +449,19 @@ func downloadModules() {
 			return
 		}
 	}
+	var checked []string
+	defer func() {
+		if modulesWhy != "" {
+			return
+		}
+		// The checked lines of this fill, for SumsChecked. The file is written whole each run, so it holds only the
+		// lines of the last fill, whose go command checked each one.
+		if err := os.WriteFile(filepath.Join(moduleCache, checkedSumsFile), []byte(strings.Join(checked, "\n")+"\n"), 0o644); err != nil {
+			fail(moduleCache, err, nil)
+		}
+	}()
 	for _, folder := range []string{ModulesFolder(), filepath.Join(filepath.Dir(ModulesFolder()), "modules-other")} {
-		env := append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+		env := append(append([]string(nil), fillEnv...), "GOFLAGS=-mod=mod")
 		output := func(args ...string) ([]byte, bool) {
 			cmd := exec.CommandContext(ctx, goTool, args...)
 			cmd.Dir, cmd.Env = folder, env
@@ -459,10 +560,18 @@ func downloadModules() {
 			}
 			decoder := json.NewDecoder(bytes.NewReader(found))
 			for decoder.More() {
-				var module struct{ GoMod string }
+				var module struct{ Path, Version, Sum, GoModSum, GoMod string }
 				if err := decoder.Decode(&module); err != nil {
 					fail(folder, err, found)
 					return
+				}
+				// The go command gives the hashes that it checked against go.sum or sum.golang.org before it wrote the
+				// module; they are the checked lines of a version that no go.sum of the repository names.
+				if module.Sum != "" {
+					checked = append(checked, module.Path+" "+module.Version+" "+module.Sum)
+				}
+				if module.GoModSum != "" {
+					checked = append(checked, module.Path+" "+module.Version+"/go.mod "+module.GoModSum)
 				}
 				data, err := os.ReadFile(module.GoMod)
 				if err != nil {
@@ -482,10 +591,47 @@ func downloadModules() {
 	}
 }
 
+// cacheFolder gives the module cache of localtest, and makes it: localtest-modules in STEGO_TEST_RUNS when that
+// variable names a folder, else in the user cache folder. It refuses a folder in the temporary folder, and the
+// GOMODCACHE of the go command, which other tools fill unchecked.
+func cacheFolder(goTool string) (string, error) {
+	base := os.Getenv("STEGO_TEST_RUNS")
+	if base == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("find the user cache folder for the module cache of localtest: %w; set STEGO_TEST_RUNS", err)
+		}
+		base = cache
+	}
+	folder, err := filepath.Abs(filepath.Join(base, "localtest-modules"))
+	if err != nil {
+		return "", err
+	}
+	tmp, _ := filepath.Abs(os.TempDir())
+	if tmp != "" && (folder == tmp || strings.HasPrefix(folder, tmp+string(filepath.Separator))) {
+		return "", fmt.Errorf("the module cache of localtest %s is in the temporary folder %s; set STEGO_TEST_RUNS to a persistent folder", folder, tmp)
+	}
+	if shared, err := exec.Command(goTool, "env", "GOMODCACHE").Output(); err == nil {
+		if abs, err := filepath.Abs(strings.TrimSpace(string(shared))); err == nil && (abs == folder || strings.HasPrefix(folder, abs+string(filepath.Separator))) {
+			return "", fmt.Errorf("the module cache of localtest %s is in the shared GOMODCACHE %s", folder, abs)
+		}
+	}
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		return "", fmt.Errorf("make the module cache of localtest %s: %w", folder, err)
+	}
+	return folder, nil
+}
+
 // command runs the tool and gives its standard output, or an error with its standard error.
 func command(ctx context.Context, path string, args ...string) (string, error) {
+	return commandEnv(ctx, nil, path, args...)
+}
+
+// commandEnv is command with the environment env, or the environment of the test when env is nil.
+func commandEnv(ctx context.Context, env []string, path string, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError

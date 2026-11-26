@@ -61,6 +61,9 @@ func TestResources(t *testing.T){if err:=run();!errors.Is(err,probe.ErrDone){t.F
 				if output, err := command.CombinedOutput(); err != nil {
 					t.Fatalf("generated %s resource test: %v\n%s", backend, err, output)
 				}
+				if args[0] == "mod" {
+					localtest.CheckSums(t, project)
+				}
 			}
 		})
 	}

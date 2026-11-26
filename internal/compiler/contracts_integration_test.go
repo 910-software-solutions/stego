@@ -172,6 +172,7 @@ func makeHTTPApplication(t *testing.T, project string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated HTTP application: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestApplicationRequiresVerifierProducer(t *testing.T) {
@@ -322,6 +323,7 @@ func makeGRPCApplication(t *testing.T, project string, watch bool) {
 			t.Fatalf("generated gRPC application: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestGeneratedGRPCProcesses(t *testing.T) {
@@ -422,6 +424,7 @@ func makeGRPCProcesses(t *testing.T, project string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated RPC process: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	// The process executable is built once, with the race detector, outside the time limit of the inner tests:
 	// they run it through processBinaryVariable, so their limit bounds the scenarios and not a build. The folder
 	// _bin is one that go vet and go test leave out.

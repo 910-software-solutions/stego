@@ -91,6 +91,9 @@ func TestGeneratedDatabaseAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("generated database access: %v\n%s", err, output)
 		}
+		if args[1] == "tidy" {
+			localtest.CheckSums(t, project)
+		}
 		t.Log(string(output))
 	}
 }
