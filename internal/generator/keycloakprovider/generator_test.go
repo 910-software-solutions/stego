@@ -25,6 +25,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/provider", OutDirName: "out", OutputNamespace: "keycloak", AuthPackage: "example.com/provider/out/auth", PeerNamespaces: map[string]string{"http-application": "application", "jwt-auth": "auth"}}
 }

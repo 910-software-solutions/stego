@@ -15,6 +15,9 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 // noteEntities gives the entity Note of serviceDocument with the field name as given.
 func noteEntities(name types.Field) []types.Entity {
 	return []types.Entity{{Name: "Note", Fields: []types.Field{name, {Name: "size", Type: "int64"}, {Name: "owner", Type: "string"}}}}

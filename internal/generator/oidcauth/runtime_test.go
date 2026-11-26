@@ -18,9 +18,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
-// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
-// (ST-STD-LOCAL-R04, R05).
-func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // The end-to-end proof of oidc-auth and of rh-sso-auth as its configuration: the stego binary of this commit
 // generates the service of internal/compiler/testdata/runtime_wiring/project on the runtime data path with each auth

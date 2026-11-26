@@ -15,6 +15,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 func TestGeneratedSSOTrustPolicy(t *testing.T) {
 	for _, telemetry := range []bool{false, true} {
 		t.Run(fmt.Sprint(telemetry), func(t *testing.T) { testGeneratedSSOTrustPolicy(t, telemetry) })

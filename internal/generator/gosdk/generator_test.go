@@ -17,6 +17,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 const sample = `openapi: 3.0.3
 info: {title: Sample, version: '1'}
 paths:

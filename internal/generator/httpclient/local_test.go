@@ -19,6 +19,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 //go:embed testdata/local_test.go
 var localTests []byte
 

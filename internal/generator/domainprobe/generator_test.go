@@ -22,6 +22,9 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+
 // reservationContext is the declaration of the RC34 test records, as the compiler gives it to the generator: the
 // entity Reservation, the command reserve-and-charge, the query open-reservations, the slot binding
 // reservations.before_create and three observations.
