@@ -460,6 +460,8 @@ of the release, such as a shared preview database that ran the build of a branch
 before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
 migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
 kubectl rollout status -n <namespace> deployment/<service>
@@ -479,7 +481,10 @@ manifest of the Job with the kustomize library. To run the migration of a servic
 
 Each process of a service keeps pools of database connections of its own.
 `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` (16 when it has no value) bounds each
-pool that reads the setting. At the defaults, one process can open at most:
+pool that reads the setting: the main pool, the audit pool, the pool of the
+worker role (with the lower limit W below) and the pool of the relay role.
+The pool of the charges of counted values does not read it: it is always 4.
+At the defaults, one process can open at most:
 
 | Process | Pools | Most connections |
 |---|---|---|
@@ -495,6 +500,19 @@ subscription). Each slot holds one connection, and the claims and the purge
 timer hold one more each. For example, a worker that consumes five topics
 and has three destinations has S = 4 + 5 = 9 and W = 16. With
 `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 4, the same worker has W = 11, not 4.
+
+To count the destinations of the outbox worker, count each of these that
+the service has (walkthrough 27, D-PS):
+
+- `audit-sink`, when the service has the audit-log component.
+- `kafka`, when the service has the kafka-producer component.
+- `rest-api.after-slots`, when the service has the rest-api component, also
+  when no collection binds an after slot.
+- One destination for each topic that a declared worker consumes
+  (`trigger: consumes`).
+
+A service with four destinations or fewer has S = 4 + the Kafka inboxes,
+because the concurrency of the outbox worker is 4.
 
 A pool opens a connection only when it needs one, so an idle service holds
 fewer. But a burst, a slow database or a restart of many pods at the same

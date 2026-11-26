@@ -140,6 +140,8 @@ PostgreSQL cannot make without a rewrite, such as an enum made a string with a
 `max_length`. Those still need a new field, a copy and a drop. `stego compat`
 names the relax to declare when you relax a field with no schema change.
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 The step's own migration runs one `ALTER TABLE` that reads no row under its
 `ACCESS EXCLUSIVE` lock: the new `CHECK` of the field `NOT VALID` as
 `<table>_<column>_relax`, a longer `character varying`, `DROP NOT NULL` and
@@ -1068,7 +1070,17 @@ The steps are the steps of each other retype:
    declaration gives.
 
 The JSON type of the field stays a number. Thus a client of the release
-before keeps working, and needs no change.
+before keeps working, but only until a value above the `int32` range
+(2147483647) is written. After the contract step, a client that holds the
+field as an `int32`, such as the Go SDK of the release before, cannot read
+a row with such a value: a read of the row fails, and so does each list
+that holds it (walkthrough 27, W-OLD). Do one of these:
+
+- Move each typed client, such as a Go SDK and a TypeScript client, to the
+  release of the expand step before the contract step.
+- Or keep the maximum of the release before (2147483647) in the
+  declaration after the contract step, until all clients use the new
+  release.
 
 The field keeps its name in the API, but its JSON type in the API changes with
 its type: a retype from `int64` to `string` changes the value `14` to `"14"`,

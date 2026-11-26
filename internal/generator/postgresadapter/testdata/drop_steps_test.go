@@ -145,6 +145,24 @@ func TestDropSteps(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		// Counts of wrong attempts of the dropped field rank, of the dropped entity Pin and of the kept field title, in
+		// tenant-a and in tenant-b, as the counts table of the key table migration holds them (ST-SUP-RP10-LC54).
+		counts := []string{`CREATE TABLE public.attempt_counts (tenant_id text NOT NULL, counter text NOT NULL, row_id text NOT NULL, checks integer NOT NULL,
+  charged_at timestamp with time zone, failures integer, PRIMARY KEY (tenant_id, counter, row_id))`,
+			"ALTER TABLE public.attempt_counts ENABLE ROW LEVEL SECURITY", "ALTER TABLE public.attempt_counts FORCE ROW LEVEL SECURITY",
+			"CREATE POLICY attempt_counts_tenant ON public.attempt_counts USING (tenant_id = pg_catalog.current_setting('app.tenant', true)) WITH CHECK (tenant_id = pg_catalog.current_setting('app.tenant', true))",
+			"ALTER TABLE public.attempt_counts OWNER TO " + pgx.Identifier{tenancy.OwnerRole}.Sanitize(),
+			"INSERT INTO public.stego_tenants (tenant_id) VALUES ('tenant-b')"}
+		for _, tenant := range []string{"tenant-a", "tenant-b"} {
+			for _, counter := range []string{"Board.rank", "Pin.code", "Board.title"} {
+				counts = append(counts, "INSERT INTO public.attempt_counts (tenant_id, counter, row_id, checks) VALUES ('"+tenant+"', '"+counter+"', 'r1', 2)")
+			}
+		}
+		for _, statement := range counts {
+			if _, err := db.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
 		before := catalog(t, db)
 		err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return dropc.Migrate(ctx, conn) })
 		var refused interface{ Refusal() string }
@@ -170,6 +188,13 @@ func TestDropSteps(t *testing.T) {
 		if err := db.QueryRow(`SELECT pg_catalog.to_regclass('public.pins') IS NOT NULL`).Scan(&pins); err != nil || pins {
 			t.Errorf("the table pins is still there after the contract (error %v)", err)
 		}
+		// The contract deleted the counts of wrong attempts of the dropped field and entity in each listed tenant, and
+		// kept the counts of the fields that stay (decision ST-SUP-Q216 (a)).
+		var gone, kept int
+		if err := db.QueryRow(`SELECT count(*) FILTER (WHERE counter IN ('Board.legacy', 'Board.rank', 'Pin.code')), count(*) FILTER (WHERE counter = 'Board.title')
+  FROM public.attempt_counts`).Scan(&gone, &kept); err != nil || gone != 0 || kept != 2 {
+			t.Errorf("after the contract the counts of the dropped field and entity are %d and those of Board.title %d (error %v); want 0 and 2", gone, kept, err)
+		}
 		var last, set string
 		if err := db.QueryRow(`SELECT version, compatible_with::text FROM stego_schema.migrations ORDER BY version COLLATE "C" DESC LIMIT 1`).Scan(&last, &set); err != nil {
 			t.Fatal(err)
@@ -183,6 +208,23 @@ func TestDropSteps(t *testing.T) {
 		works(t, db, reader, "the release of the contract", "the contract", func(ctx context.Context, db *sql.DB) error { return dropc.VerifySchema(ctx, db) }, dropc.SchemaManifest)
 		if code := write(t, db, "tenant-a", `INSERT INTO public."boards" ("id", "title") VALUES ($1, 'v3')`, uuid.Must(uuid.NewV7()).String()); code != "" {
 			t.Errorf("the release of the contract writes no board: %s", code)
+		}
+		// A database whose contract ran under an adapter before the delete of the counts holds the digest of the body
+		// before it: the ledger takes it as an earlier digest of the step (decision ST-SUP-Q216 (a)).
+		// The bodies are those of the adapter before the delete, as main 65ba10777 writes them.
+		earlier := dropc.EarlierMigrationDigests()
+		for name, body := range map[string]string{
+			"step_0004_board-legacy-drop_contract": "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"legacy\";\n",
+			"step_0005_board-rank-drop_contract":   "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"rank\";\n",
+			"step_0006_pin-drop_contract": "ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_board_id_fkey\";\n" +
+				"ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_tenant_id_fkey\";\nDROP TABLE IF EXISTS public.\"pins\";\n",
+		} {
+			if want := dropc.Digest(body); !slices.Equal(earlier[name], []string{want}) {
+				t.Fatalf("the release gives the earlier digests %v of %s, want the digest %s of the body before the delete of the counts", earlier[name], name, want)
+			}
+			if _, err := db.Exec(`UPDATE stego_schema.migrations SET digest = $1 WHERE version = $2`, dropc.Digest(body), name); err != nil {
+				t.Fatal(err)
+			}
 		}
 		again := catalog(t, db)
 		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return dropc.Migrate(ctx, conn) }); err != nil {

@@ -98,17 +98,17 @@ func TestFillManifestReader(t *testing.T) {
 			{"command-fill", "implements: command.command\n", "", ""},
 			{"collection-command-fill", "implements: command.command\ncollection: org-users\n", "collection", "org-users"},
 		}
-		root := t.TempDir()
+		check.ProjectDir = t.TempDir()
 		for _, m := range manifests {
-			dir := filepath.Join(root, m.name)
-			if err := os.Mkdir(dir, 0755); err != nil {
+			dir := filepath.Join(check.ProjectDir, "fills", m.name)
+			if err := os.MkdirAll(dir, 0755); err != nil {
 				t.Fatal(err)
 			}
 			path := filepath.Join(dir, ManifestFile)
 			if err := os.WriteFile(path, []byte("kind: fill\nname: "+m.name+"\n"+m.body), 0644); err != nil {
 				t.Fatal(err)
 			}
-			f, err := ReadManifest(path, check)
+			f, err := ReadManifest(check, m.name)
 			if m.name == "command-fill" {
 				if err != nil || f == nil || f.Implements != "command.command" || f.Collection != "" {
 					t.Fatalf("%s: refused or misread: %+v, %v", m.name, f, err)
@@ -129,6 +129,68 @@ func TestFillManifestReader(t *testing.T) {
 					t.Errorf("%s: the fault %q does not name %q", m.name, err, part)
 				}
 			}
+		}
+	})
+}
+
+func TestReadManifestStaysInFills(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T05 The fill manifest reader refuses a name outside the fill-name form and a link out of the fills folder, and reads no file outside it", func(t *testing.T) {
+		// Security review of PR #518, finding 1: ReadManifest read <project>/fills/<name>/fill.yaml for any name, so
+		// the name ../../outside read and quoted a manifest outside the project.
+		check := builtInCheck()
+		parent := t.TempDir()
+		check.ProjectDir = filepath.Join(parent, "project")
+		outside := filepath.Join(parent, "outside")
+		secret := "kind: fill\nname: outside\nimplements: rest-api.before_create\ncollection: secret-collection\n"
+		for _, dir := range []string{outside, filepath.Join(check.ProjectDir, "fills", "real")} {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(outside, ManifestFile), []byte(secret), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// fills/linked is a link to the folder outside, and fills/real/fill.yaml is a link to the manifest outside.
+		if err := os.Symlink(outside, filepath.Join(check.ProjectDir, "fills", "linked")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(outside, ManifestFile), filepath.Join(check.ProjectDir, "fills", "real", ManifestFile)); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"../../outside", "../outside", "x/../../../outside", "..", ".", "", "Outside", "a\\..\\outside"} {
+			f, err := ReadManifest(check, name)
+			if err == nil || f != nil {
+				t.Fatalf("the name %q was read: %+v", name, f)
+			}
+			if strings.Contains(err.Error(), "secret-collection") || !strings.Contains(err.Error(), "fill-name form") {
+				t.Errorf("the name %q gave the fault %q, want the fill-name form and no quote of the manifest outside", name, err)
+			}
+		}
+		for _, name := range []string{"linked", "real"} {
+			f, err := ReadManifest(check, name)
+			if err == nil || f != nil {
+				t.Fatalf("the link of %q was read through: %+v", name, f)
+			}
+			if strings.Contains(err.Error(), "secret-collection") || !strings.Contains(err.Error(), "escapes") {
+				t.Errorf("the link of %q gave the fault %q, want a refused link and no quote of the manifest outside", name, err)
+			}
+		}
+		// The catalog and the revision check read through the same root.
+		entries, err := projectCatalog(check, types.SlotRef{Component: "rest-api", Slot: "before_create"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.Contains(fmt.Sprint(entry), "secret-collection") || entry.Unreadable == "" {
+				t.Errorf("the catalog read the manifest outside through %q: %+v", entry.Fill, entry)
+			}
+		}
+		faults, err := RevisionFaults(check.ProjectDir, []string{"linked", "real"}, compiler.FillCheck{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(faults) != 2 || strings.Contains(strings.Join(faults, "\n"), "secret-collection") {
+			t.Errorf("the revision check gave %q, want a fault for each link and no quote of the manifest outside", faults)
 		}
 	})
 }

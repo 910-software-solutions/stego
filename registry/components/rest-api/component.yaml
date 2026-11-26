@@ -90,7 +90,12 @@ name: rest-api
 # Version 4.39.0 gives a problem that the status sets at run time the slug of its status: service-unavailable for a
 # 503, such as of a database that cannot serve now, method-not-allowed, content-too-large and unprocessable-content
 # (walkthrough 25, P1-16; ST-SUP-RC20-OC04).
-version: 4.41.0
+# Version 4.42.0 answers each member of an entity in envelope mode as its JSON text, so an int64 above 2^53 is
+# answered as it is stored and not rounded through a float64 (ST-SUP-RC20-OC06; walkthrough 27, W-PREC).
+# Version 4.43.0 compares a kept jsonb field with each number as its exact decimal value, and not as a float64, so a
+# value that differs from the stored one only above 2^53 is refused with 400 (ST-SUP-RC20-OC44; security review of
+# PR #519, B-I2).
+version: 4.43.0
 stage: ga
 output_namespace: internal/api
 

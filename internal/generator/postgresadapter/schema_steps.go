@@ -354,8 +354,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 					body.WriteString(text + ";\n")
 				}
 			}
+			var earlier []string
+			if change.Kind == "drop" {
+				earlier = []string{ledgerDigest(dropBodyBefore(contract))}
+			}
 			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase,
-				Body: body.String(), Contract: contract, Expand: expand})
+				Body: body.String(), Contract: contract, Expand: expand, Earlier: earlier})
 			before = after
 			continue
 		}
