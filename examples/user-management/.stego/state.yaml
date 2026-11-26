@@ -23,13 +23,13 @@ last_applied:
                 mode: 420
             go.sum:
                 exists: true
-                sha256: 6ce76a7ff29d06ff2f8ac973754cb7624fb7ab9dba6f1a4fa10b89be754c8176
+                sha256: ceeba610750e5f78cde49bd78b914b96cdee45505359e85333a83bca7ca7cfe1
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: b5457ce89c784fa5ae990b10f29cabff4dfbcae34e4c9d395dc60861972d5970
+        sha256: 2ed2950efcf878e5b3ac51aa233cbb2fd520478e5236b47b1b87a22f03fae2d7
     compiler_build:
         go_version: go1.26.11
         goos: linux
