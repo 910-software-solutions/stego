@@ -83,12 +83,8 @@ func newEvolution(t *testing.T) *evolution {
 	parent := t.TempDir()
 	e := &evolution{repo: filepath.Join(parent, "user-management"), bin: filepath.Join(parent, "bin"), plans: map[string]string{}}
 	home := filepath.Join(parent, ".home")
-	// The module cache stays the one of the test run, so no build downloads into the temporary home.
-	cache, err := exec.Command(pinnedGo(t), "env", "GOMODCACHE").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.env = append(localtest.GoEnv(), "HOME="+home, "GOMODCACHE="+strings.TrimSpace(string(cache)), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GOWORK=off", "GOTOOLCHAIN=local",
+	// The module cache is the one of localtest (GoEnv), so no build downloads into the temporary home.
+	e.env = append(localtest.GoEnv(), "HOME="+home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GOWORK=off", "GOTOOLCHAIN=local",
 		"STEGO_REGISTRY="+filepath.Join(root, "registry"), "PATH="+filepath.Dir(pinnedGo(t))+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GIT_AUTHOR_NAME=td04", "GIT_AUTHOR_EMAIL=td04@example.test", "GIT_COMMITTER_NAME=td04", "GIT_COMMITTER_EMAIL=td04@example.test")
 	if output, err := exec.Command("cp", "-a", filepath.Join(root, "examples", "user-management"), e.repo).CombinedOutput(); err != nil {
@@ -326,7 +322,7 @@ func (e *evolution) buildWith(goBin, tag, root string) error {
 			return fmt.Errorf("go %s for %s: %v\n%s", strings.Join(args, " "), tag, err, output)
 		}
 	}
-	return nil
+	return localtest.SumsChecked(dir)
 }
 
 // buildBeside starts build of the release at the tag in a goroutine and gives a function that waits for the build and

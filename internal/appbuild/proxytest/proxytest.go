@@ -11,7 +11,6 @@ package proxytest
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -30,6 +29,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 // Servers are the local module proxy and sum database of one test.
@@ -108,9 +108,11 @@ func ModulesOf(t testing.TB, goSum string) []string {
 // a module graph, gets its go.mod only, and its record names the go.mod alone.
 func (s *Servers) add(t testing.TB, goTool string, m module.Version) {
 	t.Helper()
+	// The modules come from the module cache of localtest, which the go command fills with the sum database on, and
+	// never from the shared GOMODCACHE, which other tools fill unchecked (security review of PR #510, M1).
 	download := exec.Command(goTool, "mod", "download", "-json", m.Path+"@"+m.Version)
 	download.Dir = t.TempDir()
-	download.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+	download.Env = append(localtest.FillEnv(t), "GOFLAGS=")
 	if output, err := download.Output(); err != nil {
 		// A version that the proxy of the environment does not serve whole, such as one that only a module graph
 		// names, is served with its go.mod alone.
@@ -120,7 +122,7 @@ func (s *Servers) add(t testing.TB, goTool string, m module.Version) {
 			t.Fatalf("proxytest: download %s: %v\n%s%s", m, err, output, out)
 		}
 	}
-	cache := strings.TrimSpace(goEnv(t, goTool, "GOMODCACHE"))
+	cache := localtest.ModuleCache(t)
 	escapedPath, err := module.EscapePath(m.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -196,16 +198,4 @@ func (s *Servers) ZipPath(t testing.TB, path, version string) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(s.Folder, filepath.FromSlash(escapedPath), "@v", escapedVersion+".zip")
-}
-
-// goEnv reads one go env value of goTool.
-func goEnv(t testing.TB, goTool, key string) string {
-	t.Helper()
-	cmd := exec.CommandContext(context.Background(), goTool, "env", key)
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("proxytest: go env %s: %v", key, err)
-	}
-	return string(out)
 }

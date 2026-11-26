@@ -166,7 +166,8 @@ func testFillKeys(t *testing.T) *fillKeys {
 			return "", err
 		}
 		values := strings.Split(strings.TrimSpace(string(out)), "\n")
-		k.goEnv = []string{"GOMODCACHE=" + values[0], "GOCACHE=" + values[1], "GOPATH=" + values[2]}
+		// The module cache is the one of localtest, whose modules are checked, not the shared one.
+		k.goEnv = []string{"GOMODCACHE=" + localtest.ModuleCache(t), "GOCACHE=" + values[1], "GOPATH=" + values[2]}
 		// The fill fixture is a rest-crud project of the GORM store path until the store path is removed
 		// (ST-SUP-RC20-OC39).
 		k.registry = filepath.Join(fixtureRoot, "fill-store-registry")
