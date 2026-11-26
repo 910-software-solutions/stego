@@ -46,6 +46,8 @@ func testStreams(t *testing.T, options bool) {
 			t.Fatal(err)
 		}
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-v", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "-run="+pattern, "./...")
@@ -175,6 +177,8 @@ func TestLeafSymbolicLink(t *testing.T){
 				t.Fatal(err)
 			}
 		}
+		// The module cache is filled once, before the time limit of the command starts.
+		localtest.RequireModules(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-mod=readonly", "-timeout=30s", "./...")
@@ -213,6 +217,8 @@ func TestCacheResponse(t *testing.T){
 			t.Fatal(err)
 		}
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./...")

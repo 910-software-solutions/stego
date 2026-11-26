@@ -73,6 +73,8 @@ func testGeneratedSSOTrustPolicy(t *testing.T, telemetry bool) {
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(module), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=45s", "./..."}} {

@@ -240,6 +240,8 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 		t.Fatal(err)
 	}
 	{
+		// The module cache is filled once, before the time limit of the command starts.
+		localtest.RequireModules(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = project
