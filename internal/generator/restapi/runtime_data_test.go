@@ -785,6 +785,7 @@ func TestFieldRelationship(t *testing.T) {
 // proves.
 var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC44-T01 An update refuses a changed create or never field, names each, changes nothing, and keeps a field that the body leaves out or repeats",
+	"ST-SUP-RC20-OC44-T03 A kept jsonb field compares its numbers exactly, so a value that differs only above 2^53 is refused",
 	"ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field",
 	"ST-SUP-RC20-OC46-T01 A patch refuses a create or never field that the body names with another value, and changes nothing",
 	"ST-SUP-RC20-OC15-T03 A patch refuses a member that is not kind, a patchable field or a kept field, also in another letter case, and changes nothing",

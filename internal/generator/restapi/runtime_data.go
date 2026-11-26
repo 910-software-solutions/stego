@@ -1242,7 +1242,8 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 		needFmt = true
 	}
 	needUUID := w.envelope && (c.ops[types.OpCreate] || c.ops[types.OpUpsert])
-	w.f("package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n", path.Base(ctx.OutputNamespace))
+	w.f("package %s\n\nimport (\n", path.Base(ctx.OutputNamespace))
+	w.f("\t\"context\"\n\t\"encoding/json\"\n")
 	// Each read and list waits through AwaitWrite, and each write through AwaitRevocation, and each tests its error with
 	// errors.Is (ST-SUP-RC20-OC41, ST-SUP-RC20-OC49).
 	w.f("\t\"errors\"\n")
@@ -1253,7 +1254,7 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 		w.f("\t\"io\"\n")
 	}
 	w.f("\t\"net/http\"\n")
-	if c.ops[types.OpList] {
+	if c.ops[types.OpList] || w.checksKept() && keptJSON(e) {
 		w.f("\t\"strconv\"\n")
 	}
 	if w.checksKept() && keptJSON(e) {

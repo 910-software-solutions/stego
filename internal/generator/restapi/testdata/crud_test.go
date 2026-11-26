@@ -3364,6 +3364,47 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC44-T03 A kept jsonb field compares its numbers exactly, so a value that differs only above 2^53 is refused", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","meta":{"n":9007199254740993,"list":[1,2.5]}}`)
+		path := "/api/v1/tickets/" + id
+		stored := func(what string) {
+			t.Helper()
+			if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND meta = '{"n":9007199254740993,"list":[1,2.5]}'::jsonb`, id); n != 1 {
+				t.Errorf("%s: %d ticket rows that keep the created meta, want 1", what, n)
+			}
+		}
+		// A float64 holds 9007199254740992 and 9007199254740993 as one value; the check must not.
+		for _, c := range []struct{ method, meta string }{
+			{http.MethodPut, `{"n":9007199254740992,"list":[1,2.5]}`},
+			{http.MethodPut, `{"n":9007199254740994,"list":[1,2.5]}`},
+			{http.MethodPut, `{"n":9007199254740993,"list":[1,2.500000000000000001]}`},
+			{http.MethodPut, `{"n":"9007199254740993","list":[1,2.5]}`},
+			{http.MethodPatch, `{"n":9007199254740992,"list":[1,2.5]}`},
+		} {
+			body := `{"folder_id":"` + folder + `","code":"c1","title":"changed","sku":"s1","meta":` + c.meta + `}`
+			key := ""
+			if c.method == http.MethodPatch {
+				body, key = `{"title":"changed","meta":`+c.meta+`}`, "k-"+uuid.NewString()
+			}
+			r := e.send(a, c.method, path, key, body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"meta"`) {
+				t.Errorf("a %s with meta %s answered %d %s, want 400 that names meta", c.method, c.meta, r.status, r.body)
+			}
+			stored("after a " + c.method + " with meta " + c.meta)
+		}
+		// The same value in another form is the stored value.
+		for _, meta := range []string{`{"list":[1.0,25e-1],"n":9007199254740993}`, `{"n":9.007199254740993e15,"list":[10e-1,2.50]}`} {
+			r := e.send(a, http.MethodPut, path, "", `{"folder_id":"`+folder+`","code":"c1","title":"kept","sku":"s1","meta":`+meta+`}`)
+			if r.status != http.StatusOK {
+				t.Errorf("an update with meta %s, the stored value in another form, answered %d %s, want 200", meta, r.status, r.body)
+			}
+			stored("after an update with meta " + meta)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
