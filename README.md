@@ -51,7 +51,9 @@ runtime library github.com/jsell-rh/stego/registry/runtime. Its archetype must
 hold the command and query components; a service that declares entities,
 commands or queries without them is refused. Its main reads the deployment settings from the environment:
 `DATABASE_URL` or `DATABASE_URL_FILE` for the runtime role, `STEGO_SPICEDB_ENDPOINT`
-and `STEGO_SPICEDB_KEY_FILE` for SpiceDB, `STEGO_QUERY_CURSOR_KEY_FILE` for the key
+and `STEGO_SPICEDB_KEY_FILE` for SpiceDB (with `STEGO_SPICEDB_CA_FILE`, the certificate
+authorities that verify a SpiceDB whose certificate a private authority signs, added to
+the system roots), `STEGO_QUERY_CURSOR_KEY_FILE` for the key
 of the list cursors, and `STEGO_SERVICE_VERSION` for the release that each audit
 row names. It takes the issuer and the audience that the declaration states for
 jwt-auth; when the declaration states none, it reads `STEGO_AUTHN_ISSUER` and

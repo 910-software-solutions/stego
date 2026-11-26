@@ -201,6 +201,7 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
+| `STEGO_SPICEDB_CA_FILE` | path | no | none | no | - | `/etc/stego/spicedb/ca.crt` | A PEM file of certificate authorities that the connection to SpiceDB adds to the system roots. When it has no value, the connection uses the system roots. |
 | `STEGO_SPICEDB_ENDPOINT` | address | yes | none | no | - | `spicedb.example.svc:50051` | The host and port of SpiceDB. The service does not start when it has no value. |
 | `STEGO_SPICEDB_INSECURE_LOOPBACK` | boolean | no | `0` | no | 0, 1 | - | Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS. |
 | `STEGO_SPICEDB_KEY_FILE` | path | yes | none | no | - | `/etc/stego/spicedb/key` | The file of the preshared key of SpiceDB. The service does not start when it has no value. |

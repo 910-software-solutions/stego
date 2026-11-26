@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,10 @@ const (
 	// SpiceDBInsecureLoopbackSetting set to 1 lets the connection to a loopback SpiceDB address go without TLS, for a
 	// local test only; every other address needs verified TLS.
 	SpiceDBInsecureLoopbackSetting = "STEGO_SPICEDB_INSECURE_LOOPBACK"
+	// SpiceDBCAFileSetting is the PEM file of certificate authorities that the connection to SpiceDB adds to the
+	// system roots, for a SpiceDB whose certificate a private authority signs; it never replaces them, and it is
+	// optional (ST-SUP-RP14-LC14).
+	SpiceDBCAFileSetting = "STEGO_SPICEDB_CA_FILE"
 	// CursorKeyFileSetting is the file of the key of the list cursors: at least query.MinCursorKey bytes, the same in
 	// every replica.
 	CursorKeyFileSetting = "STEGO_QUERY_CURSOR_KEY_FILE"
@@ -75,12 +80,15 @@ type Auth struct {
 	Component string
 }
 
-// SpiceDB is how the service reaches SpiceDB: its address, its preshared key and whether a loopback address goes
-// without TLS.
+// SpiceDB is how the service reaches SpiceDB: its address, its preshared key, whether a loopback address goes
+// without TLS, and the roots that verify its certificate.
 type SpiceDB struct {
 	Endpoint         string
 	Key              string
 	InsecureLoopback bool
+	// Roots are the system roots with the certificates of the CA file added (ST-SUP-RP14-LC14); nil is the system
+	// roots alone.
+	Roots *x509.CertPool
 }
 
 // Settings are the settings of a running service, which ReadSettings reads from the process environment.
@@ -155,7 +163,7 @@ func settingComponent(variable, auth string) string {
 			return DefaultAuthComponent
 		}
 		return auth
-	case SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting:
+	case SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting, SpiceDBCAFileSetting:
 		return "spicedb-authz"
 	case CursorKeyFileSetting, ExtraCursorKeyFileSetting:
 		return "query"
@@ -270,7 +278,7 @@ func ReadMigrationSettings() (MigrationSettings, error) {
 }
 
 // readSpiceDB reads the address of SpiceDB, its preshared key from the key file, with the checks of settingFile,
-// and the loopback test mode.
+// the loopback test mode, and the CA file of spiceDBRoots.
 func readSpiceDB() (SpiceDB, error) {
 	var s SpiceDB
 	var err error
@@ -299,7 +307,35 @@ func readSpiceDB() (SpiceDB, error) {
 	default:
 		return SpiceDB{}, settingError(SpiceDBInsecureLoopbackSetting, "must be 0 or 1")
 	}
+	if s.Roots, err = spiceDBRoots(s.InsecureLoopback, x509.SystemCertPool); err != nil {
+		return SpiceDB{}, err
+	}
 	return s, nil
+}
+
+// spiceDBRoots reads the CA file of SpiceDBCAFileSetting, with the checks of settingFile, and gives the system roots
+// with its certificates added, or nil when the setting has no value. It refuses a file that holds no PEM certificate,
+// and a CA file together with the loopback test mode, which has no TLS to verify (ST-SUP-RP14-LC14).
+func spiceDBRoots(insecureLoopback bool, system func() (*x509.CertPool, error)) (*x509.CertPool, error) {
+	name := os.Getenv(SpiceDBCAFileSetting)
+	if name == "" {
+		return nil, nil
+	}
+	if insecureLoopback {
+		return nil, settingError(SpiceDBCAFileSetting, "takes no value when "+SpiceDBInsecureLoopbackSetting+" is 1")
+	}
+	data, err := settingFile(SpiceDBCAFileSetting, name)
+	if err != nil {
+		return nil, err
+	}
+	roots, err := system()
+	if err != nil || roots == nil {
+		return nil, settingError(SpiceDBCAFileSetting, "needs the system roots, which are missing")
+	}
+	if roots = roots.Clone(); !roots.AppendCertsFromPEM(data) {
+		return nil, settingError(SpiceDBCAFileSetting, "names a file that holds no PEM certificate")
+	}
+	return roots, nil
 }
 
 // ReadKeyRing reads the key ring of the secret fields from the file of KeyRingFileSetting, with the checks of

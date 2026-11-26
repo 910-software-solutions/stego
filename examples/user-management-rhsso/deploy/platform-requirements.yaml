@@ -1220,6 +1220,13 @@ environment:
     required: false
     description: The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version.
     secret: false
+  - name: STEGO_SPICEDB_CA_FILE
+    read_by:
+      - spicedb-authz
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the connection to SpiceDB adds to the system roots. When it has no value, the connection uses the system roots.
+    secret: false
   - name: STEGO_SPICEDB_ENDPOINT
     read_by:
       - spicedb-authz

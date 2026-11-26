@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.262.0",
+    "archetype_version": "3.266.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -102,7 +102,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -226,7 +226,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -746,7 +746,7 @@
     {
       "id": "component:spicedb-authz",
       "name": "spicedb-authz",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "stage": "ga",
       "layer": "authentication",
       "flow_part": "Asks SpiceDB whether the caller holds the permission of the operation.",
@@ -774,7 +774,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "architecture"
         }
       }
@@ -895,7 +895,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "provides"
         }
       }
@@ -911,7 +911,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "provides"
         }
       }
@@ -1109,7 +1109,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1123,7 +1123,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1137,7 +1137,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1151,7 +1151,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1165,7 +1165,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1179,7 +1179,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.262.0",
+          "version": "3.266.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1936,7 +1936,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2080,7 +2080,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2260,7 +2260,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2404,7 +2404,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2548,7 +2548,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2747,7 +2747,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -2968,7 +2968,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -3165,7 +3165,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -3309,7 +3309,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -3519,7 +3519,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -3671,7 +3671,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -3881,7 +3881,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4080,7 +4080,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4285,7 +4285,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4429,7 +4429,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4581,7 +4581,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4761,7 +4761,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "architecture"
             }
           }
@@ -4876,7 +4876,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -4892,7 +4892,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -4909,7 +4909,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -5061,7 +5061,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -5112,7 +5112,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "needs"
         }
       }
@@ -7535,6 +7535,24 @@
       }
     },
     {
+      "id": "variable:STEGO_SPICEDB_CA_FILE",
+      "name": "STEGO_SPICEDB_CA_FILE",
+      "read_by": [
+        "component:spicedb-authz"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.7.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:STEGO_SPICEDB_ENDPOINT",
       "name": "STEGO_SPICEDB_ENDPOINT",
       "read_by": [
@@ -7547,7 +7565,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "environment"
         }
       }
@@ -7566,7 +7584,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "environment"
         }
       }
@@ -7584,7 +7602,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.6.0",
+          "version": "1.7.0",
           "field": "environment"
         }
       }
@@ -15576,6 +15594,51 @@
           }
         },
         {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_CA_FILE/read-by",
+          "about": "variable:STEGO_SPICEDB_CA_FILE",
+          "name": "read by",
+          "value": "component:spicedb-authz",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.7.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_CA_FILE/required",
+          "about": "variable:STEGO_SPICEDB_CA_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.7.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_CA_FILE/secret",
+          "about": "variable:STEGO_SPICEDB_CA_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.7.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
           "id": "fact:configuration/variable:STEGO_SPICEDB_ENDPOINT/read-by",
           "about": "variable:STEGO_SPICEDB_ENDPOINT",
           "name": "read by",
@@ -15585,7 +15648,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15600,7 +15663,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15615,7 +15678,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15630,7 +15693,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15645,7 +15708,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15660,7 +15723,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15675,7 +15738,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15690,7 +15753,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15705,7 +15768,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
@@ -15720,7 +15783,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.6.0",
+              "version": "1.7.0",
               "field": "environment"
             }
           }
