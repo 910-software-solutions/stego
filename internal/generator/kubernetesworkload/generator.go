@@ -27,6 +27,10 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 	return nil
 }
 
+// KeyPrefix is the prefix of every label and annotation key that this component writes (ST-SUP-RC15-OC46), as
+// kubernetes-service states it.
+const KeyPrefix = "stego.jsell-rh.github.io/"
+
 func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	if err := g.ValidateContext(ctx); err != nil {
 		return nil, nil, err
@@ -36,7 +40,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	var output bytes.Buffer
-	if err := t.Execute(&output, struct{ Package string }{path.Base(ctx.OutputNamespace)}); err != nil {
+	if err := t.Execute(&output, struct{ Package, KeyPrefix string }{path.Base(ctx.OutputNamespace), KeyPrefix}); err != nil {
 		return nil, nil, err
 	}
 	code, err := format.Source(output.Bytes())

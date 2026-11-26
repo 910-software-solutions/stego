@@ -84,7 +84,7 @@ func TestAllocationPeerBindingsManifests(t *testing.T) {
 		}
 	}
 	text := strings.Join(expressions, "\n")
-	for _, part := range []string{"namespaceObject.metadata.name.substring(5)", "stego.dev/service-account-gateway", `subjects[0].namespace == "tenant-" +`, "oldObject.metadata.annotations"} {
+	for _, part := range []string{"namespaceObject.metadata.name.substring(5)", "stego.jsell-rh.github.io/service-account-gateway", `subjects[0].namespace == "tenant-" +`, "oldObject.metadata.annotations"} {
 		if !strings.Contains(text, part) {
 			t.Fatal("related account guard missing", part)
 		}

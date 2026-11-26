@@ -236,6 +236,7 @@ func exportOf(t *testing.T, project, format, view string) string {
 }
 
 func TestArchitectureExport(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-GEN-UC17-R01-T01 The export gives Structurizr DSL and Mermaid entity-relationship and sequence diagrams that parse, from the model alone", func(t *testing.T) {
 		in := archFixture(t)
 		in.Service.Entities = append(in.Service.Entities, types.Entity{Name: "Note", Fields: []types.Field{{Name: "doc", Type: "ref", To: "Doc"}, {Name: "text", Type: "string", Optional: true}}})

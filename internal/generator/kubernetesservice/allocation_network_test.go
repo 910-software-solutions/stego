@@ -53,7 +53,7 @@ func TestAllocationNetworkPeer(t *testing.T) {
 				rule := item["spec"].(object)["egress"].([]any)[0].(object)
 				peer := rule["to"].([]any)[0].(object)
 				labels := peer["namespaceSelector"].(object)["matchLabels"].(object)
-				if len(labels) != 2 || labels["stego.dev/allocator"] != marker || labels["stego.dev/allocation-profile"] != "tenant" {
+				if len(labels) != 2 || labels["stego.jsell-rh.github.io/allocator"] != marker || labels["stego.jsell-rh.github.io/allocation-profile"] != "tenant" {
 					t.Fatal("network does not restrict the allocation installation and profile")
 				}
 				pods := peer["podSelector"].(object)["matchLabels"].(object)

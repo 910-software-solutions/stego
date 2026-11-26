@@ -31,10 +31,13 @@ KINDS = {
     "ValidatingAdmissionPolicy": ("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies", False),
     "ValidatingAdmissionPolicyBinding": ("/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings", False),
 }
+# KEY_PREFIX is the prefix of every label and annotation key that STEGO writes (ST-SUP-RC15-OC46); the other
+# allocation checks read it from this module.
+KEY_PREFIX = "stego.jsell-rh.github.io/"
 CONTROL = "stego-allocation-accounts-ci"
 PEER = "stego-allocation-accounts-peer-ci"
 PREFIX = "stego-accounts-ci-"
-ANNOTATION = "stego.dev/service-account-gateway"
+ANNOTATION = KEY_PREFIX + "service-account-gateway"
 INTENT_ANNOTATION = "stego.test/create-intent"
 
 
@@ -55,8 +58,8 @@ def namespace(name, control=None, owner=None):
     obj = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "labels": labels}}
     if control:
         labels.update({
-            "stego.dev/allocator": hashlib.sha256((control + ".widget-queue").encode()).hexdigest()[:32],
-            "stego.dev/allocation-profile": "tenant", "example.test/owner": owner,
+            KEY_PREFIX + "allocator": hashlib.sha256((control + ".widget-queue").encode()).hexdigest()[:32],
+            KEY_PREFIX + "allocation-profile": "tenant", "example.test/owner": owner,
             "app.kubernetes.io/managed-by": "widget",
         })
         obj["metadata"]["annotations"] = {ANNOTATION: account_name(control, owner)}

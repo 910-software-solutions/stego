@@ -15,6 +15,10 @@ import hashlib
 import uuid
 import time
 
+# KEY_PREFIX is the prefix of every label and annotation key that STEGO writes (ST-SUP-RC15-OC46), as
+# check-allocation-account-identity.py states it for the other allocation checks.
+KEY_PREFIX = "stego.jsell-rh.github.io/"
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--context", required=True)
 parser.add_argument("--namespace", required=True)
@@ -66,8 +70,8 @@ def run(args, obj=None, as_user=None, good=True, check=True):
 
 
 labels = {
-    "stego.dev/allocator": marker,
-    "stego.dev/allocation-profile": "tenant",
+    KEY_PREFIX + "allocator": marker,
+    KEY_PREFIX + "allocation-profile": "tenant",
     "example.test/owner": "owner-1",
     "app.kubernetes.io/managed-by": "widget",
     "pod-security.kubernetes.io/enforce": "restricted",
@@ -175,7 +179,7 @@ def check_network_policy():
     if args.network_endpoints:
         policy["spec"]["egress"] += endpoint_rules(False)
     normalized = {key: value for key, value in policy["spec"].items() if key != "policyTypes"}
-    policy["metadata"]["annotations"] = {"stego.dev/network-spec-sha256": hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+    policy["metadata"]["annotations"] = {KEY_PREFIX + "network-spec-sha256": hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
     check("declared network policy", ["create", "--dry-run=server", "-f", "-"], policy, good=True)
     invalid = []
     for direction in ("ingress", "egress"):
@@ -348,7 +352,7 @@ try:
     check(
         "foreign namespace delete", ["delete", "namespace", foreign, "--dry-run=server"]
     )
-    patch = json.dumps({"metadata": {"labels": {"stego.dev/allocator": None}}})
+    patch = json.dumps({"metadata": {"labels": {KEY_PREFIX + "allocator": None}}})
     check(
         "owner label removal",
         ["patch", "namespace", owned, "--type=merge", "-p", patch, "--dry-run=server"],
@@ -565,10 +569,10 @@ try:
         spec["egress"] = spec["egress"][:2] + endpoint_rules(True)
         normalized = {key: value for key, value in spec.items() if key != "policyTypes"}
         digest = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        patch = {"metadata": {"uid": old_policy["metadata"]["uid"], "resourceVersion": old_policy["metadata"]["resourceVersion"], "annotations": {"stego.dev/network-spec-sha256": digest}}, "spec": spec}
+        patch = {"metadata": {"uid": old_policy["metadata"]["uid"], "resourceVersion": old_policy["metadata"]["resourceVersion"], "annotations": {KEY_PREFIX + "network-spec-sha256": digest}}, "spec": spec}
         check("approved endpoint replacement", ["patch", "networkpolicy", "stego-allocation", "-n", owned, "--type=merge", "-p", json.dumps(patch)], good=True)
         updated = json.loads(run(["get", "networkpolicy", "stego-allocation", "-n", owned, "-o", "json"], as_user=actor).stdout)
-        if updated["metadata"]["uid"] != old_policy["metadata"]["uid"] or updated["metadata"]["resourceVersion"] == old_policy["metadata"]["resourceVersion"] or updated["spec"] != spec or updated["metadata"]["annotations"]["stego.dev/network-spec-sha256"] != digest:
+        if updated["metadata"]["uid"] != old_policy["metadata"]["uid"] or updated["metadata"]["resourceVersion"] == old_policy["metadata"]["resourceVersion"] or updated["spec"] != spec or updated["metadata"]["annotations"][KEY_PREFIX + "network-spec-sha256"] != digest:
             raise RuntimeError("endpoint replacement did not retain identity and replace the rules")
         check("retired endpoint restoration", ["patch", "networkpolicy", "stego-allocation", "-n", owned, "--type=merge", "-p", json.dumps({"spec": old_policy["spec"]}), "--dry-run=server"])
         check_endpoint_mutations(updated, "regenerated update")
@@ -591,7 +595,7 @@ try:
                 spec["egress"] = spec["egress"][1:]
                 normalized = {key: value for key, value in spec.items() if key != "policyTypes"}
                 digest = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-                patch = {"metadata": {"uid": old_policy["metadata"]["uid"], "resourceVersion": old_policy["metadata"]["resourceVersion"], "annotations": {"stego.dev/network-spec-sha256": digest}}, "spec": spec}
+                patch = {"metadata": {"uid": old_policy["metadata"]["uid"], "resourceVersion": old_policy["metadata"]["resourceVersion"], "annotations": {KEY_PREFIX + "network-spec-sha256": digest}}, "spec": spec}
                 check("approved regenerated peer update", ["patch", "networkpolicy", "stego-allocation", "-n", owned, "--type=merge", "-p", json.dumps(patch)], good=True)
                 updated = json.loads(run(["get", "networkpolicy", "stego-allocation", "-n", owned, "-o", "json"], as_user=actor).stdout)
                 if updated["metadata"]["uid"] != old_policy["metadata"]["uid"] or updated["metadata"]["resourceVersion"] == old_policy["metadata"]["resourceVersion"] or updated["spec"] != spec:

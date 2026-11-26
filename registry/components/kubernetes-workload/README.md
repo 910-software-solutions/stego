@@ -49,7 +49,7 @@ the containers. The digest sorts dependency and
 key names and hashes a versioned, length-delimited encoding. Map order has no
 effect. Changed contents or names change the digest. API metadata is excluded
 because the caller supplies only contents. Nil and empty bytes are equivalent.
-The builder puts the digest in the Pod annotation `stego.dev/config-sha256`.
+The builder puts the digest in the Pod annotation `stego.jsell-rh.github.io/config-sha256`.
 Secret contents do not enter the returned resources or error text. A digest is
 not encryption: low-entropy values can be guessed from a public digest. Supply
 only authorized configuration, and keep credentials in Secret references.

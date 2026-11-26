@@ -11,6 +11,7 @@ import (
 )
 
 func TestGeneratedGoIsFormatted(t *testing.T) {
+	t.Parallel()
 	t.Run("ST-STD-GEN-R04-T01 The TLS open files that the compiler emits are as gofmt formats them", func(t *testing.T) {
 		for _, file := range httpTLSFiles() {
 			formatted, err := format.Source(file.Content)

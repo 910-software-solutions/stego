@@ -29,8 +29,8 @@ def account_name(owner, alias):
 
 def destination(suffix, owner):
     result = common.namespace(DESTINATION_PREFIX + suffix, common.CONTROL, owner)
-    result["metadata"]["labels"]["stego.dev/allocation-profile"] = "jobs"
-    result["metadata"]["annotations"]["stego.dev/service-account-runner"] = account_name(owner, "runner")
+    result["metadata"]["labels"][common.KEY_PREFIX + "allocation-profile"] = "jobs"
+    result["metadata"]["annotations"][common.KEY_PREFIX + "service-account-runner"] = account_name(owner, "runner")
     return result
 
 
@@ -45,7 +45,7 @@ class Check(common.Check):
         self.create({"apiVersion": "v1", "kind": "ResourceQuota", "metadata": {"name": "stego-allocation", "namespace": obj["metadata"]["name"], "labels": labels},
                      "spec": {"hard": {"pods": "1", "limits.cpu": "1", "limits.memory": "256Mi", "limits.ephemeral-storage": "128Mi", "requests.storage": "1Gi"}}}, actor)
         account = common.service_account(obj)
-        account["metadata"]["name"] = obj["metadata"]["annotations"]["stego.dev/service-account-" + alias]
+        account["metadata"]["name"] = obj["metadata"]["annotations"][common.KEY_PREFIX + "service-account-" + alias]
         self.create(account, actor)
         return stored
 
