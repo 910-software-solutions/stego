@@ -111,7 +111,7 @@ When the database cannot serve a command now, the command answers 503 with
 `command.database.unavailable` for each action and step in 10 seconds. The
 line has `stego.action`, `stego.step` and `stego.sqlstate_class`: the class
 of the SQLSTATE only, never the full code and never the message. From runtime
-v0.200.0 (rest-crud 3.266.0, rpc-service and browser-service 1.266.0):
+v0.201.0 (rest-crud 3.267.0, rpc-service and browser-service 1.267.0):
 
 | `stego.sqlstate_class` | Cause | Action |
 |---|---|---|
