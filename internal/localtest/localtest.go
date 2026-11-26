@@ -370,6 +370,24 @@ func SumsChecked(dir string) error {
 	return nil
 }
 
+// ModuleCache gives the module cache of localtest, and fills it as the first call of GoEnv does. A test that copies
+// modules out of a module cache, such as the local proxy of Building, takes them from this one: each module in it is
+// checked.
+func ModuleCache(t testing.TB) string {
+	t.Helper()
+	RequireModules(t)
+	return moduleCache
+}
+
+// FillEnv gives the environment of a go command that downloads modules into the module cache of localtest with the
+// sum database on, as its fill does: sum.golang.org, no private, insecure or unchecked module, the go env file not
+// read.
+func FillEnv(t testing.TB) []string {
+	t.Helper()
+	RequireModules(t)
+	return fillEnvironment()
+}
+
 // RequireModules downloads the modules of testdata/modules, as the first call of GoEnv does, and fails the test with
 // the reason when the download failed.
 func RequireModules(t testing.TB) {
@@ -403,24 +421,7 @@ func downloadModules() {
 	}
 	moduleCache = folder
 	cacheProxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(moduleCache, "cache", "download"))}).String()
-	// The fill reads modules through the module proxy of the environment, and each module is checked: against the
-	// go.sum of the folder, else against sum.golang.org. No setting of the environment or of the go env file can turn
-	// a check off: GOENV=off, and each sum and private setting is set here.
-	fillEnv := []string{}
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if innerSettings[key] {
-			continue
-		}
-		fillEnv = append(fillEnv, entry)
-	}
-	proxy := os.Getenv("GOPROXY")
-	if proxy == "" || proxy == "off" {
-		proxy = "https://proxy.golang.org"
-	}
-	fillEnv = append(fillEnv, "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
-		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
-		"GOTOOLCHAIN=local")
+	fillEnv := fillEnvironment()
 	// testdata/modules pins the runtime library's modules and each module that a generator requires; testdata/
 	// modules-other pins the modules that a test writes into a generated module at another version.
 	//
@@ -589,6 +590,28 @@ func downloadModules() {
 			}
 		}
 	}
+}
+
+// fillEnvironment is the environment of the fill of the module cache of localtest. It reads modules through the
+// module proxy of the environment, and each module is checked: against the go.sum of the folder, else against
+// sum.golang.org. No setting of the environment or of the go env file can turn a check off: GOENV=off, and each sum
+// and private setting is set here.
+func fillEnvironment() []string {
+	fillEnv := []string{}
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if innerSettings[key] {
+			continue
+		}
+		fillEnv = append(fillEnv, entry)
+	}
+	proxy := os.Getenv("GOPROXY")
+	if proxy == "" || proxy == "off" {
+		proxy = "https://proxy.golang.org"
+	}
+	return append(fillEnv, "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
+		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
+		"GOTOOLCHAIN=local")
 }
 
 // cacheFolder gives the module cache of localtest, and makes it: localtest-modules in STEGO_TEST_RUNS when that
