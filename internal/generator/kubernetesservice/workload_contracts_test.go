@@ -325,7 +325,7 @@ var oldPrefixAllowed = map[string]bool{
 
 // upgradeRowStart is the start of the release row of docs/upgrade.md for the new key prefix, which names the old
 // prefix in its text.
-const upgradeRowStart = "| - | - | STEGO commit of pull request #506 (the archetype versions stay 3.262.0, 1.262.0 and 1.262.0) | kubernetes-service 1.31.0 and kubernetes-workload 1.1.0"
+const upgradeRowStart = "| - | - | STEGO commit 955d242c7 of pull request #506 (the archetype versions stay 3.262.0, 1.262.0 and 1.262.0) | kubernetes-service 1.31.0 and kubernetes-workload 1.1.0"
 
 // upgradeRowText is the one text of that row after its start: an old key in a changed row is no longer the row.
 const upgradeRowText = ", which only browser-service holds, or a declaration that selects them. Each label and annotation key that STEGO writes starts with `stego.jsell-rh.github.io/` and not with `stego" + ".dev/`: `config-sha256`, `allocator`, `allocation-profile`, `allocation-network-endpoints`, `network-spec-sha256` and `service-account-<alias>`, and the capability paths of the namespace allocator. The admission policies and the allocator select only the new keys. A namespace that an allocator of an earlier release made keeps the old labels, and loses the protection of the policies and the ownership of the allocator. The Pods restart once, because the key of the configuration digest annotation changes. | [Upgrade over the old label keys](#upgrade-over-the-old-label-keys) |"
