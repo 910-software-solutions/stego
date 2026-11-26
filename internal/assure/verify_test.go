@@ -14,6 +14,8 @@ import (
 
 const (
 	trustedWorkflow = "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
+	// fixtureWorkflow signed testdata/sigstore-proof-run.json, in the repository of STEGO before the move.
+	fixtureWorkflow = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
 	changeRef       = "refs/pull/7/merge"
 )
 
@@ -350,7 +352,10 @@ func TestVerify(t *testing.T) {
 		commits := memoryCommits{parents: map[string][]string{
 			"9609dbfd7ade7168ff18d49af5df240f6334778e": {"d7643951379de746ff1d7d812a2333900dc209de", fixture.Commit},
 		}}
-		trust := Trust{Signer: trusted, ChangeRef: "refs/pull/24/merge", Base: "d7643951379de746ff1d7d812a2333900dc209de", Commits: commits}
+		// The fixture is a real bundle that the proof run workflow of the old repository jsell-rh/stego signed before
+		// the move to 910-software-solutions/stego, so it trusts that workflow.
+		fixtureSigner := TrustedSigner{Issuer: GitHubIssuer, Workflow: fixtureWorkflow}
+		trust := Trust{Signer: fixtureSigner, ChangeRef: "refs/pull/24/merge", Base: "d7643951379de746ff1d7d812a2333900dc209de", Commits: commits}
 		store := &memoryStore{bundles: map[string][][]byte{fixture.Commit: {fixture.Bundle}}}
 		verification, err := VerifyAttestation(fixture.Commit, store, verifier, trust)
 		if err != nil {
@@ -366,7 +371,7 @@ func TestVerify(t *testing.T) {
 		want := Attestation{
 			PredicateType: ProofRunPredicateType,
 			Subject:       fixture.Commit,
-			Signer:        Signer{Issuer: GitHubIssuer, Subject: trustedWorkflow + "@refs/pull/24/merge"},
+			Signer:        Signer{Issuer: GitHubIssuer, Subject: fixtureWorkflow + "@refs/pull/24/merge"},
 			LogEntry:      "rekor:3614924958",
 		}
 		if proof.Attestation != want || proof.Grade != ChangeGrade || proof.Run.Commit != fixture.Commit || len(proof.Run.Outcomes) != 239 {

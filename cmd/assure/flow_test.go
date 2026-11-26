@@ -114,7 +114,7 @@ func TestGateFlow(t *testing.T) {
 			"base head: " + g.base + "\n" +
 			"coverage at " + change + ": 5 obligations: 5 designed (100.0%), 2 built (40.0%), 2 proved (40.0%)\n" +
 			"coverage at " + g.base + ": 4 obligations: 4 designed (100.0%), 2 built (50.0%), 2 proved (50.0%)\n" +
-			"proof run: https://github.com/910-software-solutions/stego/assure/proof-run/v1 about " + change +
+			"proof run: https://github.com/jsell-rh/stego/assure/proof-run/v1 about " + change +
 			", signed by https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/pull/7/merge (issuer https://token.actions.githubusercontent.com), rekor:21\n" +
 			"code faults (1):\n" +
 			"internal/lend/rules.go (ST-STD-CODE-R02, present at base): FX-LEND-INV02-RL names lend.dueAfterStart, which the file does not declare\n" +
@@ -163,9 +163,9 @@ func TestReleaseFlow(t *testing.T) {
 		result := g.release(t, full, proof, predicate, "GITHUB_STEP_SUMMARY="+summary)
 		decision := "release gate on " + full + ": passed\n" +
 			"coverage at " + full + ": 4 obligations: 4 designed (100.0%), 4 built (100.0%), 4 proved (100.0%)\n" +
-			"proof run: https://github.com/910-software-solutions/stego/assure/proof-run/v1 about " + full +
+			"proof run: https://github.com/jsell-rh/stego/assure/proof-run/v1 about " + full +
 			", signed by https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com), rekor:31\n" +
-			"attestation: https://github.com/910-software-solutions/stego/assure/release-decision/v1 about " + full +
+			"attestation: https://github.com/jsell-rh/stego/assure/release-decision/v1 about " + full +
 			", for https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com) to sign\n" +
 			"code faults: none\n" +
 			"reasons: none\n"
@@ -182,7 +182,7 @@ func TestReleaseFlow(t *testing.T) {
   "reasons": [],
   "codeFaults": [],
   "proofRun": {
-    "predicateType": "https://github.com/910-software-solutions/stego/assure/proof-run/v1",
+    "predicateType": "https://github.com/jsell-rh/stego/assure/proof-run/v1",
     "subject": "` + full + `",
     "issuer": "https://token.actions.githubusercontent.com",
     "signer": "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main",
@@ -192,7 +192,7 @@ func TestReleaseFlow(t *testing.T) {
 `
 		sum := sha256.Sum256([]byte(want))
 		predicateLine := "decision predicate " + predicate + " (sha256:" + hex.EncodeToString(sum[:]) + "), type " +
-			"https://github.com/910-software-solutions/stego/assure/release-decision/v1, for https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main to sign\n"
+			"https://github.com/jsell-rh/stego/assure/release-decision/v1, for https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main to sign\n"
 		if result.code != 0 || result.stdout != decision+predicateLine {
 			t.Fatalf("assure gate release exited %d with:\n%s%s\nwant:\n%s%s", result.code, result.stdout, result.stderr, decision, predicateLine)
 		}

@@ -63,7 +63,7 @@ def signer_policy(gh, path, revision, bundle):
             "--deny-self-hosted-runners", "--format", "json"]
 
 
-DECISION_PREDICATE = "https://github.com/910-software-solutions/stego/assure/release-decision/v1"
+DECISION_PREDICATE = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
 
 
 def decision_result(revision, **predicate):

@@ -28,7 +28,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 REPOSITORY = "910-software-solutions/stego"
-DECISION_PREDICATE = "https://github.com/910-software-solutions/stego/assure/release-decision/v1"
+DECISION_PREDICATE = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
 COMPILER_PREDICATE = "https://slsa.dev/provenance/v1"
 ARTIFACT_RUN = 202
 CHECKS_RUN = 101

@@ -31,7 +31,7 @@ CHECKS_WORKFLOW = ".github/workflows/checks.yml"
 # The release gate's decision (ST-DIS-UC08-R04): the proof run workflow at
 # main signs a passed release decision with the commit as its subject.
 DECISION_WORKFLOW = ".github/workflows/proof-run.yml"
-DECISION_PREDICATE = "https://github.com/910-software-solutions/stego/assure/release-decision/v1"
+DECISION_PREDICATE = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
 ARTIFACT_WORKFLOW = ".github/workflows/compiler-artifact.yml"
 CHECKS_JOB_NAMES = ["examples (user-management)", "examples (user-management-rhsso)",
                     "compiler", "postgres-provisioning", "keycloak-provider",
