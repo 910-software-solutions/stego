@@ -163,7 +163,7 @@ func allocationConfig(ctx gen.Context) (allocationConfiguration, error) {
 		length, lok := values["suffix_length"].(int)
 		owner, _ := values["owner_label"].(string)
 		manager, _ := values["manager"].(string)
-		if !label.MatchString(name) || names[name] || !allocationPrefix.MatchString(prefix) || !lok || length < 1 || len(prefix)+length > 63 || !validLabelKey(owner) || len(owner) > 253 || strings.HasPrefix(owner, "stego.dev/") || strings.HasPrefix(owner, "pod-security.kubernetes.io/") || owner == "app.kubernetes.io/managed-by" || owner == "pod-security.kubernetes.io/enforce" || !label.MatchString(manager) {
+		if !label.MatchString(name) || names[name] || !allocationPrefix.MatchString(prefix) || !lok || length < 1 || len(prefix)+length > 63 || !validLabelKey(owner) || len(owner) > 253 || reservedKeyPrefix(owner) || strings.HasPrefix(owner, "pod-security.kubernetes.io/") || owner == "app.kubernetes.io/managed-by" || owner == "pod-security.kubernetes.io/enforce" || !label.MatchString(manager) {
 			return result, fmt.Errorf("invalid allocation profile identity")
 		}
 		for _, old := range result.Profiles {
@@ -249,7 +249,7 @@ func allocationConfig(ctx gen.Context) (allocationConfiguration, error) {
 				}
 				field, _ := m["field"].(string)
 				key, _ := m["key"].(string)
-				if !labelValue.MatchString(field) || !validLabelKey(key) || len(key) > 253 || fields[field] || seen[key] || key == owner || key == "app.kubernetes.io/managed-by" || key == "kubernetes.io/metadata.name" || strings.HasPrefix(key, "stego.dev/") || strings.HasPrefix(key, "pod-security.kubernetes.io/") {
+				if !labelValue.MatchString(field) || !validLabelKey(key) || len(key) > 253 || fields[field] || seen[key] || key == owner || key == "app.kubernetes.io/managed-by" || key == "kubernetes.io/metadata.name" || reservedKeyPrefix(key) || strings.HasPrefix(key, "pod-security.kubernetes.io/") {
 					return result, fmt.Errorf("invalid or reserved namespace identity field")
 				}
 				fields[field] = true
@@ -472,7 +472,7 @@ func allocationFiles(ctx gen.Context) ([]gen.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := struct{ Kubernetes, Configuration string }{path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["kubernetes-client"]), string(encoded)}
+	data := struct{ Kubernetes, Configuration, KeyPrefix string }{path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["kubernetes-client"]), string(encoded), KeyPrefix}
 	tmpl, err := template.New("allocation").Parse(allocationSource)
 	if err != nil {
 		return nil, err

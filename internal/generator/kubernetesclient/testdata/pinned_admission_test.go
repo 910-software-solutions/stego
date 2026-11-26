@@ -75,7 +75,7 @@ func TestPinnedAdmissionHasNoWriteGrantOrOptionalParameter(t *testing.T) {
 		}
 		switch item["kind"] {
 		case "ValidatingAdmissionPolicy":
-			for _, fragment := range []string{`"failurePolicy":"Fail"`, `system:serviceaccount:ci:runner`, `"scope":"Namespaced"`, `params.metadata.uid`, `stego.dev/pinned-namespace-uid`, `request.operation != 'UPDATE'`, `request.options.propagationPolicy`, `request.options.preconditions.uid`} {
+			for _, fragment := range []string{`"failurePolicy":"Fail"`, `system:serviceaccount:ci:runner`, `"scope":"Namespaced"`, `params.metadata.uid`, `stego.jsell-rh.github.io/pinned-namespace-uid`, `request.operation != 'UPDATE'`, `request.options.propagationPolicy`, `request.options.preconditions.uid`} {
 				if !strings.Contains(string(raw), fragment) {
 					t.Fatal("missing policy guard", fragment)
 				}

@@ -120,8 +120,8 @@ func allocationNetworkRulesCEL(p allocationProfile, direction string) string {
 			labels := path + ".matchLabels"
 			pairs := [][2]string{
 				{"kubernetes.io/metadata.name", celString(peer.PeerPrefix) + " + namespaceObject.metadata.name.substring(" + fmt.Sprint(len(p.Prefix)) + ")"},
-				{"stego.dev/allocator", "namespaceObject.metadata.labels['stego.dev/allocator']"},
-				{"stego.dev/allocation-profile", celString(peer.PeerProfile)},
+				{KeyPrefix + "allocator", "namespaceObject.metadata.labels['" + KeyPrefix + "allocator']"},
+				{KeyPrefix + "allocation-profile", celString(peer.PeerProfile)},
 				{p.OwnerLabel, "namespaceObject.metadata.labels[" + celString(p.OwnerLabel) + "]"},
 			}
 			parts := []string{"has(" + path + ")", "has(" + labels + ")", "size(" + labels + ") == 4", "(!has(" + path + ".matchExpressions) || size(" + path + ".matchExpressions) == 0)"}
@@ -144,7 +144,7 @@ func allocationNetworkRulesCEL(p allocationProfile, direction string) string {
 	return "(" + strings.Join(checks, " && ") + ")"
 }
 
-const allocationEndpointAnnotation = "stego.dev/allocation-network-endpoints"
+const allocationEndpointAnnotation = KeyPrefix + "allocation-network-endpoints"
 const allocationEndpointEnvironment = "STEGO_ALLOCATION_NETWORK_ENDPOINTS"
 const allocationEndpointPlaceholder = "stego_unrendered_allocation_endpoints"
 

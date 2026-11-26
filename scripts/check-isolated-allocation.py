@@ -55,7 +55,7 @@ class Check(pods.Check):
         labels = {k: v for k, v in namespace["metadata"]["labels"].items() if not k.startswith("pod-security.")}
         return self.create({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
                             "metadata": {"namespace": namespace["metadata"]["name"],
-                                         "name": "stego-" + labels["stego.dev/allocator"] + "-2", "labels": labels},
+                                         "name": "stego-" + labels[common.KEY_PREFIX + "allocator"] + "-2", "labels": labels},
                             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "system:openshift:scc:privileged"},
                             "subjects": [{"kind": "ServiceAccount", "namespace": namespace["metadata"]["name"],
                                           "name": namespace["metadata"]["annotations"][common.ANNOTATION]}]}, common.actor(control))
@@ -96,8 +96,8 @@ class Check(pods.Check):
         labels = common.namespace(namespace, common.CONTROL, "owner-1")["metadata"]["labels"]
         labels = {k: v for k, v in labels.items() if not k.startswith("pod-security.")}
         target = {"kubernetes.io/metadata.name": "stego-rules-target-ci-" + namespace[len(common.PREFIX):],
-                  "stego.dev/allocator": labels["stego.dev/allocator"],
-                  "stego.dev/allocation-profile": "peer", "example.test/owner": "owner-1"}
+                  common.KEY_PREFIX + "allocator": labels[common.KEY_PREFIX + "allocator"],
+                  common.KEY_PREFIX + "allocation-profile": "peer", "example.test/owner": "owner-1"}
         network = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
                    "metadata": {"name": "stego-allocation", "namespace": namespace, "labels": labels},
                    "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"],
@@ -114,8 +114,8 @@ class Check(pods.Check):
         if self.get(network) is not None:
             raise RuntimeError("Network dry-run left a stored policy")
         for key, value in [("kubernetes.io/metadata.name", "stego-rules-target-ci-foreign"),
-                           ("stego.dev/allocator", "other-installation"),
-                           ("stego.dev/allocation-profile", "tenant"),
+                           (common.KEY_PREFIX + "allocator", "other-installation"),
+                           (common.KEY_PREFIX + "allocation-profile", "tenant"),
                            ("example.test/owner", "owner-2"),
                            ("example.test/owner", None)]:
             changed = copy.deepcopy(network)

@@ -252,7 +252,7 @@ func TestTypedRendererRejectsInvalidOptions(t *testing.T) {
 			}
 		},
 	}
-	for _, key := range []string{"plain", "stego.dev/owner", "k8s.io/owner", "app.kubernetes.io/name", "Bad..test/owner", "example.test/path/extra"} {
+	for _, key := range []string{"plain", "stego.jsell-rh.github.io/owner", "k8s.io/owner", "app.kubernetes.io/name", "Bad..test/owner", "example.test/path/extra"} {
 		mutations["owner key "+key] = func(o *deployment.Options) { o.OwnerLabels = map[string]string{key: "one"} }
 	}
 	for _, value := range []string{"", "../one", strings.Repeat("a", 64)} {

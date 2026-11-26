@@ -81,7 +81,7 @@ func Commands()command.Application{return command.Application{VersionCommand:tru
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"runtime_test.go", "output_test.go", "oauth_test.go", "apply_test.go", "apply_immutable_test.go", "idempotency_test.go", "relative_time_test.go", "identity_test.go", "version_test.go"} {
+	for _, name := range []string{"runtime_test.go", "output_test.go", "oauth_test.go", "apply_test.go", "apply_immutable_test.go", "idempotency_test.go", "relative_time_test.go", "identity_test.go", "version_test.go", "config_test.go"} {
 		data, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {
 			t.Fatal(err)
