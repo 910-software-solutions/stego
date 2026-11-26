@@ -1,16 +1,23 @@
 package assure
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
+	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The tests of the rules of ST-STD-RUNTIME (the runtime library), of ST-STD-TRUST-R05 (delivery to a GitOps tool)
@@ -114,23 +121,34 @@ func tableFill(function *ast.FuncDecl) bool {
 }
 
 // processGlobals are the registries and the settings of the whole process that a library must not use on its own:
-// the default HTTP mux, the default logger and its output, the database driver and gob registries, the global
-// providers of OpenTelemetry, the environment and signals (review of PR #504, M4). The flag package outside a
-// FlagSet of its own is one too.
+// the default HTTP mux, client and transport, the default logger and its output, the local time zone, the database
+// driver and gob registries, the global providers and logger of OpenTelemetry, the default resolver, the
+// environment, the working folder, the runtime's limits and signals (review of PR #504, M4). The flag package outside
+// a FlagSet of its own is one too.
 var processGlobals = map[string]bool{
 	"net/http.Handle": true, "net/http.HandleFunc": true, "net/http.DefaultServeMux": true, "net/http.DefaultClient": true,
-	"log/slog.SetDefault": true, "log.SetOutput": true, "log.SetFlags": true, "log.SetPrefix": true,
+	"net/http.DefaultTransport": true, "net.DefaultResolver": true,
+	"log/slog.SetDefault": true, "log/slog.SetLogLoggerLevel": true, "log.SetOutput": true, "log.SetFlags": true,
+	"log.SetPrefix": true, "log.Default": true, "time.Local": true,
 	"database/sql.Register": true, "encoding/gob.Register": true, "encoding/gob.RegisterName": true,
 	"go.opentelemetry.io/otel.SetTracerProvider": true, "go.opentelemetry.io/otel.SetMeterProvider": true,
 	"go.opentelemetry.io/otel.SetTextMapPropagator": true, "go.opentelemetry.io/otel.SetErrorHandler": true,
-	"os.Setenv": true, "os.Unsetenv": true, "os/signal.Notify": true, "expvar.Publish": true,
+	"go.opentelemetry.io/otel.SetLogger": true, "go.opentelemetry.io/otel/log/global.SetLoggerProvider": true,
+	"os.Setenv": true, "os.Unsetenv": true, "os.Clearenv": true, "os.Chdir": true, "os/signal.Notify": true,
+	"os/signal.Ignore": true, "os/signal.Reset": true, "expvar.Publish": true, "runtime.GOMAXPROCS": true,
+	"runtime/debug.SetGCPercent": true, "runtime/debug.SetMemoryLimit": true, "runtime/debug.SetMaxThreads": true,
+	"runtime/debug.SetMaxStack": true, "runtime/debug.SetPanicOnFault": true, "runtime/debug.SetTraceback": true,
 }
 
 // admittedGlobals are the uses of a setting of the whole process that ST-STD-RUNTIME-R01 admits, by file and name,
-// each because the service's own code calls the function that holds it: service.UseJSONLog sets the default logger
-// when the generated NewService and Migrate call it. A new use fails the test.
+// each for its reason. A new use fails the test.
+//   - service.UseJSONLog sets the default logger when the generated NewService and Migrate call it.
+//   - sealed reads GOMAXPROCS(0), which changes nothing, to size its pool of hash slots.
+//   - kafkaoutbox reads the default resolver to look up a broker's addresses, and changes nothing.
 var admittedGlobals = map[string][]string{
-	runtimeModule + "/service/service.go": {"log/slog.SetDefault"},
+	runtimeModule + "/service/service.go":                {"log/slog.SetDefault"},
+	runtimeModule + "/sealed/compare.go":                 {"runtime.GOMAXPROCS"},
+	runtimeModule + "/outbox/kafkaoutbox/destination.go": {"net.DefaultResolver"},
 }
 
 // admittedGlobal tells if the use is one of admittedGlobals.
@@ -138,9 +156,57 @@ func admittedGlobal(source sourceFile, name string) bool {
 	return slices.Contains(admittedGlobals[source.name], name)
 }
 
+// assignedSelectors gives each selector pkg.Name of an imported package on the left side of an assignment or an
+// increment in the file, and each such selector that a field or an index of the left side starts from: a library
+// that writes a variable of another package changes it for the whole process (review of PR #504, M4).
+func assignedSelectors(file *ast.File, imports map[string]string) []string {
+	var names []string
+	var root func(expr ast.Expr) *ast.SelectorExpr
+	root = func(expr ast.Expr) *ast.SelectorExpr {
+		switch e := expr.(type) {
+		case *ast.SelectorExpr:
+			if pkg, ok := e.X.(*ast.Ident); ok && imports[pkg.Name] != "" {
+				return e
+			}
+			return root(e.X)
+		case *ast.IndexExpr:
+			return root(e.X)
+		case *ast.StarExpr:
+			return root(e.X)
+		case *ast.ParenExpr:
+			return root(e.X)
+		case *ast.TypeAssertExpr:
+			return root(e.X)
+		case *ast.CallExpr:
+			return root(e.Fun)
+		}
+		return nil
+	}
+	add := func(expr ast.Expr) {
+		if selector := root(expr); selector != nil {
+			names = append(names, imports[selector.X.(*ast.Ident).Name]+"."+selector.Sel.Name)
+		}
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.AssignStmt:
+			if n.Tok != token.DEFINE {
+				for _, left := range n.Lhs {
+					add(left)
+				}
+			}
+		case *ast.IncDecStmt:
+			add(n.X)
+		}
+		return true
+	})
+	return names
+}
+
 // frameworkFaults gives each fault of ST-STD-RUNTIME-R01 in the runtime module: an init that is not one of the two
-// admitted forms, a read of a struct tag, a lookup of a type or a function by name (plugin, reflect), and a call of
-// a function of the process's global registries (flag, expvar, the default HTTP mux).
+// admitted forms, a dot import, which hides what the file uses, a read of a struct tag, a lookup of a type or a
+// function by name (plugin, reflect), a use of a registry or a setting of the whole process, and an assignment to a
+// variable of another package (review of PR #504, M4).
 func frameworkFaults(files []sourceFile) []string {
 	var faults []string
 	for _, source := range files {
@@ -151,12 +217,19 @@ func frameworkFaults(files []sourceFile) []string {
 			if spec.Name != nil {
 				name = spec.Name.Name
 			}
+			if name == "." {
+				faults = append(faults, fmt.Sprintf("%s imports %s with a dot, so the test cannot see what it uses", source.name, value))
+				continue
+			}
 			imports[name] = value
 		}
 		for _, value := range importsOf(source.file) {
 			if value == "plugin" || value == "expvar" {
 				faults = append(faults, fmt.Sprintf("%s imports %s, which registers or discovers by name", source.name, value))
 			}
+		}
+		for _, name := range assignedSelectors(source.file, imports) {
+			faults = append(faults, fmt.Sprintf("%s assigns to %s, a variable of another package, which changes it for the whole process", source.name, name))
 		}
 		ast.Inspect(source.file, func(node ast.Node) bool {
 			switch n := node.(type) {
@@ -306,29 +379,56 @@ func importNames(file *ast.File) map[string]string {
 	return names
 }
 
-// gitopsFaults gives each fault of ST-STD-TRUST-R05 in a file that delivers to a GitOps tool: an import of a network,
-// process, gRPC, Kubernetes or Argo CD client, by any alias, a read of the environment, where a credential of the tool
-// would be, and a read of a file, where a credential or a kube configuration would be (review of PR #504, L6). The
-// adapter writes its files; the caller reads the declaration and passes its values.
+// gitopsImports are the imports that a file of the delivery package may have: the standard library's text,
+// encoding, data and error packages, the YAML package, and the application build's pins. Each other import fails the
+// test, so a network, process, gRPC, Kubernetes, Argo CD or TLS client is never in the package (review of PR #504,
+// M2). net and net/url parse and check addresses; neither dials.
+var gitopsImports = map[string]bool{
+	"bytes": true, "errors": true, "fmt": true, "io": true, "maps": true, "math": true, "net": true, "net/url": true,
+	"path": true, "regexp": true, "slices": true, "sort": true, "strconv": true, "strings": true, "time": true,
+	"unicode": true, "unicode/utf8": true, "gopkg.in/yaml.v3": true, "github.com/jsell-rh/stego/internal/appbuild": true,
+}
+
+// gitopsDials are the functions of the admitted imports that open a connection: a file of the delivery package
+// must not refer to one.
+var gitopsDials = map[string]bool{"net.Dial": true, "net.DialTimeout": true, "net.DialTCP": true, "net.DialUDP": true,
+	"net.DialIP": true, "net.DialUnix": true, "net.Listen": true, "net.ListenPacket": true, "net.LookupHost": true,
+	"net.LookupIP": true, "net.LookupAddr": true, "net.DefaultResolver": true, "net.Dialer": true, "net.Resolver": true}
+
+// gitopsReads are the functions of package os and io/ioutil that read the environment or a file. A file of the
+// delivery package must not refer to one, as a call or as a value (os.Expand(text, os.Getenv)).
+var gitopsReads = map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "os.Environ": true, "os.ExpandEnv": true,
+	"os.Expand": true, "os.ReadFile": true, "os.Open": true, "os.OpenFile": true, "os.ReadDir": true, "os.DirFS": true,
+	"os.UserHomeDir": true, "os.UserConfigDir": true, "io/ioutil.ReadFile": true, "io/ioutil.ReadDir": true}
+
+// gitopsFaults gives each fault of ST-STD-TRUST-R05 in a file of the package that delivers to a GitOps tool: an
+// import that gitopsImports does not admit, a dot import, a reference to a function that dials, and a reference to a
+// function that reads the environment or a file, where a credential of the tool would be (review of PR #504, L6 and
+// M2). The adapter writes its files; the caller reads the declaration and passes its values.
 func gitopsFaults(source sourceFile) []string {
 	var faults []string
-	for _, imported := range importsOf(source.file) {
-		switch {
-		case imported == "net/http", imported == "net", imported == "os/exec", imported == "syscall", strings.HasPrefix(imported, "google.golang.org/grpc"),
-			strings.HasPrefix(imported, "k8s.io/client-go"), strings.HasPrefix(imported, "sigs.k8s.io/controller-runtime"),
-			strings.HasPrefix(imported, "github.com/argoproj/"):
-			faults = append(faults, fmt.Sprintf("%s imports %s, so it can call the tool or the cluster", source.name, imported))
+	for _, spec := range source.file.Imports {
+		imported, _ := strconv.Unquote(spec.Path.Value)
+		if spec.Name != nil && spec.Name.Name == "." {
+			faults = append(faults, fmt.Sprintf("%s imports %s with a dot, so the test cannot see what it calls", source.name, imported))
+		}
+		if !gitopsImports[imported] {
+			faults = append(faults, fmt.Sprintf("%s imports %s, which the delivery package may not import: it can call the tool or the cluster, or read a credential", source.name, imported))
 		}
 	}
 	names := importNames(source.file)
-	reads := map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "os.Environ": true, "os.ReadFile": true, "os.Open": true,
-		"os.OpenFile": true, "io/ioutil.ReadFile": true, "os.UserHomeDir": true}
 	ast.Inspect(source.file, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if pkg, ok := selector.X.(*ast.Ident); ok && reads[names[pkg.Name]+"."+selector.Sel.Name] {
-					faults = append(faults, fmt.Sprintf("%s calls %s.%s, which reads the environment or a file where a credential of the tool would be", source.name, names[pkg.Name], selector.Sel.Name))
-				}
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkg, ok := selector.X.(*ast.Ident); ok {
+			name := names[pkg.Name] + "." + selector.Sel.Name
+			if gitopsReads[name] {
+				faults = append(faults, fmt.Sprintf("%s refers to %s, which reads the environment or a file where a credential of the tool would be", source.name, name))
+			}
+			if gitopsDials[name] {
+				faults = append(faults, fmt.Sprintf("%s refers to %s, which opens a connection", source.name, name))
 			}
 		}
 		return true
@@ -341,28 +441,32 @@ const gitopsAdapter = "ST-INT03-AD"
 
 func TestGitOpsDeliveryWritesFilesOnly(t *testing.T) {
 	spec, tree := readHead(t)
-	var files []string
+	var adapter string
 	for _, record := range spec.Technical {
 		if record.ID == gitopsAdapter {
-			files = append(append(files, record.File), record.Helpers...)
+			adapter = record.File
 		}
 	}
-	if len(files) == 0 {
-		t.Fatalf("the spec at HEAD has no adapter %s", gitopsAdapter)
+	if adapter == "" {
+		t.Fatalf("the spec at HEAD has no adapter %s with a file", gitopsAdapter)
 	}
 	t.Run("ST-STD-TRUST-R05-T01 The Argo CD adapter writes files and calls no API, runs no command and reads no credential", func(t *testing.T) {
+		// The adapter's file can call each function of its package, so the test reads each Go file of the package
+		// that is not a test file (review of PR #504, M2).
 		var faults []string
-		for _, name := range files {
-			data, held := tree.File(name)
-			if !held {
-				faults = append(faults, name+" is not in the tree")
+		if _, held := tree.File(adapter); !held {
+			faults = append(faults, adapter+" is not in the tree")
+		}
+		read := 0
+		for _, source := range goSources(t, tree, path.Dir(adapter)) {
+			if path.Dir(source.name) != path.Dir(adapter) {
 				continue
 			}
-			file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.SkipObjectResolution)
-			if err != nil {
-				t.Fatalf("%s does not parse: %v", name, err)
-			}
-			faults = append(faults, gitopsFaults(sourceFile{name: name, data: data, file: file})...)
+			read++
+			faults = append(faults, gitopsFaults(source)...)
+		}
+		if read < 2 {
+			faults = append(faults, fmt.Sprintf("the test reads %d file of the package of %s, so it does not read the whole package", read, adapter))
 		}
 		report(t, "ST-STD-TRUST-R05", faults)
 	})
@@ -371,28 +475,138 @@ func TestGitOpsDeliveryWritesFilesOnly(t *testing.T) {
 // consoleSink is the variable that turns the console sink of the domain probes on (ST-SUP-RP12-LC16).
 const consoleSink = "STEGO_PROBE_CONSOLE"
 
+// deliveryStanzaFor is a delivery stanza for Argo CD that the test adds to the declaration of an example, so that
+// stego apply writes the GitOps object as well as the Kubernetes base.
+func deliveryStanzaFor(service string) string {
+	return "\ndelivery:\n  argocd:\n    project: " + service + "\n" +
+		"    source: {repo: https://git.example/" + service + ".git, path: deploy/base}\n" +
+		"    environments: {repo: https://git.example/platform.git, revision: main, path: environments/" + service + "/*.yaml}\n"
+}
+
+// runIn runs the program in the folder with the environment added, and fails the test when it fails.
+func runIn(t *testing.T, dir string, env []string, program string, args ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, program, args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), env...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%s %s in %s: %v\n%s", program, strings.Join(args, " "), dir, err, output)
+	}
+}
+
+// generatedDeployFiles writes the tree at HEAD to a temporary folder, builds stego from it, and runs stego apply on
+// a copy of each example with a delivery stanza for Argo CD. It gives each file that apply writes under deploy/base,
+// deploy/components and deploy/argocd, whatever its extension, by its path under examples (review of PR #504, M3).
+func generatedDeployFiles(t *testing.T) map[string][]byte {
+	t.Helper()
+	root, err := RepositoryRoot(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "stego")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "head.tar")
+	runIn(t, root, nil, "git", "archive", "--output", archive, "HEAD")
+	runIn(t, source, nil, "tar", "-xf", archive)
+	stego := filepath.Join(t.TempDir(), "stego")
+	runIn(t, source, []string{"GOWORK=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local"}, "go", "build", "-trimpath", "-o", stego, "./cmd/stego")
+	entries, err := os.ReadDir(filepath.Join(source, "examples"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := []string{"GIT_AUTHOR_NAME=assure", "GIT_AUTHOR_EMAIL=assure@invalid", "GIT_COMMITTER_NAME=assure", "GIT_COMMITTER_EMAIL=assure@invalid"}
+	files := map[string][]byte{}
+	for _, entry := range entries {
+		example := filepath.Join(source, "examples", entry.Name())
+		declaration, err := os.ReadFile(filepath.Join(example, "service.yaml"))
+		if !entry.IsDir() || err != nil {
+			continue
+		}
+		// apply checks the declaration against the version on main, so the example as committed is that version.
+		runIn(t, example, identity, "git", "init", "-q", "-b", "main")
+		runIn(t, example, identity, "git", "add", "-A")
+		runIn(t, example, identity, "git", "commit", "-q", "-m", "the example at HEAD")
+		if !strings.Contains(string(declaration), "\ndelivery:") {
+			if err := os.WriteFile(filepath.Join(example, "service.yaml"), append(declaration, deliveryStanzaFor(entry.Name())...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runIn(t, example, []string{"STEGO_REGISTRY=" + filepath.Join(source, "registry"), "GOWORK=off", "GOTOOLCHAIN=local"}, stego, "apply")
+		for _, folder := range []string{"base", "components", "argocd"} {
+			err := filepath.WalkDir(filepath.Join(example, "deploy", folder), func(name string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				data, err := os.ReadFile(name)
+				if err != nil {
+					return err
+				}
+				relative, _ := filepath.Rel(filepath.Join(source, "examples"), name)
+				files[filepath.ToSlash(relative)] = data
+				return nil
+			})
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatal(err)
+			}
+		}
+	}
+	return files
+}
+
+// consoleSinkFaults gives each file that names the console sink, and a fault when no file of the base or no file of
+// the GitOps object was read, so that the test never passes on nothing.
+func consoleSinkFaults(origin string, files map[string][]byte) []string {
+	var faults []string
+	base, gitops := 0, 0
+	for name, data := range files {
+		parts := strings.Split(name, "/")
+		if len(parts) < 3 || parts[1] != "deploy" {
+			continue
+		}
+		switch parts[2] {
+		case "base", "components":
+			base++
+		case "argocd":
+			gitops++
+		default:
+			continue
+		}
+		if strings.Contains(string(data), consoleSink) {
+			faults = append(faults, fmt.Sprintf("%s %s names %s", origin, name, consoleSink))
+		}
+	}
+	if base == 0 {
+		faults = append(faults, origin+": no file of deploy/base or deploy/components was read, so the test reads nothing of the base")
+	}
+	if gitops == 0 {
+		faults = append(faults, origin+": no file of deploy/argocd was read, so the test reads nothing of the GitOps object")
+	}
+	return faults
+}
+
 func TestDeploymentLeavesTheConsoleSinkOff(t *testing.T) {
 	_, tree := readHead(t)
-	t.Run("ST-STD-OBS-R03-T01 No Kubernetes base or GitOps object of a committed example sets the console sink", func(t *testing.T) {
-		var faults []string
-		read := 0
+	t.Run("ST-STD-OBS-R03-T01 No Kubernetes base or GitOps object that stego apply writes for an example sets the console sink", func(t *testing.T) {
+		// The committed deploy files of the examples, each file whatever its extension (a configMapGenerator can load
+		// a .env file). No example states a delivery stanza, so these hold no GitOps object.
+		committed := map[string][]byte{}
 		for _, name := range tree.paths() {
 			parts := strings.Split(name, "/")
 			if len(parts) < 4 || parts[0] != "examples" || parts[2] != "deploy" || parts[3] != "base" && parts[3] != "components" && parts[3] != "argocd" {
 				continue
 			}
-			if ext := path.Ext(name); ext != ".yaml" && ext != ".yml" {
-				continue
-			}
-			read++
-			data, _ := tree.File(name)
-			if strings.Contains(string(data), consoleSink) {
-				faults = append(faults, name+" names "+consoleSink)
-			}
+			committed[strings.TrimPrefix(name, "examples/")], _ = tree.File(name)
 		}
-		if read == 0 {
-			faults = append(faults, "the tree holds no deploy/base file of an example, so the test reads nothing")
-		}
-		report(t, "ST-STD-OBS-R03", faults)
+		// The committed files are reported first, so a fault in them is named even when apply refuses the example.
+		report(t, "ST-STD-OBS-R03", slices.DeleteFunc(consoleSinkFaults("committed", committed), func(fault string) bool {
+			return strings.Contains(fault, "nothing of the GitOps object")
+		}))
+		// A fresh generation of each example with a delivery stanza: the base and the ApplicationSet that the
+		// stego of HEAD writes (review of PR #504, M3).
+		report(t, "ST-STD-OBS-R03", consoleSinkFaults("generated", generatedDeployFiles(t)))
 	})
 }
