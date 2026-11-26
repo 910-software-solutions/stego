@@ -15,12 +15,14 @@
 // server fails with the reason: a missing result is not a pass.
 //
 // Modules (ST-STD-LOCAL-R03): the first call of GoEnv downloads, once per test binary, each module that testdata/
-// modules pins in its go.sum: the runtime library's modules and each module that a generator of STEGO requires. Its
+// modules and testdata/modules-other pin in their go.sum: the runtime library's modules, each module that a generator
+// of STEGO requires, and each module that a test writes into a generated module at another version. Its
 // go command uses the proxy of the environment, as the go command of the test binary itself does. Each go command of a
-// generated module then has as its only module proxy the download folder of the module cache, as a file URL, and a sum
-// database at a closed local port, so a go mod tidy or a -mod=mod reaches no host: the proxy answers a query for the
-// latest version of a module with the versions that the cache holds, and the checksums come from go.sum and from the
-// lookups that the cache keeps. A module or a checksum that the cache does not hold fails the command, which names it.
+// generated module then has as its only module proxy the download folder of the module cache, as a file URL, and no
+// sum database (GOSUMDB=off), so a go mod tidy or a -mod=mod reaches no host: the proxy answers a query for the latest
+// version of a module with the versions that the cache holds. Each module in the cache came there under the go.sum of
+// testdata, which the go command checks, so its hash is already verified; a module that the cache does not hold fails
+// the command, which names it.
 package localtest
 
 import (
@@ -28,6 +30,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,6 +46,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/mod/modfile"
 )
 
 // PostgresImage is the pinned PostgreSQL server image: postgres:18.6-alpine, by the digest of the image that the CI job
@@ -275,7 +280,7 @@ func remove() {
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
 // environment of the test with no work file, no toolchain switch and GOFLAGS cleared, the download folder of the
-// module cache as the only module proxy (GOPROXY=file://...,off) and a sum database at a closed local port, then the
+// module cache as the only module proxy (GOPROXY=file://...,off) and no sum database (GOSUMDB=off), then the
 // entries extra. The first call downloads the modules of testdata/modules into the module cache, once per test binary.
 // It takes no test, so a build in a goroutine can call it: a failed download is written to standard error, and
 // RequireModules fails a test with it.
@@ -290,7 +295,7 @@ func GoEnv(extra ...string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GOPROXY="+cacheProxy+",off", "GOSUMDB=sum.golang.org http://127.0.0.1:9", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
+	env = append(env, "GOPROXY="+cacheProxy+",off", "GOSUMDB=off", "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
 	return append(env, extra...)
 }
 
@@ -326,12 +331,154 @@ func downloadModules() {
 		return
 	}
 	cacheProxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(strings.TrimSpace(string(cache)), "cache", "download"))}).String()
-	cmd := exec.CommandContext(ctx, goTool, "mod", "tidy", "-diff")
-	cmd.Dir = ModulesFolder()
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		modulesWhy = fmt.Sprintf("download the modules of %s: %v\n%s", cmd.Dir, err, output)
+	// testdata/modules pins the runtime library's modules and each module that a generator requires; testdata/
+	// modules-other pins the modules that a test writes into a generated module at another version.
+	//
+	// A generated module that requires fewer modules selects older versions of some of them, such as an older
+	// golang.org/x/text, and the go.mod of such a version can require a version of another module that the build of
+	// these folders never reaches, because the go command prunes the module graph. So the cache takes, for each module
+	// of the build list of a folder (go list -m all), each version of it in the module graph, and each version of it
+	// that the go.mod of such a version requires.
+	fail := func(folder string, err error, output []byte) {
+		modulesWhy = fmt.Sprintf("download the modules of %s: %v\n%s", folder, err, output)
 		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
+	}
+	// The tests build the stego binary of this commit (./cmd/stego) with GoEnv too, so the cache also takes each module
+	// that provides a package of that build, in the root module.
+	root := filepath.Join(filepath.Dir(ModulesFolder()), "..", "..", "..")
+	list := exec.CommandContext(ctx, goTool, "list", "-mod=readonly", "-deps", "-f", "{{with .Module}}{{if not .Main}}{{.Path}}@{{.Version}}{{end}}{{end}}", "./cmd/stego")
+	list.Dir, list.Env = root, append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=")
+	if out, err := list.Output(); err != nil {
+		fail(root, err, out)
+		return
+	} else if versions := strings.Fields(string(out)); len(versions) > 0 {
+		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download"}, versions...)...)
+		download.Dir, download.Env = root, list.Env
+		if output, err := download.CombinedOutput(); err != nil {
+			fail(root, err, output)
+			return
+		}
+	}
+	for _, folder := range []string{ModulesFolder(), filepath.Join(filepath.Dir(ModulesFolder()), "modules-other")} {
+		env := append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod")
+		output := func(args ...string) ([]byte, bool) {
+			cmd := exec.CommandContext(ctx, goTool, args...)
+			cmd.Dir, cmd.Env = folder, env
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				fail(folder, err, append(out, stderr.Bytes()...))
+				return nil, false
+			}
+			return out, true
+		}
+		// The commands after the check of go.mod and go.sum run on a copy of them (-modfile), so that they add no line
+		// to the go.sum of testdata, also with an empty module cache.
+		scratch, err := os.MkdirTemp("", "localtest-modules-")
+		if err != nil {
+			fail(folder, err, nil)
+			return
+		}
+		defer os.RemoveAll(scratch)
+		for _, name := range []string{"go.mod", "go.sum"} {
+			data, err := os.ReadFile(filepath.Join(folder, name))
+			if err != nil {
+				fail(folder, err, nil)
+				return
+			}
+			if err := os.WriteFile(filepath.Join(scratch, name), data, 0o600); err != nil {
+				fail(folder, err, nil)
+				return
+			}
+		}
+		if _, ok := output("mod", "tidy", "-diff"); !ok {
+			return
+		}
+		modFile := "-modfile=" + filepath.Join(scratch, "go.mod")
+		list, ok := output("list", modFile, "-m", "-f", "{{if not .Replace}}{{.Path}}{{end}}", "all")
+		if !ok {
+			return
+		}
+		paths := map[string]bool{}
+		for _, path := range strings.Fields(string(list)) {
+			paths[path] = true
+		}
+		graph, ok := output("mod", "graph", modFile)
+		if !ok {
+			return
+		}
+		seen := map[string]bool{}
+		var next []string
+		take := func(version string) {
+			if path, _, found := strings.Cut(version, "@"); found && paths[path] && !seen[version] {
+				seen[version] = true
+				next = append(next, version)
+			}
+		}
+		for _, line := range strings.Split(string(graph), "\n") {
+			if fields := strings.Fields(line); len(fields) == 2 {
+				take(fields[1])
+			}
+		}
+		// A version of a module that provides a package that go mod tidy loads (go list -deps -test all) gets its zip: a
+		// generated module can build it. Every other version gets only its go.mod and info, which a go command needs to
+		// load the module graph. Two rounds: the versions of the module graph, and the versions that their go.mod files
+		// require; a further round would take the whole history of each module.
+		built, ok := output("list", modFile, "-e", "-deps", "-test", "-f", "{{with .Module}}{{.Path}}{{end}}", "all")
+		if !ok {
+			return
+		}
+		zip := map[string]bool{}
+		for _, path := range strings.Fields(string(built)) {
+			zip[path] = true
+		}
+		for round := 0; round < 2 && len(next) > 0; round++ {
+			var zips, mods []string
+			for _, version := range next {
+				if path, _, _ := strings.Cut(version, "@"); zip[path] {
+					zips = append(zips, version)
+				} else {
+					mods = append(mods, version)
+				}
+			}
+			next = nil
+			var found []byte
+			for _, part := range [][]string{
+				append([]string{"mod", "download", "-json", modFile}, zips...),
+				append([]string{"list", "-json", modFile, "-m"}, mods...),
+			} {
+				if part[0] == "mod" && len(zips) == 0 || part[0] == "list" && len(mods) == 0 {
+					continue
+				}
+				out, ok := output(part...)
+				if !ok {
+					return
+				}
+				found = append(found, out...)
+			}
+			decoder := json.NewDecoder(bytes.NewReader(found))
+			for decoder.More() {
+				var module struct{ GoMod string }
+				if err := decoder.Decode(&module); err != nil {
+					fail(folder, err, found)
+					return
+				}
+				data, err := os.ReadFile(module.GoMod)
+				if err != nil {
+					fail(folder, err, nil)
+					return
+				}
+				file, err := modfile.ParseLax(module.GoMod, data, nil)
+				if err != nil {
+					fail(folder, err, data)
+					return
+				}
+				for _, require := range file.Require {
+					take(require.Mod.Path + "@" + require.Mod.Version)
+				}
+			}
+		}
 	}
 }
 
