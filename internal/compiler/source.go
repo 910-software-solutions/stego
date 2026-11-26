@@ -45,12 +45,28 @@ func loadCompilationSource(input ReconcilerInput) (*compilationSource, error) {
 		if errors.As(err, &refused) {
 			named := *refused
 			named.Need = strings.ReplaceAll(named.Need, "{service}", service.Name)
-			return nil, fmt.Errorf("loading registry: %w", &named)
+			return nil, &RegistryLoadError{err: &named}
 		}
-		return nil, fmt.Errorf("loading registry: %w", err)
+		return nil, &RegistryLoadError{err: err}
 	}
 	return &compilationSource{ServiceData: data, Service: service, Undeclared: undeclared, Registry: reg}, nil
 }
+
+// RegistryLoadError is a registry that the compiler could not load from the folders that the resolver gave, such as a
+// folder that does not exist. It comes from outside the declaration, so stego compat, which checks the declaration
+// against its base, can still give the result of that check (ST-GEN-CLI07).
+type RegistryLoadError struct{ err error }
+
+func (e *RegistryLoadError) Error() string { return "loading registry: " + e.err.Error() }
+func (e *RegistryLoadError) Unwrap() error { return e.err }
+
+// FillError is a fill of the project that the compiler could not read or check, such as a fill manifest that does
+// not parse, or a qualification of the bound fills that could not run. The declaration checks did not run to their
+// end, so no caller may take their result as a pass (security review of PR #499, L2).
+type FillError struct{ err error }
+
+func (e *FillError) Error() string { return e.err.Error() }
+func (e *FillError) Unwrap() error { return e.err }
 
 // declarationReadError is a declaration that cannot be read as one document. Validation reports it as the one
 // fault of the declaration (ST-DECL-UC04-R06); plan and apply stop with it.

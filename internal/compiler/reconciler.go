@@ -161,12 +161,12 @@ type ReconcilerInput struct {
 	// filepath.Join(ProjectDir, "out") if empty.
 	OutDir string
 
-	// ReadFill reads the collection that each fill named in a slot binding
+	// ReadFill decodes the collection that each fill named in a slot binding
 	// serves. Validation needs it when a slot binding names a fill whose
-	// fill.yaml exists; cmd/stego gives fill.ReadCollection.
+	// fill.yaml exists; cmd/stego gives fill.DecodeCollection.
 	ReadFill FillReader
-	// ReadFillSlot reads the slot that each fill named by a command, a query or a worker implements;
-	// cmd/stego gives fill.ReadImplements.
+	// ReadFillSlot decodes the slot that each fill named by a command, a query or a worker implements;
+	// cmd/stego gives fill.DecodeImplements.
 	ReadFillSlot FillSlotReader
 
 	// QualifyFills checks each fill that a slot binding names: that it fits
@@ -386,15 +386,19 @@ type CommandFill struct {
 // fill package implements it (ST-STD-CODE-R03).
 type FillQualifier func(check FillCheck) ([]FillFault, error)
 
-// FillReader reads the fill manifest (fill.yaml) at path and gives the
-// collection the fill serves. The compiler owns this port and Extending's
-// fill package implements it, because Generating and Declaring may not import
-// Extending (ST-STD-CODE-R03).
-type FillReader func(path string) (collection string, err error)
+// FillReader decodes data, the fill manifest (fill.yaml) that the compiler read
+// at path inside the project folder, and gives the collection the fill serves.
+// The compiler reads the file through os.OpenRoot, so that no link takes the
+// read out of the project, and the reader opens no file. The path is for the
+// errors only. The compiler owns this port and Extending's fill package
+// implements it, because Generating and Declaring may not import Extending
+// (ST-STD-CODE-R03).
+type FillReader func(data []byte, path string) (collection string, err error)
 
-// FillSlotReader reads the fill manifest (fill.yaml) at path and gives the slot the fill implements, as
-// component.slot. The compiler owns this port and Extending's fill package implements it (ST-STD-CODE-R03).
-type FillSlotReader func(path string) (slot string, err error)
+// FillSlotReader decodes data, the fill manifest (fill.yaml) that the compiler read at path inside the project
+// folder as for FillReader, and gives the slot the fill implements, as component.slot. The compiler owns this port and
+// Extending's fill package implements it (ST-STD-CODE-R03).
+type FillSlotReader func(data []byte, path string) (slot string, err error)
 
 // checkBuiltFolder refuses, before plan, apply and deps, a folder out that holds a file that go build would put in
 // the binary and that the generated Go files do not show, such as a .s or a .syso file, or a link: stego build

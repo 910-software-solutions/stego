@@ -318,6 +318,38 @@ func TestFillBinding(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-EXT-UC01-R02-T06 Validate names a slot binding fill name outside the fill-name form and reads no fill manifest outside the project", func(t *testing.T) {
+		// Security review of PR #518, finding 1: stego validate gives the compiler fill.QualificationFaults, which read
+		// fills/../../outside/fill.yaml and quoted its collection in a fault.
+		p := newFillProject(t)
+		outside := filepath.Join(filepath.Dir(p.dir), "outside")
+		if err := os.MkdirAll(outside, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outside, "fill.yaml"), []byte("kind: fill\nname: outside\nimplements: rest-api.before_create\ncollection: secret-collection\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// fills/../../outside is the folder outside, next to the project folder.
+		if _, err := os.Stat(filepath.Join(p.dir, "fills", "..", "..", "outside", "fill.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		// A read of the manifest outside shows in the output: its collection is not one of the declaration, so the
+		// fault would quote secret-collection.
+		p.write(t, "service.yaml", fillBaseService+p.declarationExtra+"slots:\n  - {slot: before_create, collection: org-users, gate: [\"../../outside\"]}\n")
+		for _, args := range [][]string{{"validate"}, {"validate", "--json"}} {
+			stdout, stderr, err := p.stego(t, "no-key", args...)
+			if err == nil {
+				t.Fatalf("stego %s accepted the name ../../outside:\n%s", strings.Join(args, " "), stdout)
+			}
+			if strings.Contains(stdout+stderr, "secret-collection") {
+				t.Fatalf("stego %s quotes the fill manifest outside the project:\n%s\n%s", strings.Join(args, " "), stdout, stderr)
+			}
+			if !strings.Contains(stdout, "name-form") || !strings.Contains(stdout, "slots[0].gate[0]") || !strings.Contains(stdout, "../../outside") {
+				t.Fatalf("stego %s does not name the name-form fault at slots[0].gate[0]:\n%s\n%s", strings.Join(args, " "), stdout, stderr)
+			}
+		}
+	})
+
 	t.Run("ST-EXT-UC01-R04-T01 Plan and apply refuse a bound fill with no test file, and name it", func(t *testing.T) {
 		p := newFillProject(t)
 		p.bind(t, slotBinding{"no-tests-fill", "before_create", "org-users"})

@@ -42,7 +42,8 @@ const compatGitTimeout = time.Minute
 // runCompat implements stego compat (ST-GEN-CLI07): it reads the declaration and the record at the base ref from
 // the service's repository, checks the head declaration in the working folder against them (ST-GEN-QRY04), and
 // prints the base ref and its commit and each fault. It exits 0 with no fault, 1 with a fault, and 2 for a usage
-// error or a ref that it cannot read. It writes nothing in the service folder. To compare the committed migrate.go
+// error, a ref that it cannot read, or declaration checks of stego validate that cannot run for a cause other than the
+// registry (declarationFaults). It writes nothing in the service folder. To compare the committed migrate.go
 // with a new generation (warnUngenerated), it resolves the registry, which can clone it into the cache of the user,
 // and runs go list, as stego plan does.
 func runCompat(args []string, stdout io.Writer) error {
@@ -81,7 +82,10 @@ func runCompat(args []string, stdout io.Writer) error {
 	}
 	// compat runs the declaration checks of stego validate on the head too, so a head that plan and apply refuse,
 	// such as a retype whose conversion is not total, is never "No fault" (walkthrough 26, P3-CMP).
-	validated := declarationFaults(&check, os.Stderr)
+	validated, err := declarationFaults(&check, os.Stderr)
+	if err != nil {
+		return err
+	}
 	// compat generates nothing, so it takes the generated files of the head from the record of the head, which
 	// stego apply writes and the drift check holds to the generated files (ST-GEN-INV38).
 	headState, err := compiler.LoadState(".stego/state.yaml")
@@ -119,10 +123,13 @@ func runCompat(args []string, stdout io.Writer) error {
 const ValidateRule = "ST-DECL-UC01"
 
 // declarationFaults runs the declaration checks of stego validate on the head (compiler.Validate) and adds each error
-// to the check as a fault of ValidateRule, with its own rule, path and message. It gives false, and writes a note to
-// stderr with a fixed cause class and never the error text, when the checks cannot run, such as with a registry that
-// does not resolve; compat then says that its result holds only the compatibility with the base.
-func declarationFaults(check *compiler.BaseCheck, stderr io.Writer) bool {
+// to the check as a fault of ValidateRule, with its own rule, path and message. When the registry does not resolve or
+// load, which comes from outside the declaration, it gives false and writes a note to stderr with the cause class
+// registry and never the error text; compat then says that its result holds only the compatibility with the base.
+// Each other error of the checks, such as a fill manifest that does not parse, is an exitStatus of compatUsage with a
+// fixed cause class and no error text: the checks did not run to their end, so compat never says No fault for it
+// (security review of PR #499, L2).
+func declarationFaults(check *compiler.BaseCheck, stderr io.Writer) (bool, error) {
 	input, err := buildReconcilerInput()
 	var result *compiler.ValidationResult
 	if err == nil {
@@ -132,13 +139,33 @@ func declarationFaults(check *compiler.BaseCheck, stderr io.Writer) bool {
 		result, err = compiler.Validate(input)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "note: compat did not run the declaration checks of stego validate (cause: registry); run stego validate to see the cause.")
-		return false
+		class := validateCause(err)
+		if class == "registry" {
+			fmt.Fprintln(stderr, "note: compat did not run the declaration checks of stego validate (cause: registry); run stego validate to see the cause.")
+			return false, nil
+		}
+		return false, exitStatus{compatUsage, fmt.Sprintf("compat could not run the declaration checks of stego validate (cause: %s); run stego validate to see the cause", class)}
 	}
 	for _, fault := range result.Errors {
 		check.Faults = append(check.Faults, compiler.BaseFault{Rule: ValidateRule, Message: "stego validate refuses the head: " + fault.Prose()})
 	}
-	return true
+	return true, nil
+}
+
+// validateCause gives the fixed cause class of an error of compiler.Validate, which compat prints in place of the
+// error text: registry for a registry that does not resolve or load, fill for a fill that cannot be read or checked, and
+// declaration for each other error.
+func validateCause(err error) string {
+	var resolved *registryResolveError
+	var loaded *compiler.RegistryLoadError
+	var fill *compiler.FillError
+	switch {
+	case errors.As(err, &resolved), errors.As(err, &loaded):
+		return "registry"
+	case errors.As(err, &fill):
+		return "fill"
+	}
+	return "declaration"
 }
 
 // formatBaseCheck gives the check as text: the base it took, then each fault with its entity, field, rule and the
