@@ -125,6 +125,11 @@ type Field struct {
 	// clear, in a column of its type with its CHECKs: the stored shape before a seal from secret (walkthrough 13,
 	// W13-B1). The declaration never sets it.
 	ClearStored bool `yaml:"-" json:"ClearStored,omitempty"`
+	// HeldMin and HeldMax are the bounds of int32 that the API and the check of each command hold on an int64 field
+	// that an open retype from int32 widens, where its own bounds are wider (gen.HeldBounds, ST-DECL-Q48): the column
+	// of the release before cannot hold a wider value. The table does not read them. The declaration never sets them.
+	HeldMin *float64 `yaml:"-" json:"HeldMin,omitempty"`
+	HeldMax *float64 `yaml:"-" json:"HeldMax,omitempty"`
 }
 
 // FieldAttempts is the limit of wrong checks of a compare-only secret field (ST-DECL-EN03 Attempts), from 1 to 100

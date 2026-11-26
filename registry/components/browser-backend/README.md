@@ -26,7 +26,8 @@ base path of its API. A different prefix gives 404 from the API.
 ### More than one API
 
 `api_prefix` goes to the API of `STEGO_BROWSER_API_URL`. To reach more APIs,
-declare `apis` (version 4.8.0), a list of 1 to 8 entries:
+declare `apis` (version 4.8.0), a list of 1 to 15 entries (1 to 8 before
+version 4.17.0):
 
 ```yaml
 overrides:
@@ -67,6 +68,16 @@ comma-separated list of `name=origin`, such as
   503 with `Retry-After: 1`, and the other APIs keep their shares. The same access token goes to
   each API, so the identity provider must give a token whose `aud` holds the
   audience of each API.
+- The limit of 15 entries comes from this pool, not from a header or the
+  Content Security Policy. The policy stays `connect-src 'self'`, because
+  each API is under the origin of the console. The 16 requests of the pool
+  are for `api_prefix` and all entries of `apis` together, and each API keeps
+  at least one. Thus more APIs give a smaller share to each API: with 1
+  entry each API has 8 requests and 2 waiting reads, with 3 entries 4 and 1,
+  with 7 entries 2 and 1, and with 8 to 15 entries 1 and 1. With a share of
+  1, a second request to the same API at the same time gets 503 with
+  `Retry-After: 1`. For more APIs, or for more requests to one API at one
+  time, put an API gateway behind one entry.
 - A local application cannot declare `apis`.
 
 Run the service binary with the one argument `migrate` before service startup

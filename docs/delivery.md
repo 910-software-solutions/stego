@@ -484,8 +484,17 @@ pool that reads the setting. At the defaults, one process can open at most:
 | Process | Pools | Most connections |
 |---|---|---|
 | api pod (`--mode=api`) | the main pool (16), the audit pool (16) and the pool of the charges of counted values (4) | 36 |
-| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role (16, and at least the concurrency of the outbox worker + 2) and the pool of the relay role (16) | 68 |
+| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role and the pool of the relay role (16) | 36 + W + 16; 68 when W is 16 |
 | migration Job | the owner connection and the connections of its steps | a few |
+
+W is the pool of the worker role. It is the larger of
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` and S + 2, where S is the claim slots:
+the larger of the concurrency of the outbox worker (4) and the count of its
+destinations, plus one slot for each Kafka inbox (each declared
+subscription). Each slot holds one connection, and the claims and the purge
+timer hold one more each. For example, a worker that consumes five topics
+and has three destinations has S = 4 + 5 = 9 and W = 16. With
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 4, the same worker has W = 11, not 4.
 
 A pool opens a connection only when it needs one, so an idle service holds
 fewer. But a burst, a slow database or a restart of many pods at the same
@@ -508,13 +517,39 @@ Size the server for the most connections, not for the mean:
    of the worker role keeps at least the concurrency of the outbox worker
    + 2.
 3. Give the server memory for `shared_buffers` and for each connection.
-   Each connection is one server process, which takes some MiB when it is
-   idle and up to `work_mem` for each sort or hash of a statement. A start
-   value: `shared_buffers` 25% of the memory of the server, and about 10 MiB
-   for each connection of `max_connections`. For the 86 connections of
-   walkthrough 25 that is about 1 GiB, more than the 768 MiB of its limit.
-4. Watch the count of connections (`pg_stat_activity`) and the 53300
-   refusals while you change the replicas.
+   Each connection is one server process. An idle process takes some MiB.
+   A statement takes up to `work_mem` more for each sort or hash while it
+   runs. A safe start value: `shared_buffers` 25% of the memory of the
+   server, and about 10 MiB for each connection of `max_connections`. This
+   value assumes that each connection runs a statement at the same time.
+4. Watch the count of connections (`pg_stat_activity`), the memory of the
+   server and the 53300 refusals while you change the replicas.
+
+The sum of step 1 is a ceiling: each pool at its limit at one time. Most
+connections are idle most of the time. In walkthrough 26, four PostgreSQL 17
+servers of 768 MiB each (`shared_buffers` 192 MB, `max_connections` 200)
+served five services each through a rollout of 20 services, with
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 3. Each server held 53 to 71
+connections and used 218 to 331 MiB. No server was killed and none
+refused a connection with 53300. The rule of step 3 asked 2.2 to 2.6 GiB for
+each server. Thus an idle connection takes much less than 10 MiB, and the
+rule is a bound for the worst case, not a measure. Walkthrough 25 shows the
+other side: a server of 768 MiB was killed when about 86 connections started
+together and ran statements.
+
+When the server cannot get the memory of the rule:
+
+- Lower `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` first, so that the sum of
+  step 1 drops. This is the only bound that STEGO holds.
+- Keep `max_connections` at the sum of step 1, so that a burst gets 53300,
+  which a service answers 503 with Retry-After, and the kernel does not stop
+  the server.
+- Keep `work_mem` small (the default, 4 MB), because each sort or hash of
+  each active statement can take it.
+- Measure the server at the peak of a rollout: the count of
+  `pg_stat_activity` by `state`, and the memory of the server or its
+  container. Keep free memory for the count of active statements times
+  `work_mem`.
 
 ## Secrets as files
 

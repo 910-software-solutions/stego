@@ -626,6 +626,8 @@ func TestProblemForm(t *testing.T) {
 			{http.StatusBadRequest, "", "", base + "bad-request"},
 			{http.StatusConflict, "", "appointment.not_booked", base + "appointment-not-booked"},
 			{http.StatusBadRequest, rt.problemType("idempotency-key-missing"), "", base + "idempotency-key-missing"},
+			{http.StatusServiceUnavailable, "", ErrorCodeUnavailable, base + "service-unavailable"},
+			{http.StatusServiceUnavailable, "", "undecided", base + "service-unavailable"},
 		} {
 			w := httptest.NewRecorder()
 			rt.writeProblem(w, c.status, c.problemType, c.code)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"math"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -576,7 +577,9 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 				if ok {
 					return nil, fmt.Errorf("the entity %s: generation does not rename and retype the field %s both yet", entity.Name, field.Name)
 				}
-				if reason := namedElsewhere(entity, field.Name, invariants, collections, true); reason != "" {
+				// The patchable list names the field by its name, which a retype keeps in the API, and the patch writes
+				// its Column, so a patchable field can be retyped (walkthrough 26, P3-RT).
+				if reason := namedElsewhere(entity, field.Name, invariants, collections, false); reason != "" {
 					return nil, fmt.Errorf("the entity %s: generation does not retype the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
 				}
 				column := RetypeColumn(field.Name, field.Type)
@@ -880,6 +883,85 @@ func RetypeField(change types.SchemaChange) types.Field {
 		}
 	}
 	return types.Field{Name: change.Field, Type: types.FieldType(change.From)}
+}
+
+// integerRange gives the least and the most value of an integer field type, and false for another type.
+func integerRange(t types.FieldType) (float64, float64, bool) {
+	switch t {
+	case types.FieldTypeInt32:
+		return math.MinInt32, math.MaxInt32, true
+	case types.FieldTypeInt64:
+		return math.MinInt64, math.MaxInt64, true
+	}
+	return 0, 0, false
+}
+
+// WithinNarrower gives the two sides of a widening retype between two integer types, such as int32 to int64, with
+// the bounds that each side holds in fact: each missing min or max is the bound of its type, and each bound is held
+// within the range of the narrower type. The column type of the field before holds that side, and the API of the
+// release of the change holds the other while the change is open (HeldBounds), so an int32 with min 0 and an int64
+// with min 0 both give min 0 and max 2147483647. Any other retype, a narrowing included, is given back as it is: the
+// release before a narrowing writes values of the whole wider range (ST-DECL-Q48; walkthrough 26, P3-RT).
+func WithinNarrower(before, after types.Field) (types.Field, types.Field) {
+	lowBefore, highBefore, okBefore := integerRange(before.Type)
+	lowAfter, highAfter, okAfter := integerRange(after.Type)
+	if !okBefore || !okAfter || lowBefore < lowAfter || highBefore > highAfter {
+		return before, after
+	}
+	held := func(f types.Field) types.Field {
+		minimum, maximum := lowBefore, highBefore
+		if f.Min != nil {
+			minimum = min(max(*f.Min, lowBefore), highBefore)
+		}
+		if f.Max != nil {
+			maximum = max(min(*f.Max, highBefore), lowBefore)
+		}
+		f.Min, f.Max = &minimum, &maximum
+		return f
+	}
+	return held(before), held(after)
+}
+
+// HeldBounds gives the entities in which each field that an open retype from int32 to int64 widens holds, in HeldMin
+// and HeldMax, the bounds of int32 where its own bounds are wider. The API and the check of each command of the
+// release of the change read them, so that they take no value that the column of the release before cannot hold
+// while both releases run: a value above 2147483647 gets 400 until the contract step of the change. The table and its
+// CHECK do not read them, so the release of the contract step, which gives the field its declared bounds, takes the
+// whole range with no change of the CHECK (ST-DECL-Q48; walkthrough 26, P3-RT).
+func HeldBounds(entities []types.Entity, changes []types.SchemaChange, history []types.SchemaStep) []types.Entity {
+	contracted := map[string]bool{}
+	for _, step := range history {
+		if step.Phase == "contract" {
+			contracted[step.Change] = true
+		}
+	}
+	widened := map[[2]string]bool{}
+	for _, change := range changes {
+		if change.Kind == "retype" && change.From == string(types.FieldTypeInt32) && !contracted[change.ID] {
+			widened[[2]string{change.Entity, change.Field}] = true
+		}
+	}
+	if len(widened) == 0 {
+		return entities
+	}
+	out := make([]types.Entity, len(entities))
+	for i, entity := range entities {
+		entity.Fields = append([]types.Field(nil), entity.Fields...)
+		for j, field := range entity.Fields {
+			if field.Type != types.FieldTypeInt64 || !widened[[2]string{entity.Name, field.Name}] {
+				continue
+			}
+			low, high := float64(math.MinInt32), float64(math.MaxInt32)
+			if field.Min == nil || *field.Min < low {
+				entity.Fields[j].HeldMin = &low
+			}
+			if field.Max == nil || *field.Max > high {
+				entity.Fields[j].HeldMax = &high
+			}
+		}
+		out[i] = entity
+	}
+	return out
 }
 
 // namedElsewhere tells what, other than the field itself, names the field of the entity, or empty. patchable tells

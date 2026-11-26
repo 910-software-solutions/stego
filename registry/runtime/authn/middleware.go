@@ -115,12 +115,14 @@ func (v *Verifier) token(value string) (string, string) {
 // one form of every problem of the service (ST-SUP-RC32-OC19, ST-SUP-RC33-OC12, ST-SUP-RC27-OC17; ST-SUP-Q171 (a)):
 // base and a path fixed for each code, the code in lower case with each '.' and '_' as '-', such as
 // tenant-not-provisioned for tenant.not_provisioned; for a problem with no code, the name of its status as the CRUD
-// problems use it, such as not-found, or status-<n> for another status. With no base it is about:blank.
+// problems use it, such as not-found, or status-<n> for another status. A 503 has the one type service-unavailable
+// whatever its code, unavailable or undecided, as the CRUD problems give it, so a client reads one type for each
+// answer that it may try again; the code tells the cause (walkthrough 26, U-503). With no base it is about:blank.
 func ProblemTypeOf(base string, status int, code string) string {
 	if base == "" {
 		return "about:blank"
 	}
-	if code != "" {
+	if code != "" && status != http.StatusServiceUnavailable {
 		return base + strings.NewReplacer(".", "-", "_", "-").Replace(strings.ToLower(code))
 	}
 	if name, ok := statusNames[status]; ok {
