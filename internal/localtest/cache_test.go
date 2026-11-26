@@ -152,3 +152,70 @@ func TestModuleCacheTakesOnlyCheckedModules(t *testing.T) {
 		}
 	})
 }
+
+// TestFailClosedProbe is the child of ST-STD-LOCAL-R03-T11: with LOCALTEST_PROBE set, it runs go mod tidy with GoEnv
+// in the module that LOCALTEST_PROBE names and prints the outcome; without it, it does nothing.
+func TestFailClosedProbe(t *testing.T) {
+	dir := os.Getenv("LOCALTEST_PROBE")
+	if dir == "" {
+		return
+	}
+	env := GoEnv()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GOMODCACHE=") || strings.HasPrefix(entry, "GOPROXY=") {
+			t.Log("probe env " + entry)
+		}
+	}
+	tidy := exec.Command(goTool(), "mod", "tidy")
+	tidy.Dir, tidy.Env = dir, env
+	output, err := tidy.CombinedOutput()
+	t.Logf("probe tidy err=%v\n%s", err, output)
+}
+
+func TestModuleCacheFailsClosed(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T11 When the module cache of localtest cannot be made, GoEnv gives no shared cache and a tidy of a planted module fails", func(t *testing.T) {
+		shared, err := exec.Command(goTool(), "env", "GOMODCACHE").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The shared cache of the child: GOPATH/pkg/mod, which an empty GOMODCACHE names, holds a planted module. The
+		// child takes it as its shared cache, so STEGO_TEST_RUNS inside it names the shared cache.
+		gopath := t.TempDir()
+		childShared := filepath.Join(gopath, "pkg", "mod")
+		plantedModule(t, childShared)
+		_ = shared
+		for name, runs := range map[string]string{
+			"STEGO_TEST_RUNS in the shared module cache": childShared,
+			"STEGO_TEST_RUNS in the temporary folder":    t.TempDir(),
+		} {
+			t.Run(name, func(t *testing.T) {
+				dir := generatedModule(t)
+				self, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				child := exec.Command(self, "-test.run", "^TestFailClosedProbe$", "-test.v")
+				child.Env = append(os.Environ(), "LOCALTEST_PROBE="+dir, "STEGO_TEST_RUNS="+runs, "GOPATH="+gopath, "GOMODCACHE=")
+				output, _ := child.CombinedOutput()
+				text := string(output)
+				if !strings.Contains(text, "probe tidy err=") {
+					t.Fatalf("the probe did not run:\n%s", text)
+				}
+				if strings.Contains(text, "probe tidy err=<nil>") {
+					t.Fatalf("a tidy of the planted module succeeded with the module cache of localtest refused:\n%s", text)
+				}
+				for _, bad := range []string{"probe env GOMODCACHE=\n", "probe env GOMODCACHE=" + childShared} {
+					if strings.Contains(text, bad) {
+						t.Fatalf("GoEnv gave the shared module cache (%q):\n%s", strings.TrimSpace(bad), text)
+					}
+				}
+				if !strings.Contains(text, "probe env GOPROXY=off") {
+					t.Fatalf("GoEnv gave a module proxy with the module cache of localtest refused:\n%s", text)
+				}
+				if data, _ := os.ReadFile(filepath.Join(dir, "go.sum")); strings.Contains(string(data), "example.com/lib") {
+					t.Fatalf("the tidy wrote the planted module into go.sum:\n%s", data)
+				}
+			})
+		}
+	})
+}
