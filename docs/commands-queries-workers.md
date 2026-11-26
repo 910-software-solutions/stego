@@ -1666,6 +1666,15 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.200.0
+
+- The WARN line `command.database.unavailable` names `sqlstate_class`, the
+  class of the SQLSTATE of the error, such as `53` for a full disk (53100)
+  or no memory (53200), `57` for a server that shuts down and `08` for a
+  lost connection, or `none` for an error with no SQLSTATE (security review
+  of PR #499, L1). It never names the full code or the message.
+- apidiff against v0.198.0: compatible (no change of the exported API).
+
 ### Release notes for runtime v0.198.0
 
 - A database that takes no new connection is unavailable (walkthrough 26,
