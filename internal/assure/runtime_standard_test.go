@@ -123,18 +123,19 @@ func tableFill(function *ast.FuncDecl) bool {
 // processGlobals are the registries and the settings of the whole process that a library must not use on its own:
 // the default HTTP mux, client and transport, the default logger and its output, the local time zone, the database
 // driver and gob registries, the global providers and logger of OpenTelemetry, the default resolver, the
-// environment, the working folder, the runtime's limits and signals (review of PR #504, M4). The flag package outside
+// environment, the working folder, the file mode mask, the MIME types, the runtime's limits and signals (review of
+// PR #504, M4 and N4). The flag package outside
 // a FlagSet of its own is one too.
 var processGlobals = map[string]bool{
 	"net/http.Handle": true, "net/http.HandleFunc": true, "net/http.DefaultServeMux": true, "net/http.DefaultClient": true,
 	"net/http.DefaultTransport": true, "net.DefaultResolver": true,
-	"log/slog.SetDefault": true, "log/slog.SetLogLoggerLevel": true, "log.SetOutput": true, "log.SetFlags": true,
+	"log/slog.SetDefault": true, "log/slog.Default": true, "log/slog.SetLogLoggerLevel": true, "log.SetOutput": true, "log.SetFlags": true,
 	"log.SetPrefix": true, "log.Default": true, "time.Local": true,
 	"database/sql.Register": true, "encoding/gob.Register": true, "encoding/gob.RegisterName": true,
 	"go.opentelemetry.io/otel.SetTracerProvider": true, "go.opentelemetry.io/otel.SetMeterProvider": true,
 	"go.opentelemetry.io/otel.SetTextMapPropagator": true, "go.opentelemetry.io/otel.SetErrorHandler": true,
 	"go.opentelemetry.io/otel.SetLogger": true, "go.opentelemetry.io/otel/log/global.SetLoggerProvider": true,
-	"os.Setenv": true, "os.Unsetenv": true, "os.Clearenv": true, "os.Chdir": true, "os/signal.Notify": true,
+	"os.Setenv": true, "os.Unsetenv": true, "os.Clearenv": true, "os.Chdir": true, "os.Umask": true, "mime.AddExtensionType": true, "os/signal.Notify": true,
 	"os/signal.Ignore": true, "os/signal.Reset": true, "expvar.Publish": true, "runtime.GOMAXPROCS": true,
 	"runtime/debug.SetGCPercent": true, "runtime/debug.SetMemoryLimit": true, "runtime/debug.SetMaxThreads": true,
 	"runtime/debug.SetMaxStack": true, "runtime/debug.SetPanicOnFault": true, "runtime/debug.SetTraceback": true,
@@ -142,17 +143,28 @@ var processGlobals = map[string]bool{
 
 // admittedGlobals are the uses of a setting of the whole process that ST-STD-RUNTIME-R01 admits, by file and name,
 // each for its reason. A new use fails the test.
-//   - service.UseJSONLog sets the default logger when the generated NewService and Migrate call it.
-//   - sealed reads GOMAXPROCS(0), which changes nothing, to size its pool of hash slots.
+//   - service.UseJSONLog sets the default logger when the generated NewService and Migrate call it, and reads it.
+//   - sealed reads GOMAXPROCS(0), which changes nothing, to size its pool of hash slots. Only a call with the
+//     literal 0 is admitted: another argument changes the process (review of PR #504, N2).
 //   - kafkaoutbox reads the default resolver to look up a broker's addresses, and changes nothing.
 var admittedGlobals = map[string][]string{
-	runtimeModule + "/service/service.go":                {"log/slog.SetDefault"},
+	runtimeModule + "/service/service.go":                {"log/slog.SetDefault", "log/slog.Default"},
 	runtimeModule + "/sealed/compare.go":                 {"runtime.GOMAXPROCS"},
 	runtimeModule + "/outbox/kafkaoutbox/destination.go": {"net.DefaultResolver"},
 }
 
-// admittedGlobal tells if the use is one of admittedGlobals.
-func admittedGlobal(source sourceFile, name string) bool {
+// admittedGlobal tells if the use is one of admittedGlobals. A use of runtime.GOMAXPROCS is admitted only as a call
+// whose one argument is the literal 0, which reads the setting and changes nothing.
+func admittedGlobal(source sourceFile, name string, call *ast.CallExpr) bool {
+	if name == "runtime.GOMAXPROCS" {
+		if call == nil || len(call.Args) != 1 {
+			return false
+		}
+		literal, ok := call.Args[0].(*ast.BasicLit)
+		if !ok || literal.Kind != token.INT || literal.Value != "0" {
+			return false
+		}
+	}
 	return slices.Contains(admittedGlobals[source.name], name)
 }
 
@@ -231,6 +243,17 @@ func frameworkFaults(files []sourceFile) []string {
 		for _, name := range assignedSelectors(source.file, imports) {
 			faults = append(faults, fmt.Sprintf("%s assigns to %s, a variable of another package, which changes it for the whole process", source.name, name))
 		}
+		// calls maps each selector that is the function of a call to that call, so the admitted list can read its
+		// arguments.
+		calls := map[*ast.SelectorExpr]*ast.CallExpr{}
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+					calls[selector] = call
+				}
+			}
+			return true
+		})
 		ast.Inspect(source.file, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.FuncDecl:
@@ -242,7 +265,7 @@ func frameworkFaults(files []sourceFile) []string {
 					imported := imports[pkg.Name]
 					name := imported + "." + n.Sel.Name
 					if processGlobals[name] || imported == "flag" && !slices.Contains([]string{"NewFlagSet", "ContinueOnError", "ExitOnError", "PanicOnError", "FlagSet", "ErrHelp", "Value", "Flag"}, n.Sel.Name) {
-						if !admittedGlobal(source, name) {
+						if !admittedGlobal(source, name, calls[n]) {
 							faults = append(faults, fmt.Sprintf("%s uses %s, a registry or a setting of the whole process", source.name, name))
 						}
 					}
@@ -380,20 +403,24 @@ func importNames(file *ast.File) map[string]string {
 }
 
 // gitopsImports are the imports that a file of the delivery package may have: the standard library's text,
-// encoding, data and error packages, the YAML package, and the application build's pins. Each other import fails the
-// test, so a network, process, gRPC, Kubernetes, Argo CD or TLS client is never in the package (review of PR #504,
-// M2). net and net/url parse and check addresses; neither dials.
+// encoding, data and error packages, the YAML package, and the application build. Each other import fails the test,
+// so a network, process, gRPC, Kubernetes, Argo CD or TLS client is never in the package (review of PR #504, M2).
+// net/url parses addresses. net and appbuild can also reach the network, so only the names of gitopsNames are
+// admitted from them.
 var gitopsImports = map[string]bool{
 	"bytes": true, "errors": true, "fmt": true, "io": true, "maps": true, "math": true, "net": true, "net/url": true,
 	"path": true, "regexp": true, "slices": true, "sort": true, "strconv": true, "strings": true, "time": true,
 	"unicode": true, "unicode/utf8": true, "gopkg.in/yaml.v3": true, "github.com/jsell-rh/stego/internal/appbuild": true,
 }
 
-// gitopsDials are the functions of the admitted imports that open a connection: a file of the delivery package
-// must not refer to one.
-var gitopsDials = map[string]bool{"net.Dial": true, "net.DialTimeout": true, "net.DialTCP": true, "net.DialUDP": true,
-	"net.DialIP": true, "net.DialUnix": true, "net.Listen": true, "net.ListenPacket": true, "net.LookupHost": true,
-	"net.LookupIP": true, "net.LookupAddr": true, "net.DefaultResolver": true, "net.Dialer": true, "net.Resolver": true}
+// gitopsNames are the only names that a file of the delivery package may use from an admitted import that can
+// also reach the network or run a command: from net, the parse of a host and a port; from appbuild, the pins of the
+// application build. Each other name of these packages fails the test, such as net.Dial, net.ListenTCP or
+// appbuild.Download (review of PR #504, M2 and N1).
+var gitopsNames = map[string][]string{
+	"net": {"SplitHostPort"},
+	"github.com/jsell-rh/stego/internal/appbuild": {"GoVersion", "BuildFlags", "BuildEnvironment"},
+}
 
 // gitopsReads are the functions of package os and io/ioutil that read the environment or a file. A file of the
 // delivery package must not refer to one, as a call or as a value (os.Expand(text, os.Getenv)).
@@ -402,9 +429,9 @@ var gitopsReads = map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "os.E
 	"os.UserHomeDir": true, "os.UserConfigDir": true, "io/ioutil.ReadFile": true, "io/ioutil.ReadDir": true}
 
 // gitopsFaults gives each fault of ST-STD-TRUST-R05 in a file of the package that delivers to a GitOps tool: an
-// import that gitopsImports does not admit, a dot import, a reference to a function that dials, and a reference to a
-// function that reads the environment or a file, where a credential of the tool would be (review of PR #504, L6 and
-// M2). The adapter writes its files; the caller reads the declaration and passes its values.
+// import that gitopsImports does not admit, a dot import, a name of net or appbuild that gitopsNames does not admit,
+// and a reference to a function that reads the environment or a file, where a credential of the tool would be
+// (review of PR #504, L6, M2 and N1). The adapter writes its files; the caller reads the declaration and passes its values.
 func gitopsFaults(source sourceFile) []string {
 	var faults []string
 	for _, spec := range source.file.Imports {
@@ -427,8 +454,8 @@ func gitopsFaults(source sourceFile) []string {
 			if gitopsReads[name] {
 				faults = append(faults, fmt.Sprintf("%s refers to %s, which reads the environment or a file where a credential of the tool would be", source.name, name))
 			}
-			if gitopsDials[name] {
-				faults = append(faults, fmt.Sprintf("%s refers to %s, which opens a connection", source.name, name))
+			if admitted, held := gitopsNames[names[pkg.Name]]; held && !slices.Contains(admitted, selector.Sel.Name) {
+				faults = append(faults, fmt.Sprintf("%s refers to %s, which the delivery package may not use: only %s of that package is admitted", source.name, name, strings.Join(admitted, ", ")))
 			}
 		}
 		return true

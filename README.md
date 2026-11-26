@@ -154,24 +154,29 @@ result is not a pass. These folders have such tests:
   start a server themselves when the variable is not set.
 
 Start a local server from the image that CI uses (postgres 18.6-alpine, pinned by
-digest). The container is not privileged. It has limits on memory, CPU and
-processes. Its port is bound to 127.0.0.1 only, and Docker selects the host port:
+digest), and run the tests with it. The container is not privileged. It has limits
+on memory, CPU and processes. Its port is bound to 127.0.0.1 only, and Docker
+selects the host port. The commands run in a subshell: when a command fails, the
+subshell stops, and your shell stays open. On each exit, the trap removes the
+container:
 
 ```bash
-set -e
-password="$(openssl rand -hex 16)"
-docker run -d --rm --name stego-test-postgres \
-  --memory 512m --cpus 1 --pids-limit 256 \
-  --security-opt no-new-privileges --cap-drop ALL \
-  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
-  -e POSTGRES_PASSWORD="$password" \
-  -e POSTGRES_INITDB_ARGS='--auth-host=scram-sha-256 --auth-local=trust' \
-  -p 127.0.0.1::5432 \
-  postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-port="$(docker port stego-test-postgres 5432/tcp | head -n 1 | sed 's/.*://')"
-export STEGO_TEST_POSTGRES_DSN="postgres://postgres:$password@127.0.0.1:$port/postgres?sslmode=disable"
-STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1 go test ./...
-docker rm -f stego-test-postgres
+(
+  set -eu
+  password="$(openssl rand -hex 16)"
+  docker run -d --rm --name stego-test-postgres \
+    --memory 512m --cpus 1 --pids-limit 256 \
+    --security-opt no-new-privileges --cap-drop ALL \
+    --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
+    -e POSTGRES_PASSWORD="$password" \
+    -e POSTGRES_INITDB_ARGS='--auth-host=scram-sha-256 --auth-local=trust' \
+    -p 127.0.0.1::5432 \
+    postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+  trap 'docker rm -f stego-test-postgres >/dev/null' EXIT
+  port="$(docker port stego-test-postgres 5432/tcp | head -n 1 | sed 's/.*://')"
+  export STEGO_TEST_POSTGRES_DSN="postgres://postgres:$password@127.0.0.1:$port/postgres?sslmode=disable"
+  STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1 go test ./...
+)
 ```
 
 The DSN has the form
