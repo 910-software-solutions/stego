@@ -110,6 +110,14 @@ func PostgresDSN(t testing.TB) string {
 	return dsn
 }
 
+// PostgresEnv gives the environment entries that hand the local server to the tests of a generated module: the
+// superuser URL in STEGO_TEST_POSTGRES_DSN, and STEGO_REQUIRE_POSTGRES=1, so that such a test fails, never skips,
+// when it finds no server. It starts the server as PostgresDSN does.
+func PostgresEnv(t testing.TB) []string {
+	t.Helper()
+	return []string{PostgresVariable + "=" + PostgresDSN(t), "STEGO_REQUIRE_POSTGRES=1"}
+}
+
 // startPostgres finds the server: the variable, else a new container. It sets dsn, or failWhy.
 func startPostgres() {
 	if v := os.Getenv(PostgresVariable); v != "" {
