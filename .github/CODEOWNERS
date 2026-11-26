@@ -1,12 +1,12 @@
 # Changes to the CI definitions need the repository owner's review (ST-ASR-UC02-R06, decided 2026-10-31).
-/.github/workflows/ @jsell-rh @elsell
-/.github/CODEOWNERS @jsell-rh @elsell
+/.github/workflows/ @elsell @AustinRedenbaugh @Jared4Robertson
+/.github/CODEOWNERS @elsell @AustinRedenbaugh @Jared4Robertson
 # The gate's own code, the runner that reports the Python outcomes of a proof run, and the keys that may qualify a
 # fill (ST-EXT-TM04) need the same review.
-/internal/assure/ @jsell-rh @elsell
-/cmd/assure/ @jsell-rh @elsell
-/scripts/run-python-tests.py @jsell-rh @elsell
-**/SIGNERS @jsell-rh @elsell
+/internal/assure/ @elsell @AustinRedenbaugh @Jared4Robertson
+/cmd/assure/ @elsell @AustinRedenbaugh @Jared4Robertson
+/scripts/run-python-tests.py @elsell @AustinRedenbaugh @Jared4Robertson
+**/SIGNERS @elsell @AustinRedenbaugh @Jared4Robertson
 # The list of known code-standard faults may only shrink, and a test holds that (ST-STD-CODE). A change that fixes a
 # fault removes its line, so this file needs no owner review. A later line wins, and a pattern with no owner leaves
 # the file with no owner.
