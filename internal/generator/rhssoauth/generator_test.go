@@ -19,6 +19,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/jwtauth"
+	"github.com/jsell-rh/stego/internal/localtest"
 )
 
 func TestGenerateSharedRuntime(t *testing.T) {
@@ -200,7 +201,7 @@ func localImporter(t *testing.T, fset *token.FileSet) gotypes.Importer {
 	// holds it, as the generated-module tests of this package fetch it.
 	download := exec.Command("go", "mod", "download", "-json", "github.com/golang-jwt/jwt/v5@"+jwtVersion(t))
 	download.Dir = t.TempDir()
-	download.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	download.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	if err := os.WriteFile(filepath.Join(download.Dir, "go.mod"), []byte("module example.com/download\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
