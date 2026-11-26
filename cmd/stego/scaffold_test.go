@@ -423,7 +423,7 @@ func sameProjectInCopy(folder string) error {
 }
 
 func TestWalkthroughCopyGuard(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R05-T03 The walkthrough copy guard refuses a project link that resolves out of the project folder or does not resolve", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R05-T04 The walkthrough copy guard refuses a project link that resolves out of the project folder or does not resolve", func(t *testing.T) {
 		project := func(t *testing.T) string {
 			t.Helper()
 			root := t.TempDir()

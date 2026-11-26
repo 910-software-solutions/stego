@@ -96,7 +96,7 @@ func runTLSCheck(dir, pkg string, env []string, flags ...string) ([]byte, error)
 var tlsCheckStage = func(string) {}
 
 func TestTLSCheckLock(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R01-T02 A check that turns TLS on in the local PostgreSQL server is built before it takes the TLS lock and runs under it", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R01-T03 A check that turns TLS on in the local PostgreSQL server is built before it takes the TLS lock and runs under it", func(t *testing.T) {
 		dir := t.TempDir()
 		for name, text := range map[string]string{
 			"go.mod":                  "module example.com/tlslock\n\ngo 1.26\n",
