@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
 )
@@ -32,11 +33,13 @@ const readTenantStatement = "SELECT pg_catalog.current_setting('app.tenant', tru
 
 // Unavailable reports whether err tells that the database cannot serve now, so a retry later may pass: a
 // connection that the server refused, reset or closed, a lost or broken connection of the pool, a connection that
-// could not be made in time, a server that shuts down or does not accept connections yet, and a server with no free
-// connection (SQLSTATE class 08, 57P01, 57P02, 57P03 and 53300). An error that tells so itself, through a method
-// Unavailable() bool, counts too. A statement that the server refuses for its values or its schema, a conflict and a
-// cancel of the caller are not unavailable. A handler answers it 503 with Retry-After, or Unavailable over gRPC
-// (walkthrough 10, B7).
+// could not be made in time, a server that shuts down, does not accept connections yet or ended an idle session, a
+// server with no free connection or with no memory, disk or other resource now (SQLSTATE class 08, 57P01, 57P02,
+// 57P03, 57P05, 53000, 53100, 53200 and 53300), and a database that takes no new connection, such as after ALTER DATABASE ...
+// ALLOW_CONNECTIONS false (SQLSTATE 55000 at connect only; walkthrough 26, U-503). An error that tells so itself,
+// through a method Unavailable() bool, counts too. A statement that the server refuses for its values or its schema,
+// a 55000 of a statement, a conflict and a cancel of the caller are not unavailable. A handler answers it 503 with
+// Retry-After, or Unavailable over gRPC (walkthrough 10, B7).
 func Unavailable(err error) bool {
 	if err == nil {
 		return false
@@ -48,8 +51,14 @@ func Unavailable(err error) bool {
 	var coded interface{ SQLState() string }
 	if errors.As(err, &coded) {
 		code := coded.SQLState()
+		var connect *pgconn.ConnectError
 		switch {
-		case strings.HasPrefix(code, "08"), code == "57P01", code == "57P02", code == "57P03", code == "53300":
+		case strings.HasPrefix(code, "08"), code == "57P01", code == "57P02", code == "57P03", code == "57P05",
+			code == "53000", code == "53100", code == "53200", code == "53300":
+			return true
+		case code == "55000" && errors.As(err, &connect):
+			// The server is up, and the database takes no new connection now. The same state of a statement, such
+			// as currval before nextval, is an error of the statement and stays 500.
 			return true
 		case code != "":
 			return false

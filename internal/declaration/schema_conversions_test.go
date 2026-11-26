@@ -168,6 +168,50 @@ func TestSchemaConversions(t *testing.T) {
 // A chain of retypes is checked step by step: each retype from its From to the type that its own step gives the
 // field, with each later step undone (decision on ST-DECL-Q17 (a), orchestrator under the owner's delegation,
 // 2026-11-14).
+func TestWideningRetype(t *testing.T) {
+	conversions := databaseConversions(t)
+	f := func(v float64) *float64 { return &v }
+	t.Run("ST-DECL-INV63-T a widening from int32 to int64 with min 0 and no max is accepted, and a narrowing with no max is not", func(t *testing.T) {
+		// Walkthrough 26, P3-RT: Item.lead_days, an int32 with min 0 and no max, becomes an int64 with min 0 and no
+		// max. The int32 column holds the one side, and the API of the release of the change holds the other at
+		// most 2147483647 while the change is open, so the inverse conversion is total and the bounds agree.
+		widen := func(definition string, min, max *float64) *types.ServiceDeclaration {
+			return &types.ServiceDeclaration{Entities: []types.Entity{{Name: "Item", Fields: []types.Field{{Name: "lead_days", Type: types.FieldTypeInt64, Min: min, Max: max}}}},
+				SchemaChanges: []types.SchemaChange{{ID: "item-lead-days-retype", Kind: "retype", Entity: "Item", Field: "lead_days", From: "int32", Definition: definition,
+					Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}},
+				SchemaHistory: []types.SchemaStep{{Change: "item-lead-days-retype", Phase: "expand"}}}
+		}
+		for name, service := range map[string]*types.ServiceDeclaration{
+			"min 0 and no max":                       widen("int32, min 0, default 0", f(0), nil),
+			"no bounds":                              widen("int32", nil, nil),
+			"max 2147483647 on both sides":           widen("int32, min 0, max 2147483647", f(0), f(2147483647)),
+			"max 2147483647 before and none after":   widen("int32, min 0, max 2147483647", f(0), nil),
+			"no max before and 2147483647 after":     widen("int32, min 0", f(0), f(2147483647)),
+			"a max above the int32 range after":      widen("int32, min 0", f(0), f(9000000000)),
+			"the int32 bounds before and none after": widen("int32, min -2147483648, max 2147483647", nil, nil),
+		} {
+			if faults := ValidateSchemaConversions(service, conversions, true); len(faults) != 0 {
+				t.Errorf("%s: checking refuses the widening: %v", name, faults)
+			}
+		}
+		// Bounds that differ within the int32 range still break the CHECK of one column.
+		if faults := ValidateSchemaConversions(widen("int32, min 0", f(1), nil), conversions, true); len(faults) != 1 || !strings.Contains(faults[0].Message, "bounds min and max") {
+			t.Errorf("a widening with min 0 before and min 1 after gives %v, want the fault of the bounds", faults)
+		}
+		if faults := ValidateSchemaConversions(widen("int32, min 0, max 100", f(0), nil), conversions, true); len(faults) != 1 || !strings.Contains(faults[0].Message, "bounds min and max") {
+			t.Errorf("a widening with max 100 before and no max after gives %v, want the fault of the bounds", faults)
+		}
+		// A narrowing from int64 to int32 is not held: the release before writes the whole int64 range.
+		narrow := &types.ServiceDeclaration{Entities: []types.Entity{{Name: "Item", Fields: []types.Field{{Name: "lead_days", Type: types.FieldTypeInt32, Min: f(0)}}}},
+			SchemaChanges: []types.SchemaChange{{ID: "item-lead-days-retype", Kind: "retype", Entity: "Item", Field: "lead_days", From: "int64", Definition: "int64, min 0",
+				Conversion: "int64_to_integer", InverseConversion: "integer_to_int64"}},
+			SchemaHistory: []types.SchemaStep{{Change: "item-lead-days-retype", Phase: "expand"}}}
+		if faults := ValidateSchemaConversions(narrow, conversions, true); len(faults) == 0 || !strings.Contains(faults[0].Message, "int64_to_integer is not total") {
+			t.Errorf("a narrowing with no max gives %v, want the conversion that is not total", faults)
+		}
+	})
+}
+
 func TestSchemaConversionChain(t *testing.T) {
 	conversions := databaseConversions(t)
 	first := types.SchemaChange{ID: "todo-priority-retype", Kind: "retype", Entity: "Todo", Field: "priority", From: "int32", Conversion: "integer_to_text", InverseConversion: "text_to_integer"}

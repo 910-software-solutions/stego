@@ -36,36 +36,40 @@ var evolutionV1 = [2]string{"      - { name: generation, type: int64 }\n", "    
 
 // The edits of v1 of ST-GEN-TD04 for the relate of a field: the optional field Organization.approver, which the
 // public create and the update of v1 can set and change, as a release before the relationship does (walkthrough 25,
-// P2-F).
+// P2-F); and the field Organization.quota, an int32 with min 0 and no max that the collection patches, which v2
+// widens to an int64 (walkthrough 26, P3-RT).
 var evolutionV1Approver = [][2]string{
-	{"    permissions: {create: public, read: view, list: view, delete: edit}\n", "    permissions: {create: public, read: view, list: view, update: edit, delete: edit}\n"},
+	{"    permissions: {create: public, read: view, list: view, delete: edit}\n", "    permissions: {create: public, read: view, list: view, update: edit, patch: edit, delete: edit}\n"},
 	{"      - { name: description, type: string, optional: true, max_length: 1000 }\n",
-		"      - { name: description, type: string, optional: true, max_length: 1000 }\n      - { name: approver, type: string, optional: true, max_length: 255 }\n"},
-	{"    operations: [create, read, delete, list]\n", "    operations: [create, read, update, delete, list]\n"},
+		"      - { name: description, type: string, optional: true, max_length: 1000 }\n      - { name: approver, type: string, optional: true, max_length: 255 }\n" +
+			"      - { name: quota, type: int32, min: 0, default: 0 }\n"},
+	{"    operations: [create, read, delete, list]\n", "    operations: [create, read, update, delete, list, patch]\n    patchable: [quota]\n"},
 }
 
 // The declaration of v2 of ST-GEN-TD04, by the edits of the declaration of v1: the add of User.nickname, the rename
-// of User.email to contact_email, the retype of OrgSetting.rank from int64 to string and the require of
-// User.locale, each at expand. The drop and the unique of ST-GEN-TD04 v2 wait for their builds (interim scope of the
+// of User.email to contact_email, the retype of OrgSetting.rank from int64 to string, the require of User.locale and
+// the widening of the patchable Organization.quota from int32 to int64, each at expand. The drop and the unique of ST-GEN-TD04 v2 wait for their builds (interim scope of the
 // harness, accepted by the orchestrator, 2026-11-13).
 var evolutionV2 = [][2]string{
 	{"      - { name: email, type: string, unique: true, max_length: 255 }\n",
 		"      - { name: contact_email, type: string, unique: true, max_length: 255 }\n      - { name: nickname, type: string, optional: true, max_length: 50 }\n" +
 			"      - { name: locale, type: string, max_length: 10 }\n"},
 	{"      - { name: rank, type: int64 }\n", "      - { name: rank, type: string, pattern: \"^-?[0-9]{1,18}$\" }\n"},
+	{"      - { name: quota, type: int32, min: 0, default: 0 }\n", "      - { name: quota, type: int64, min: 0, default: 0 }\n"},
 	{"\ncollections:\n", "\nschema_changes:\n  - {id: user-nickname-add, kind: add, entity: User, field: nickname}\n" +
 		"  - {id: user-email-rename, kind: rename, entity: User, field: contact_email, from: email}\n" +
 		"  - {id: orgsetting-rank-retype, kind: retype, entity: OrgSetting, field: rank, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}\n" +
 		"  - {id: user-locale-require, kind: require, entity: User, field: locale, fill_value: en}\n" +
+		"  - {id: organization-quota-retype, kind: retype, entity: Organization, field: quota, from: int32, definition: \"int32, min 0, default 0\", conversion: integer_to_int64, inverse_conversion: int64_to_integer}\n" +
 		"schema_history:\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n" +
-		"  - {change: orgsetting-rank-retype, phase: expand}\n  - {change: user-locale-require, phase: expand}\n\ncollections:\n"},
+		"  - {change: orgsetting-rank-retype, phase: expand}\n  - {change: user-locale-require, phase: expand}\n  - {change: organization-quota-retype, phase: expand}\n\ncollections:\n"},
 }
 
 // The declaration of v3 of ST-GEN-TD04, by the edit of the declaration of v2: the contract steps of the rename, the
-// retype and the require at the end of the schema history (ST-GEN-UC15).
-var evolutionV3 = [2]string{"  - {change: user-locale-require, phase: expand}\n",
-	"  - {change: user-locale-require, phase: expand}\n  - {change: user-email-rename, phase: contract}\n" +
-		"  - {change: orgsetting-rank-retype, phase: contract}\n  - {change: user-locale-require, phase: contract}\n"}
+// retype, the require and the widening at the end of the schema history (ST-GEN-UC15).
+var evolutionV3 = [2]string{"  - {change: organization-quota-retype, phase: expand}\n",
+	"  - {change: organization-quota-retype, phase: expand}\n  - {change: user-email-rename, phase: contract}\n" +
+		"  - {change: orgsetting-rank-retype, phase: contract}\n  - {change: user-locale-require, phase: contract}\n  - {change: organization-quota-retype, phase: contract}\n"}
 
 // newEvolution makes the repository of ST-GEN-TD04 with the commit v1, the example as it is, and the commit v2,
 // which stego plan --base v1 and stego apply make from the declaration of v2, and builds the service binary of each
@@ -252,8 +256,8 @@ var (
 		{"\ncollections:\n", "\nschema_changes:\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
 			"  - {id: organization-approver-relate, kind: relate, entity: Organization, relation: approver}\n" +
 			"schema_history:\n  - {change: organization-tenant-relate, phase: expand}\n  - {change: organization-approver-relate, phase: expand}\n\ncollections:\n"},
-		{"    permissions: {create: public, read: view, list: view, update: edit, delete: edit}\n    public_reasons: {create: a new organization has no resource to decide on before it exists}\n",
-			"    permissions: {create: create_organization, read: view, list: view, update: edit, delete: edit}\n" +
+		{"    permissions: {create: public, read: view, list: view, update: edit, patch: edit, delete: edit}\n    public_reasons: {create: a new organization has no resource to decide on before it exists}\n",
+			"    permissions: {create: create_organization, read: view, list: view, update: edit, patch: edit, delete: edit}\n" +
 				"    relationships:\n      - {relation: approver, subject_source: field, subject_field: approver, subject_type: user}\n"},
 	}
 	evolutionV1RSchema = [][2]string{
@@ -454,6 +458,12 @@ func TestSchemaEvolution(t *testing.T) {
 	t.Run("ST-GEN-UC12-R03-T04 Each release reads what the other writes for a retype and a require at expand, and no value is lost", func(t *testing.T) {
 		result(t, "ST-GEN-UC12-R03-T04")
 	})
+	t.Run("ST-GEN-UC12-R03-T05 A patchable int32 widened to an int64 keeps each value through both releases, and the new release holds the int32 range until the contract", func(t *testing.T) {
+		if plan := e.plans["v2 plan"]; !strings.Contains(plan, "organization-quota-retype: retype Organization.quota at expand; migration internal/storage/migrations/step_0005_organization-quota-retype_expand.sql; trigger organizations_quota_sync; backfill in the migration job under the lease stego.backfill.organization-quota-retype") {
+			t.Fatalf("stego plan --base v1 of v2 does not list the widening of Organization.quota:\n%s", plan)
+		}
+		result(t, "ST-GEN-UC12-R03-T05")
+	})
 	t.Run("ST-GEN-UC12-R04-T01 After the rename the API still names the field email", func(t *testing.T) {
 		result(t, "ST-GEN-UC12-R04-T01")
 		// The User schema of v2 is the one of v1 with the added field nickname, and holds email and no
@@ -532,7 +542,7 @@ func TestSchemaEvolution(t *testing.T) {
 	})
 	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
 		plan := e.plans["v3 plan"]
-		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0005_user-email-rename_contract.sql; trigger none; backfill none") {
+		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0006_user-email-rename_contract.sql; trigger none; backfill none") {
 			t.Fatalf("stego plan --base v2 of v3 (%s) does not list the contract migration of the rename:\n%s", e.plans["v3 plan error"], plan)
 		}
 		if e.plans["removed compat error"] == "" || !strings.Contains(e.plans["removed compat"], "user-email-rename") {

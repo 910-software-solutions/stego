@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 func TestRenamedPatchableField(t *testing.T) {
@@ -58,6 +59,39 @@ schema_history:
 		data, err := os.ReadFile(filepath.Join(input.ProjectDir, "service.yaml"))
 		if err != nil || string(data) != service {
 			t.Fatalf("generation changed the declaration: %v", err)
+		}
+	})
+}
+
+func TestRetypedPatchableField(t *testing.T) {
+	t.Run("ST-GEN-UC12-R04-T04 A collection patches a field that an open retype from int32 to int64 widens, and its API holds the int32 bounds until the contract", func(t *testing.T) {
+		// Walkthrough 26, P3-RT: Item.lead_days, an int32 with min 0 and no max that the collection names as
+		// patchable, becomes an int64 with min 0 and no max. Generation refused it, as the patchable list names it.
+		minimum := 0.0
+		svc := &types.ServiceDeclaration{
+			Entities: []types.Entity{{Name: "Item", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString},
+				{Name: "lead_days", Type: types.FieldTypeInt64, Min: &minimum}}}},
+			Collections: []types.Collection{{Name: "items", Entity: "Item", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpPatch}, Patchable: []string{"name", "lead_days"}}},
+			SchemaChanges: []types.SchemaChange{{ID: "item-lead-days-retype", Kind: "retype", Entity: "Item", Field: "lead_days", From: "int32",
+				Definition: "int32, min 0", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}},
+		}
+		for _, contract := range []bool{false, true} {
+			svc.SchemaHistory = []types.SchemaStep{{Change: "item-lead-days-retype", Phase: "expand"}}
+			if contract {
+				svc.SchemaHistory = append(svc.SchemaHistory, types.SchemaStep{Change: "item-lead-days-retype", Phase: "contract"})
+			}
+			live, _, err := storedEntities(svc, svc.SchemaChanges)
+			if err != nil {
+				t.Fatalf("generation refused a retype of a patchable field (contract %t): %v", contract, err)
+			}
+			field := live[0].Fields[1]
+			if field.Name != "lead_days" || field.ColumnName() != "lead_days_int64" || field.Max != nil || field.Min == nil || *field.Min != 0 {
+				t.Fatalf("the generator gets the field %+v; want lead_days in the column lead_days_int64 with min 0 and no max", field)
+			}
+			held := field.HeldMax != nil && *field.HeldMax == 2147483647 && field.HeldMin == nil
+			if held == contract {
+				t.Fatalf("the field lead_days holds the bounds %v and %v with the contract step %t; want at most 2147483647 only until the contract", field.HeldMin, field.HeldMax, contract)
+			}
 		}
 	})
 }
