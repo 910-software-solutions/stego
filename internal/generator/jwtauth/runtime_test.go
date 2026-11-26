@@ -99,6 +99,7 @@ func testGeneratedAuthenticationRuntime(t *testing.T, telemetry bool) {
 			t.Fatalf("generated authentication checks: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 	if os.Getenv("STEGO_BENCH_AUTH") == "1" {
 		command := exec.Command("go", "test", "-run", "^$", "-bench", "^Benchmark(Verify|GrantPolicy)$", "-benchtime=1s", "-benchmem", "./...")
 		command.Dir = project

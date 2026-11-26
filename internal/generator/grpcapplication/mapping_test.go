@@ -267,6 +267,7 @@ func checkGeneratedResponseMappings(t *testing.T, context func(*testing.T) gen.C
 					t.Logf("%s", output)
 				}
 			}
+			localtest.CheckSums(t, project)
 		})
 	}
 }

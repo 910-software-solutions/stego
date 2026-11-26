@@ -108,6 +108,7 @@ func testGeneratedPostgresClient(t *testing.T, pattern string) {
 			t.Logf("%s", output)
 		}
 	}
+	localtest.CheckSums(t, dir)
 }
 
 func TestTracingPeer(t *testing.T) {

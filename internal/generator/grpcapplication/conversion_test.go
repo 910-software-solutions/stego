@@ -66,6 +66,7 @@ func TestGeneratedTimestampConversions(t *testing.T) {
 					t.Logf("%s", output)
 				}
 			}
+			localtest.CheckSums(t, project)
 		})
 	}
 }

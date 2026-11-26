@@ -172,6 +172,9 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 			}
 			t.Logf("generated controller trace results:\n%s", output)
 		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
+		}
 	}
 	if os.Getenv("STEGO_BENCH_DATABASE") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkDatabaseSignals$", "-benchtime=200ms", "-count=3", "./...")

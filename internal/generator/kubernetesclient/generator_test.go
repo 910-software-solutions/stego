@@ -168,6 +168,7 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("telemetry dependencies: %v\n%s", err, output)
 		}
+		localtest.CheckSums(t, project)
 	}
 	budget := "30s"
 	if telemetry && os.Getenv("STEGO_KUBERNETES_LIVE_ROTATION") == "1" {

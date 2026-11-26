@@ -292,6 +292,7 @@ func testGeneratedSDK(t *testing.T, traced bool) {
 			t.Log("generated SDK passed HTTPS, status, and nullable exchange checks")
 		}
 	}
+	localtest.CheckSums(t, root)
 }
 
 const runtimeTest = `package sdk
@@ -602,6 +603,7 @@ func TestPrintedSecretMember(t *testing.T) {
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("go %s: %v\n%s", args[0], err, output)
 			}
+			localtest.CheckSums(t, root)
 		}
 	})
 }

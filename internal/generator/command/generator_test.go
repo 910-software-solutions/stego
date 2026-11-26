@@ -739,6 +739,7 @@ func newProject(t *testing.T, ctx gen.Context, extra map[string][]byte) *project
 	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
@@ -1102,6 +1103,7 @@ func buildEntityFile(t *testing.T, source []byte) {
 		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.write("data/entities.go", source)
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	p.mustGo("vet", "./...")
 }
 

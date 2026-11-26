@@ -236,6 +236,7 @@ func testGeneratedController(t *testing.T, telemetry bool, patterns ...string) {
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("resolve telemetry modules: %v %s", err, output)
 		}
+		localtest.CheckSums(t, project)
 	}
 	cmd := exec.Command("go", "test", "-race", "-count=1", "-timeout=45s", "./...")
 	if len(patterns) != 0 {

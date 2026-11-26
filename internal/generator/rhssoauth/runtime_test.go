@@ -85,4 +85,5 @@ func testGeneratedSSOTrustPolicy(t *testing.T, telemetry bool) {
 			t.Fatalf("SSO runtime: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }

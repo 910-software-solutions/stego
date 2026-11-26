@@ -252,6 +252,7 @@ func (p *project) build() string {
 	p.write(filepath.Join(p.dir, "out", "oidccheck", "oidc_test.go"), string(check))
 	env := goEnv("GOFLAGS=-mod=mod")
 	command(t, p.dir, env, pinnedGo(), "mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	binary := filepath.Join(p.dir, "bin", "service")
 	command(t, p.dir, env, pinnedGo(), "build", "-o", binary, "./out")
 	return binary

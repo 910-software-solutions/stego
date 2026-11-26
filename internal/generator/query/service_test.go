@@ -141,6 +141,7 @@ func shopProject(t *testing.T) string {
 	write("go.mod", []byte("module "+shopModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.196.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeFolder+"\n"))
 	goCommand(t, project, nil, "mod", "tidy")
+	localtest.CheckSums(t, project)
 	goCommand(t, project, nil, "vet", "./...")
 	goCommand(t, project, nil, "build", "./...")
 	return project

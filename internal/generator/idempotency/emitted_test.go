@@ -62,6 +62,7 @@ func emittedProject(t *testing.T) string {
 	for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}} {
 		goCommand(t, project, nil, args...)
 	}
+	localtest.CheckSums(t, project)
 	return project
 }
 

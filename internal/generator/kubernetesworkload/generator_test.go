@@ -81,6 +81,7 @@ func TestGeneratedWorkloadConstruction(t *testing.T) {
 	if output, err := deps.CombinedOutput(); err != nil {
 		t.Fatalf("API test dependencies: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	cmd := exec.Command("go", "test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./workload")
 	cmd.Dir = project
 	cmd.Env = localtest.GoEnv("GOMAXPROCS=2")

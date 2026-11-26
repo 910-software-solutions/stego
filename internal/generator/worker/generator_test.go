@@ -217,6 +217,7 @@ func newProject(t *testing.T, ctx gen.Context, extra ...map[string][]byte) *proj
 	p.write("go.mod", []byte("module "+testModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
