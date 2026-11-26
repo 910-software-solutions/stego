@@ -191,8 +191,36 @@ func NewCounter(spec CounterSpec) (*Counter, error) {
 	if u := spec.UnlockAfter; u != 0 && (u < MinUnlockAfter || u > MaxUnlockAfter || u%time.Second != 0) {
 		return nil, fmt.Errorf("command: the counter of %s.%s unlocks after %s; give none, or whole seconds from %s to %s", spec.Entity, spec.Field, u, MinUnlockAfter, MaxUnlockAfter)
 	}
-	return &Counter{spec: spec}, nil
+	c := &Counter{spec: spec}
+	declaredCounters.Store(c.name(), spec.Entity)
+	return c, nil
 }
+
+// declaredCounters holds each counter, as <entity>.<field>, that NewCounter took, with its entity. The generated
+// counters are package variables, so each is known before the first call; a delete of a row of the entity deletes
+// the counts of each (decision ST-SUP-Q216 (a)).
+var declaredCounters sync.Map
+
+// countersOf gives the counters of the entity, as <entity>.<field>, in byte order.
+func countersOf(entity string) []string {
+	var out []string
+	declaredCounters.Range(func(name, of any) bool {
+		if of.(string) == entity {
+			out = append(out, name.(string))
+		}
+		return true
+	})
+	sort.Strings(out)
+	return out
+}
+
+// purgeRowStatement deletes the counts of one row of the counters $2 in the tenant $1: a delete of the row runs it in
+// its own transaction, so the counts go only with the row (decision ST-SUP-Q216 (a)).
+const purgeRowStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1 AND counter = ANY($2::text[]) AND row_id = $3`
+
+// PurgeTenantStatement deletes every count of the tenant $1: the Retire of the tenant runs it in its transaction, so
+// the counts go only with the retire (decision ST-SUP-Q216 (a)).
+const PurgeTenantStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1`
 
 // UnlockAfter is the window of the decay of the counter: a row at its limit opens again this long after its last
 // charge, while its failures are below FailureCap. Zero is no decay.

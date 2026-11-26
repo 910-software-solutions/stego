@@ -2737,6 +2737,12 @@ func (r *Repository[T]) Delete(ctx context.Context, from Loaded[T], parent ...Re
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}
 		return s.conflict
 	}
+	// The counts of wrong attempts of the row go with the row, in its transaction (decision ST-SUP-Q216 (a)).
+	if counters := countersOf(e.spec.Name); len(counters) > 0 {
+		if _, err := s.exec(ctx, purgeRowStatement, s.tenant.ID(), counters, strings.ToLower(from2.meta.ID)); err != nil {
+			return s.fail(ctx, "delete the attempts of "+e.spec.Name, err)
+		}
+	}
 	if err := r.unrelateAll(ctx, from2.meta.ID); err != nil {
 		return err
 	}
