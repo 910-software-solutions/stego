@@ -25,9 +25,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
-// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
-// (ST-STD-LOCAL-R04, R05).
-func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // The service test of the generated query component: testdata/query_test.go runs in the module of the generated
 // test service, with the fills of testdata/fills, against a local PostgreSQL server and a local SpiceDB container.

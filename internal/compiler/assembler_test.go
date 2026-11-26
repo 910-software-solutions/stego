@@ -30,8 +30,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fixtureRoot = root
-	// localtest.Main removes the PostgreSQL container that a test started (ST-STD-LOCAL-R04, R05).
-	code := localtest.Main(m)
+	// localtest.MainModules fills the checked module cache first and runs no test without it, and removes the
+	// PostgreSQL container that a test started (ST-STD-LOCAL-R03, R04, R05).
+	code := localtest.MainModules(m)
 	// A go command can keep read-only files; make the folders writable to remove them.
 	_ = filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
 		if err == nil && entry.IsDir() {

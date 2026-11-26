@@ -13,9 +13,9 @@ import (
 	"github.com/jsell-rh/stego/internal/localtest"
 )
 
-// TestMain removes the PostgreSQL container that localtest started for the tests of the package, if any
-// (ST-STD-LOCAL-R04, R05).
-func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/worker_test.go
 var serviceChecks []byte
