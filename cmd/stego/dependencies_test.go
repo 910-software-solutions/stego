@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/registry"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -30,7 +31,21 @@ func dependencyProject(t *testing.T) {
 	generatingProject(t, generatingDeclaration)
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOTOOLCHAIN", "local")
+	offlineModules(t)
 	mustRun(t, runApply)
+}
+
+// offlineModules sets the environment of the go commands that stego deps and stego apply run: the module cache that
+// localtest fills once is the only module proxy, and no sum database is asked (ST-STD-LOCAL-R03).
+func offlineModules(t *testing.T) {
+	t.Helper()
+	localtest.RequireModules(t)
+	for _, entry := range localtest.GoEnv() {
+		key, value, _ := strings.Cut(entry, "=")
+		if key == "GOPROXY" || key == "GOSUMDB" {
+			t.Setenv(key, value)
+		}
+	}
 }
 
 func moduleFiles(t *testing.T) (string, string) {

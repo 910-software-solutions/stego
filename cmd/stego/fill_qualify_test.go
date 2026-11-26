@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/registry"
 )
 
@@ -181,8 +182,9 @@ func testFillKeys(t *testing.T) *fillKeys {
 // ST-EXT-TD02, or of no key: its own HOME, the test keyring, no ssh-agent,
 // the built-in registry and the Go settings of the test run.
 func (k *fillKeys) env(home string) []string {
+	// localtest.GoEnv fills the module cache once.
 	var env []string
-	for _, entry := range os.Environ() {
+	for _, entry := range localtest.GoEnv() {
 		name, _, _ := strings.Cut(entry, "=")
 		switch name {
 		case "HOME", "GNUPGHOME", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "GOFLAGS", "GOWORK", "GOTOOLCHAIN", "GOMODCACHE", "GOCACHE", "GOPATH",
@@ -193,7 +195,9 @@ func (k *fillKeys) env(home string) []string {
 	}
 	env = append(env, k.goEnv...)
 	return append(env, "HOME="+home, "GNUPGHOME="+k.gnupgHome, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
-		"GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod", "GIT_CONFIG_NOSYSTEM=1",
+		// GOPROXY=off, which the fill check of stego keeps (internal/fill moduleSources): each module comes from the
+		// module cache that localtest filled, and none from a hosted proxy (ST-STD-LOCAL-R03).
+		"GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod", "GOPROXY=off", "GIT_CONFIG_NOSYSTEM=1",
 		"STEGO_REGISTRY="+k.registry, "STEGO_MODULE=example.com/fills", "STEGO_GO_VERSION=1.26.11")
 }
 

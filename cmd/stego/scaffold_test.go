@@ -16,6 +16,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/parser"
 	"gopkg.in/yaml.v3"
 )
@@ -168,6 +169,7 @@ func TestScaffoldDeniesUnimplementedPolicy(t *testing.T) {
 		for _, args := range [][]string{{"test", "-mod=readonly", "./..."}, {"mod", "tidy"}} {
 			cmd := exec.Command("go", args...)
 			cmd.Dir = project
+			cmd.Env = localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("after repeated apply, go %v: %v\n%s", args, err, output)
 			}

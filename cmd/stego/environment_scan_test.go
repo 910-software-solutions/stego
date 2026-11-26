@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/localtest"
 	"github.com/jsell-rh/stego/internal/registry"
 )
 
@@ -581,6 +582,8 @@ func libraryReads(t *testing.T, root string) []libraryRead {
 	moduleDir := func(module string) string {
 		command := exec.Command("go", "mod", "download", "-json", module)
 		command.Dir = filepath.Join(root, "registry", "runtime")
+		// The module cache that localtest fills holds each module of the runtime library, so no proxy is asked.
+		command.Env = localtest.GoEnv()
 		output, err := command.Output()
 		if err != nil {
 			t.Fatalf("go mod download %s: %v", module, err)
