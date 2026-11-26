@@ -42,7 +42,8 @@ const compatGitTimeout = time.Minute
 // runCompat implements stego compat (ST-GEN-CLI07): it reads the declaration and the record at the base ref from
 // the service's repository, checks the head declaration in the working folder against them (ST-GEN-QRY04), and
 // prints the base ref and its commit and each fault. It exits 0 with no fault, 1 with a fault, and 2 for a usage
-// error or a ref that it cannot read. It writes nothing in the service folder. To compare the committed migrate.go
+// error, a ref that it cannot read, or declaration checks of stego validate that cannot run for a cause other than the
+// registry (declarationFaults). It writes nothing in the service folder. To compare the committed migrate.go
 // with a new generation (warnUngenerated), it resolves the registry, which can clone it into the cache of the user,
 // and runs go list, as stego plan does.
 func runCompat(args []string, stdout io.Writer) error {

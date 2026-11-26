@@ -74,10 +74,14 @@ the rule `ST-DECL-UC01`, such as `stego validate refuses the head:
 that `stego plan` and `stego apply` refuse for a declaration fault, such as
 a retype whose conversion is not total. A fill with no evidence or no
 sign-off stays a warning of validate, so compat does not refuse it; plan
-and apply refuse it. When compat cannot run these checks, such as with no
-registry, it writes a note with the cause class `registry` on standard
-error, and after `No fault` it says that the result holds only the
-compatibility with the base. Then run `stego validate`.
+and apply refuse it. When compat cannot run these checks because the
+registry does not resolve or load, it writes a note with the cause class
+`registry` on standard error, and after `No fault` it says that the result
+holds only the compatibility with the base. Then run `stego validate`.
+From STEGO 3.266.0, when compat cannot run these checks for any other
+cause, such as a `fill.yaml` that does not parse, it exits 2 with the cause
+class `fill` or `declaration`, and never says `No fault`. The error text
+stays out of its output; run `stego validate` to see the cause.
 
 The check reads the record of the base, not the out folder. `stego apply`
 writes a missing generated file again with no flag, and refuses only a
