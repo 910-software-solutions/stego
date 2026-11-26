@@ -110,7 +110,24 @@ func Main(m *testing.M) int {
 	close(done)
 	signal.Stop(signals)
 	remove()
+	if emptyDir != "" {
+		_ = os.RemoveAll(emptyDir)
+	}
 	return code
+}
+
+// MainModules is Main for a package whose tests run go commands with GoEnv: it fills the module cache of localtest
+// first, and when that fails it runs no test, names the reason on standard error and gives 1, so no test of the
+// binary runs a go command without the checked cache (security review of PR #510, L4).
+//
+//	func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+func MainModules(m *testing.M) int {
+	modulesOnce.Do(downloadModules)
+	if modulesWhy != "" {
+		fmt.Fprintln(os.Stderr, "localtest: the module cache cannot be used, so no test runs: "+modulesWhy)
+		return 1
+	}
+	return Main(m)
 }
 
 // PostgresDSN gives the superuser URL of the local server, and starts the container the first time a test of the
@@ -288,6 +305,13 @@ func remove() {
 // goroutine can call it: a failed fill is written to standard error, and RequireModules fails a test with it.
 func GoEnv(extra ...string) []string {
 	modulesOnce.Do(downloadModules)
+	// When the module cache of localtest could not be made or filled, a go command gets no module at all: an empty
+	// module cache of its own and no proxy. It never falls back to the shared GOMODCACHE, which an empty GOMODCACHE
+	// would name through GOPATH (security review of PR #510, L4).
+	cache, proxy := moduleCache, cacheProxy+",off"
+	if modulesWhy != "" || moduleCache == "" {
+		cache, proxy = emptyCache(), "off"
+	}
 	env := []string{}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -296,11 +320,30 @@ func GoEnv(extra ...string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GOMODCACHE="+moduleCache, "GOPROXY="+cacheProxy+",off", "GOSUMDB=off", "GONOSUMDB=none", "GONOSUMCHECK=",
+	env = append(env, "GOMODCACHE="+cache, "GOPROXY="+proxy, "GOSUMDB=off", "GONOSUMDB=none", "GONOSUMCHECK=",
 		"GOPRIVATE=", "GONOPROXY=none", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off",
 		"GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
 	return append(env, extra...)
 }
+
+// emptyCache gives an empty module cache of this process, made once in the temporary folder, for the go commands of
+// GoEnv when the module cache of localtest is not there. Main removes it when the tests end.
+func emptyCache() string {
+	emptyOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "localtest-empty-modules-")
+		if err != nil {
+			// A path that cannot exist: the go command then finds no module in it either.
+			dir = filepath.Join(string(filepath.Separator), "nonexistent", "localtest-empty-modules")
+		}
+		emptyDir = dir
+	})
+	return emptyDir
+}
+
+var (
+	emptyOnce sync.Once
+	emptyDir  string
+)
 
 // innerSettings are the go settings that GoEnv sets, which it takes from no other source.
 var innerSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSUMDB": true, "GONOSUMDB": true, "GONOSUMCHECK": true,
@@ -461,7 +504,7 @@ func downloadModules() {
 		}
 		// The checked lines of this fill, for SumsChecked. The file is written whole each run, so it holds only the
 		// lines of the last fill, whose go command checked each one.
-		if err := os.WriteFile(filepath.Join(moduleCache, checkedSumsFile), []byte(strings.Join(checked, "\n")+"\n"), 0o644); err != nil {
+		if err := writeAtomic(filepath.Join(moduleCache, checkedSumsFile), []byte(strings.Join(checked, "\n")+"\n")); err != nil {
 			fail(moduleCache, err, nil)
 		}
 	}()
@@ -645,6 +688,29 @@ func runtimePins(root string) ([]string, error) {
 		}
 	}
 	return lines, nil
+}
+
+// writeAtomic writes data to name through a new file in the same folder and a rename, so a reader never sees a part
+// of it.
+func writeAtomic(name string, data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(name), filepath.Base(name)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(data)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(file.Name(), 0o644)
+	}
+	if err == nil {
+		err = os.Rename(file.Name(), name)
+	}
+	if err != nil {
+		_ = os.Remove(file.Name())
+	}
+	return err
 }
 
 // cacheFolder gives the module cache of localtest, and makes it: localtest-modules in STEGO_TEST_RUNS when that
