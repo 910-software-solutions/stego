@@ -172,49 +172,71 @@ func TestTableSteps(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC01-OC38-T07 A unique build that a concurrent duplicate fails leaves no index and no ledger row, and a rerun builds it", func(t *testing.T) {
-		_, db, conn := base(t)
 		// A writer of the release of the step writes two boards of one tenant with one slug while the build waits for
-		// an open write transaction on boards; no event trigger is used.
-		done := make(chan error, 1)
-		go func() { done <- boardsslug.Migrate(ctx, conn) }()
-		deadline := time.Now().Add(30 * time.Second)
-		for {
-			var column bool
-			if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::pg_catalog.regclass AND attname = 'slug')`).Scan(&column); err != nil {
+		// an open write transaction on boards; no event trigger is used. The holder takes its lock once the step has
+		// added slug, so the unique build can be past its first wait before the lock, and set its index ready before
+		// the write: then the write is checked by the index and is refused, and the attempt proves nothing. Such an
+		// attempt starts again on a new database, at most maxAttempts times, and is never a skip, which the host
+		// test takes as a failure (flaky test of #505).
+		var db *sql.DB
+		var conn *sql.Conn
+		var err error
+		const maxAttempts = 5
+		for attempt := 1; ; attempt++ {
+			var inconclusive string
+			_, db, conn = base(t)
+			done := make(chan error, 1)
+			go func() { done <- boardsslug.Migrate(ctx, conn) }()
+			deadline := time.Now().Add(30 * time.Second)
+			for {
+				var column bool
+				if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::pg_catalog.regclass AND attname = 'slug')`).Scan(&column); err != nil {
+					t.Fatal(err)
+				}
+				if column {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the step never adds slug")
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			holder, connErr := db.Conn(ctx)
+			if connErr != nil {
+				t.Fatal(connErr)
+			}
+			if _, err := holder.ExecContext(ctx, `BEGIN; LOCK TABLE public."boards" IN ROW EXCLUSIVE MODE`); err != nil {
 				t.Fatal(err)
 			}
-			if column {
+			var uniqueReady bool
+			if err := db.QueryRow(`SELECT coalesce(bool_or(i.indisready), false) FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'boards_slug_key'`).Scan(&uniqueReady); err != nil {
+				t.Fatal(err)
+			}
+			if uniqueReady {
+				inconclusive = "the unique build was ready before the holder took its lock"
+			} else if _, dupErr := db.Exec(`INSERT INTO public."boards" ("tenant_id", "id", "title", "slug") VALUES ('tenant-a', gen_random_uuid(), 'c', 'same'), ('tenant-a', gen_random_uuid(), 'd', 'same')`); dupErr != nil {
+				var pgErr *pgconn.PgError
+				if !errors.As(dupErr, &pgErr) || pgErr.Code != "23505" {
+					t.Fatalf("the duplicate write: %v", dupErr)
+				}
+				inconclusive = "the unique build set its index ready before the duplicate write, which the index refused"
+			}
+			if _, err := holder.ExecContext(ctx, `COMMIT`); err != nil {
+				t.Fatal(err)
+			}
+			_ = holder.Close()
+			select {
+			case err = <-done:
+			case <-time.After(60 * time.Second):
+				t.Fatal("the migration job did not end")
+			}
+			if inconclusive == "" {
 				break
 			}
-			if time.Now().After(deadline) {
-				t.Fatal("the step never adds slug")
+			t.Logf("attempt %d proves nothing: %s (job: %v)", attempt, inconclusive, err)
+			if attempt == maxAttempts {
+				t.Fatalf("each of %d attempts proved nothing; the last: %s", maxAttempts, inconclusive)
 			}
-			time.Sleep(2 * time.Millisecond)
-		}
-		holder, err := db.Conn(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer holder.Close()
-		if _, err := holder.ExecContext(ctx, `BEGIN; LOCK TABLE public."boards" IN ROW EXCLUSIVE MODE`); err != nil {
-			t.Fatal(err)
-		}
-		var uniqueReady bool
-		_ = db.QueryRow(`SELECT coalesce(bool_or(i.indisready), false) FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'boards_slug_key'`).Scan(&uniqueReady)
-		if uniqueReady {
-			t.Skip("inconclusive: the unique build was past its first phase before the holder took its lock")
-		}
-		_, dupErr := db.Exec(`INSERT INTO public."boards" ("tenant_id", "id", "title", "slug") VALUES ('tenant-a', gen_random_uuid(), 'c', 'same'), ('tenant-a', gen_random_uuid(), 'd', 'same')`)
-		if dupErr != nil {
-			t.Fatalf("the duplicate write: %v", dupErr)
-		}
-		if _, err := holder.ExecContext(ctx, `COMMIT`); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case err = <-done:
-		case <-time.After(60 * time.Second):
-			t.Fatal("the migration job did not end")
 		}
 		if err == nil || !strings.Contains(err.Error(), slugUnique) {
 			t.Fatalf("the job with a duplicate gives %v, want the failure of %s", err, slugUnique)
