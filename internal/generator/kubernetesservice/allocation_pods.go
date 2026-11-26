@@ -69,7 +69,7 @@ func allocationPodObjects(config allocationConfiguration, p allocationProfile, i
 	// Select immutable allocator and profile labels. Two installations can use
 	// the same name pattern without applying their policy to each other's Pods.
 	items[0].(object)["spec"].(object)["matchConstraints"].(object)["namespaceSelector"] = object{"matchLabels": object{
-		"stego.dev/allocator": allocationMarker(config), "stego.dev/allocation-profile": p.Name,
+		KeyPrefix + "allocator": allocationMarker(config), KeyPrefix + "allocation-profile": p.Name,
 	}}
 	return items
 }

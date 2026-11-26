@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -52,6 +53,9 @@ var watchSetTests []byte
 //go:embed testdata/rotation_telemetry_test.go
 var rotationTelemetryTests []byte
 
+//go:embed testdata/observation_test.go
+var observationTests []byte
+
 //go:embed testdata/pinned_admission_test.go
 var pinnedAdmissionTests []byte
 
@@ -82,6 +86,9 @@ func TestGeneratedRouteAdmission(t *testing.T) {
 }
 func TestGeneratedServerTLSSecret(t *testing.T) {
 	testGeneratedKubernetesClient(t, false, "^Test(Server|Client)TLSSecret")
+}
+func TestGeneratedObservationHelpers(t *testing.T) {
+	testGeneratedKubernetesClient(t, false, "^TestObservationHelpersMakeNoNetworkCall$")
 }
 func TestGeneratedDeploymentAvailability(t *testing.T) {
 	testGeneratedKubernetesClient(t, false, "^TestDeploymentAvailability$")
@@ -115,6 +122,7 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	files = append(files, gen.File{Path: "kubernetes/rotation_test.go", Content: rotationTests})
 	files = append(files, gen.File{Path: "kubernetes/watch_capacity_test.go", Content: watchCapacityTests})
 	files = append(files, gen.File{Path: "kubernetes/watch_set_test.go", Content: watchSetTests})
+	files = append(files, gen.File{Path: "kubernetes/observation_test.go", Content: observationTests})
 	var module strings.Builder
 	module.WriteString("module example.com/widget\ngo 1.26.11\n")
 	if telemetry {
@@ -249,6 +257,42 @@ func TestUnverifiedAdmissionPrototypeIsNotGenerated(t *testing.T) {
 		for _, file := range files {
 			if strings.Contains(file.Path, "pinned_admission") || bytes.Contains(file.Bytes(), []byte("PinnedAdmissionPolicies")) {
 				t.Fatal("unverified admission prototype reached generated output")
+			}
+		}
+	})
+}
+
+func TestClientKeyPrefix(t *testing.T) {
+	t.Run("ST-SUP-RC14-OC54-T01 Every key the client writes or selects by has the STEGO prefix", func(t *testing.T) {
+		ctx := gen.Context{ModuleName: "example.com/policy", OutDirName: "out", OutputNamespace: "kubernetes", PeerNamespaces: map[string]string{"http-application": "application"}}
+		files, _, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyPattern := regexp.MustCompile(`stego\.[a-z0-9.-]+/[A-Za-z0-9_.-]*`)
+		// The emitted client writes and selects by no STEGO key of its own: it takes each label selector from its
+		// caller. The one key that the component holds, pinned-namespace-uid, is in the pinned admission prototype,
+		// which the client keeps for the namespace allocation and does not emit yet.
+		for _, file := range files {
+			text := string(file.Content)
+			if strings.Contains(text, "stego"+".dev") {
+				t.Fatalf("%s holds the old key prefix", file.Path)
+			}
+			if keys := keyPattern.FindAllString(text, -1); len(keys) > 0 {
+				for _, key := range keys {
+					if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
+						t.Fatalf("%s holds the key %q, which is not under stego.jsell-rh.github.io/", file.Path, key)
+					}
+				}
+			}
+		}
+		prototype := keyPattern.FindAllString(pinnedAdmissionSource, -1)
+		if len(prototype) == 0 || strings.Contains(pinnedAdmissionSource, "stego"+".dev") {
+			t.Fatalf("the pinned admission prototype holds the keys %v", prototype)
+		}
+		for _, key := range prototype {
+			if !strings.HasPrefix(key, "stego.jsell-rh.github.io/") {
+				t.Fatalf("the pinned admission prototype holds the key %q", key)
 			}
 		}
 	})
