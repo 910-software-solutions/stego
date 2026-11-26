@@ -331,21 +331,112 @@ func (p localProof) oneCommandRunsEachSuite(t *testing.T) {
 	report(t, "ST-STD-LOCAL-R02", faults)
 }
 
-// A read of an environment variable of the product that the test needs: a STEGO_ variable compared with the empty
-// string, or looked up with no value, which the documented command does not set.
-var neededVariable = regexp.MustCompile(`(?:Getenv\("(STEGO_[A-Z0-9_]+)"\)\s*==\s*""|""\s*==\s*os\.Getenv\("(STEGO_[A-Z0-9_]+)"\)|LookupEnv\("(STEGO_[A-Z0-9_]+)"\);\s*!ok)`)
+// testEnvironmentSection is the heading of the section of README.md that names the variables of the tests. A
+// variable is documented only when this section names it as a whole word (review of PR #504, L1).
+const testEnvironmentSection = "### The environment of the tests"
 
-// A failure or a skip of a test, which a missing variable leads to within a few lines.
-var stopsTest = regexp.MustCompile(`\bt\.(Fatal|Fatalf|Skip|Skipf|SkipNow)\(`)
+// documentedSection gives the text of the section of README.md that starts at the heading, up to the next heading
+// of the same or a higher level, or "" when README.md has no such heading.
+func documentedSection(readme, heading string) string {
+	lines := strings.Split(readme, "\n")
+	level := len(heading) - len(strings.TrimLeft(heading, "#"))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != heading {
+			continue
+		}
+		var section []string
+		for _, next := range lines[i+1:] {
+			if hashes := len(next) - len(strings.TrimLeft(next, "#")); hashes > 0 && hashes <= level && strings.HasPrefix(next[hashes:], " ") {
+				break
+			}
+			section = append(section, next)
+		}
+		return strings.Join(section, "\n")
+	}
+	return ""
+}
+
+// namesWord tells if the text holds the name as a whole word: not as a part of a longer name (review of PR #504, L1).
+func namesWord(text, name string) bool {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(name) + `($|[^A-Za-z0-9_])`).MatchString(text)
+}
+
+// A read of an environment variable of the product: each Getenv or LookupEnv of a STEGO_ variable, in any form
+// (review of PR #504, M1).
+var readsVariable = regexp.MustCompile(`(?:Getenv|LookupEnv)\("(STEGO_[A-Z0-9_]+)"\)`)
+
+// An assignment of the value of a read to names, with := or =; the names on its left side.
+var assignsRead = regexp.MustCompile(`^\s*(?:if\s+|var\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:?=[^=]`)
+
+// A failure or a skip of a test, or a bare return out of it, which a missing variable leads to within a few lines.
+var stopsTest = regexp.MustCompile(`(?m)\bt\.(Fatal|Fatalf|Skip|Skipf|SkipNow|FailNow)\(|^\s*return\s*$`)
 
 // A set of a variable by a test of the tree: Setenv, or an entry of the environment of a command it runs.
 var setsVariable = regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+|"([A-Z0-9_]+)=[^"]*"`)
 
-// undocumentedEnvironment gives each STEGO_ variable that a test file of the domain's packages needs and README.md
-// does not name: the test fails or skips when the variable is empty, and no test of the tree sets it for the test
-// (as a parent test sets the path of a binary for the child process it runs). The documented command go test ./...
-// runs the test with no such variable, so the test does not run from the documented command alone (review of PR
-// #502, L4).
+// optInVariables are the STEGO_ variables that a test reads only to do more than its proof, so that the documented
+// command proves the same without them. Each has its reason. A new variable that a test stops on fails the test
+// until README.md names it or this list holds it with a reason.
+var optInVariables = map[string]string{
+	"STEGO_UPDATE_GOLDEN":      "writes the golden files again in place of a comparison with them",
+	"STEGO_TEST_REACH_SCHEMAS": "changes the count of random schemas from its default; it stops the test only on a value that is not a count",
+	"STEGO_TEST_NO_CONTAINERS": "turns the failure of a test with no container engine into a skip; without it the test fails, as R02 asks",
+}
+
+// optInSuffixes are the endings of the names of opt-in variables that copy what a test made to a folder, for a
+// person or a CI job to read: the test proves the same without them.
+var optInSuffixes = []string{"_DUMP", "_ARTIFACTS"}
+
+// optIn tells if the variable is an opt-in one, by name or by the ending of its name.
+func optIn(name string) bool {
+	if _, held := optInVariables[name]; held {
+		return true
+	}
+	for _, suffix := range optInSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionLine gives the line that tests the value of the read on line i: line i when it is an if statement or
+// holds the condition itself; else the first if statement of the next ten lines that names, as a whole word, a name
+// that line i assigns the value to. It gives -1 when nothing tests the value.
+func conditionLine(lines []string, i int) int {
+	line := lines[i]
+	if strings.Contains(line, "if ") || strings.Contains(line, "==") || strings.Contains(line, "!=") || strings.Contains(line, "!ok") {
+		return i
+	}
+	match := assignsRead.FindStringSubmatch(line)
+	if match == nil {
+		return -1
+	}
+	var names []string
+	for _, name := range strings.Split(match[1], ",") {
+		if name = strings.TrimSpace(name); name != "_" && name != "" {
+			names = append(names, name)
+		}
+	}
+	for j := i + 1; j < min(i+11, len(lines)); j++ {
+		if !strings.Contains(lines[j], "if ") && !strings.Contains(lines[j], "switch ") {
+			continue
+		}
+		for _, name := range names {
+			if namesWord(lines[j], name) {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// undocumentedEnvironment gives each STEGO_ variable that a test file of the domain's packages needs and the test
+// environment section of README.md does not name: the test reads the variable, directly or through a name it
+// assigns the value to, and fails, skips or returns within a few lines of the condition on it; no test of the tree
+// sets it for the test (as a parent test sets the path of a binary for the child process it runs); and it is not an
+// opt-in variable. The documented command go test ./... runs the test with no such variable, so the test does not
+// run from the documented command alone (review of PR #502, L4; review of PR #504, M1).
 func (p localProof) undocumentedEnvironment(readme string) []string {
 	set := map[string]bool{}
 	for _, name := range p.tree.paths() {
@@ -356,17 +447,24 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 			}
 		}
 	}
+	section := documentedSection(readme, testEnvironmentSection)
 	var faults []string
+	if section == "" {
+		faults = append(faults, "README.md has no section "+testEnvironmentSection+" that names the variables of the tests")
+	}
 	for file, data := range p.packageFiles() {
 		lines := codeLines(file, data)
 		for i, line := range lines {
-			for _, match := range neededVariable.FindAllStringSubmatch(line, -1) {
-				name := match[1] + match[2] + match[3]
-				end := min(i+4, len(lines))
-				if strings.Contains(readme, name) || set[name] || !stopsTest.MatchString(strings.Join(lines[i:end], "\n")) {
+			for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
+				name := match[1]
+				if set[name] || optIn(name) || namesWord(section, name) {
 					continue
 				}
-				faults = append(faults, fmt.Sprintf("%s needs %s, which README.md does not name", file, name))
+				condition := conditionLine(lines, i)
+				if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
+					continue
+				}
+				faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, name, testEnvironmentSection))
 			}
 		}
 	}

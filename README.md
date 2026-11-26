@@ -154,35 +154,59 @@ result is not a pass. These folders have such tests:
   start a server themselves when the variable is not set.
 
 Start a local server from the image that CI uses (postgres 18.6-alpine, pinned by
-digest). The container is not privileged, and its port is bound to 127.0.0.1 only:
+digest). The container is not privileged. It has limits on memory, CPU and
+processes. Its port is bound to 127.0.0.1 only, and Docker selects the host port:
 
 ```bash
+set -e
+password="$(openssl rand -hex 16)"
 docker run -d --rm --name stego-test-postgres \
+  --memory 512m --cpus 1 --pids-limit 256 \
   --security-opt no-new-privileges --cap-drop ALL \
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETGID --cap-add SETUID \
-  -e POSTGRES_PASSWORD=stego_test \
+  -e POSTGRES_PASSWORD="$password" \
   -e POSTGRES_INITDB_ARGS='--auth-host=scram-sha-256 --auth-local=trust' \
-  -p 127.0.0.1:5432:5432 \
+  -p 127.0.0.1::5432 \
   postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
-export STEGO_TEST_POSTGRES_DSN='postgres://postgres:stego_test@127.0.0.1:5432/postgres?sslmode=disable'
-export STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1
-go test ./...
+port="$(docker port stego-test-postgres 5432/tcp | head -n 1 | sed 's/.*://')"
+export STEGO_TEST_POSTGRES_DSN="postgres://postgres:$password@127.0.0.1:$port/postgres?sslmode=disable"
+STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1 go test ./...
 docker rm -f stego-test-postgres
 ```
 
 The DSN has the form
 `postgres://<user>:<password>@127.0.0.1:<port>/<database>?sslmode=disable`.
 `STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1` lets the generated code connect
-without TLS to a server on the loopback address. Set
-`STEGO_REQUIRE_POSTGRES=1` to make a test fail, not skip, when
-`STEGO_TEST_POSTGRES_DSN` is not set.
+without TLS to a server on the loopback address. Use it for local tests only.
+Never set it in a deployment.
 
-The tests of `internal/generator/command` and of `internal/compiler` also need
-SpiceDB. They start a SpiceDB container
-(`authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd`)
-when `STEGO_TEST_SPICEDB` is not set. To use a server that runs already, set
-`STEGO_TEST_SPICEDB` to its gRPC address (for example `127.0.0.1:50051`) and
-`STEGO_TEST_SPICEDB_KEY` to its preshared key.
+`go test ./...` at the root does not run the tests of `internal/assure` and
+`cmd/assure`, because each has a Go module of its own. Run `go test ./...` in
+each of these folders too.
+
+### The environment of the tests
+
+The tests read these variables. The table tells what each one does, and what a
+test does when the variable is not set.
+
+| Variable | What it does | When it is not set |
+|---|---|---|
+| `STEGO_TEST_POSTGRES_DSN` | The address of a PostgreSQL server for the tests (see above). | The tests that need it skip, or fail when `STEGO_REQUIRE_POSTGRES=1`. |
+| `STEGO_REQUIRE_POSTGRES` | Set to `1` to make a test fail, not skip, when `STEGO_TEST_POSTGRES_DSN` is not set. CI sets it. | A test without a server skips. |
+| `STEGO_REQUIRE_PROVISIONING_POSTGRES` | Set to `1` to run the provisioning test of `internal/generator/postgresclient`. It creates and removes databases and roles, so give it a server of its own, such as the one above, and never a shared server. | The test skips. |
+| `STEGO_TEST_SPICEDB`, `STEGO_TEST_SPICEDB_KEY` | The gRPC address and the preshared key of a SpiceDB server that runs already. | The tests of `internal/generator/command` and `internal/compiler` start a SpiceDB container (`authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd`). |
+| `STEGO_REQUIRE_NODE` | Set to `1` to make the tests of `internal/generator/browsertelemetry` and `internal/generator/typescriptsdk` fail, not skip, without Node.js and the packages of their `testdata` folders (`npm ci --prefix <folder>/testdata`). CI sets it. | Without Node.js, these tests skip. |
+| `STEGO_LATHE`, `STEGO_REQUIRE_LATHE` | `STEGO_LATHE` is the path of the Lathe CLI for the tests of `internal/assure` and `cmd/assure` (the default is `node_modules/.bin/lathe`; run `npm ci` first). Set `STEGO_REQUIRE_LATHE=1` to make them fail, not skip, without it. CI sets it. | Without the Lathe CLI, these tests skip. |
+| `STEGO_BROWSER`, `STEGO_REQUIRE_BROWSER_VIEW` | `STEGO_BROWSER` is the path of a Chrome or Chromium executable for the browser tests of the architecture view in `internal/compiler`. Set `STEGO_REQUIRE_BROWSER_VIEW=1` to make them fail, not skip, without it. | These tests skip. |
+| `STEGO_REQUIRE_BROWSER_LOGOUT` | Set to `1` to run the native browser logout test of `internal/generator/browserbackend`. It runs in the browser-logout CI job, which installs the browser. | The test skips. |
+| `STEGO_REQUIRE_KEYCLOAK_PROVIDER` | Set to `1` to run the tests of `internal/generator/keycloakprovider` against a real Keycloak. They run only in their CI job (`GITHUB_ACTIONS=true`). | The tests skip. |
+| `STEGO_KUBERNETES_LIVE_ROTATION`, `STEGO_TEST_NAMESPACE`, `STEGO_TEST_POD_UID` | The token rotation test of `internal/generator/kubernetesclient` on a live cluster. `scripts/check-kubernetes-token-rotation.py` sets them in the Pod that it starts in a dedicated namespace. | The test skips. |
+| `STEGO_ALLOCATION_LIVE`, `STEGO_ALLOCATION_NAMESPACE`, `STEGO_ALLOCATION_SUFFIX` | Set `STEGO_ALLOCATION_LIVE=1` to run the allocation test of `internal/generator/kubernetesservice` on a live cluster, from a Pod with the CA file and the token of an allocation account. `STEGO_ALLOCATION_NAMESPACE` is its control namespace, and `STEGO_ALLOCATION_SUFFIX` is eight lower-case letters or digits that make its names unique. | The test skips. |
+| `STEGO_TEST_PROJECTED_DATABASE_URL_FILE` | The path of a database URL in a mounted Secret, for the configuration test of `internal/compiler` in a Pod. | The test skips. |
+| `STEGO_TEST_PINNED_GO` | The `go` command of the pinned official Go SDK (`python3 scripts/prepare-compiler-toolchain.py --download --output <folder>`). The build tests of `cmd/stego` need it. | The tests use the `go` that runs them. The build tests skip when it is not the pinned SDK. |
+
+Variables that end in `_ARTIFACTS` or `_DUMP`, and `STEGO_UPDATE_GOLDEN`,
+only copy or write again what a test makes. A test proves the same without them.
 
 ## Quick start
 
