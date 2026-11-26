@@ -31,7 +31,7 @@ const CSRFHeader="X-CSRF-Token"
 type asset struct{Source,Path,Hash string}
 type configuration struct{DynamicStyles bool;RuntimeConfigOffset int;Prefix,RolesClaim,LogoutScope,TelemetryService,OAuthScope string;Routes []string;APIs []struct{Name,Prefix string};Assets []asset;ScriptHashes []string}
 type options struct{Origin,Upstream,Upstreams,UpstreamCA,Issuer,IssuerCA,ClientID,SecretFile,KeyFile string}
-type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;main apiRoute;apis []apiRoute;origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits chan struct{}}
+type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;main apiRoute;apis []apiRoute;origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits,reserve chan struct{}}
 
 // NewBrowserBackendWithTelemetry binds startup to the process telemetry runtime.
 // Generated assembly closes the backend before it closes that runtime.
@@ -97,7 +97,7 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  err=startupStep(ctx,telemetry.StartupBrowserAuthorization,func(context.Context)error{
   authorization,_:=httpsURL(provider.metadata.Authorization);if cookieHost(authorization)==cookieHost(origin){return errors.New("browser authorization requires a separate HTTPS cookie host")};return nil
  });if err!=nil{provider.close();upstream.Close();closeAPIs(apis);return nil,err}
- b:=&Backend{store:store,provider:provider,upstream:upstream,apis:apis,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests)}
+ b:=&Backend{store:store,provider:provider,upstream:upstream,apis:apis,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests),reserve:make(chan struct{},ReservedRequests)}
  b.main=apiRoute{upstream:upstream};poolAPIs(&b.main,b.apis)
  err=startupStep(ctx,telemetry.StartupBrowserRoutes,func(context.Context)error{
   if json.Unmarshal([]byte(generatedConfiguration),&b.config)!=nil{return errors.New("invalid generated browser configuration")}
@@ -176,12 +176,29 @@ func failure(w http.ResponseWriter,code int){response(w,code,map[string]string{"
 func(b *Backend)sameOrigin(r *http.Request)bool{return len(r.Header.Values("Origin"))==1&&r.Header.Get("Origin")==b.origin.String()}
 func(b *Backend)browserPath(value string)bool{for _,route:=range b.routes{if route.MatchString(value){return true}};return false}
 func(b *Backend)returnPath(value string)string{u,err:=url.Parse(value);if err!=nil||len(value)>2048||u.IsAbs()||u.Host!=""||u.Fragment!=""||u.RawPath!=""||!b.browserPath(u.Path)||strings.ContainsAny(value,"\\\r\n\x00"){return "/"};return value}
+// ReservedRequests is the size of the reserve: the permits that only a request of /auth/* or of an asset or a
+// document that the backend serves itself takes. Each request takes a permit of the backend before it is routed, and
+// a request to an API holds its permit for up to the request timeout of the API client. Without a reserve, slow APIs
+// could hold each permit, and a login, a sign-out and the assets would get 503 (security review of PR #499, L3). A
+// request of the reserve takes a permit of the backend when the reserve is full, so the reserve adds capacity and
+// takes none.
+const ReservedRequests=8
+// ownRoute tells whether the path is one that the backend answers itself, with no request to an API: a route of
+// /auth/*, and{{if .EmbeddedAssets}} each other path under no API prefix and not under /telemetry/: the embedded assets, the
+// documents of the routes and the 404 of another path{{else}} no other path: an asset and a document go to the application{{end}}.
+func(b *Backend)ownRoute(p string)bool{
+ if strings.HasPrefix(p,"/auth/"){return true}
+ {{if .EmbeddedAssets}}return !strings.HasPrefix(p,"/telemetry/")&&b.apiPrefix(p)==nil{{else}}return false{{end}}
+}
 func(b *Backend)ServeHTTP(w http.ResponseWriter,r *http.Request){
  w.Header().Set("Cache-Control","no-store");w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Referrer-Policy","no-referrer")
  w.Header().Set("Content-Security-Policy","default-src 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'")
  w.Header().Set("Strict-Transport-Security","max-age=31536000")
  {{if .LocalApplication}}if socketRequest(r){b.socket(w,r);return}
- {{end}}select{case b.permits<-struct{}{}:defer func(){<-b.permits}();default:failure(w,503);return}
+ {{end}}held:=b.permits
+ if b.ownRoute(r.URL.Path){select{case b.reserve<-struct{}{}:held=b.reserve;default:}}
+ if held==b.permits{select{case b.permits<-struct{}{}:default:failure(w,503);return}}
+ defer func(){<-held}()
  original:=r;defer func(){original.Pattern=r.Pattern}()
  ctx,cancel:=context.WithTimeout(r.Context(),20*time.Second);defer cancel();r=r.WithContext(ctx)
  if r.TLS==nil||r.Host!=b.origin.Host||r.URL.RawPath!=""||len(r.URL.Path)>4096||len(r.URL.RawQuery)>8192||strings.ContainsAny(r.URL.Path,"\\\x00\r\n")||strings.Contains(r.URL.Path,"//")||strings.Contains(r.URL.Path+"/","/./")||strings.Contains(r.URL.Path+"/","/../"){failure(w,400);return}
