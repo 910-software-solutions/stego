@@ -5,18 +5,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"math/big"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"net/http"
-	"os/exec"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -316,6 +316,24 @@ func outboundAddress() string {
 // read them first.
 const proxyChild = "STEGO_TEST_PROXY_CHILD"
 
+// proxyChildRun selects the test in the child process, and proxyChildPass is the line that its subtest prints when it
+// passes under -test.v.
+var (
+	proxyChildRun  = "^TestKeySourceSendsNoRequestThroughAProxy$"
+	proxyChildPass = "--- PASS: TestKeySourceSendsNoRequestThroughAProxy/ST-SUP-RC11-OC14-T01_The_key_source_fetches_keys_directly_while_proxy_settings_are_set"
+)
+
+// hasLine tells whether a line of the output, without its indent and its time, is the given line.
+func hasLine(output, want string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == want || strings.HasPrefix(line, want+" (") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestKeySourceSendsNoRequestThroughAProxy(t *testing.T) {
 	t.Run("ST-SUP-RC11-OC14-T01 The key source fetches keys directly while proxy settings are set", func(t *testing.T) {
 		if os.Getenv(proxyChild) == "" {
@@ -325,15 +343,16 @@ func TestKeySourceSendsNoRequestThroughAProxy(t *testing.T) {
 				http.Error(w, "the recording proxy forwards nothing", http.StatusBadGateway)
 			}))
 			defer proxy.Close()
-			child := exec.Command(os.Args[0], "-test.run", "^TestKeySourceSendsNoRequestThroughAProxy$", "-test.count=1")
+			child := exec.Command(os.Args[0], "-test.run", proxyChildRun, "-test.count=1", "-test.v")
 			child.Env = append(os.Environ(), proxyChild+"=1", "HTTP_PROXY="+proxy.URL, "HTTPS_PROXY="+proxy.URL, "http_proxy="+proxy.URL,
 				"https_proxy="+proxy.URL, "NO_PROXY=", "no_proxy=")
 			output, err := child.CombinedOutput()
 			if err != nil || proxied.Load() != 0 {
 				t.Fatalf("the key source with proxy settings: %v, the proxy got %d requests\n%s", err, proxied.Load(), output)
 			}
-			if !strings.Contains(string(output), "PASS") {
-				t.Fatalf("the child ran no test:\n%s", output)
+			// A child that matches no test also prints PASS, so the exact line of this subtest must be in its output.
+			if !hasLine(string(output), proxyChildPass) || strings.Contains(string(output), "no tests to run") {
+				t.Fatalf("the child did not pass the subtest %q:\n%s", proxyChildPass, output)
 			}
 			return
 		}
