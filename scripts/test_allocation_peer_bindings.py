@@ -26,13 +26,17 @@ class PeerRunnerTests(unittest.TestCase):
             self.assertEqual(peers.account_name(owner, "gateway"), peers.common.account_name(peers.common.CONTROL, owner))
         self.assertNotEqual(peers.account_name("owner-1", "gateway"), peers.account_name("owner-1", "runner"))
 
+    def test_key_prefix(self):
+        # The prefix of every label and annotation key that STEGO writes (ST-SUP-RC15-OC46).
+        self.assertEqual(peers.common.KEY_PREFIX, "stego.jsell-rh.github.io/")
+
     def test_destination_has_both_account_identities(self):
         ns = peers.destination("12345678", "owner-1")
         self.assertEqual(ns["metadata"]["name"], peers.DESTINATION_PREFIX + "12345678")
-        self.assertEqual(ns["metadata"]["labels"]["stego.dev/allocation-profile"], "jobs")
+        self.assertEqual(ns["metadata"]["labels"][peers.common.KEY_PREFIX + "allocation-profile"], "jobs")
         self.assertEqual(ns["metadata"]["annotations"], {
             peers.common.ANNOTATION: peers.account_name("owner-1", "gateway"),
-            "stego.dev/service-account-runner": peers.account_name("owner-1", "runner")})
+            peers.common.KEY_PREFIX + "service-account-runner": peers.account_name("owner-1", "runner")})
 
     def test_both_allocations_are_removed_before_their_guards(self):
         source = identity_tests.namespace("source")

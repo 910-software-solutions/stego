@@ -265,7 +265,7 @@ func TestAllocationNetworkPeersRelatedOwner(t *testing.T) {
 	policy := s.objects[networkPath]
 	target := policy["spec"].(map[string]any)["egress"].([]any)[0].(map[string]any)["to"].([]any)[0].(map[string]any)
 	labels := target["namespaceSelector"].(map[string]any)["matchLabels"].(map[string]any)
-	if len(labels) != 4 || labels["kubernetes.io/metadata.name"] != "peer-"+strings.TrimPrefix(networkName, p.Prefix) || labels["stego.dev/allocator"] != a.marker || labels["stego.dev/allocation-profile"] != "peer" || labels[p.OwnerLabel] != "owner-1" {
+	if len(labels) != 4 || labels["kubernetes.io/metadata.name"] != "peer-"+strings.TrimPrefix(networkName, p.Prefix) || labels["stego.jsell-rh.github.io/allocator"] != a.marker || labels["stego.jsell-rh.github.io/allocation-profile"] != "peer" || labels[p.OwnerLabel] != "owner-1" {
 		t.Fatal("related network peer lost owner or installation identity", labels)
 	}
 	writes := len(s.writes)

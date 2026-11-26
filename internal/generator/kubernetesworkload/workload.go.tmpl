@@ -20,7 +20,7 @@ import (
 // network policy, dependency verification, and reconciliation remain required.
 var ErrDeclaration = errors.New("invalid workload declaration")
 
-const ConfigurationAnnotation = "stego.dev/config-sha256"
+const ConfigurationAnnotation = "[[.KeyPrefix]]config-sha256"
 
 type Object = map[string]any
 
