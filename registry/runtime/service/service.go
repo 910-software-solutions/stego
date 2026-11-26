@@ -214,6 +214,15 @@ type Service struct {
 	blocked string
 }
 
+// verifierSettings are the settings of the verifier of the service: the issuer, the audience, the algorithms, the
+// subject claim, the header, the role claim and the opt-in to an ID token of the settings, the tenant claim and the
+// problem type and code of the parts, and the key set (ST-SUP-RP14-LC02, ST-SUP-Q218).
+func verifierSettings(s Settings, p Parts, keys *authn.KeySet) authn.Settings {
+	return authn.Settings{Issuer: s.Issuer, Audience: s.Audience, Algorithms: s.Algorithms, SubjectClaim: s.SubjectClaim,
+		TenantClaim: p.TenantClaim, Header: s.Header, RoleClaim: s.RoleClaim, AcceptIDToken: s.AcceptIDToken,
+		ProblemType: p.ProblemType, ProblemCode: p.ProblemCode, Keys: keys}
+}
+
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
 // main pool of the runtime role through tenant.Open with the adapter's connection configuration, reports the
 // process under its release (Parts.Release) until Close, refuses a database whose migration ledger does not hold
@@ -326,10 +335,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		return nil, err
 	}
 	svc.issuer = s.Issuer
-	if svc.verifier, err = authn.New(authn.Settings{Issuer: s.Issuer, Audience: s.Audience, Algorithms: s.Algorithms,
-		SubjectClaim: s.SubjectClaim, TenantClaim: p.TenantClaim,
-		Header: s.Header, RoleClaim: s.RoleClaim, ProblemType: p.ProblemType, ProblemCode: p.ProblemCode,
-		Keys: svc.keys}); err != nil {
+	if svc.verifier, err = authn.New(verifierSettings(s, p, svc.keys)); err != nil {
 		return nil, err
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, ChargeDB: svc.chargeDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,

@@ -63,6 +63,10 @@ With rh-sso-auth it finds the key document through the discovery document of the
 declared issuer, a Red Hat SSO realm, takes the tenant from the claim `org_id`, and
 reads no key document setting. `STEGO_AUTHN_CA_FILE` adds certificate authorities
 for the key document or the discovery document.
+With oidc-auth, `accept_id_token: true` in the declaration lets the verifier accept
+an OpenID Connect ID token as the bearer, for a web client and an API that share one
+client ID at a provider with no JWT access token, such as tsidp. No environment
+variable turns it on. See [Accept an ID token as the bearer](docs/operations.md#accept-an-id-token-as-the-bearer-oidc-auth).
 The binary runs the modes that the `--mode` option or `STEGO_MODE` selects: api,
 worker and controller, all by default. The worker mode also reads
 `STEGO_WORKER_DATABASE_URL` or `STEGO_WORKER_DATABASE_URL_FILE` for the worker role,

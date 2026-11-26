@@ -60,6 +60,8 @@ type SlotConsumer interface {
 type RuntimeAuth struct {
 	Issuer, Audience, Header, RoleClaim, SubjectClaim, TenantClaim, CAFile string
 	Algorithms                                                             []string
+	// AcceptIDToken is the declared opt-in to an OpenID Connect ID token as the bearer (ST-SUP-Q218).
+	AcceptIDToken bool
 }
 
 // RuntimeAuthProvider is an auth provider that the verifier of the runtime

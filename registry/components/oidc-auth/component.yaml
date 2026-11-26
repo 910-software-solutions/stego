@@ -1,6 +1,6 @@
 kind: component
 name: oidc-auth
-version: 0.1.1
+version: 0.2.0
 stage: ga
 output_namespace: internal/auth
 
@@ -31,6 +31,13 @@ config:
   ca_file:
     type: string
     optional: true
+  # The opt-in to an OpenID Connect ID token as the bearer, for a web client and an API that share one client ID at a
+  # provider that gives no JWT access token, such as tsidp (ST-SUP-Q218). The verifier then takes an ID token only
+  # when its aud is exactly the audience and its azp, when present, is the audience. Only the declaration turns it
+  # on: no environment variable does.
+  accept_id_token:
+    type: bool
+    default: false
 
 requires: []
 

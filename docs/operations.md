@@ -433,6 +433,70 @@ revocation. When a key leaked:
 When the service reads the key set from the file `STEGO_AUTHN_KEYS_FILE`, it
 reads the file only at start. Restart the pods after step 1 and after step 5.
 
+## Accept an ID token as the bearer (oidc-auth)
+
+From runtime v0.204.0 (rest-crud 3.273.0, rpc-service and browser-service
+1.273.0, oidc-auth 0.2.0), a service that signs in with `oidc-auth` can accept
+an OpenID Connect ID token as the bearer token. By default the verifier
+refuses each ID token: a token that holds `nonce`, `at_hash` or `c_hash` gets
+401 (decision ST-SUP-Q218 (b)). To turn it on, state it in `service.yaml`:
+
+```yaml
+  auth-provider: oidc-auth
+  oidc-auth:
+    issuer: https://homelab-idp.example.ts.net
+    audience: erp-web
+    accept_id_token: true
+```
+
+`accept_id_token` is `true` or `false`, and `false` when you do not state it.
+No environment variable turns it on, so the declaration alone shows if the
+service accepts ID tokens.
+
+### When to turn it on
+
+Turn it on only for a backend-for-frontend:
+
+- The web client and the API share one client ID at the provider, and the
+  `audience` of the service is that client ID.
+- The provider gives no JWT access token. For example, tsidp (the OpenID
+  Connect provider of Tailscale) gives an opaque access token, and its only
+  JWT is the ID token.
+
+When the provider gives JWT access tokens, send the access token and keep the
+setting off.
+
+### What the verifier accepts
+
+With `accept_id_token: true`, a token that holds `nonce`, `at_hash` or
+`c_hash`, or the payload `typ` `ID` (a Keycloak ID token), is an ID token. The
+verifier accepts it only when all of these are true:
+
+- `aud` is exactly the `audience`: a string that is equal to it, or an array
+  of one member that is equal to it. An ID token of two or more audiences is
+  refused.
+- `azp`, when it is in the token, is equal to the `audience`.
+- The payload `typ`, when it is in the token, is `Bearer` or `ID`.
+
+Each other check stays: the algorithms of the allow list and the algorithm of
+the key, the header `typ` (`JWT`, `at+jwt` or `application/at+jwt`), the
+refusal of `crit`, `jku`, `jwk` and `x5u`, the issuer, the expiry, the issue
+time and the not-before time with the clock skew, the subject claim and the
+tenant claim. A logout token or another security event token (a token that
+holds `events`) is always refused. The setting does not change how the
+verifier checks an access token.
+
+### The risk
+
+An ID token is for the client that asked for it, not for an API (OpenID
+Connect Core 1.0, section 2). The verifier accepts it only for the audience
+alone, so a token that the provider issued to another client is refused. Keep
+the ID token on the server side of the backend-for-frontend: do not give it to
+JavaScript in the browser, and do not send it to another service. A service
+that accepts ID tokens cannot tell an ID token that a user copied from the web
+client from a request of the web client, so treat each ID token as a bearer
+credential of the user for its lifetime.
+
 ## Rotate the cursor key
 
 A list gives a cursor for its next page. The cursor is sealed with the key of

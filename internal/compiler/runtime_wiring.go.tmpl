@@ -154,7 +154,7 @@ type Runtime struct {
 // declared are the settings of the verifier that the declaration states.
 var declared = service.Auth{Issuer: declaredIssuer, Audience: declaredAudience, Header: declaredHeader, KeyFile: declaredKeyFile,
 	RoleClaim: declaredRoleClaim, Component: declaredAuthComponent{{if .Discovery}}, Discovery: true, CAFile: declaredCAFile, SubjectClaim: declaredSubjectClaim,
-	Algorithms: []string{ {{- range $i, $a := .Algorithms}}{{if $i}}, {{end}}{{printf "%q" $a}}{{end -}} }{{end}}}
+	Algorithms: []string{ {{- range $i, $a := .Algorithms}}{{if $i}}, {{end}}{{printf "%q" $a}}{{end -}} }{{if .AcceptIDToken}}, AcceptIDToken: true{{end}}{{end}}}
 
 // StartStage names the stage of a start that a setting, the database pool, the key source or the schema manifest
 // refused, for the failure record of the process, which holds no error text and no value (ST-SUP-RP14-LC05).

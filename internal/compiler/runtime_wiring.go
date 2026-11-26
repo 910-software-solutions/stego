@@ -89,6 +89,8 @@ type runtimeWiringData struct {
 	Discovery            bool
 	CAFile, SubjectClaim string
 	Algorithms           []string
+	// AcceptIDToken is the declared opt-in of the auth provider to an ID token as the bearer (ST-SUP-Q218).
+	AcceptIDToken bool
 	// AuthComponent is the auth provider of the declaration, such as jwt-auth or oidc-auth, which the start stage of
 	// a refused verifier setting names (ST-SUP-RP14-LC05).
 	AuthComponent string
@@ -514,6 +516,7 @@ func declaredAuthentication(in runtimeWiringInput, data *runtimeWiringData) erro
 			}
 			data.Issuer, data.Audience, data.Header, data.RoleClaim = auth.Issuer, auth.Audience, auth.Header, auth.RoleClaim
 			data.Discovery, data.CAFile, data.SubjectClaim, data.Algorithms = true, auth.CAFile, auth.SubjectClaim, auth.Algorithms
+			data.AcceptIDToken = auth.AcceptIDToken
 			continue
 		}
 		if name != jwtAuthComponent {
