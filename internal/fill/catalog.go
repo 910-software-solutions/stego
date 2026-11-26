@@ -93,7 +93,7 @@ func projectCatalog(check compiler.FillCheck, slot types.SlotRef) ([]CatalogEntr
 	var entries []CatalogEntry
 	for _, name := range names {
 		dir := filepath.Join(check.ProjectDir, "fills", name)
-		f, err := ParseFill(filepath.Join(dir, ManifestFile))
+		f, err := parseFillIn(filepath.Join(check.ProjectDir, "fills"), name)
 		if err != nil {
 			entries = append(entries, CatalogEntry{Fill: name, Unreadable: strings.Join(strings.Fields(err.Error()), " ")})
 			continue

@@ -4526,6 +4526,15 @@ func TestFillNameStaysInFills(t *testing.T) {
 			read = append(read, path)
 			return readTestFill(data, path)
 		}
+		// The fill qualifier of stego validate reads fills/<name>/fill.yaml for each binding it gets (security
+		// review of PR #518, finding 1), so the check must give it no binding of the name.
+		var qualified []string
+		input.QualifyFills = func(check FillCheck) ([]FillFault, error) {
+			for _, binding := range check.Bindings {
+				qualified = append(qualified, binding.Fill)
+			}
+			return nil, nil
+		}
 		service, err := os.ReadFile(filepath.Join(projectDir, "service.yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -4537,6 +4546,9 @@ func TestFillNameStaysInFills(t *testing.T) {
 		}
 		if len(read) != 0 {
 			t.Fatalf("the check read the fill manifests %v, want none for the name %q", read, escape)
+		}
+		if len(qualified) != 0 {
+			t.Fatalf("the check gave the fill qualifier the bindings %v, want none for the name %q", qualified, escape)
 		}
 		named := false
 		for _, fault := range result.Errors {

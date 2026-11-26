@@ -839,6 +839,11 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			fills []string
 		}{{"gate", sb.Gate}, {"chain", sb.Chain}, {"fan-out", sb.FanOut}} {
 			for j, name := range operator.fills {
+				// A name outside the fill-name form names no folder under fills: checking refuses it with its path
+				// (ST-DECL-INV86), and the fill rules do not read it (security review of PR #518, finding 1).
+				if !declaration.ValidFillName(name) {
+					continue
+				}
 				path := fmt.Sprintf("slots[%d].%s[%d]", i, operator.name, j)
 				check.Bindings = append(check.Bindings, FillBinding{Fill: name, Slot: sb.Slot, Collection: sb.Collection, Path: path})
 			}
