@@ -365,24 +365,52 @@ func TestRuntimeLibraryStandard(t *testing.T) {
 	})
 
 	t.Run("ST-STD-RUNTIME-R06-T01 Only the connector package of the runtime library imports a database driver", func(t *testing.T) {
-		report(t, "ST-STD-RUNTIME-R06", driverFaults(files, func(name, imported string) bool {
+		faults := driverFaults(files, func(name, imported string) bool {
 			return path.Dir(name) == connectorPackage || strings.HasPrefix(path.Dir(name), connectorPackage+"/") || knownDriverImport(name, imported)
-		}))
+		})
+		report(t, "ST-STD-RUNTIME-R06", append(faults, staleDriverImports(files, knownDriverImports)...))
 	})
 }
 
-// knownDriverImport tells if the import is one that the record of the runtime package names as a gap of
-// ST-STD-RUNTIME-R06 not closed yet: ST-SUP-RP04-LF08 (registry/runtime/pgconn/connect.go) is not written, so the
-// tenant runtime's connector and session guard still sit in package tenant, and the command runtime and the
-// transaction of the tenant runtime read the error type of pgconn. The list holds each file and import by name, so a new driver import fails the test.
+// knownDriverImports are the driver imports that the gap ST-SUP-RP04-LF08 (registry/runtime/pgconn/connect.go, not
+// written yet) of ST-STD-RUNTIME-R06 keeps open: the tenant runtime's connector and session guard still sit in
+// package tenant (owner.go, provision.go, tx.go), Unavailable in tenant/tx.go reads *pgconn.ConnectError, and
+// command/handle.go reads *pgconn.PgError. The list holds each file and import by name, so a new driver import fails
+// the test, and staleDriverImports fails the test for an entry that the tree no longer has, so the list only gets
+// shorter as ST-SUP-RP04-LF08 closes.
+var knownDriverImports = map[string][]string{
+	"registry/runtime/tenant/owner.go":     {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn", "github.com/jackc/pgx/v5/stdlib"},
+	"registry/runtime/tenant/provision.go": {"github.com/jackc/pgx/v5"},
+	"registry/runtime/tenant/tx.go":        {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn"},
+	"registry/runtime/command/handle.go":   {"github.com/jackc/pgx/v5/pgconn"},
+}
+
+// knownDriverImport tells if the import is one that knownDriverImports lists for the file.
 func knownDriverImport(name, imported string) bool {
-	known := map[string][]string{
-		"registry/runtime/tenant/owner.go":     {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn", "github.com/jackc/pgx/v5/stdlib"},
-		"registry/runtime/tenant/provision.go": {"github.com/jackc/pgx/v5"},
-		"registry/runtime/tenant/tx.go":        {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn"},
-		"registry/runtime/command/handle.go":   {"github.com/jackc/pgx/v5/pgconn"},
+	return slices.Contains(knownDriverImports[name], imported)
+}
+
+// staleDriverImports gives a fault for each entry of known that the files no longer have: a listed file that is not
+// in the runtime library, or a listed import that the file does not import. Such an entry is a gap that closed.
+func staleDriverImports(files []sourceFile, known map[string][]string) []string {
+	imports := map[string][]string{}
+	for _, source := range files {
+		imports[source.name] = importsOf(source.file)
 	}
-	return slices.Contains(known[name], imported)
+	var faults []string
+	for name, listed := range known {
+		have, ok := imports[name]
+		if !ok {
+			faults = append(faults, fmt.Sprintf("%s is listed in knownDriverImports but is not a file of the runtime library: the gap closed, so remove the entry", name))
+			continue
+		}
+		for _, imported := range listed {
+			if !slices.Contains(have, imported) {
+				faults = append(faults, fmt.Sprintf("%s no longer imports %s, which knownDriverImports lists: the gap closed, so remove the entry", name, imported))
+			}
+		}
+	}
+	return faults
 }
 
 // importNames gives the name by which the file refers to each import path: its alias, or its last element.
