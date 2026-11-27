@@ -543,6 +543,113 @@ func TestWorkerTuples(t *testing.T) {
 			t.Fatalf("the run whose lease is lost visited %d tenants, want it to stop at the first", visited)
 		}
 	})
+	t.Run("ST-SUP-RP10-LC52-T02 The reconcile touches the service tuple of each active tenant provisioned before the relation service, once, and Retire waits for its lock", func(t *testing.T) {
+		// The release adds the relation service of the type tenant and declares no worker. org-a, org-b and org-c were
+		// provisioned before it, so none holds the service tuple; org-c is retired.
+		f := newReconcileFixture(t, "org-a", "org-b", "org-c")
+		e, reader := f.e, f.reader
+		f.workers = nil
+		f.identity(tenant.ReleaseIdentity{Release: reconcileRelease, Workers: tenant.WorkersDigest(nil)})
+		reader.relations = []string{"member", TenantServiceRelation}
+		reader.set()
+		if err := tenant.Retire(e.ctx, e.pool, "public", mustTenant(t, "org-c"), nil); err != nil {
+			t.Fatal(err)
+		}
+		serviceT := func(id string) string {
+			t.Helper()
+			of, err := authz.NewResource(mustTenant(t, id), "service", "orders")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f.resourceOf(id) + "#service@" + of.String()
+		}
+		// A reconcile with no service relation, as before this decision, writes nothing: the tuples stay missing.
+		plain := f.reconcile()
+		if report, err := plain.Run(e.ctx, nil); err != nil || report.Changed != 0 || f.writes() != 0 {
+			t.Fatalf("the reconcile with no service relation gave %+v and %v and wrote %d, want no change", report, err, f.writes())
+		}
+		r := f.reconcile()
+		if err := r.RelateService(""); err == nil {
+			t.Fatal("RelateService took an empty resource type")
+		}
+		if err := r.RelateService(authz.TenantType); err == nil {
+			t.Fatal("RelateService took the type tenant")
+		}
+		if err := r.RelateService("service"); err != nil {
+			t.Fatal(err)
+		}
+		report, err := r.Run(e.ctx, nil)
+		if err != nil || report != (ReconcileReport{Tenants: 2, Changed: 2}) {
+			t.Fatalf("the reconcile gave %+v and %v, want the 2 active tenants changed", report, err)
+		}
+		for _, id := range []string{"org-a", "org-b"} {
+			if got, want := f.staged(id), []string{"touch " + serviceT(id)}; !slices.Equal(got, want) {
+				t.Fatalf("the reconcile staged %v for %s, want %v", got, id, want)
+			}
+			if strings.Contains(serviceT(id), "@service:orders") {
+				t.Fatalf("the tuple %s names the unqualified service-level resource", serviceT(id))
+			}
+			if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = $2 AND actor_kind = 'system'`, id, ReconcileCommand); n != 1 {
+				t.Fatalf("the reconcile wrote %d audit rows for %s, want 1", n, id)
+			}
+		}
+		if got := f.staged("org-c"); len(got) != 0 {
+			t.Fatalf("the reconcile staged %v for the retired org-c, want nothing", got)
+		}
+		// The relay delivers: a run again writes nothing.
+		reader.set(serviceT("org-a"), serviceT("org-b"))
+		before := f.writes()
+		if report, err := r.Run(e.ctx, nil); err != nil || report != (ReconcileReport{Tenants: 2}) || f.writes() != before {
+			t.Fatalf("the run again gave %+v and %v and wrote %d, want no change", report, err, f.writes()-before)
+		}
+		// The tuple of org-a is lost, as after a restore of SpiceDB: the reconcile holds the lock of org-a, and a
+		// Retire of a spec with the service relation and no worker waits for it.
+		reader.set(serviceT("org-b"))
+		send := f.tenantRoutes(TenantSpec{ResourceType: "service", Schema: "public", SubjectType: "user", ServiceRelation: true, Release: reconcileRelease})
+		locked, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		r.afterLock = func() {
+			once.Do(func() {
+				close(locked)
+				<-release
+			})
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Run(e.ctx, nil)
+			done <- err
+		}()
+		<-locked
+		answered := make(chan error, 1)
+		go func() {
+			if got := send("/stego/tenants/org-a/retire", "k-retire-org-a", ""); got != http.StatusOK {
+				answered <- fmt.Errorf("the retire of org-a answered %d, want 200", got)
+				return
+			}
+			answered <- nil
+		}()
+		if waiting, err := f.awaitLockWait(answered); !waiting {
+			close(release)
+			t.Fatalf("the retire of org-a ended (%v) while the reconcile held the lock of its tenant tuples", err)
+		}
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("the reconcile gave %v, want no error", err)
+		}
+		if err := <-answered; err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"touch " + serviceT("org-a"), "touch " + serviceT("org-a"), "delete " + serviceT("org-a")}
+		if got := f.staged("org-a"); !slices.Equal(got, want) {
+			t.Fatalf("org-a staged %v, want the touch of the reconcile before the delete of the Retire: %v", got, want)
+		}
+		// A run after the Retire visits org-b alone and writes nothing.
+		before = f.writes()
+		r.afterLock = nil
+		if report, err := r.Run(e.ctx, nil); err != nil || report != (ReconcileReport{Tenants: 1}) || f.writes() != before {
+			t.Fatalf("the run after the Retire gave %+v and %v and wrote %d, want org-b alone and no write", report, err, f.writes()-before)
+		}
+	})
 	t.Run("ST-SUP-RC35-OC13-T10 With no definition tenant, or a failed read of the schema, Retire still retires and deletes its declared workers' tuples, and the reconcile writes nothing", func(t *testing.T) {
 		f := newReconcileFixture(t, "org-a", "org-b", "org-c")
 		e := f.e

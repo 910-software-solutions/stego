@@ -1734,13 +1734,16 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 				Subject:  &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "retired-export"}}}}}})
 		must(t, err)
 		s.restart(t)
+		// The schema declares the relation service of the type tenant, so the reconcile also gives the tenant of the
+		// earlier release the tuple that a Provision of this release writes (decision ST-SUP-Q220 (a)).
 		want := []string{
+			s.serviceTuple(t, preTenant),
 			"tenant:" + resource + "#worker_apply_note_replies@service_account:apply-note-replies",
 			"tenant:" + resource + "#worker_sync_partner_orders@service_account:sync-partner-orders",
 		}
 		got := s.awaitTuples(t, resource, want)
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
-			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant each worker's own tuple and no tuple of retired-export:\n%s", preTenant, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant the service tuple, each worker's own tuple and no tuple of retired-export:\n%s", preTenant, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 		// One audit row in the tenant's own chain, of the actor kind system.
 		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'reconcile-worker-tuples'

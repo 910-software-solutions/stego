@@ -88,6 +88,9 @@ type WorkerReconcile struct {
 	own       tenant.ReleaseIdentity
 	principal authz.Principal
 	page      int
+	// service is the resource type of the service-level resource when the schema declares the relation service of
+	// the type tenant, whose tuple the reconcile touches too, and else empty (decision ST-SUP-Q220 (a)).
+	service string
 	// afterLock, set only by the tests of the package, runs in the transaction of a tenant after its lock.
 	afterLock func()
 
@@ -177,6 +180,20 @@ func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader Wor
 		page: WorkerTuplesPage}, nil
 }
 
+// RelateService makes the reconcile also touch, on each active tenant, the tuple that relates its tenant resource to
+// its service-level resource of the type resourceType, the resource type of the tenant provisioning, when SpiceDB does
+// not hold it: tenant:<tenant resource ID>#service@<resourceType>:<tenant-qualified service name>, as a Provision
+// stages it (ST-SUP-RC27-OC18). So the tenants provisioned before a release that adds the relation service of the type
+// tenant get it, with no step by hand (walkthrough 29, RELATE-TSVC; decision ST-SUP-Q220 (a)). It refuses an empty
+// resource type and the type tenant, which is not the type of a service-level resource.
+func (r *WorkerReconcile) RelateService(resourceType string) error {
+	if resourceType == "" || resourceType == authz.TenantType {
+		return fmt.Errorf("command: the reconcile cannot touch the service tuple of the resource type %q", resourceType)
+	}
+	r.service = resourceType
+	return nil
+}
+
 // Run reconciles once (ST-SUP-RC35-OC13). It reads the relations of the type tenant that SpiceDB serves, and visits
 // the active tenants of the list in pages of WorkerTuplesPage, in tenant ID order after the last tenant of the page
 // before. For each tenant it reads whether SpiceDB holds the tuple of each declared worker, and whether it holds a
@@ -223,7 +240,7 @@ func (r *WorkerReconcile) run(ctx context.Context, fencer Fencer) (ReconcileRepo
 			undeclared = append(undeclared, relation)
 		}
 	}
-	if len(r.workers)+len(undeclared) == 0 {
+	if len(r.workers)+len(undeclared) == 0 && r.service == "" {
 		return report, nil
 	}
 	after := ""
@@ -313,6 +330,21 @@ func (r *WorkerReconcile) tenant(ctx context.Context, t tenant.Tenant, undeclare
 			return false, failedAt(ReconcileTupleRead, err)
 		}
 		tuple := authz.Tuple{Resource: resource, Relation: WorkerTenantRelation(name), Subject: subject}
+		held, err := r.reader.Exists(ctx, authz.FilterOf(tuple))
+		if err != nil {
+			return false, failedAt(ReconcileTupleRead, err)
+		}
+		if !held {
+			touches = append(touches, tuple)
+		}
+	}
+	if r.service != "" {
+		// The tuple of the relation service, which a tenant provisioned before the release that added the relation
+		// does not have (decision ST-SUP-Q220 (a)).
+		tuple, err := (TenantSpec{ResourceType: r.service}).serviceTuple(t, r.rt.cfg.Service)
+		if err != nil {
+			return false, failedAt(ReconcileTupleRead, err)
+		}
 		held, err := r.reader.Exists(ctx, authz.FilterOf(tuple))
 		if err != nil {
 			return false, failedAt(ReconcileTupleRead, err)

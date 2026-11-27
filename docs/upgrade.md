@@ -945,6 +945,48 @@ tuple. To give them the tuple, declare a relate step of that relation in your
 next release: the relate job reads each row that is there, and a tuple that
 is there does not change.
 
+### The tuple of the tenant and its service
+
+A relate step gives the rows a tuple. It does not give a tenant the tuple
+`tenant:<tenant>#service@<resource type>:<tenant>/<service>`, which a
+Provision writes when the schema declares the relation `service` of the type
+`tenant`, such as:
+
+```zed
+definition tenant {
+  relation service: service
+  permission audit = service->admin
+}
+```
+
+A release that adds that relation, or the first `definition tenant` with it,
+thus left each tenant that was there before with no such tuple. A check
+through `tenant->service`, such as `permission view = tenant->audit` on a row
+of the tenant, gave 404 in each such tenant, also after its relate step
+completed; a tenant provisioned on the new release got the tuple (walkthrough
+29, RELATE-TSVC).
+
+From runtime v0.208.0 the job `worker-tuples` of the controller also gives
+each active tenant the service tuple that SpiceDB does not hold (decision
+ST-SUP-Q220 (a)). It runs when the controller of the release starts, after
+the migration Job of the release wrote the release identity row, and then
+once an hour. It stages the tuple through the authz outbox with one audit row
+`reconcile-worker-tuples` in the tenant, and writes nothing for a tenant that
+holds it, or for a retired tenant. You need no step and no relate change for
+it:
+
+1. Roll out the release that adds the relation, with its relate step for the
+   rows, as above.
+2. When the controller of the new release holds the controller lease, the
+   job `worker-tuples` stages the service tuple of each active tenant. A
+   service with many tenants takes one SpiceDB read for each tenant.
+3. Check a row of a tenant that was there before the release: the check
+   through `tenant->service` now passes.
+
+A release with a runtime before v0.208.0 gives these tenants no service
+tuple. Move to runtime v0.208.0 or later: its first run of the job gives each
+active tenant the tuple, also for a relation that an earlier release added.
+
 ## Upgrade over the old label keys
 
 Do this before you apply kubernetes-service 1.31.0 or kubernetes-workload 1.1.0 to a cluster.
