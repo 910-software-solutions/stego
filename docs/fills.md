@@ -419,7 +419,7 @@ text, number or bool type, and the table has a search index on each such
 field: `(tenant_id, field)`. A PostgreSQL index entry holds at most about
 2,700 bytes, and a character of UTF-8 takes up to 4 bytes. Thus a string
 field whose `max_length` is over 500 characters has no search index (from
-postgres-adapter 6.33.0 and rest-api 4.45.0): its value can be longer than
+postgres-adapter 6.34.0 and rest-api 4.45.0): its value can be longer than
 2,000 bytes, and with an index a long value would fail its write with 500.
 A list does not search or order such a field. A `search` or an `orderBy`
 that names it gets 400 with a detail that names the field.
@@ -439,7 +439,7 @@ that names it gets 400 with a detail that names the field.
       - { name: code, type: string, optional: true, max_length: 40, searchable: false }
 ```
 
-A running service whose release before postgres-adapter 6.33.0 built a
+A running service whose release before postgres-adapter 6.34.0 built a
 search index on such a field drops it with a relax step: see [Relax
 steps](schema-changes.md#relax-steps).
 

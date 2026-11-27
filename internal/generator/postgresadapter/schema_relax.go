@@ -29,7 +29,7 @@ import (
 //
 // A relax with the item searchable also drops the search index of the field first, in its own migration, under the
 // same lock (ST-SUP-RC01-OC53, decision ST-DECL-Q50). A relax with only that item is that DROP INDEX alone. The
-// schema check of a release before postgres-adapter 6.33.0 refuses the table with no such index, so a pod of the
+// schema check of a release before postgres-adapter 6.34.0 refuses the table with no such index, so a pod of the
 // release before that starts after the step fails its check.
 //
 // The schema check of the release before accepts each state between these migrations on a column with the marker
@@ -110,7 +110,7 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 	}
 	same.checks = old.checks
 	// A relax with the item searchable drops the search index of the field (ST-SUP-RC01-OC53, decision ST-DECL-Q50).
-	// A relax without it keeps the body that it had before postgres-adapter 6.33.0, also when the field after it is
+	// A relax without it keeps the body that it had before postgres-adapter 6.34.0, also when the field after it is
 	// out of the search: a database that ran it holds the index, which a later relax with the item drops.
 	searched, stays := slices.Contains(old.search, change.Field), slices.Contains(next.search, change.Field)
 	dropIndex := change.RelaxesSearch()

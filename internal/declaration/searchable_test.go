@@ -25,7 +25,7 @@ func searchableFaults(t *testing.T, fields ...string) []ValidationError {
 }
 
 func TestValidateSearchable(t *testing.T) {
-	t.Run("ST-DECL-INV107-T A searchable setting that a field cannot hold is refused with its path, and searchable false is taken on each string field", func(t *testing.T) {
+	t.Run("ST-DECL-INV109-T A searchable setting that a field cannot hold is refused with its path, and searchable false is taken on each string field", func(t *testing.T) {
 		title := "- {name: title, type: string}"
 		refused := []struct {
 			name, found, field, says string

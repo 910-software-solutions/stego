@@ -111,7 +111,7 @@ type Field struct {
 	// ST-SUP-Q185 (a), security review of PR #451, H1). Nil is no limit.
 	Attempts *FieldAttempts `yaml:"attempts,omitempty" json:"Attempts,omitempty"`
 	// Searchable tells, for a string field, whether a list searches and orders the field, so that its table has a
-	// search index on it (ST-DECL-EN03, ST-DECL-INV107, decision ST-DECL-Q50). Nil is the default: a field whose
+	// search index on it (ST-DECL-EN03, ST-DECL-INV109, decision ST-DECL-Q50). Nil is the default: a field whose
 	// max_length can pass SearchIndexBytes in UTF-8 is not searchable, and every other string field is. The
 	// declaration may set false on any string field, and true only on one whose max_length cannot pass the limit.
 	// Generation also sets true on the field before a relax with the item searchable, whose step drops the search

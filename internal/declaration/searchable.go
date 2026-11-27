@@ -6,7 +6,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/types"
 )
 
-// validateSearchable holds the declaration to ST-DECL-INV107 (decision ST-DECL-Q50). The searchable setting of a
+// validateSearchable holds the declaration to ST-DECL-INV109 (decision ST-DECL-Q50). The searchable setting of a
 // field, when it is given, is on a string field. searchable: false is valid on each string field. searchable: true
 // is valid only on a public string field whose max_length cannot pass the size of a search index entry
 // (types.SearchIndexBytes in UTF-8, so at most 500 characters): a longer value would fail the write of its index

@@ -31,7 +31,7 @@ func noteCollections() []types.Collection {
 }
 
 // notesBefore is the release of the notes as postgres-adapter 6.32.0 generated it: each public string field of the
-// listed Note has its search index, also body and summary. Since 6.33.0 the same output comes from the fields marked
+// listed Note has its search index, also body and summary. Since 6.34.0 the same output comes from the fields marked
 // searchable, which is how the check against such a base reads it (ST-GEN-INV40); ST-SUP-RC01-OC53-T02 holds the
 // output to the golden file that 6.32.0 wrote.
 func notesBefore(ns, tenancyNS string) gen.Context {
@@ -43,7 +43,7 @@ func notesBefore(ns, tenancyNS string) gen.Context {
 	return ctx
 }
 
-// notesFresh is a new service of the notes from postgres-adapter 6.33.0: body and summary are long text, so they are
+// notesFresh is a new service of the notes from postgres-adapter 6.34.0: body and summary are long text, so they are
 // out of the search, and tag sets searchable: false.
 func notesFresh(ns, tenancyNS string) gen.Context {
 	ctx := runtimeService(ns, tenancyNS, noteEntities(), noteCollections())

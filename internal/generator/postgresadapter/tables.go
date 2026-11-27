@@ -791,7 +791,7 @@ func searchColumns(entity types.Entity, collections []types.Collection) []string
 // Searchable tells whether the search of a list takes the field, so that each table of a listed entity has a search
 // index on it: a field that is not pii or secret, of a text, enum, number or bool type. A field written public is
 // such a field, as one with no sensitivity, from postgres-adapter 6.19.0 (decision ST-DECL-Q46 (a)). From
-// postgres-adapter 6.33.0 a string field that is out of the search (types.Field.Unsearched: searchable: false, or a
+// postgres-adapter 6.34.0 a string field that is out of the search (types.Field.Unsearched: searchable: false, or a
 // max_length over 500 with no searchable setting) is not: a b-tree entry of its value could pass the size that
 // PostgreSQL takes, and the write would fail (ST-SUP-RC01-OC53, decision ST-DECL-Q50). The check against the base
 // reads it too (ST-GEN-INV33).

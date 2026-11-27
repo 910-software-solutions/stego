@@ -188,7 +188,7 @@ schema_history:
 
 `stego compat` names the relax to declare:
 
-- On a base whose release ran a postgres-adapter before 6.33.0, each public
+- On a base whose release ran a postgres-adapter before 6.34.0, each public
   string field of a listed entity with a `max_length` over 500 has its search
   index, and the head needs a relax with the item `searchable` for it.
 - A new `searchable: false` on a searched field needs the relax too.
@@ -200,7 +200,7 @@ No schema change builds a search index. Thus `stego compat` refuses a head
 that puts a field of the base back into the search, such as a field whose
 `searchable: false` the head takes away.
 
-The schema check of a release before postgres-adapter 6.33.0 refuses the
+The schema check of a release before postgres-adapter 6.34.0 refuses the
 table with no search index of the field. Its pods that run go on, but a pod
 of the release before that starts after the step fails its schema check.
 During that rolling deploy, do not restart the pods of the release before,

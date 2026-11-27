@@ -53,13 +53,13 @@ func withChanges(declaration, changes, history string) string {
 }
 
 // The relax of TD01 that drops the search index of Organization.description, of at most 1000 characters, which a
-// release before postgres-adapter 6.33.0 built (ST-GEN-INV40).
+// release before postgres-adapter 6.34.0 built (ST-GEN-INV40).
 const (
 	descriptionRelax       = "  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\n"
 	descriptionRelaxExpand = "  - {change: organization-description-relax, phase: expand}\n"
 )
 
-// withoutDescriptionRelax gives TD01 as a release before postgres-adapter 6.33.0 declared it: with no schema change.
+// withoutDescriptionRelax gives TD01 as a release before postgres-adapter 6.34.0 declared it: with no schema change.
 func withoutDescriptionRelax(t *testing.T, td01 string) string {
 	t.Helper()
 	at := strings.Index(td01, "\n# description, of at most 1000 characters")

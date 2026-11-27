@@ -106,7 +106,7 @@ overrides:
     schema_generation: tables-v1
     writer_lease: "off"
 
-# description, of at most 1000 characters, has no search index from postgres-adapter 6.33.0, as a value can pass the
+# description, of at most 1000 characters, has no search index from postgres-adapter 6.34.0, as a value can pass the
 # size of an index entry (decision ST-DECL-Q50); the release before built one, which this relax drops.
 schema_changes:
   - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}

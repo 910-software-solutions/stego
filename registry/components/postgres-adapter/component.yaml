@@ -50,11 +50,11 @@ name: postgres-adapter
 # Version 6.32.0 ends the contract step of a drop with a delete of the counts of wrong attempts of the dropped field or
 # entity in each tenant of the tenant list, and registers the digest of the body before it as an earlier digest of the
 # step (decision ST-SUP-Q216 (a)).
-# Version 6.33.0 gives no search index to a string field out of the search: searchable: false, or a max_length over
+# Version 6.34.0 gives no search index to a string field out of the search: searchable: false, or a max_length over
 # 500 characters with no searchable setting, whose value can pass the 2000 bytes of a b-tree entry in UTF-8. A relax
 # with the item searchable drops the search index of its field in its step (ST-SUP-RC01-OC53, decision ST-DECL-Q50;
 # erp-demo G10).
-version: 6.33.0
+version: 6.34.0
 stage: ga
 output_namespace: internal/storage
 

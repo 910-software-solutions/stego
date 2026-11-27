@@ -174,7 +174,7 @@ const (
 // LongTextVersion is the first postgres-adapter version that gives no search index to a string field out of the
 // search: searchable: false, or a max_length over 500 with no searchable setting (ST-SUP-RC01-OC53, decision
 // ST-DECL-Q50). An adapter before it gave a search index to each public string field of a listed entity.
-const LongTextVersion = "6.33.0"
+const LongTextVersion = "6.34.0"
 
 // LongTextIndexed tells whether the record of a release pins a postgres-adapter before LongTextVersion: its
 // 001_initial and its steps gave a search index to each public string field of a listed entity, also to long text. A
