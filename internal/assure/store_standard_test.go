@@ -61,9 +61,120 @@ func lineOf(text string, offset int) string {
 	return strings.TrimSpace(text[start : offset+end])
 }
 
-// A claim of rows: a statement that takes a batch of rows to work on, LIMIT and then FOR UPDATE, also across lines
-// and across the joins of Go string pieces. A lock of one row by its key (FOR UPDATE with no LIMIT) is not a claim.
-var claimStatement = regexp.MustCompile("(?is)\\bLIMIT\\s+[a-z0-9_$]+[\\s\"`+]*FOR\\s+(?:NO\\s+KEY\\s+)?UPDATE(?:\\s+OF\\s+[a-z_.]+)?(\\s+SKIP\\s+LOCKED)?")
+// A claim of rows: a SELECT that takes a batch of rows to work on, with a LIMIT and a locking clause FOR UPDATE or FOR
+// NO KEY UPDATE at the same level of the statement, in either order. A lock of one row by its key (FOR UPDATE with
+// no LIMIT) is not a claim. The scan reads the words of the text (sqlWords): it reads across lines, comments, quoted
+// names, Go string joins and any limit value, such as LIMIT 32, LIMIT $1, LIMIT (n), LIMIT @n, LIMIT %d or LIMIT " +
+// strconv.Itoa(n) + ", and an OFFSET after the limit (security review of the store scans, sec-10). It is not a SQL
+// parser: a claim whose LIMIT is more than claimReach bytes from its lock is not found.
+var lockClause = regexp.MustCompile(`(?i)\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b`)
+
+// claimReach is how far, in bytes of text, the scan reads from a locking clause for its LIMIT and its statement.
+const claimReach = 600
+
+// sqlWord is one word of SQL text for the claim scan: a keyword or a name, or one of ( ) , . ; as is. key is the word in
+// upper case, and text the word as the text has it.
+type sqlWord struct{ key, text string }
+
+// sqlWords gives the words of text: names and keywords, and each bracket, comma, dot and semicolon. It drops block
+// comments, a -- comment that follows a space up to the end of its line, and each other character, such as quotes,
+// backslashes and the + of a Go join, so OF "m" reads as OF m.
+func sqlWords(text string) []sqlWord {
+	var words []sqlWord
+	for i := 0; i < len(text); {
+		c := text[i]
+		switch {
+		case c == '/' && i+1 < len(text) && text[i+1] == '*':
+			end := strings.Index(text[i+2:], "*/")
+			if end < 0 {
+				return words
+			}
+			i += end + 4
+		case c == '-' && i+1 < len(text) && text[i+1] == '-' && (i == 0 || text[i-1] == ' ' || text[i-1] == '\t' || text[i-1] == '\n'):
+			end := strings.IndexByte(text[i:], '\n')
+			if end < 0 {
+				return words
+			}
+			i += end
+		case c == '{' && strings.TrimLeft(text[i+1:min(len(text), i+1+strings.IndexByte(text[i+1:]+"\n", '\n'))], " \t\r") == "",
+			c == '}' && strings.TrimLeft(text[strings.LastIndexByte(text[:i], '\n')+1:i], " \t") == "":
+			// A brace that ends or starts a line opens or closes a block of Go code: the end of a statement of
+			// SQL text. A brace of a template name, such as {s}.{events}, is in a line.
+			words = append(words, sqlWord{"BLOCK", string(c)})
+			i++
+		case c == '(' || c == ')' || c == ',' || c == '.' || c == ';':
+			words = append(words, sqlWord{string(c), string(c)})
+			i++
+		case c == '_' || c == '$' || c == '@' || c == '%' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9':
+			j := i
+			for j < len(text) && (text[j] == '_' || text[j] == '$' || text[j] == '@' || text[j] == '%' || 'a' <= text[j] && text[j] <= 'z' || 'A' <= text[j] && text[j] <= 'Z' || '0' <= text[j] && text[j] <= '9') {
+				j++
+			}
+			words = append(words, sqlWord{strings.ToUpper(text[i:j]), text[i:j]})
+			i = j
+		default:
+			i++
+		}
+	}
+	return words
+}
+
+// limitBefore tells whether the words before a locking clause, read back to the start of its SELECT, hold a LIMIT of
+// that SELECT: one at the same bracket depth. The read stops at a semicolon, at a block of Go code (BLOCK), at the
+// open bracket of a subquery that
+// holds the lock, and at the SELECT of the lock, so the LIMIT of a subquery or of another statement does not count.
+func limitBefore(words []sqlWord) bool {
+	depth := 0
+	for i := len(words) - 1; i >= 0; i-- {
+		switch words[i].key {
+		case ")":
+			depth++
+		case "(":
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case ";", "BLOCK":
+			return false
+		case "SELECT":
+			if depth == 0 {
+				return false
+			}
+		case "LIMIT":
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lockTail reads the words after FOR UPDATE: the list of names of OF, NOWAIT, SKIP LOCKED and more locking clauses,
+// then a LIMIT of the same SELECT, which PostgreSQL also takes after the lock. It gives whether the tail holds SKIP
+// LOCKED and whether a LIMIT follows. The LIMIT after a lock must be in upper case, so the Go name limit in the
+// arguments of a call after the SQL text does not count. The read stops at any other word.
+func lockTail(words []sqlWord) (skipLocked, limit bool) {
+	for i := 0; i < len(words); i++ {
+		switch words[i].key {
+		case "SKIP":
+			if i+1 < len(words) && words[i+1].key == "LOCKED" {
+				skipLocked = true
+				i++
+				continue
+			}
+			return skipLocked, false
+		case "FOR", "NO", "KEY", "UPDATE", "SHARE", "NOWAIT":
+		case "OF", ",", ".":
+			// The next word is a name of the list of OF.
+			i++
+		case "LIMIT":
+			return skipLocked, words[i].text == "LIMIT"
+		default:
+			return skipLocked, false
+		}
+	}
+	return skipLocked, false
+}
 
 // A session-scoped advisory lock: pg_advisory_lock or pg_try_advisory_lock with no _xact.
 var sessionLock = regexp.MustCompile(`pg_(try_)?advisory_lock\(`)
@@ -83,9 +194,13 @@ var pagedRowLocks = []string{"internal/generator/postgresadapter/schema_seal.go"
 func claimFaults(file storeText) ([]string, int) {
 	var faults []string
 	claims := 0
-	for _, match := range claimStatement.FindAllStringSubmatchIndex(file.text, -1) {
+	for _, match := range lockClause.FindAllStringIndex(file.text, -1) {
+		skipLocked, limitAfter := lockTail(sqlWords(file.text[match[1]:min(len(file.text), match[1]+claimReach)]))
+		if !limitAfter && !limitBefore(sqlWords(file.text[max(0, match[0]-claimReach):match[0]])) {
+			continue
+		}
 		claims++
-		if match[2] < 0 && !slices.Contains(pagedRowLocks, file.name) {
+		if !skipLocked && !slices.Contains(pagedRowLocks, file.name) {
 			faults = append(faults, fmt.Sprintf("%s claims a batch of rows FOR UPDATE with no SKIP LOCKED: %s", file.name, lineOf(file.text, match[0])))
 		}
 	}
@@ -191,7 +306,7 @@ func roleFaults(file storeText) ([]string, int) {
 // An audit events table in a grant: the name of the table as the runtime names it, with its schema in any form,
 // such as {s}.{events}, stego_audit.audit_event, or the Go joins RecordSchema + "." + EventsTable.
 var (
-	auditGrant      = regexp.MustCompile(`(?is)GRANT\s+([A-Z, ]+?)\s+ON\s+(?:TABLE\s+)?([^;]{0,160}?)\s+TO\b`)
+	auditGrant      = regexp.MustCompile(`(?is)GRANT\s+([A-Z0-9_, ()"]+?)\s+ON\s+(?:TABLE\s+)?([^;]{0,160}?)\s+TO\b`)
 	auditEventsName = regexp.MustCompile(`(?i)\{events\}|\baudit_event\b|EventsTable`)
 )
 
@@ -263,6 +378,22 @@ func TestStoreScans(t *testing.T) {
 			"`... LIMIT 32 ` + \"FOR UPDATE\"":                                    1,
 			"WHERE m.id = p_id FOR UPDATE":                                        0,
 			"SELECT pg_try_advisory_lock(1)":                                      1,
+			// The forms that the regular expression of the scan missed (security review of the store scans, sec-10).
+			"SELECT id FROM q ORDER BY id LIMIT 10 OFFSET 5 FOR UPDATE":                      1,
+			"SELECT id FROM q ORDER BY id FOR UPDATE NOWAIT LIMIT 10":                        1,
+			`SELECT id FROM q m ORDER BY id FOR UPDATE OF "m" LIMIT 10`:                      1,
+			`SELECT id FROM q m ORDER BY id LIMIT 10 FOR UPDATE OF "m" SKIP LOCKED`:          0,
+			"SELECT id FROM q ORDER BY id LIMIT (n) FOR UPDATE":                              1,
+			"SELECT id FROM q ORDER BY id LIMIT @n FOR UPDATE":                               1,
+			"SELECT id FROM q ORDER BY id LIMIT %d FOR UPDATE":                               1,
+			"`SELECT id FROM q ORDER BY id LIMIT ` + strconv.Itoa(n) + ` FOR UPDATE`":        1,
+			"SELECT id FROM q ORDER BY id LIMIT 10 /* one batch */ FOR UPDATE":               1,
+			"SELECT id FROM q ORDER BY id LIMIT 10 -- one batch\n  FOR UPDATE":               1,
+			"SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE OF stego_outbox.m SKIP LOCKED": 0,
+			// A LIMIT of a subquery, of an earlier Go statement or of the arguments of the call is not a claim.
+			"SELECT id FROM q WHERE id IN (SELECT id FROM r LIMIT 1) FOR UPDATE":                  0,
+			"read = from + ` LIMIT $2`\n\tif lock {\n\t\tlock = from + ` FOR NO KEY UPDATE`\n\t}": 0,
+			"tx.QueryContext(ctx, `SELECT id FROM q WHERE id = $1 FOR UPDATE`, id, limit)":        0,
 		} {
 			if faults, _ := claimFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
@@ -276,6 +407,10 @@ func TestStoreScans(t *testing.T) {
 			`"GRANT UPDATE, DELETE ON " + RecordSchema + "." + EventsTable + " TO "`: 1,
 			"GRANT ALL ON TABLE stego_audit.audit_event TO app;":                     1,
 			"GRANT SELECT, INSERT, UPDATE ON {s}.{heads} TO {role};":                 0,
+			// A column grant (security review of the store scans, sec-10).
+			"GRANT UPDATE (status) ON stego_audit.audit_event TO app;":         1,
+			"GRANT SELECT (id, at), INSERT ON {s}.{events} TO {role};":         0,
+			`GRANT UPDATE ("status") ON TABLE stego_audit.audit_event TO app;`: 1,
 		} {
 			if faults, _ := auditGrantFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
