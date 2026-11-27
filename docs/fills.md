@@ -1267,6 +1267,55 @@ import each package of a listed module. The rules:
   imports.
 - A test file of a fill does not need the list: it can import any module of
   `go.mod`.
+- `stego validate` refuses an entry whose path has no dot in its first
+  element, such as `workflow`, at the entry `fill_modules[<n>].module`.
+
+### A fill module in the project folder
+
+Fills can share code in a module of the project folder, such as the rules of
+one workflow. Put the module next to `fills/`, and replace it in `go.mod`
+with its folder:
+
+```
+service/
+  go.mod
+  service.yaml
+  fills/<fill-a>/...    import "example.com/erp/workflow"
+  fills/<fill-b>/...
+  workflow/
+    go.mod              module example.com/erp/workflow
+    workflow.go
+```
+
+Add these lines to the `go.mod` of the service. `stego apply` keeps them:
+
+```
+require example.com/erp/workflow v0.0.0
+
+replace example.com/erp/workflow => ./workflow
+```
+
+List the module in the declaration, under `fill_modules` as above, such as
+`{module: example.com/erp/workflow, reason: the fills share the workflow rules}`.
+
+Then run `stego apply`, `stego deps`, `stego test` and `stego fill sign` for
+each fill, and `stego apply` again. The rules:
+
+- The fill digest counts each file of each local fill module that the fill
+  reaches: a module of `fill_modules` that `go.mod` replaces with a folder,
+  and that a Go file of the fill, or of another such module that the fill
+  reaches, imports. So a change to `workflow/` makes each fill that imports
+  it stale, as a change to a file of the fill does: run `stego test` and sign
+  the fill again. `stego fill status` names the changed file as
+  `module:example.com/erp/workflow/<file>`. A change to a local module that
+  the fill does not reach leaves the fill as it was.
+- The module may import only the packages that a fill may import.
+- Use a folder inside the project, `./workflow`. A folder outside it, such as
+  `../workflow`, works for `stego validate`, `stego test`, `stego deps` and
+  `go build`, but the generated Containerfile does not copy it, so the image
+  build fails, and `stego build download` refuses it unless one repository
+  holds both folders and you give `--module <service folder>`.
+- Keep the folder name plain: no space, and no leading `_` or `.`.
 
 ## Change events
 

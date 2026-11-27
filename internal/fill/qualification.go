@@ -277,17 +277,12 @@ func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) (
 			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
 			continue
 		}
-		files, err := FileDigests(folder)
+		files, hasTests, err := fillFiles(dir, folder, capability.FillModules)
 		if err != nil {
 			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
 			continue
 		}
-		current := Current{FillDigest: combine(files), Files: files}
-		for file := range files {
-			if strings.HasSuffix(file, "_test.go") {
-				current.HasTests = true
-			}
-		}
+		current := Current{FillDigest: combine(files), Files: files, HasTests: hasTests}
 		// The fill of a command, query or worker must implement the slot that its binding names, as plan checks
 		// (misfit); else its contract digest would be compared with no contract, or with that of another slot.
 		if fault := capabilityMisfit(f, name, capability.Bindings); fault != "" {
@@ -514,18 +509,14 @@ func slotsNamed(check compiler.FillCheck, name string) []types.SlotRef {
 	return refs
 }
 
-// CurrentState reads the fill's files and its slot contract as they are now.
+// CurrentState reads the fill's files, the files of each local fill module that
+// it reaches (fillFiles), and its slot contract as they are now.
 func CurrentState(dir string, f *Fill, check compiler.FillCheck) (Current, error) {
-	files, err := FileDigests(dir)
+	files, hasTests, err := fillFiles(check.ProjectDir, dir, check.FillModules)
 	if err != nil {
 		return Current{}, err
 	}
-	current := Current{FillDigest: combine(files), Files: files}
-	for name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			current.HasTests = true
-		}
-	}
+	current := Current{FillDigest: combine(files), Files: files, HasTests: hasTests}
 	ref, err := types.ParseSlotRef(f.Implements)
 	if err != nil {
 		return Current{}, err
