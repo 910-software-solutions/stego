@@ -548,6 +548,7 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, withinFaults(base, head)...)
 	faults = append(faults, droppedEntityFaults(base, head)...)
 	faults = append(faults, eventFieldFaults(base, head)...)
+	faults = append(faults, resourceTypeFaults(base, head)...)
 	generated, ok := generatedBaselines(applied, base, head)
 	if !ok {
 		// Generation does not carry out each kind of the declarations yet, so the indexes are compared as the

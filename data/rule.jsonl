@@ -38,6 +38,7 @@
 {"id":"ST-DECL-INV104-RL","title":"declaration.validateAttempts","invariant_id":"ST-DECL-INV104","file":"internal/declaration/attempts.go"}
 {"id":"ST-DECL-INV105-RL","title":"declaration.validateEvents","invariant_id":"ST-DECL-INV105","file":"internal/declaration/events.go"}
 {"id":"ST-DECL-INV106-RL","title":"declaration.validateCollectionReferences","invariant_id":"ST-DECL-INV106","file":"internal/declaration/validate.go"}
+{"id":"ST-DECL-INV107-RL","title":"declaration.validateSharedResourceTypes","invariant_id":"ST-DECL-INV107","file":"internal/declaration/authz.go"}
 {"id":"ST-DECL-INV109-RL","title":"declaration.validateSearchable","invariant_id":"ST-DECL-INV109","file":"internal/declaration/searchable.go"}
 {"id":"ST-DECL-INV13-RL","title":"declaration.validateFieldDefaults","invariant_id":"ST-DECL-INV13","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV15-RL","title":"declaration.AcceptanceOutlivesSunset","invariant_id":"ST-DECL-INV15","file":"internal/declaration/acceptance.go"}
@@ -169,6 +170,7 @@
 {"id":"ST-GEN-INV38-RL","title":"compiler.MigrationBodyFaults","invariant_id":"ST-GEN-INV38","file":"internal/compiler/base_compat.go"}
 {"id":"ST-GEN-INV39-RL","title":"compiler.eventFieldFaults","invariant_id":"ST-GEN-INV39","file":"internal/compiler/event_fields.go"}
 {"id":"ST-GEN-INV40-RL","title":"compiler.withLongTextIndexes","invariant_id":"ST-GEN-INV40","file":"internal/compiler/base_compat.go"}
+{"id":"ST-GEN-INV41-RL","title":"compiler.resourceTypeFaults","invariant_id":"ST-GEN-INV41","file":"internal/compiler/resource_types.go"}
 {"id":"ST-SUP-INV01-RL","title":"registry.LoadSources","invariant_id":"ST-SUP-INV01","file":"internal/registry/registry.go"}
 {"id":"ST-SUP-INV02-RL","title":"registry.WritesOwnNamespace","invariant_id":"ST-SUP-INV02","file":"internal/registry/namespace.go"}
 {"id":"ST-SUP-INV03-RL","title":"registry.checkExperimentPorts","invariant_id":"ST-SUP-INV03","file":"internal/registry/stage.go"}
