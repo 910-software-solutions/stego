@@ -382,8 +382,18 @@ func TestModuleCacheLinks(t *testing.T) {
 				}
 			}
 		}
-		// A link in cache/download is the go command's own business; the walk does not go there.
+		// The start of a module path, such as gonum.org/v1, is no module path, and an escaped upper case is fine.
 		cache, module, checked := downloadedLib(t)
+		for _, name := range []string{filepath.Join("gonum.org", "v1"), filepath.Join("github.com", "!burnt!sushi")} {
+			if err := os.MkdirAll(filepath.Join(cache, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := verifyCache(cache, []fillDir{module}, checked); err != nil {
+			t.Errorf("the folders of the start of a module path fail the fill: %v", err)
+		}
+		// A link in cache/download is the go command's own business; the walk does not go there.
+		cache, module, checked = downloadedLib(t)
 		if err := os.Symlink(t.TempDir(), filepath.Join(cache, "cache", "download", "planted")); err != nil {
 			t.Fatal(err)
 		}
@@ -392,7 +402,7 @@ func TestModuleCacheLinks(t *testing.T) {
 		}
 		// A folder name that is not an escaped path, or path and version: a file system that ignores case opens
 		// Example.com for example.com.
-		for _, name := range []string{"Example.com", filepath.Join("example.com", "Lib@v1.0.0"), filepath.Join("example.com", "lib@V1.0.0")} {
+		for _, name := range []string{"Example.com", filepath.Join("example.com", "Lib@v1.0.0"), filepath.Join("example.com", "lib@V1.0.0"), filepath.Join("example.com", "!1")} {
 			cache, module, checked := downloadedLib(t)
 			if err := os.MkdirAll(filepath.Join(cache, name), 0o755); err != nil {
 				t.Fatal(err)

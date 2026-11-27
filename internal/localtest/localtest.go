@@ -642,13 +642,14 @@ func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, 
 			return filepath.SkipDir
 		}
 		escapedPath, escapedVersion, ok := strings.Cut(rel, "@")
-		path, pathErr := module.UnescapePath(escapedPath)
 		if !ok {
-			if pathErr != nil {
+			// A folder of the start of a module path, such as gonum.org/v1, which need not be a module path itself.
+			if !escapedName(rel) {
 				return fmt.Errorf("the module cache %s holds the folder %s, which is not an escaped module path: remove the cache", cache, rel)
 			}
 			return nil
 		}
+		path, pathErr := module.UnescapePath(escapedPath)
 		version, versionErr := module.UnescapeVersion(escapedVersion)
 		if pathErr != nil || versionErr != nil {
 			return fmt.Errorf("the module cache %s holds the folder %s, which is not an escaped module path and version: remove the cache", cache, rel)
@@ -661,6 +662,20 @@ func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, 
 		return filepath.SkipDir
 	})
 	return found, err
+}
+
+// escapedName tells whether name is in the escaped form of a module path: no upper-case letter, and each ! before a
+// lower-case letter, which stands for its upper case.
+func escapedName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case 'A' <= c && c <= 'Z':
+			return false
+		case c == '!' && (i+1 == len(name) || name[i+1] < 'a' || name[i+1] > 'z'):
+			return false
+		}
+	}
+	return true
 }
 
 // ModuleCache gives the module cache of localtest, and fills it as the first call of GoEnv does. A test that copies
