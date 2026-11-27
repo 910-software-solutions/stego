@@ -259,6 +259,9 @@ func reach(c *checked, roots ...string) ([]string, error) {
 	// call of Error() runs, such as UnmarshalJSON, As, Read or Error, is walked as the helper's own code (security
 	// review of PR #521, L1).
 	called := map[types.Type]bool{}
+	// callees are the identifiers that name the callee of a call, so that a use of a function as a value is told
+	// from its call.
+	callees := map[*ast.Ident]bool{}
 	var callbacks func(types.Type)
 	methods := func(typ types.Type, names map[string]bool) {
 		set := types.NewMethodSet(types.NewPointer(typ))
@@ -325,15 +328,20 @@ func reach(c *checked, roots ...string) ([]string, error) {
 		ast.Inspect(node, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.CallExpr:
-				// A call into an allowed package can call back a method of each value that it gets.
+				// A call into an allowed package can call back a method of each value that it gets. So can a call of
+				// any callee that the package does not declare as a function, such as a func value or a method value,
+				// whose body the walk does not see (security review of PR #10, L1).
 				var callee types.Object
 				switch fun := ast.Unparen(n.Fun).(type) {
 				case *ast.Ident:
-					callee = info.Uses[fun]
+					callee, callees[fun] = info.Uses[fun], true
 				case *ast.SelectorExpr:
-					callee = info.Uses[fun.Sel]
+					callee, callees[fun.Sel] = info.Uses[fun.Sel], true
 				}
-				if callee != nil && callee.Pkg() != nil && callee.Pkg() != pkg && allowedObject(callee) {
+				// A builtin and a conversion call back nothing.
+				_, builtin := callee.(*types.Builtin)
+				conversion := info.Types[n.Fun].IsType()
+				if function, local := callee.(*types.Func); !builtin && !conversion && (!local || function.Pkg() != pkg) {
 					for _, argument := range n.Args {
 						callbacks(info.Types[argument].Type)
 					}
@@ -365,6 +373,10 @@ func reach(c *checked, roots ...string) ([]string, error) {
 				if used.Pkg() != pkg {
 					if !allowedObject(used) {
 						faults = append(faults, name+": uses "+used.Pkg().Path()+"."+used.Name())
+					} else if _, function := used.(*types.Func); function && !callees[n] {
+						// A function or a method of an allowed package used as a value, such as unmarshal :=
+						// json.Unmarshal, hides the calls that the walk follows (security review of PR #10, L1).
+						faults = append(faults, name+": uses "+used.Pkg().Path()+"."+used.Name()+" as a value")
 					}
 					return true
 				}
@@ -688,6 +700,19 @@ func TestObservationHelpersMakeNoNetworkCall(t *testing.T) {
 			{"an Error method that a call of Error() on an error runs",
 				"package kubernetes\nimport \"net\"\ntype plantedFault struct{}\nfunc (plantedFault) Error() string { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; if err != nil { return err.Error() }; return \"planted\" }\nfunc PlantedCheck() bool { var err error = plantedFault{}; return err.Error() != \"\" }\n",
 				"Error: uses net.Dial"},
+			// Security review of PR #10, L1: a function or a method of an allowed package used as a value.
+			{"json.Unmarshal held in a local func variable",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nfunc PlantedCheck() bool { unmarshal := json.Unmarshal; var v plantedValue; return unmarshal([]byte(\"1\"), &v) == nil }\n",
+				"uses encoding/json.Unmarshal as a value"},
+			{"json.Unmarshal held in a package variable",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nvar plantedDecode = json.Unmarshal\nfunc PlantedCheck() bool { var v plantedValue; return plantedDecode([]byte(\"1\"), &v) == nil }\n",
+				"uses encoding/json.Unmarshal as a value"},
+			{"the method value ReadFrom of bytes.Buffer",
+				"package kubernetes\nimport (\"bytes\"; \"io\"; \"net\")\ntype plantedReader struct{}\nfunc (plantedReader) Read([]byte) (int, error) { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; if err != nil { return 0, err }; return 0, io.EOF }\nfunc PlantedCheck() bool { var b bytes.Buffer; readFrom := b.ReadFrom; _, err := readFrom(plantedReader{}); return err == nil }\n",
+				"Read: uses net.Dial"},
+			{"the method value Decode of a json.Decoder",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\"; \"strings\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nfunc PlantedCheck() bool { decode := json.NewDecoder(strings.NewReader(\"1\")).Decode; var v plantedValue; return decode(&v) == nil }\n",
+				"UnmarshalJSON: uses net.Dial"},
 			{"the control: a check that uses only an allowed package", "package kubernetes\nimport \"strings\"\nvar plantedPrefix = \"tenant-\"\nfunc PlantedCheck() bool { return strings.HasPrefix(\"tenant-1\", plantedPrefix) }\n", ""},
 		}
 		for _, plant := range plants {
