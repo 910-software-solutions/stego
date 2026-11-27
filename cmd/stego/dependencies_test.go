@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
@@ -30,7 +31,23 @@ func dependencyProject(t *testing.T) {
 	generatingProject(t, generatingDeclaration)
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOTOOLCHAIN", "local")
+	offlineModules(t)
 	mustRun(t, runApply)
+}
+
+// offlineModules sets the environment of the go commands that stego deps and stego apply run: the module cache of
+// localtest is their GOMODCACHE and their only module proxy, with no sum database, no private or insecure module and
+// no version control (ST-STD-LOCAL-R03). The test checks the go.sum that a resolution writes (localtest.CheckSums).
+func offlineModules(t *testing.T) {
+	t.Helper()
+	localtest.RequireModules(t)
+	for _, entry := range localtest.GoEnv() {
+		key, value, _ := strings.Cut(entry, "=")
+		switch key {
+		case "GOMODCACHE", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GONOPROXY", "GOINSECURE", "GOVCS", "GOAUTH", "GOENV":
+			t.Setenv(key, value)
+		}
+	}
 }
 
 func moduleFiles(t *testing.T) (string, string) {
@@ -57,6 +74,7 @@ func TestDependenciesChangeModuleFilesOnlyOnSuccess(t *testing.T) {
 	t.Run("ST-BLD-UC01-R01-T01 A failed resolution leaves go.mod and go.sum as they were", func(t *testing.T) {
 		dependencyProject(t)
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		module, sums := moduleFiles(t)
 		// A source file that imports a module the cache does not hold makes
 		// Go's module tools fail.
@@ -76,6 +94,7 @@ func TestDependenciesChangeModuleFilesOnlyOnSuccess(t *testing.T) {
 		// Find the resolved pair once; each round then starts again from the
 		// original pair.
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		resolved, resolvedSums := moduleFiles(t)
 		if resolved == original && resolvedSums == originalSums {
 			t.Fatal("the fixture resolves to the same module files; the test shows nothing")
@@ -126,6 +145,7 @@ func TestDependenciesRecordTheResolvedModules(t *testing.T) {
 		dependencyProject(t)
 		original, originalSums := moduleFiles(t)
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		resolved, resolvedSums := moduleFiles(t)
 		if resolved == original && resolvedSums == originalSums {
 			t.Fatal("the fixture resolves to the same module files; the test shows nothing")
@@ -211,6 +231,7 @@ func TestDependenciesFollowTheCapturedSource(t *testing.T) {
 	t.Run("ST-BLD-UC01-R02-T01 A saved overlay flag and ambient GOFLAGS cannot change what resolution reads", func(t *testing.T) {
 		dependencyProject(t)
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		project, err := os.Getwd()
 		if err != nil {
 			t.Fatal(err)
@@ -250,6 +271,7 @@ func TestDependenciesFollowTheCapturedSource(t *testing.T) {
 		t.Setenv("GOPROXY", "")
 		t.Setenv("GOFLAGS", "-stego-invalid-ambient-flag")
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		raw, err = os.ReadFile("go.mod")
 		if err != nil {
 			t.Fatal(err)
@@ -283,6 +305,8 @@ func TestDependenciesFollowTheCapturedSource(t *testing.T) {
 		var first string
 		for i := 0; i < 2; i++ {
 			mustRun(t, runDependencies)
+			localtest.CheckSums(t, ".")
+			localtest.CheckSums(t, ".")
 			module, _ := moduleFiles(t)
 			if i == 0 {
 				first = module
@@ -449,6 +473,7 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustRun(t, runDependencies)
+		localtest.CheckSums(t, ".")
 		if after, _ := moduleFiles(t); after == module {
 			t.Fatal("resolution left go.mod as the first apply wrote it")
 		}

@@ -268,7 +268,7 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 }
 
 func TestUnlistedModuleFoldersAreHashed(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R03-T14 A changed folder of a checked module that the fill did not list fails the fill of localtest", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T19 A changed folder of a checked module that the fill did not list fails the fill of localtest", func(t *testing.T) {
 		// A stand-in cache: the go command extracts example.com/lib v1.0.0 from a file proxy into a module cache of the
 		// test, as an earlier fill or a go command of a test did. The fill of this run does not list it.
 		proxy, cache := t.TempDir(), t.TempDir()

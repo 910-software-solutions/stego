@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"testing"
 	"time"
 
 	"golang.org/x/mod/modfile"
@@ -118,7 +121,77 @@ const sumDBKey = "sum.golang.org+033de0ae+Ac4zctda0e5eza+HJyk9SxEdh+s3Ux18htTTAD
 // found false when the database does not know the module, as for a version
 // that is not released.
 func lookupSumDB(ctx context.Context, path, version string) (string, bool, error) {
-	return lookupSumDBAt(ctx, sumDBServer{url: "https://sum.golang.org", key: sumDBKey, client: http.DefaultClient, state: sumDBStateDir()}, path, version)
+	server := sumDBServer{url: "https://sum.golang.org", key: sumDBKey, client: http.DefaultClient, state: sumDBStateDir()}
+	if sources := testSources(); sources != nil {
+		server = sumDBServer{url: sources.sumDBURL, key: sources.sumDBKey, client: http.DefaultClient}
+	}
+	return lookupSumDBAt(ctx, server, path, version)
+}
+
+// moduleSources is a module proxy and a sum database that a download and a
+// build take in place of proxy.golang.org and sum.golang.org.
+type moduleSources struct {
+	proxy, sumDB, sumDBKey, sumDBURL string
+}
+
+// testModuleSources holds the local stand-ins that UseTestModuleSources set,
+// or nil: every real run of stego uses proxy.golang.org and sum.golang.org.
+var testModuleSources struct {
+	sync.Mutex
+	sources *moduleSources
+}
+
+// testSources gives the local stand-ins, or nil.
+func testSources() *moduleSources {
+	testModuleSources.Lock()
+	defer testModuleSources.Unlock()
+	return testModuleSources.sources
+}
+
+// UseTestModuleSources makes each download and build of this process take
+// the module proxy at proxyURL and the sum database at sumDBURL, whose name
+// and verifier key are in sumDBKey (as note.GenerateKey gives it), in place
+// of proxy.golang.org and sum.golang.org, and gives a function that restores
+// them. It exists only for the local stand-ins of the tests (ST-STD-LOCAL):
+// it panics outside a test binary (testing.Testing), so a stego binary never
+// takes it, and it refuses a URL whose host is not a loopback address. No
+// flag and no environment variable reach it. The records still name
+// ProxySource: the stand-in plays proxy.golang.org, with the same zips and
+// hashes.
+func UseTestModuleSources(proxyURL, sumDBKey, sumDBURL string) (restore func(), err error) {
+	if !testing.Testing() {
+		panic("appbuild: UseTestModuleSources is only for the local stand-ins of a test binary")
+	}
+	for _, raw := range []string{proxyURL, sumDBURL} {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme != "http" || parsed.User != nil {
+			return nil, fmt.Errorf("appbuild: the test module source %q is not a plain http URL", raw)
+		}
+		host, _, err := net.SplitHostPort(parsed.Host)
+		if err != nil {
+			host = parsed.Host
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return nil, fmt.Errorf("appbuild: the test module source %q is not on a loopback address", raw)
+		}
+	}
+	name, _, ok := strings.Cut(sumDBKey, "+")
+	if !ok || name == "" || strings.ContainsAny(sumDBKey, " \t\n") {
+		return nil, fmt.Errorf("appbuild: %q is not a sum database verifier key", sumDBKey)
+	}
+	testModuleSources.Lock()
+	defer testModuleSources.Unlock()
+	// One test at a time holds the stand-ins: two tests of one binary that ran downloads at once would each take
+	// the other's servers. A second call before the first restores is refused, so such tests fail and do not mix.
+	if testModuleSources.sources != nil {
+		return nil, errors.New("appbuild: another test holds the test module sources; tests that download must not run in parallel")
+	}
+	testModuleSources.sources = &moduleSources{proxy: proxyURL, sumDB: sumDBKey + " " + sumDBURL, sumDBKey: sumDBKey, sumDBURL: sumDBURL}
+	return func() {
+		testModuleSources.Lock()
+		defer testModuleSources.Unlock()
+		testModuleSources.sources = nil
+	}, nil
 }
 
 // sumDBServer is the sum database that a lookup asks: its URL, its public
@@ -761,7 +834,7 @@ func withRuntimeProxy(env []string, proxy string) ([]string, error) {
 	result := make([]string, 0, len(env))
 	for _, value := range env {
 		if strings.HasPrefix(value, "GOPROXY=") {
-			value = "GOPROXY=" + location + "," + ProxySource
+			value = "GOPROXY=" + location + "," + strings.TrimPrefix(value, "GOPROXY=")
 		}
 		result = append(result, value)
 	}
