@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1073,6 +1074,32 @@ func TestCreatedRows(t *testing.T) {
 				t.Fatalf("the bind of %s gave %v, want a refusal that names the entity and the witness", name, err)
 			}
 		}
+		// Security review of PR #30, L2: a relationship witness is the caller's only, so a worker's is refused; and only
+		// a required reference of P is a witness, so a reference witness through an optional one is refused.
+		_, err := NewWorker(WorkerSpec[testProbe]{Name: "sync-items", Permission: "sync", Interval: time.Minute, Probe: newTestProbe,
+			Writes: []Declared{c.orgs, c.ownedAll, c.prices}, CreatesWithChildren: true,
+			Witnesses: []Witness{{Entity: "PriceHistory", Field: "cost_item_id", Subject: SubjectWorker, Permission: "sync", Kind: WitnessRelationship, Relation: "owner"}}})
+		if err == nil || !strings.Contains(err.Error(), "PriceHistory.cost_item_id") || !strings.Contains(err.Error(), "owner") {
+			t.Fatalf("the bind of a worker's relationship witness gave %v, want a refusal that names the entity and the witness", err)
+		}
+		optional := c.items.spec
+		optional.Parent = slices.Clone(optional.Parent)
+		optional.Parent[0].Required = false
+		optionalItems, err := NewEntity(optional)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewCommand(CommandSpec[testProbe]{Name: "add-cost-item", Probe: newTestProbe, Writes: []Declared{c.orgs, optionalItems, c.prices},
+			Permission: "catalog_edit", Resource: &Resource{Type: "org", Token: `SELECT authz_token FROM orgs WHERE tenant_id = $1 AND id = $2 FOR SHARE`, ValidID: func(string) bool { return true }},
+			CreatesWithChildren: true, Witnesses: []Witness{priceWitness}}); err == nil || !strings.Contains(err.Error(), "PriceHistory.cost_item_id") ||
+			!strings.Contains(err.Error(), "required reference") {
+			t.Fatalf("the bind of a witness through an optional reference gave %v, want a refusal that names the entity and the witness", err)
+		}
+		if _, err := NewCommand(CommandSpec[testProbe]{Name: "add-cost-item", Probe: newTestProbe, Writes: []Declared{c.orgs, c.items, c.prices},
+			Permission: "catalog_edit", Resource: &Resource{Type: "org", Token: `SELECT authz_token FROM orgs WHERE tenant_id = $1 AND id = $2 FOR SHARE`, ValidID: func(string) bool { return true }},
+			CreatesWithChildren: true, Witnesses: []Witness{priceWitness}}); err != nil {
+			t.Fatalf("the bind of the same witness through the required reference gave %v", err)
+		}
 	})
 
 	t.Run("ST-SUP-RP10-LC59-T15 A witness record matches only the reference and the object that the new row's tuple names", func(t *testing.T) {
@@ -1135,6 +1162,308 @@ func TestCreatedRows(t *testing.T) {
 			} else {
 				before = c.tuples()
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC59-T16 A client-chosen ID of an existing row, an upsert and a move never open a created-by-Create record", func(t *testing.T) {
+		c := newCostEnv(t)
+		c.exec(`INSERT INTO orgs (tenant_id, id, name) VALUES ('t1', 'o1', 'O1')`, `INSERT INTO cost_items (tenant_id, id, org_id) VALUES ('t1', 'p0', 'o1'), ('t1', 'p00', 'o1')`,
+			`INSERT INTO price_histories (tenant_id, id, cost_item_id, price) VALUES ('t1', 'h0', 'p00', '1')`)
+		c.decision.setRelations(c.grants(relation(t, "user:u-7", "view", "t1", "cost_item", "p0"), relation(t, "user:u-7", "catalog_edit", "t1", "cost_item", "p0"),
+			relation(t, "user:u-7", "edit", "t1", "cost_item", "p00"),
+			relation(t, "user:u-7", "view", "t1", "price_history", "h0"), relation(t, "user:u-7", "catalog_edit", "t1", "price_history", "h0"))...)
+		cmd := c.addCostItem(true, []Witness{priceWitness}, nil, c.orgs, c.items, c.prices)
+		before := c.tuples()
+		open := func(h *Handle[testProbe], id string) bool {
+			rec := h.st.created[rowKey{"CostItem", id}]
+			return rec != nil && rec.open
+		}
+
+		// The create of the ID of the existing p0 is a unique violation: no record opens, the call is broken, and a
+		// later reference to p0 in the call is never decided by a record.
+		var createErr, laterErr error
+		var recorded bool
+		_, err := c.call(cmd, "k-lc59-t16-taken", func(ctx context.Context, h *Handle[testProbe]) error {
+			o, err := repo(t, h, c.orgs).Get(ctx, "o1")
+			if err != nil {
+				return err
+			}
+			_, createErr = repo(t, h, c.items).Create(ctx, costItem{ID: "p0", OrgID: "o1"}, o)
+			recorded = open(h, "p0") || len(h.st.createTokens) != 0
+			// The fill goes on as if the create had written p0: the handle is broken.
+			r, err := Repo(h, c.items)
+			if err == nil {
+				var p Loaded[costItem]
+				if p, err = r.Get(ctx, "p0"); err == nil {
+					var prices *Repository[priceRow]
+					if prices, err = Repo(h, c.prices); err == nil {
+						_, err = prices.Create(ctx, priceRow{ID: "h16a", CostItemID: "p0"}, p)
+					}
+				}
+			}
+			laterErr = err
+			return nil
+		})
+		if !errors.Is(createErr, ErrConflict) || recorded || laterErr == nil || !errors.Is(err, ErrConflict) {
+			t.Fatalf("the create of the existing ID p0 gave %v (record %t), the later create %v and the call %v, want a conflict, no record and a broken call",
+				createErr, recorded, laterErr, err)
+		}
+		c.none("k-lc59-t16-taken", len(before), "h16a")
+
+		// The update branch of an upsert of the client-chosen ID p0, and a move of the existing h0 to p0, write no
+		// record: a reference to the value that the update returned is decided at the provider.
+		for name, fill := range map[string]func(ctx context.Context, h *Handle[testProbe]) (Loaded[costItem], error){
+			"the update branch of an upsert": func(ctx context.Context, h *Handle[testProbe]) (Loaded[costItem], error) {
+				p0, err := repo(t, h, c.items).GetForUpdate(ctx, "p0")
+				if err != nil {
+					return nil, err
+				}
+				return repo(t, h, c.items).Update(ctx, p0, costItem{ID: "p0", OrgID: "o1", GroupID: "upsert"})
+			},
+			"a move to the existing row": func(ctx context.Context, h *Handle[testProbe]) (Loaded[costItem], error) {
+				p0, err := repo(t, h, c.items).Get(ctx, "p0")
+				if err != nil {
+					return nil, err
+				}
+				h0, err := repo(t, h, c.prices).GetForUpdate(ctx, "h0")
+				if err != nil {
+					return nil, err
+				}
+				if _, err := repo(t, h, c.prices).Update(ctx, h0, priceRow{ID: "h0", CostItemID: "p0", Price: "2"}, p0); err != nil {
+					return nil, err
+				}
+				return p0, nil
+			},
+		} {
+			key := "k-lc59-t16-" + strings.ReplaceAll(name, " ", "-")
+			recorded = false
+			c.decision.taken()
+			_, err := c.call(cmd, key, func(ctx context.Context, h *Handle[testProbe]) error {
+				p, err := fill(ctx, h)
+				if err != nil {
+					return err
+				}
+				recorded = open(h, "p0") || len(h.st.created) != 0 || len(h.st.createTokens) != 0
+				_, err = repo(t, h, c.prices).Create(ctx, priceRow{ID: "h16b", CostItemID: "p0"}, p)
+				return err
+			})
+			if recorded || !errors.Is(err, ErrNotFound) || !slices.Contains(c.decided(false), "edit cost_item:p0") {
+				t.Fatalf("%s gave %v (record %t), want no record and not found from edit on cost_item:p0 at the provider", name, err, recorded)
+			}
+			c.none(key, len(before), "h16b")
+		}
+
+		// A delete of the existing p0 and a create of the same ID in the call write a new row: its record is the
+		// record of that create, and the value that the read before the delete gave is never decided by it.
+		c.decision.taken()
+		if _, err := c.call(cmd, "k-lc59-t16-again", func(ctx context.Context, h *Handle[testProbe]) error {
+			o, err := repo(t, h, c.orgs).Get(ctx, "o1")
+			if err != nil {
+				return err
+			}
+			old, err := repo(t, h, c.items).GetForDelete(ctx, "p0")
+			if err != nil {
+				return err
+			}
+			if err := repo(t, h, c.items).Delete(ctx, old); err != nil {
+				return err
+			}
+			if open(h, "p0") {
+				return errors.New("the delete of the existing p0 opened a record")
+			}
+			if _, err := repo(t, h, c.items).Create(ctx, costItem{ID: "p0", OrgID: "o1"}, o); err != nil {
+				return err
+			}
+			_, err = repo(t, h, c.prices).Create(ctx, priceRow{ID: "h16c", CostItemID: "p0"}, old)
+			return err
+		}); err == nil || !slices.Contains(c.decided(false), "edit cost_item:p0") && !errors.Is(err, ErrInternal) {
+			t.Fatalf("a reference by the value read before the delete gave %v, want no proof by the record of the new p0", err)
+		}
+		c.none("k-lc59-t16-again", len(before), "h16c")
+		if c.count(`SELECT count(*) FROM cost_items WHERE id = 'p0' AND group_id = ''`) != 1 || c.count(`SELECT count(*) FROM price_histories WHERE id = 'h0' AND price = '1'`) != 1 {
+			t.Fatal("a call of the test changed p0 or h0")
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC59-T16 The record and the decision read the ID of a row in the form that the database stores", func(t *testing.T) {
+		c := newCostEnv(t)
+		c.exec(`INSERT INTO orgs (tenant_id, id, name) VALUES ('t1', 'o1', 'O1')`,
+			`CREATE TABLE uuid_items (tenant_id text NOT NULL, id uuid NOT NULL, org_id text NOT NULL DEFAULT '', billing_org_id text NOT NULL DEFAULT '', group_id text NOT NULL DEFAULT '',
+ version bigint NOT NULL DEFAULT 1, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`,
+			"ALTER TABLE uuid_items ENABLE ROW LEVEL SECURITY", "ALTER TABLE uuid_items FORCE ROW LEVEL SECURITY",
+			"CREATE POLICY uuid_items_tenant ON uuid_items USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON uuid_items TO "+c.roles[0])
+		c.decision.setRelations(c.grants()...)
+		s := spec("CostItem", "cost_item", "uuid_items", []string{"org_id", "billing_org_id", "group_id"}, c.items.spec.Scan, c.items.spec.Values, c.items.spec.State)
+		s.Parent = c.items.spec.Parent
+		items, err := NewEntity(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := c.addCostItem(true, []Witness{priceWitness}, nil, c.orgs, items, c.prices)
+		before, rows := c.tuples(), 0
+		for i, template := range []string{"A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A%d1", "{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a%d2}", "a0eebc999c0b4ef8bb6d6bb9bd380a%d3",
+			" a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a%d4 ", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a%d5"} {
+			for j, raw := range []bool{false, true} {
+				form := fmt.Sprintf(template, j)
+				stored := strings.ToLower(strings.Trim(strings.TrimSpace(form), "{}"))
+				if len(stored) == 32 {
+					stored = stored[:8] + "-" + stored[8:12] + "-" + stored[12:16] + "-" + stored[16:20] + "-" + stored[20:]
+				}
+				child := stored
+				if raw {
+					child = form
+				}
+				key := fmt.Sprintf("k-lc59-t16-id-%d-%d", i, j)
+				var keys []string
+				var createErr error
+				var id string
+				c.decision.taken()
+				_, err := c.call(cmd, key, func(ctx context.Context, h *Handle[testProbe]) error {
+					o, err := repo(t, h, c.orgs).Get(ctx, "o1")
+					if err != nil {
+						return err
+					}
+					p, err := repo(t, h, items).Create(ctx, costItem{ID: form, OrgID: "o1"}, o)
+					for k := range h.st.created {
+						keys = append(keys, k.id)
+					}
+					if createErr = err; err != nil {
+						return err
+					}
+					id = p.ID()
+					_, err = repo(t, h, c.prices).Create(ctx, priceRow{ID: key, CostItemID: child}, p)
+					return err
+				})
+				provider := slices.ContainsFunc(c.decided(false), func(d string) bool { return strings.HasPrefix(d, "edit cost_item:") })
+				if createErr != nil {
+					// A form that the database does not take writes no row and opens no record.
+					if len(keys) != 0 || err == nil {
+						t.Fatalf("the create of %q gave %v with the records %v, want no record and no commit", form, createErr, keys)
+					}
+					c.none(key, len(before), key)
+					if c.count(`SELECT count(*) FROM uuid_items`) != rows {
+						t.Fatalf("the create of %q left a row", form)
+					}
+					continue
+				}
+				if id != stored || !slices.Equal(keys, []string{stored}) {
+					t.Fatalf("the create of %q gave the ID %q and the records %v, want the stored form %q in both", form, id, keys, stored)
+				}
+				if child == stored {
+					if err != nil || provider {
+						t.Fatalf("a reference by the stored form %q gave %v (provider %t), want a commit proved by the record", stored, err, provider)
+					}
+					before, rows = c.tuples(), rows+1
+					continue
+				}
+				// A reference that names the row in another form is not the loaded value's row: the create is refused
+				// before any decision, so no form other than the stored one reaches the record.
+				if !errors.Is(err, ErrInternal) || provider {
+					t.Fatalf("a reference by the form %q of %q gave %v (provider %t), want an internal error with no decision", form, stored, err, provider)
+				}
+				c.none(key, len(before), key)
+				if c.count(`SELECT count(*) FROM uuid_items`) != rows {
+					t.Fatalf("the refused create of %q left a row", form)
+				}
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC59-T15 A witness record that differs from its witness in the principal, the relation or the decided permission, and a value of another state, prove nothing", func(t *testing.T) {
+		// Security review of PR #30, L2: each part of the match of a witness record is needed. A hook of the test
+		// changes one part of the records of the CostItem; the reference of the PriceHistory is then decided at the
+		// provider, which denies edit on the new CostItem.
+		c := newCostEnv(t)
+		c.exec(`INSERT INTO orgs (tenant_id, id, name) VALUES ('t1', 'o1', 'O1')`)
+		c.decision.setRelations(c.grants()...)
+		var hook func(records []witnessRecord) []witnessRecord
+		c.crt.witnessRecordHook = func(entity string, records []witnessRecord) []witnessRecord {
+			if entity == "CostItem" && hook != nil {
+				return hook(records)
+			}
+			return records
+		}
+		change := func(match func(witnessRecord) bool, edit func(*witnessRecord)) func([]witnessRecord) []witnessRecord {
+			return func(records []witnessRecord) []witnessRecord {
+				for i := range records {
+					if match(records[i]) {
+						edit(&records[i])
+					}
+				}
+				return records
+			}
+		}
+		relationship := func(r witnessRecord) bool { return r.relationship }
+		referenceOf := func(r witnessRecord) bool { return r.field == "org_id" }
+		noPermission := func(s *CommandSpec[testProbe]) { s.Permission, s.Resource = "", nil }
+		owner := Witness{Entity: "PriceHistory", Field: "cost_item_id", Subject: SubjectCaller, Permission: "edit", Kind: WitnessRelationship, Relation: "owner"}
+		byOwner := c.addCostItem(true, []Witness{owner}, noPermission, c.orgs, c.owned, c.prices)
+		byOrg := c.addCostItem(true, []Witness{priceWitness}, nil, c.orgs, c.items, c.prices)
+		before := c.tuples()
+		n := 0
+		for _, run := range []struct {
+			name  string
+			cmd   *Command[testProbe]
+			items *Entity[costItem]
+			hook  func([]witnessRecord) []witnessRecord
+			proof bool
+		}{
+			{"the relationship witness as made", byOwner, c.owned, nil, true},
+			{"a relationship record of another principal", byOwner, c.owned, change(relationship, func(r *witnessRecord) { r.subject = "user:u-9" }), false},
+			{"a relationship record of another relation", byOwner, c.owned, change(relationship, func(r *witnessRecord) { r.relation = "admin" }), false},
+			{"the reference witness as made", byOrg, c.items, nil, true},
+			{"a reference record of another decided permission", byOrg, c.items, change(referenceOf, func(r *witnessRecord) { r.permission = "view" }), false},
+			{"a reference record of another subject kind", byOrg, c.items, change(referenceOf, func(r *witnessRecord) { r.subject = SubjectWorker }), false},
+		} {
+			n++
+			hook = run.hook
+			c.decision.taken()
+			id := strings.Repeat("r", n)
+			key := "k-lc59-t15-neg-" + id
+			_, err := c.call(run.cmd, key, c.pair(run.items, "p"+id, "h"+id))
+			provider := slices.Contains(c.decided(false), "edit cost_item:p"+id)
+			if run.proof {
+				if err != nil || provider {
+					t.Fatalf("%s gave %v (provider %t), want a commit proved by the record", run.name, err, provider)
+				}
+				before = c.tuples()
+				continue
+			}
+			if !errors.Is(err, ErrNotFound) || !provider {
+				t.Fatalf("%s gave %v (provider %t), want not found from edit on cost_item:p%s at the provider", run.name, err, provider, id)
+			}
+			c.none(key, len(before), "p"+id, "h"+id)
+		}
+		hook = nil
+
+		// A value whose owner is not the state of the handle is decided at the provider even when its entity, its ID
+		// and its write token are those of an open record of the state: the owner is part of the test, not only the
+		// parent match of the create.
+		c.decision.taken()
+		var proved bool
+		var decideErr error
+		if _, err := c.call(byOrg, "k-lc59-t15-owner", func(ctx context.Context, h *Handle[testProbe]) error {
+			o, err := repo(t, h, c.orgs).Get(ctx, "o1")
+			if err != nil {
+				return err
+			}
+			p, err := repo(t, h, c.items).Create(ctx, costItem{ID: "p-own", OrgID: "o1"}, o)
+			if err != nil {
+				return err
+			}
+			other := refOf(p)
+			other.st = &state{}
+			ref := reference{entity: "CostItem", resourceType: "cost_item", id: p.ID(), permission: "edit", relation: "cost_item", field: "cost_item_id"}
+			c.decision.taken()
+			allows, err := h.st.decideCreateReference(ctx, "PriceHistory", ref, other)
+			proved, decideErr = err == nil && len(allows) > 0 && !slices.Contains(c.decided(false), "edit cost_item:p-own"), err
+			return errors.New("the test ends the call")
+		}); err == nil {
+			t.Fatal("the call committed")
+		}
+		if proved || !errors.Is(decideErr, ErrNotFound) {
+			t.Fatalf("a value of another state was proved (%t) with %v, want not found from edit on cost_item:p-own at the provider", proved, decideErr)
 		}
 	})
 }
@@ -1213,6 +1542,57 @@ func TestCreatedRowsWorkers(t *testing.T) {
 		}
 		if c.count(`SELECT count(*) FROM cost_items WHERE id = 'pc2'`) != 0 {
 			t.Fatal("the undecided run left its row")
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC59-T07 A tenant witness record of another tenant or of another decided permission proves nothing", func(t *testing.T) {
+		// Security review of PR #30, L2: a hook of the test changes one part of the tenant record of the CostItem; the
+		// reference of the PriceHistory is then decided at the provider, which denies sync on the new CostItem.
+		c := newCostEnv(t)
+		syncW := Witness{Entity: "PriceHistory", Field: "cost_item_id", Subject: SubjectWorker, Permission: "sync", Kind: WitnessTenant, Relation: "tenant", Decided: "sync"}
+		var hook func(*witnessRecord)
+		c.crt.witnessRecordHook = func(entity string, records []witnessRecord) []witnessRecord {
+			if entity == "CostItem" && hook != nil {
+				for i := range records {
+					if records[i].relation == authz.TenantRelation {
+						hook(&records[i])
+					}
+				}
+			}
+			return records
+		}
+		c.decision.setRelations(relation(t, "service_account:sync-costs", "sync", "t1", "tenant", "t1"))
+		w := c.worker("sync-costs", "sync", func(s *WorkerSpec[testProbe]) { s.CreatesWithChildren, s.Witnesses = true, []Witness{syncW} }, c.tenanted, c.prices)
+		at := tick
+		for i, run := range []struct {
+			name  string
+			hook  func(*witnessRecord)
+			proof bool
+		}{
+			{"the tenant record as made", nil, true},
+			{"a tenant record of another tenant", func(r *witnessRecord) { r.resourceID = "t2" }, false},
+			{"a tenant record of another decided permission", func(r *witnessRecord) { r.permission = "stage" }, false},
+			{"a tenant record of another resource type", func(r *witnessRecord) { r.resourceType = "org" }, false},
+		} {
+			hook = run.hook
+			at = at.Add(time.Minute)
+			id := strings.Repeat("t", i+1)
+			c.decision.taken()
+			err := RunWorker(c.ctx, c.crt, w, at, mustTenant(t, "t1"), nil, workerFill(func(ctx context.Context, h *Handle[testProbe]) error {
+				p, err := repo(t, h, c.tenanted).Create(ctx, costItem{ID: "pw" + id})
+				if err != nil {
+					return err
+				}
+				_, err = repo(t, h, c.prices).Create(ctx, priceRow{ID: "hw" + id, CostItemID: "pw" + id}, p)
+				return err
+			}))
+			provider := slices.Contains(c.decided(true), "service_account:sync-costs sync cost_item:pw"+id)
+			if run.proof != (err == nil) || run.proof == provider {
+				t.Fatalf("%s gave %v (provider %t), want proof %t", run.name, err, provider, run.proof)
+			}
+			if !run.proof && c.count(`SELECT count(*) FROM cost_items WHERE id = $1`, "pw"+id) != 0 {
+				t.Fatalf("%s left its row", run.name)
+			}
 		}
 	})
 

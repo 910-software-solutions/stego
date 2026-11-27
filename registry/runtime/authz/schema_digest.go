@@ -158,8 +158,11 @@ const (
 // SchemaGate tells whether SpiceDB serves the schema of the release of this pod now (ST-SUP-RP10-LC59). Its expected
 // digest is the canonical digest of the schema compiled into the release, computed once when it is made; nothing is
 // looked up by a release name. Holds reads the served schema with ReadSchema, at most once in each SchemaDigestBound
-// on the monotonic clock, and the concurrent re-reads of one gate collapse into one call. A read error, a time-out
-// and a digest that is not the own one make Holds false, so the runtime decides at the provider (fail closed).
+// on the monotonic clock, and the concurrent re-reads of one gate collapse into one call. That call runs on a context
+// of its own, detached from the cancellation of the caller that started it and bounded by the read limit, so a caller
+// whose context ends returns false alone and every other caller still takes the answer of the call (security review
+// of PR #30, L1). A read error, a time-out and a digest that is not the own one make Holds false, so the runtime
+// decides at the provider (fail closed).
 type SchemaGate struct {
 	own    string
 	reader SchemaReader
@@ -178,7 +181,7 @@ type SchemaGate struct {
 	reads int
 }
 
-// schemaRead is one ReadSchema call that the waiters of a gate share. done closes when it returned; holds is its
+// schemaRead is one ReadSchema call that the callers of a gate share. done closes when it returned; holds is its
 // answer, false for an error.
 type schemaRead struct {
 	done  chan struct{}
@@ -220,7 +223,8 @@ func init() {
 func (g *SchemaGate) Digest() string { return g.own }
 
 // Holds tells whether the schema that SpiceDB serves has the digest of the release, by a reading of at most
-// SchemaDigestBound before. A nil gate never holds.
+// SchemaDigestBound before. A nil gate never holds. A caller whose context ends before the shared read returned gets
+// false; the read goes on for the other callers.
 func (g *SchemaGate) Holds(ctx context.Context) bool {
 	if g == nil {
 		return false
@@ -231,20 +235,26 @@ func (g *SchemaGate) Holds(ctx context.Context) bool {
 		g.mu.Unlock()
 		return holds
 	}
-	if call := g.inFlight; call != nil {
-		g.mu.Unlock()
-		select {
-		case <-call.done:
-			return call.holds
-		case <-ctx.Done():
-			return false
-		}
+	call := g.inFlight
+	if call == nil {
+		call = &schemaRead{done: make(chan struct{})}
+		g.inFlight = call
+		g.reads++
+		// The shared read keeps the values of the first caller's context, such as its trace, and none of its
+		// cancellation or deadline: read bounds it with the read limit.
+		go g.share(context.WithoutCancel(ctx), call)
 	}
-	call := &schemaRead{done: make(chan struct{})}
-	g.inFlight = call
-	g.reads++
 	g.mu.Unlock()
+	select {
+	case <-call.done:
+		return call.holds
+	case <-ctx.Done():
+		return false
+	}
+}
 
+// share makes the shared read call and gives its answer to every caller that waits for it.
+func (g *SchemaGate) share(ctx context.Context, call *schemaRead) {
 	holds, ok := g.read(ctx)
 	g.mu.Lock()
 	if ok {
@@ -257,7 +267,6 @@ func (g *SchemaGate) Holds(ctx context.Context) bool {
 	g.inFlight = nil
 	g.mu.Unlock()
 	close(call.done)
-	return call.holds
 }
 
 // read reads the served schema within the limit and compares its digest; ok is false for an error or a time-out.

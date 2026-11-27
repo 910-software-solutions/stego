@@ -114,6 +114,10 @@ func TestCreatesWithChildren(t *testing.T) {
 			{"an arrow all", "org.all(catalog_edit)", "org", "user", false, false, nil},
 			{"two subject types", arrow, "org | user", "user", false, false, nil},
 			{"a subject relation", arrow, "org | group#member", "user", false, false, nil},
+			// The subject relation of the referenced type itself, alone or beside the plain type (security review of
+			// PR #30, L3): org#member names the members of an org, not the org, so the arrow proves nothing.
+			{"a subject relation of the referenced type", arrow, "org#member", "user", false, false, nil},
+			{"the referenced type and a subject relation of it", arrow, "org | org#member", "user", false, false, nil},
 			{"a wildcard", arrow, "org | org:*", "user", false, false, nil},
 			{"a caveat", arrow, "org with only_on", "user", false, false, nil},
 			{"an expiration", arrow, "org with expiration", "user", false, false, nil},

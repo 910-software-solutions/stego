@@ -144,6 +144,14 @@ caveat only_on(day int, allowed list<int>) {
 		if _, err := SchemaDigest("definition {"); err == nil || strings.Contains(err.Error(), "definition {") {
 			t.Fatalf("a schema that does not compile gave %v, want an error with no schema text", err)
 		}
+		// A use directive of the text that no definition uses is part of the form too (security review of PR #30, L2).
+		plain := "definition user {}\n\ndefinition org {\n\trelation owner: user\n}"
+		if mustDigest(t, "use expiration\n\n"+plain) == mustDigest(t, plain) {
+			t.Fatal("a schema that differs only in a use directive that no definition uses has the digest of the schema without it")
+		}
+		if canonical, err := CanonicalSchema("use expiration\n\n" + plain); err != nil || !strings.HasPrefix(canonical, "use expiration\n") {
+			t.Fatalf("the canonical form of a schema with an unused use directive is %q (%v), want it to start with the directive", canonical, err)
+		}
 	})
 
 	t.Run("ST-SUP-RP10-LC59-T13 The canonical form compiles to the same definitions as the schema, for .any() and .all() arrows, subject relations and caveat expressions", func(t *testing.T) {
@@ -261,6 +269,137 @@ caveat only_on(day int, allowed list<int>) {
 			t.Fatal("a nil gate holds")
 		}
 	})
+
+	t.Run("ST-SUP-RP10-LC59-T13 A served schema that does not compile never holds", func(t *testing.T) {
+		// Security review of PR #30, L2: a served schema that the pinned compiler cannot read is not the own one.
+		for _, served := range []string{"definition {", "definition org { relation owner: nosuchtype }"} {
+			reader := &blockingReader{release: make(chan struct{}), text: served}
+			close(reader.release)
+			gate, err := NewSchemaGate(digestBase, reader, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gate.Holds(context.Background()) {
+				t.Fatalf("the served schema %q holds, want a decision at the provider", served)
+			}
+			if gate.Reads() != 1 {
+				t.Fatalf("the gate made %d reads, want one", gate.Reads())
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC59-T13 The shared read runs on its own context: a cancelled or late first caller does not fail the other callers, and the read stays within its limit", func(t *testing.T) {
+		// Security review of PR #30, L1.
+		for name, start := range map[string]func() (context.Context, func()){
+			"a cancelled first caller": func() (context.Context, func()) { return context.WithCancel(context.Background()) },
+			"a first caller past its deadline": func() (context.Context, func()) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+		} {
+			reader := &ctxReader{release: make(chan struct{}), text: digestBase}
+			gate, err := NewSchemaGate(digestBase, reader, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaderCtx, end := start()
+			leader := make(chan bool, 1)
+			go func() { leader <- gate.Holds(leaderCtx) }()
+			for deadline := time.Now().Add(5 * time.Second); gate.Reads() == 0 && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+			var wg sync.WaitGroup
+			results := make(chan bool, 3)
+			for range 3 {
+				wg.Add(1)
+				go func() { defer wg.Done(); results <- gate.Holds(context.Background()) }()
+			}
+			time.Sleep(20 * time.Millisecond)
+			end()
+			if <-leader {
+				t.Fatalf("%s: the first caller holds after its context ended", name)
+			}
+			// The read is still running after the first caller returned: its context did not end with the caller's.
+			if err := reader.ctxErr(); err != nil {
+				t.Fatalf("%s: the context of the shared read ended with the first caller (%v)", name, err)
+			}
+			close(reader.release)
+			wg.Wait()
+			close(results)
+			for holds := range results {
+				if !holds {
+					t.Fatalf("%s: another caller of the shared read does not hold", name)
+				}
+			}
+			if gate.Reads() != 1 {
+				t.Fatalf("%s: the callers made %d reads, want one", name, gate.Reads())
+			}
+			if !gate.Holds(context.Background()) || gate.Reads() != 1 {
+				t.Fatalf("%s: the reading of the shared read is not kept for the bound", name)
+			}
+		}
+		// The shared read has the bound of the gate, the smaller of 1 s and the decision limit, of its own: a read
+		// that never returns ends at the limit for a caller that would wait longer.
+		reader := &ctxReader{release: make(chan struct{}), hang: true}
+		gate, err := NewSchemaGate(digestBase, reader, 200*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		close(reader.release)
+		begin := time.Now()
+		if gate.Holds(context.Background()) {
+			t.Fatal("a read that never returns holds")
+		}
+		if took := time.Since(begin); took < 150*time.Millisecond || took > 2*time.Second {
+			t.Fatalf("a read that never returns ended after %v, want the limit of 200 ms", took)
+		}
+		if _, ok := reader.deadline(); !ok {
+			t.Fatal("the shared read had no deadline of its own")
+		}
+	})
+}
+
+// ctxReader serves text after release closes, or waits for its context while hang is set, and keeps the context of
+// its last call.
+type ctxReader struct {
+	release chan struct{}
+	text    string
+	hang    bool
+	mu      sync.Mutex
+	ctx     context.Context
+}
+
+func (r *ctxReader) ReadSchema(ctx context.Context) (string, error) {
+	r.mu.Lock()
+	r.ctx = ctx
+	r.mu.Unlock()
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if r.hang {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	return r.text, nil
+}
+
+func (r *ctxReader) ctxErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ctx == nil {
+		return errors.New("no read")
+	}
+	return r.ctx.Err()
+}
+
+func (r *ctxReader) deadline() (time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ctx == nil {
+		return time.Time{}, false
+	}
+	return r.ctx.Deadline()
 }
 
 // blockingReader serves text or err after release closes, or waits for its context while hang is set.
