@@ -90,16 +90,33 @@ type SchemaStep struct {
 // values, a default where there was none, a required field made optional, and an enum made a string with no
 // max_length, which keeps the column type text (decision on finding F12 of the schema-change research, owner,
 // 2026-11-13). Its Definition gives the field before the change, one item for each attribute that the change
-// relaxes, separated by commas: max_length N, values V1 V2 ..., required, no default and type enum.
+// relaxes, separated by commas: max_length N, values V1 V2 ..., required, no default and type enum. The item
+// searchable says that the field was searchable before, and the step drops its search index: the field is out of
+// the search now, by searchable: false or as long text (decision ST-DECL-Q50).
 
 // RelaxItems are the items of the Definition of a relax, in the order that RelaxedFrom reads them.
-var RelaxItems = []string{"type enum", "max_length", "values", "required", "no default"}
+var RelaxItems = []string{"type enum", "max_length", "values", "required", "no default", "searchable"}
+
+// RelaxesSearch tells whether the change is a relax whose Definition names the item searchable: its step drops the
+// search index of the field (ST-SUP-RC01-OC53, decision ST-DECL-Q50).
+func (c SchemaChange) RelaxesSearch() bool {
+	if c.Kind != "relax" {
+		return false
+	}
+	for _, raw := range strings.Split(c.Definition, ",") {
+		if strings.Join(strings.Fields(raw), " ") == "searchable" {
+			return true
+		}
+	}
+	return false
+}
 
 // RelaxedFrom gives the field before a relax, from the field after it and the items of the change's Definition. It
 // gives a reason, and no field, when the Definition cannot be read or an item does not relax the field: a shorter or
 // equal max_length, enum values that the field does not keep, required for a field that is still required, no
 // default for a field with no default, or type enum for a field that is not a string with no max_length and no
-// min_length. A relax changes nothing else of the field, so the other attributes before are those after.
+// min_length, or searchable for a field that is in the search now. A relax changes nothing else of the field, so the
+// other attributes before are those after.
 func (c SchemaChange) RelaxedFrom(after Field) (Field, string) {
 	before := after
 	before.Values = slices.Clone(after.Values)
@@ -116,7 +133,7 @@ func (c SchemaChange) RelaxedFrom(after Field) (Field, string) {
 			key, value = item, ""
 		}
 		if !slices.Contains(RelaxItems, key) {
-			return Field{}, fmt.Sprintf("the item %q is not one a relax takes; a relax takes max_length N, values V1 V2 ..., required, no default and type enum", item)
+			return Field{}, fmt.Sprintf("the item %q is not one a relax takes; a relax takes max_length N, values V1 V2 ..., required, no default, type enum and searchable", item)
 		}
 		if seen[key] {
 			return Field{}, fmt.Sprintf("the item %s is given twice", key)
@@ -154,6 +171,15 @@ func (c SchemaChange) RelaxedFrom(after Field) (Field, string) {
 			before.Default = nil
 		case "type enum":
 			toEnum = true
+		case "searchable":
+			if value != "" {
+				return Field{}, "the item searchable takes no value"
+			}
+			if !after.Unsearched() {
+				return Field{}, "the field is in the search now, so searchable before relaxes nothing; the item searchable is for a field that searchable: false or a max_length over 500 takes out of the search"
+			}
+			searchable := true
+			before.Searchable = &searchable
 		}
 	}
 	switch {

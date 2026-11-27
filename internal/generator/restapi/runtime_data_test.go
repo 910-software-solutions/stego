@@ -147,6 +147,14 @@ func crudContext() gen.Context {
 		types.Entity{Name: "Mark", Fields: []types.Field{{Name: "card_id", Type: types.FieldTypeRef, To: "Card"}, {Name: "label", Type: types.FieldTypeString}, {Name: "note", Type: types.FieldTypeString}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "mark", Permissions: permissions(types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert), PublicReasons: reasons,
 				References: map[string]types.Reference{"card_id": {Relation: "parent", Permission: "edit"}}}},
+		// Memo gives long text fields on a listed entity (erp-demo G10, decision ST-DECL-Q50): body of at most 4000
+		// characters and summary of at most 1000, which can each pass the size of a b-tree entry, so they are out of the
+		// search; tag of at most 40 with searchable: false; and title of at most 200, which a list searches.
+		types.Entity{Name: "Memo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString, MaxLength: memoLength(200)},
+			{Name: "body", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(4000)},
+			{Name: "summary", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(1000)},
+			{Name: "tag", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(40), Searchable: memoSearchable(false)}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "memo", Permissions: permissions(types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 	)
 	return withSchema(gen.Context{
 		ModuleName:      crudModule,
@@ -175,6 +183,7 @@ func crudContext() gen.Context {
 			// /folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks.
 			{Name: "folder-racks", Entity: "Rack", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
 			{Name: "rack-cards", Entity: "Card", Scope: map[string]string{"rack_id": "Rack"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
+			{Name: "memos", Entity: "Memo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpDelete}},
 			{Name: "card-marks", Entity: "Mark", Scope: map[string]string{"card_id": "Card"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert}, Patchable: []string{"note"}, UpsertKey: []string{"label"}},
 		},
 		SlotBindings: []types.SlotDeclaration{
@@ -192,6 +201,12 @@ func crudContext() gen.Context {
 		PeerNamespaces: map[string]string{"idempotency": "idempotency", "postgres-adapter": "storage", gen.TenancyComponent: "tenancy", "command": "commands", "query": "queries"},
 	})
 }
+
+// memoLength gives a max_length of the Memo fixture.
+func memoLength(n int) *int { return &n }
+
+// memoSearchable gives a searchable setting of the Memo fixture.
+func memoSearchable(b bool) *bool { return &b }
 
 // crudFiles generates the rest-api files of ctx, by path.
 func crudFiles(t testing.TB, ctx gen.Context) map[string][]byte {
@@ -861,6 +876,8 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC24-T12 A missing, wrong or denied path gives the same 404 with the same calls to the authorization port, and changes nothing",
 	"ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors only after the decision on the deepest resource, and decides nothing on them",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
+	"ST-SUP-RC20-OC57-T01 A create stores a long text value of 4000 characters and of 1000 four-byte characters",
+	"ST-SUP-RC20-OC57-T02 A search or an order of a field out of the search answers 400 that names the field, and the table has no search index of it",
 	"ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",
 }

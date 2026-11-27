@@ -37,6 +37,9 @@ var dropStepsTests []byte
 //go:embed testdata/seal_steps_test.go
 var sealStepsTests []byte
 
+//go:embed testdata/long_text_steps_test.go
+var longTextStepsTests []byte
+
 const tablesModule = "example.com/tables-check"
 
 // runtimeService gives the context of a pooled service on the runtime data path whose adapter writes to ns and
@@ -207,7 +210,9 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 		{dropBase("dropbase", "dropbasetenancy"), "dropbase_access.json"}, {dropHead("drop", "droptenancy"), "drop_access.json"},
 		{dropContract("dropc", "dropctenancy"), "dropc_access.json"},
 		{sealBase("sealbase", "sealbasetenancy"), "sealbase_access.json"}, {sealSteps("seal", "sealtenancy", false), "seal_access.json"},
-		{sealSteps("sealc", "sealctenancy", true), "sealc_access.json"}} {
+		{sealSteps("sealc", "sealctenancy", true), "sealc_access.json"},
+		{notesBefore("notesbase", "notesbasetenancy"), "notesbase_access.json"}, {notesUpgrade("notesup", "notesuptenancy"), "notesup_access.json"},
+		{notesFresh("notesfresh", "notesfreshtenancy"), "notesfresh_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
@@ -238,7 +243,7 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 		t.Fatal(err)
 	}
 	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests, "relax_steps_test.go": relaxStepsTests, "drop_steps_test.go": dropStepsTests,
-		"seal_steps_test.go": sealStepsTests} {
+		"seal_steps_test.go": sealStepsTests, "long_text_steps_test.go": longTextStepsTests} {
 		if err := os.WriteFile(filepath.Join(project, "check", name), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +264,7 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 	if before == nil {
 		t.Fatal("the boards service has no marker digest of a release before")
 	}
-	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=240s", "./check")
+	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=300s", "./check")
 	run.Dir, run.Env = project, localtest.GoEnv(append(localtest.PostgresEnv(t), "STEGO_TEST_MARKER_BEFORE="+string(before[1]))...)
 	output, _ := run.CombinedOutput()
 	passed := map[string]bool{}
@@ -572,6 +577,10 @@ func TestTables(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC01-OC45-T04 The migration job takes a database with rows through the relax steps to the schema of a new database, and the release before migrates again on it", func(t *testing.T) {
 		onRelax(t, "ST-SUP-RC01-OC45-T04")
+	})
+	// The case of testdata/long_text_steps_test.go runs in the same generated module, under TestLongTextSteps.
+	t.Run("ST-SUP-RC01-OC53-T03 A new service stores long text, and the upgrade from postgres-adapter 6.32.0 drops the search indexes of the fields out of the search and keeps each row", func(t *testing.T) {
+		passedIn(t, passed, log, "TestLongTextSteps", "ST-SUP-RC01-OC53-T03")
 	})
 	t.Run("ST-SUP-RC01-OC44-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T02") })
 	// The cases of testdata/drop_steps_test.go run in the same generated module, under TestDropSteps.

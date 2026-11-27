@@ -110,6 +110,13 @@ type Field struct {
 	// before it verifies the value, and fails each check at the limit (ST-DECL-EN03, ST-DECL-INV104, decision
 	// ST-SUP-Q185 (a), security review of PR #451, H1). Nil is no limit.
 	Attempts *FieldAttempts `yaml:"attempts,omitempty" json:"Attempts,omitempty"`
+	// Searchable tells, for a string field, whether a list searches and orders the field, so that its table has a
+	// search index on it (ST-DECL-EN03, ST-DECL-INV107, decision ST-DECL-Q50). Nil is the default: a field whose
+	// max_length can pass SearchIndexBytes in UTF-8 is not searchable, and every other string field is. The
+	// declaration may set false on any string field, and true only on one whose max_length cannot pass the limit.
+	// Generation also sets true on the field before a relax with the item searchable, whose step drops the search
+	// index (types.SchemaChange.RelaxedFrom).
+	Searchable *bool `yaml:"searchable,omitempty" json:"Searchable,omitempty"`
 	// Column is the stored column of the field when it is not Name: generation names a renamed field in the API by
 	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
 	// declaration never sets it.
@@ -196,6 +203,33 @@ func (f Field) Kept() bool { return f.Writable == WritableCreate || f.Writable =
 // same (ST-DECL-EN03, decision ST-DECL-Q46 (a)). A list searches and orders a public field, and its table has a search
 // index on it.
 func (f Field) Public() bool { return f.Sensitivity == "" || f.Sensitivity == "public" }
+
+// SearchIndexBytes is the size in bytes of the longest value of a string field that a search index takes (decision
+// ST-DECL-Q50): a PostgreSQL b-tree entry holds at most about 2700 bytes, so 2000 bytes leave room for the tenant
+// column and the entry header. UTF8Bytes is the most bytes of one character in UTF-8.
+const (
+	SearchIndexBytes = 2000
+	UTF8Bytes        = 4
+)
+
+// LongText tells whether the field is a string with a max_length whose values can pass SearchIndexBytes in UTF-8:
+// a max_length of more than 500 characters. A string with no max_length is not long text here: its search index
+// stays as before (decision ST-DECL-Q50).
+func (f Field) LongText() bool {
+	return f.Type == FieldTypeString && f.MaxLength != nil && *f.MaxLength*UTF8Bytes > SearchIndexBytes
+}
+
+// Unsearched tells whether a string field is out of the search of a list, its order and its search index, whatever
+// its sensitivity: it sets searchable: false, or it is long text with no searchable setting (decision ST-DECL-Q50).
+func (f Field) Unsearched() bool {
+	if f.Type != FieldTypeString {
+		return false
+	}
+	if f.Searchable != nil {
+		return !*f.Searchable
+	}
+	return f.LongText()
+}
 
 // Secret tells whether the field is of the sensitivity secret (ST-DECL-EN03).
 func (f Field) Secret() bool { return f.Sensitivity == "secret" }

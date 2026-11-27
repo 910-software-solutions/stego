@@ -27,6 +27,11 @@ import (
 //  3. The finish migration drops the old CHECK, when it is still there, and gives the new CHECK the name of the
 //     field's CHECK.
 //
+// A relax with the item searchable also drops the search index of the field first, in its own migration, under the
+// same lock (ST-SUP-RC01-OC53, decision ST-DECL-Q50). A relax with only that item is that DROP INDEX alone. The
+// schema check of a release before postgres-adapter 6.33.0 refuses the table with no such index, so a pod of the
+// release before that starts after the step fails its check.
+//
 // The schema check of the release before accepts each state between these migrations on a column with the marker
 // (registry/runtime/manifest, ST-SUP-RP15-LC04).
 
@@ -104,6 +109,19 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		return nil, fmt.Errorf("a relax of %s.%s changes another CHECK of the table", name, change.Field)
 	}
 	same.checks = old.checks
+	// A relax with the item searchable drops the search index of the field (ST-SUP-RC01-OC53, decision ST-DECL-Q50).
+	// A relax without it keeps the body that it had before postgres-adapter 6.33.0, also when the field after it is
+	// out of the search: a database that ran it holds the index, which a later relax with the item drops.
+	searched, stays := slices.Contains(old.search, change.Field), slices.Contains(next.search, change.Field)
+	dropIndex := change.RelaxesSearch()
+	switch {
+	case dropIndex && (!searched || stays):
+		return nil, fmt.Errorf("a relax of %s.%s with the item searchable has no search index of the field to drop: the field before the step has none, or the field after it is still in the search", name, change.Field)
+	case !searched && stays:
+		return nil, fmt.Errorf("a relax of %s.%s puts the field in the search, and no step builds its search index", name, change.Field)
+	case searched != stays:
+		same.search = old.search
+	}
 	if !reflect.DeepEqual(same, old) {
 		return nil, fmt.Errorf("a relax of %s.%s changes more of the table than the column", name, change.Field)
 	}
@@ -158,10 +176,18 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 	if newColumn.defaultClause != oldColumn.defaultClause {
 		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s SET%s", column, newColumn.defaultClause))
 	}
-	if len(parts) == 0 {
+	if len(parts) == 0 && !dropIndex {
 		return nil, fmt.Errorf("a relax of %s.%s changes nothing of the column", name, change.Field)
 	}
 	step := StepMigrationName(position, change.ID, "expand")
+	// The drop of the search index needs the ACCESS EXCLUSIVE lock of the table for a moment and reads no row.
+	drop := ""
+	if dropIndex {
+		drop = fmt.Sprintf("DROP INDEX public.%s;\n", sqlIdentifier(searchName(name, change.Field)))
+	}
+	if len(parts) == 0 {
+		return []schemaStep{{Name: step, Change: change, Phase: "expand", Body: drop}}, nil
+	}
 	form := struct {
 		typ, defaultValue string
 		check             *string
@@ -180,7 +206,7 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		form.check = &definition
 	}
 	comment := RelaxComment(step, form.typ, oldColumn.notNull && !newColumn.notNull, form.defaultValue, form.check)
-	body := fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment))
+	body := drop + fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment))
 	steps := []schemaStep{{Name: step, Change: change, Phase: "expand", Body: body}}
 	if relaxCheck {
 		validates := []validation{{table: table, schema: "public", tableName: name, name: relax}}

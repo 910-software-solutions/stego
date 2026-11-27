@@ -171,10 +171,17 @@ definition ticket {
 	permission view = owner + folder->view
 	permission edit = owner + folder->edit
 }
+
+definition memo {
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer
+	permission edit = owner
+}
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings", "labels", "racks", "cards", "marks", "tickets"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings", "labels", "racks", "cards", "marks", "tickets", "memos"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
@@ -519,6 +526,12 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	mux.HandleFunc("PUT /api/v1/tickets/{id}", tickets.Update)
 	mux.HandleFunc("PATCH /api/v1/tickets/{id}", tickets.Patch)
 	mux.HandleFunc("PUT /api/v1/tickets", tickets.Upsert)
+	memos := api.NewMemosHandler(rt)
+	mux.HandleFunc("POST /api/v1/memos", memos.Create)
+	mux.HandleFunc("GET /api/v1/memos", memos.List)
+	mux.HandleFunc("GET /api/v1/memos/{id}", memos.Read)
+	mux.HandleFunc("PUT /api/v1/memos/{id}", memos.Update)
+	mux.HandleFunc("DELETE /api/v1/memos/{id}", memos.Delete)
 	// The routes of the parent chain of three levels, as the wiring of the generator gives them (ST-SUP-RC20-OC24).
 	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks", folderRacks.Create)
 	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{id}", folderRacks.Read)
@@ -798,6 +811,25 @@ func (e *env) cliWarn(t *testing.T, c caller, serve func(w http.ResponseWriter, 
 }
 
 func newTenant() string { return "t-" + uuid.NewString()[:8] }
+
+// randomText gives n random characters: letters and digits, or, when wide, characters of four bytes each in UTF-8
+// (U+1F600 to U+1F64F).
+func randomText(n int, wide bool) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
+	}
+	var b strings.Builder
+	for _, c := range raw {
+		if wide {
+			b.WriteRune(rune(0x1F600 + int(c)%0x50))
+		} else {
+			b.WriteByte(letters[int(c)%len(letters)])
+		}
+	}
+	return b.String()
+}
 
 // failInsert makes the database fail each insert into table whose column holds value, until the check ends, as a
 // fault of the database does: the service then answers the write with a 5xx.
@@ -3225,6 +3257,69 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 			if r := e.send(a, http.MethodGet, "/api/v1/todos?search="+url.QueryEscape(q), "", ""); r.status != http.StatusBadRequest {
 				t.Errorf("the search %q answered %d %s, want 400", q, r.status, r.body)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC57-T01 A create stores a long text value of 4000 characters and of 1000 four-byte characters", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		// Random text, so the compression of an index entry cannot make it small: 4000 letters and digits in body
+		// (4000 bytes), and 1000 characters of four bytes each in summary (4000 bytes). A b-tree entry holds at most
+		// about 2700 bytes (erp-demo G10).
+		body, summary := randomText(4000, false), randomText(1000, true)
+		document, err := json.Marshal(map[string]string{"title": "long", "body": body, "summary": summary})
+		must(t, err)
+		id := e.create(a, "memos", "memo", string(document))
+		var storedBody, storedSummary string
+		must(t, e.admin.QueryRowContext(e.ctx, `SELECT body, summary FROM memos WHERE id = $1::uuid`, id).Scan(&storedBody, &storedSummary))
+		if storedBody != body || storedSummary != summary || len(storedSummary) != 4000 {
+			t.Errorf("the memo stores a body of %d bytes and a summary of %d bytes, want the values of the create", len(storedBody), len(storedSummary))
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1/memos/"+id, "", ""); r.status != http.StatusOK || r.member(t, "body") != body || r.member(t, "summary") != summary {
+			t.Errorf("the read of the memo answered %d, want 200 with the long values", r.status)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC57-T02 A search or an order of a field out of the search answers 400 that names the field, and the table has no search index of it", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		e.create(a, "memos", "memo", `{"title":"first","body":"b","summary":"s","tag":"t"}`)
+		for _, c := range []struct{ query, field string }{
+			{"search=" + url.QueryEscape("body = 'b'"), "body"},
+			{"search=" + url.QueryEscape("title = 'first' and summary = 's'"), "summary"},
+			{"search=" + url.QueryEscape("tag = 't'"), "tag"},
+			{"orderBy=body", "body"},
+			{"orderBy=" + url.QueryEscape("title asc, tag desc"), "tag"},
+		} {
+			r := e.send(a, http.MethodGet, "/api/v1/memos?"+c.query, "", "")
+			if r.status != http.StatusBadRequest || !strings.Contains(r.member(t, "detail"), `"`+c.field+`"`) || !strings.Contains(r.member(t, "detail"), "searchable") {
+				t.Errorf("the list of memos with %s answered %d %s, want 400 with a detail that names %s", c.query, r.status, r.body, c.field)
+			}
+		}
+		// A search of a field that the entity does not declare, and one that is not well formed, stay the 400 that
+		// names no field; title is searched and orders the list.
+		for _, q := range []string{"search=" + url.QueryEscape("colour = 'red'"), "search=" + url.QueryEscape("body = b")} {
+			if r := e.send(a, http.MethodGet, "/api/v1/memos?"+q, "", ""); r.status != http.StatusBadRequest || r.member(t, "detail") != "the search is not valid" {
+				t.Errorf("the list of memos with %s answered %d %s, want 400 the search is not valid", q, r.status, r.body)
+			}
+		}
+		for _, q := range []string{"search=" + url.QueryEscape("title = 'first'"), "orderBy=title"} {
+			if r := e.send(a, http.MethodGet, "/api/v1/memos?"+q, "", ""); r.status != http.StatusOK {
+				t.Errorf("the list of memos with %s answered %d %s, want 200", q, r.status, r.body)
+			}
+		}
+		rows, err := e.admin.QueryContext(e.ctx, `SELECT indexname FROM pg_catalog.pg_indexes WHERE tablename = 'memos' AND indexname LIKE '%\_search' ORDER BY indexname`)
+		must(t, err)
+		var indexes []string
+		for rows.Next() {
+			var name string
+			must(t, rows.Scan(&name))
+			indexes = append(indexes, name)
+		}
+		must(t, rows.Err())
+		rows.Close()
+		if !slices.Equal(indexes, []string{"memos_title_search"}) {
+			t.Errorf("the table memos has the search indexes %v, want only memos_title_search", indexes)
 		}
 	})
 

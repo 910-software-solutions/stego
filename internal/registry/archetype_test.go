@@ -117,16 +117,16 @@ func TestLiveRegistryLoadsAllArchetypeComponents(t *testing.T) {
 	if restAPI == nil {
 		t.Fatal("Component(rest-api) returned nil")
 	}
-	if restAPI.Version != "4.44.0" {
-		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.44.0")
+	if restAPI.Version != "4.45.0" {
+		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.45.0")
 	}
 
 	pg := reg.Component("postgres-adapter")
 	if pg == nil {
 		t.Fatal("Component(postgres-adapter) returned nil")
 	}
-	if pg.Version != "6.32.0" {
-		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.32.0")
+	if pg.Version != "6.33.0" {
+		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.33.0")
 	}
 
 	otel := reg.Component("otel-tracing")

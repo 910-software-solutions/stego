@@ -590,6 +590,48 @@ func listOrder(text string, fields map[string]bool) ([]query.OrderBy, error) {
 	return order, nil
 }
 
+// unsearchedOrder gives the first field of the orderBy text that is one of unsearched, the declared fields that a list
+// neither searches nor orders, or "" when it names none (ST-SUP-RC20-OC57, decision ST-DECL-Q50).
+func unsearchedOrder(text string, unsearched map[string]query.FieldKind) string {
+	for _, part := range strings.Split(text, ",") {
+		if words := strings.Fields(part); len(words) > 0 {
+			if _, out := unsearched[words[0]]; out {
+				return words[0]
+			}
+		}
+	}
+	return ""
+}
+
+// unsearchedSearch gives the first field of a search that is one of unsearched, when the search is well formed with
+// those fields in it too, or "" (ST-SUP-RC20-OC57). A search that is not well formed stays the 400 that names no
+// part of its text.
+func unsearchedSearch(text string, searched, unsearched map[string]query.FieldKind, most int) string {
+	all := map[string]query.FieldKind{}
+	for name, kind := range searched {
+		all[name] = kind
+	}
+	for name, kind := range unsearched {
+		all[name] = kind
+	}
+	where, err := query.ParseSearch(text, all, most)
+	if err != nil {
+		return ""
+	}
+	for _, condition := range where {
+		if _, out := unsearched[condition.Field]; out {
+			return condition.Field
+		}
+	}
+	return ""
+}
+
+// unsearchedDetail is the detail of the 400 of a list whose parameter names a field that a list neither searches nor
+// orders (ST-SUP-RC20-OC57).
+func unsearchedDetail(parameter, field string) string {
+	return parameter + " names the field " + strconv.Quote(field) + ", which a list neither searches nor orders: the field is declared searchable: false, or its max_length is over 500 characters, so it has no search index"
+}
+
 // isBadCursor tells whether err is a cursor of another order, which a list answers with 400.
 func isBadCursor(err error) bool { return errors.Is(err, query.ErrBadCursor) }
 

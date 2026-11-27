@@ -135,10 +135,11 @@ func (c *runtimeCollection) hrefExpr(v string) string {
 }
 
 // searchKind gives the kind of the values of a field that a list search may name, or empty for a field that a
-// search does not take: a pii or secret field, whose match would tell its value (ST-SUP-RP11-LC20), a ref, and a
-// field of a jsonb, bytes or timestamp type.
+// search does not take: a pii or secret field, whose match would tell its value (ST-SUP-RP11-LC20), a string field
+// out of the search (types.Field.Unsearched, ST-SUP-RC20-OC57), a ref, and a field of a jsonb, bytes or timestamp
+// type.
 func searchKind(f types.Field) string {
-	if !f.Public() {
+	if !f.Public() || f.Unsearched() {
 		return ""
 	}
 	switch f.Type {
@@ -154,6 +155,18 @@ func searchKind(f types.Field) string {
 		return "KindBool"
 	}
 	return ""
+}
+
+// unsearchedFields gives the public string fields of the entity that are out of the search (types.Field.Unsearched),
+// in the entity's order, but the implicit fields, which the list filters on already.
+func unsearchedFields(e types.Entity, implicit map[string]bool) []string {
+	var out []string
+	for _, f := range e.Fields {
+		if f.Public() && f.Unsearched() && !implicit[f.Name] {
+			out = append(out, f.Name)
+		}
+	}
+	return out
 }
 
 // patchFields gives the collection's patchable fields in the entity's order.
@@ -649,6 +662,48 @@ func listOrder(text string, fields map[string]bool) ([]query.OrderBy, error) {
 		order = append(order, o)
 	}
 	return order, nil
+}
+
+// unsearchedOrder gives the first field of the orderBy text that is one of unsearched, the declared fields that a list
+// neither searches nor orders, or "" when it names none (ST-SUP-RC20-OC57, decision ST-DECL-Q50).
+func unsearchedOrder(text string, unsearched map[string]query.FieldKind) string {
+	for _, part := range strings.Split(text, ",") {
+		if words := strings.Fields(part); len(words) > 0 {
+			if _, out := unsearched[words[0]]; out {
+				return words[0]
+			}
+		}
+	}
+	return ""
+}
+
+// unsearchedSearch gives the first field of a search that is one of unsearched, when the search is well formed with
+// those fields in it too, or "" (ST-SUP-RC20-OC57). A search that is not well formed stays the 400 that names no
+// part of its text.
+func unsearchedSearch(text string, searched, unsearched map[string]query.FieldKind, most int) string {
+	all := map[string]query.FieldKind{}
+	for name, kind := range searched {
+		all[name] = kind
+	}
+	for name, kind := range unsearched {
+		all[name] = kind
+	}
+	where, err := query.ParseSearch(text, all, most)
+	if err != nil {
+		return ""
+	}
+	for _, condition := range where {
+		if _, out := unsearched[condition.Field]; out {
+			return condition.Field
+		}
+	}
+	return ""
+}
+
+// unsearchedDetail is the detail of the 400 of a list whose parameter names a field that a list neither searches nor
+// orders (ST-SUP-RC20-OC57).
+func unsearchedDetail(parameter, field string) string {
+	return parameter + " names the field " + strconv.Quote(field) + ", which a list neither searches nor orders: the field is declared searchable: false, or its max_length is over 500 characters, so it has no search index"
 }
 
 // isBadCursor tells whether err is a cursor of another order, which a list answers with 400.
@@ -1434,6 +1489,15 @@ func (w *runtimeHandlerWriter) declarations() {
 			}
 		}
 		w.f("}\n\n")
+		// A public string field out of the search is named in the 400 of a search or an order that names it
+		// (ST-SUP-RC20-OC57, decision ST-DECL-Q50).
+		if out := unsearchedFields(e, implicit); len(out) > 0 {
+			w.f("// %sUnsearchedFields are the public string fields that a list neither searches nor orders, as they have no\n// search index: each sets searchable: false or has a max_length over 500 (ST-SUP-RC20-OC57).\nvar %sUnsearchedFields = map[string]query.FieldKind{", c.camel, c.camel)
+			for _, name := range out {
+				w.f("%q: query.KindText, ", name)
+			}
+			w.f("}\n\n")
+		}
 	}
 	if fields := w.fingerprintFields(types.OpCreate); c.ops[types.OpCreate] {
 		w.f("// %sCreateFields are the body fields that the fingerprint of a create covers (ST-SUP-RC30-OC03).\nvar %sCreateFields = []string{%s}\n\n", c.camel, c.camel, quoteAll(fields))
@@ -2744,13 +2808,23 @@ func (w *runtimeHandlerWriter) list() {
 	w.f("\tparameters, detail := listQuery(r)\n\tif detail != \"\" {\n\t\thandleError(w, r, BadRequest(detail))\n\t\treturn\n\t}\n")
 	w.f("\tlimit := 100\n\tif text := parameters.Get(\"pageSize\"); text != \"\" {\n\t\tn, err := strconv.Atoi(text)\n\t\tif err != nil || n < 1 {\n\t\t\thandleError(w, r, BadRequest(\"pageSize must be a whole number of at least 1\"))\n\t\t\treturn\n\t\t}\n\t\tlimit = min(n, query.MaxLimit)\n\t}\n")
 	var fields []string
-	// A pii or secret field orders no list: the order would tell its value (ST-SUP-RP11-LC20).
+	// A pii or secret field orders no list: the order would tell its value (ST-SUP-RP11-LC20). A string field out of
+	// the search orders none either, and the 400 names it (ST-SUP-RC20-OC57).
 	for _, f := range e.Fields {
-		if f.Public() {
+		if f.Public() && !f.Unsearched() {
 			fields = append(fields, fmt.Sprintf("%q: true", f.Name))
 		}
 	}
-	w.f("\torder, err := listOrder(parameters.Get(\"orderBy\"), map[string]bool{%s})\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(err.Error()))\n\t\treturn\n\t}\n", strings.Join(fields, ", "))
+	implicit := map[string]bool{}
+	for _, kv := range c.implicit {
+		implicit[kv[0]] = true
+	}
+	unsearched := len(unsearchedFields(e, implicit)) > 0
+	named := ""
+	if unsearched {
+		named = fmt.Sprintf("\t\tif name := unsearchedOrder(parameters.Get(\"orderBy\"), %sUnsearchedFields); name != \"\" {\n\t\t\thandleError(w, r, BadRequest(unsearchedDetail(\"orderBy\", name)))\n\t\t\treturn\n\t\t}\n", c.camel)
+	}
+	w.f("\torder, err := listOrder(parameters.Get(\"orderBy\"), map[string]bool{%s})\n\tif err != nil {\n%s\t\thandleError(w, r, BadRequest(err.Error()))\n\t\treturn\n\t}\n", strings.Join(fields, ", "), named)
 	// A field selection names declared fields; a secret field is cleared in each presented value (ST-SUP-RC20-OC12).
 	var declared []string
 	for _, f := range e.Fields {
@@ -2763,7 +2837,11 @@ func (w *runtimeHandlerWriter) list() {
 	if c.scope != "" {
 		own++
 	}
-	w.f("\twhere, err := query.ParseSearch(parameters.Get(\"search\"), %sSearchFields, query.MaxFilter-%d)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the search is not valid\"))\n\t\treturn\n\t}\n", c.camel, own)
+	named = ""
+	if unsearched {
+		named = fmt.Sprintf("\t\tif name := unsearchedSearch(parameters.Get(\"search\"), %sSearchFields, %sUnsearchedFields, query.MaxFilter-%d); name != \"\" {\n\t\t\thandleError(w, r, BadRequest(unsearchedDetail(\"search\", name)))\n\t\t\treturn\n\t\t}\n", c.camel, c.camel, own)
+	}
+	w.f("\twhere, err := query.ParseSearch(parameters.Get(\"search\"), %sSearchFields, query.MaxFilter-%d)\n\tif err != nil {\n%s\t\thandleError(w, r, BadRequest(\"the search is not valid\"))\n\t\treturn\n\t}\n", c.camel, own, named)
 	// A renamed field is named in the API by its first name and stored in the column of its declared name
 	// (ST-GEN-UC12-R04): the order and the search name it by the API name, and the query runtime reads columns.
 	var renamed []string

@@ -10,13 +10,13 @@ import (
 
 func TestBaseSecretForm(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC48-T02 A head that changes the secret form of a stored field is refused against the base with the seal step as the remedy", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
 		for _, c := range []struct{ name, base, head string }{
-			{"a stored field made secret", description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"},
-			{"a secret made compare-only", "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }",
-				"{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret, compare_only: true }"},
-			{"a secret made public", "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", description},
+			{"a stored field made secret", description, "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }"},
+			{"a secret made compare-only", "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }",
+				"{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret, compare_only: true }"},
+			{"a secret made public", "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }", description},
 		} {
 			base := []byte(strings.Replace(td01, description, c.base, 1))
 			head := strings.Replace(td01, description, c.head, 1)
@@ -83,9 +83,9 @@ func TestBaseSecretForm(t *testing.T) {
 
 func TestBaseSeal(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T03 A head that seals a stored field with a seal change is accepted against the base at expand and at contract", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
-		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }"
 		change := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
 		expand := withChanges(strings.Replace(td01, description, secret, 1), change, "  - {change: organization-description-seal, phase: expand}\n")
 		base := []byte(td01)
@@ -138,6 +138,19 @@ func TestBaseSeal(t *testing.T) {
 	})
 }
 
+// sealBase is TD01 with Organization.description of at most 500 characters, which a list searches with every release:
+// with its max_length of 1000, a base of a postgres-adapter before LongTextVersion holds its search index, which only a
+// relax with the item searchable drops (ST-GEN-INV40-T), and these tests are of the seal alone.
+func sealBase(t *testing.T) string {
+	t.Helper()
+	td01 := withoutDescriptionRelax(t, string(userManagementBase(t)))
+	short := strings.Replace(td01, "{ name: description, type: string, optional: true, max_length: 1000 }", "{ name: description, type: string, optional: true, max_length: 500 }", 1)
+	if short == td01 {
+		t.Fatal("TD01 has no Organization.description of at most 1000 characters")
+	}
+	return short
+}
+
 // runtimeRecord is adapterRecord with the archetype rest-crud on the runtime library runtime.
 func runtimeRecord(t *testing.T, declaration []byte, adapter, runtime string) []byte {
 	t.Helper()
@@ -159,9 +172,9 @@ func adapterRecord(t *testing.T, declaration []byte, version string) []byte {
 
 func TestBaseClearSecret(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T04 A base whose older generator stored a secret field in clear is refused with the seal step, and a seal from secret is accepted", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
-		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }"
 		declared := strings.Replace(td01, description, secret, 1)
 		base := []byte(declared)
 		// The release of the base ran postgres-adapter 6.12.0, which stored description in clear.
@@ -196,9 +209,9 @@ func TestBaseClearSecret(t *testing.T) {
 
 func TestBaseSealReports(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T06 A seal over a base whose processes do not report themselves is refused, and a pin that does not parse counts as stored in clear", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
-		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }"
 		declared := strings.Replace(td01, description, secret, 1)
 		base := []byte(declared)
 		head := withChanges(declared, "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description, from: secret}\n",
@@ -232,9 +245,9 @@ func TestBaseSealReports(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC01-OC49-T07 The contract of a seal is refused over a base whose release of the expand step needs the clear column", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
-		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }"
 		change := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
 		expand := withChanges(strings.Replace(td01, description, secret, 1), change, "  - {change: organization-description-seal, phase: expand}\n")
 		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
@@ -271,12 +284,12 @@ func TestBaseSealReports(t *testing.T) {
 
 func TestBaseSealTogether(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T09 The contract of one seal of an entity is refused while the base holds another seal of the entity open, and the contract of both is accepted", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
 		// Organization has two fields in clear in the base, description and motto, and the release of the base
 		// seals both at expand.
 		clear := strings.Replace(td01, description, description+"\n      - { name: motto, type: string, optional: true, max_length: 100 }", 1)
-		sealed := strings.Replace(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+		sealed := strings.Replace(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }", 1),
 			"max_length: 100 }", "max_length: 100, sensitivity: secret }", 1)
 		changes := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n" +
 			"  - {id: organization-motto-seal, kind: seal, entity: Organization, field: motto}\n"
@@ -308,7 +321,7 @@ func TestBaseSealTogether(t *testing.T) {
 		}
 		// A base with description alone open: the head may open the seal of motto and contract description in one
 		// release, since the release of the base has one open seal of the entity.
-		one := []byte(withChanges(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+		one := []byte(withChanges(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }", 1),
 			"  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n", "  - {change: organization-description-seal, phase: expand}\n"))
 		head := withChanges(sealed, changes, "  - {change: organization-description-seal, phase: expand}\n  - {change: organization-motto-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
 		check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: one, Record: runtimeRecord(t, one, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
@@ -325,15 +338,15 @@ func TestBaseSealTogether(t *testing.T) {
 
 func TestBaseSealDrop(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T10 A drop of a field whose seal is open is refused, and another field of the entity goes through the expand and the contract of its drop while the seal stays open", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
-		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		td01 := sealBase(t)
+		const description = "{ name: description, type: string, optional: true, max_length: 500 }"
 		const motto = "\n      - { name: motto, type: string, optional: true, max_length: 100 }"
 		clear := strings.Replace(td01, description, description+motto, 1)
-		sealed := strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1)
+		sealed := strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 500, sensitivity: secret }", 1)
 		seal := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
 		open := "  - {change: organization-description-seal, phase: expand}\n"
 		mottoDrop := "  - {id: organization-motto-drop, kind: drop, entity: Organization, field: motto, definition: \"string, optional, max_length 100, after description\"}\n"
-		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, secret, after name\"}\n"
+		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 500, secret, after name\"}\n"
 		noMotto := strings.Replace(sealed, motto, "", 1)
 		noDescription := strings.Replace(clear, description+"\n      - { name: motto", "{ name: motto", 1)
 		check := func(base []byte, head string) BaseCheck {
@@ -397,7 +410,7 @@ func TestBaseSealDrop(t *testing.T) {
 
 func TestBaseSealEntityDrop(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC49-T11 A drop of an entity with a field whose seal is open is refused with a fault that names the seal", func(t *testing.T) {
-		td01 := string(userManagementBase(t))
+		td01 := sealBase(t)
 		const action = "{ name: action, type: string, max_length: 100 }"
 		sealed := strings.Replace(td01, action, "{ name: action, type: string, max_length: 100, sensitivity: secret }", 1)
 		seal := "  - {id: activity-entry-action-seal, kind: seal, entity: ActivityEntry, field: action}\n"

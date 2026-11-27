@@ -759,7 +759,8 @@ func indexSQL(table tableModel) string {
 
 // searchColumns gives the columns of the entity that a list of a collection over it filters on, in the entity's
 // order: the scope field and the implicit fields of each collection with list, and the fields that its search takes,
-// which are the fields that are not pii or secret, of a text, enum, number or bool type.
+// which are the fields that are not pii or secret, of a text, enum, number or bool type, and not out of the search
+// (Searchable).
 func searchColumns(entity types.Entity, collections []types.Collection) []string {
 	filtered := map[string]bool{}
 	listed := false
@@ -789,10 +790,13 @@ func searchColumns(entity types.Entity, collections []types.Collection) []string
 
 // Searchable tells whether the search of a list takes the field, so that each table of a listed entity has a search
 // index on it: a field that is not pii or secret, of a text, enum, number or bool type. A field written public is
-// such a field, as one with no sensitivity, from postgres-adapter 6.19.0 (decision ST-DECL-Q46 (a)). The check
-// against the base reads it too (ST-GEN-INV33).
+// such a field, as one with no sensitivity, from postgres-adapter 6.19.0 (decision ST-DECL-Q46 (a)). From
+// postgres-adapter 6.33.0 a string field that is out of the search (types.Field.Unsearched: searchable: false, or a
+// max_length over 500 with no searchable setting) is not: a b-tree entry of its value could pass the size that
+// PostgreSQL takes, and the write would fail (ST-SUP-RC01-OC53, decision ST-DECL-Q50). The check against the base
+// reads it too (ST-GEN-INV33).
 func Searchable(f types.Field) bool {
-	return f.Public() && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
+	return f.Public() && !f.Unsearched() && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
 		f.Type == types.FieldTypeInt32 || f.Type == types.FieldTypeInt64 || f.Type == types.FieldTypeFloat ||
 		f.Type == types.FieldTypeDouble || f.Type == types.FieldTypeBool)
 }

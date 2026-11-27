@@ -1553,4 +1553,5 @@ func dropInvalid(ctx context.Context, conn *sql.Conn, index string) error {
 func registerGenerated() {
 	RegisterSQL("001_initial", InitialTables)
 	RegisterSQL("100_tenancy_row_security", stegotenancy.RowSecurity)
+	RegisterStep("step_0001_organization-description-relax_expand", "DROP INDEX public.\"organizations_description_search\";\n")
 }
