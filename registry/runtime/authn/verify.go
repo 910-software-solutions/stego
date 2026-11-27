@@ -52,8 +52,16 @@ var subjectClaims = []string{"sub", "oid"}
 var tokenTypes = []string{"JWT", "at+jwt", "application/at+jwt"}
 
 // idTokenClaims are the claims that mark an ID token, which is not an access token, so Verify refuses a token that
-// holds one (ST-SUP-RP13-LC03).
-var idTokenClaims = []string{"at_hash", "c_hash", "nonce", "events"}
+// holds one, unless the settings opt in to an ID token as the bearer (ST-SUP-RP13-LC03, ST-SUP-Q218).
+var idTokenClaims = []string{"at_hash", "c_hash", "nonce"}
+
+// logoutClaim marks a logout token or another security event token (RFC 8417, OpenID Connect Back-Channel Logout).
+// Verify always refuses a token that holds it, also when the settings opt in to an ID token (ST-SUP-Q218).
+const logoutClaim = "events"
+
+// idTokenKind is the payload typ of a Keycloak ID token. Verify accepts it only when the settings opt in to an ID
+// token as the bearer (ST-SUP-Q218).
+const idTokenKind = "ID"
 
 // accessTokenKind is the one value of the payload claim typ that Verify accepts: Bearer, the kind of a Keycloak
 // access token, in the case that Keycloak sends. Every other value, null and other JSON types included, names a
@@ -144,6 +152,12 @@ type Settings struct {
 	// ProblemCode is the declared service prefix of the problem code, such as SVC; the code of a refusal is
 	// SVC-AUT-001 (ST-SUP-RP13-LC17).
 	ProblemCode string
+	// AcceptIDToken opts the verifier in to an OpenID Connect ID token as the bearer, for a backend-for-frontend
+	// whose web client and API share one client ID at a provider that gives no JWT access token, such as tsidp
+	// (ST-SUP-Q218). An ID token is then accepted only when its aud is exactly the audience, its azp, when present,
+	// is the audience, and its payload typ, when present, is Bearer or ID. A logout token stays refused, and the
+	// handling of an access token does not change. False, the default: every ID token is refused (ST-SUP-RP13-LC03).
+	AcceptIDToken bool
 	// Keys is the key set that holds the verification keys.
 	Keys *KeySet
 }
@@ -161,6 +175,7 @@ type Verifier struct {
 	attributes []string
 	header     string
 	bare       bool
+	idToken    bool
 	problem    string
 	code       string
 	keys       *KeySet
@@ -248,7 +263,7 @@ func newVerifier(s Settings, now func() time.Time) (*Verifier, error) {
 	}
 	return &Verifier{issuer: s.Issuer, audience: s.Audience, algorithms: algorithms, subject: subject, skew: s.Skew,
 		rolePath: rolePath, tenantPath: tenantPath, attributes: slices.Clone(s.AttributeClaims), header: header,
-		bare: s.BareToken, problem: problem, code: s.ProblemCode + "-AUT-001", keys: s.Keys, now: now}, nil
+		bare: s.BareToken, idToken: s.AcceptIDToken, problem: problem, code: s.ProblemCode + "-AUT-001", keys: s.Keys, now: now}, nil
 }
 
 // problemPrefix reports whether the prefix is 1 to 32 upper-case letters and digits (ST-SUP-RC20-OC03).
@@ -326,16 +341,8 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	for _, name := range idTokenClaims {
-		if _, present := claims[name]; present {
-			return Identity{}, errIDToken
-		}
-	}
-	if kind, present := claims["typ"]; present {
-		var name string
-		if len(kind) == 0 || kind[0] != '"' || json.Unmarshal(kind, &name) != nil || name != accessTokenKind {
-			return Identity{}, errIDToken
-		}
+	if err := v.tokenKind(claims); err != nil {
+		return Identity{}, err
 	}
 	issuer, subject, expires, err := v.registered(claims)
 	if err != nil {
@@ -356,6 +363,67 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	return Identity{mark: seal.NewIdentityMark(tenant, hasTenant), issuer: issuer, subject: subject, roles: roles,
 		attributes: p.attributes, username: p.username, email: p.email, givenName: p.givenName,
 		familyName: p.familyName, expires: expires}, nil
+}
+
+// tokenKind refuses a token that is no access token (ST-SUP-RP13-LC03): a logout token, which holds events, always;
+// a token that holds at_hash, c_hash or nonce, or the payload typ ID, which mark an ID token, unless the settings
+// opt in to an ID token; and a payload typ other than Bearer, or ID under the opt-in. Under the opt-in, an ID token
+// must name the audience as its one audience, and its azp, when present, must be the audience: OpenID Connect Core
+// 1.0 section 2 requires an azp for an ID token of more than one audience, and the verifier takes no such token
+// (ST-SUP-Q218). The other checks of Verify apply to an ID token as to an access token.
+func (v *Verifier) tokenKind(claims map[string]json.RawMessage) error {
+	if _, present := claims[logoutClaim]; present {
+		return errIDToken
+	}
+	idToken := false
+	for _, name := range idTokenClaims {
+		if _, present := claims[name]; present {
+			idToken = true
+		}
+	}
+	if kind, present := claims["typ"]; present {
+		var name string
+		if len(kind) == 0 || kind[0] != '"' || json.Unmarshal(kind, &name) != nil {
+			return errIDToken
+		}
+		switch name {
+		case accessTokenKind:
+		case idTokenKind:
+			idToken = true
+		default:
+			return errIDToken
+		}
+	}
+	if !idToken {
+		return nil
+	}
+	if !v.idToken {
+		return errIDToken
+	}
+	if !v.soleAudience(claims["aud"]) {
+		return errAudience
+	}
+	if party, present := claims["azp"]; present {
+		var name string
+		if len(party) == 0 || party[0] != '"' || json.Unmarshal(party, &name) != nil || name != v.audience {
+			return errAudience
+		}
+	}
+	return nil
+}
+
+// soleAudience reports whether the aud claim names the audience of the verifier and no other: a string equal to it,
+// or an array of exactly one member equal to it (ST-SUP-Q218).
+func (v *Verifier) soleAudience(raw json.RawMessage) bool {
+	if len(raw) > 0 && raw[0] == '[' {
+		var many []json.RawMessage
+		if json.Unmarshal(raw, &many) != nil || len(many) != 1 {
+			return false
+		}
+		raw = many[0]
+	}
+	var one string
+	return len(raw) > 0 && raw[0] == '"' && json.Unmarshal(raw, &one) == nil && one == v.audience
 }
 
 // tokenText reports whether the raw token holds only the base64url alphabet and dots (ST-SUP-RP13-LC06).
