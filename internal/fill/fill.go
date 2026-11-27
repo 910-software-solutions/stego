@@ -108,25 +108,35 @@ func DecodeImplements(data []byte, path string) (string, error) {
 	return f.Implements, nil
 }
 
-// writeSection sets one top-level key of the fill manifest at path to value,
-// or removes the key when value is nil, and keeps each other key and its
+// writeSection sets one top-level key of the manifest fills/<name>/fill.yaml to
+// value, or removes the key when value is nil, and keeps each other key and its
 // comments as they are. It writes a new file and renames it over the old one,
 // so a reader sees the old manifest or the new one, never a part of either.
 //
-// The path is fills/<name>/fill.yaml. It reads, writes and renames the
-// manifest through an os.Root of the fills folder, as ReadManifest reads it, so
-// that a link that takes the path out of that folder is refused also when a
-// process puts it there after ReadManifest (security review of PR #518, item
-// b, CWE-367).
-func writeSection(path, key string, value any) error {
-	fills, name := filepath.Dir(filepath.Dir(path)), filepath.Base(filepath.Dir(path))
-	manifest := name + "/" + filepath.Base(path)
+// It refuses a name outside the fill-name form before it opens a file, as
+// ReadManifest does (security review of PR #9, INFO-1). It opens the fill
+// folder once as an os.Root inside an os.Root of the fills folder, and reads,
+// writes, renames and removes through that one root, so a link that takes the
+// path out of the fills folder is refused also when a process puts it there
+// after ReadManifest (security review of PR #518, item b, CWE-367), and a swap
+// of the folder during the write cannot send the remove of the temporary file
+// to another folder (security review of PR #9, INFO-2).
+func writeSection(fills, name, key string, value any) (err error) {
+	if err := checkFillName(name); err != nil {
+		return err
+	}
+	path := filepath.Join(fills, name, ManifestFile)
 	root, err := os.OpenRoot(fills)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	file, err := root.Open(manifest)
+	dir, err := root.OpenRoot(name)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	defer dir.Close()
+	file, err := dir.Open(ManifestFile)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -167,28 +177,37 @@ func writeSection(path, key string, value any) error {
 	if _, err := rand.Read(random[:]); err != nil {
 		return err
 	}
-	temp := name + "/.fill-" + hex.EncodeToString(random[:]) + ".yaml"
-	written, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	temp := ".fill-" + hex.EncodeToString(random[:]) + ".yaml"
+	written, err := dir.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
-	defer root.Remove(temp)
+	renamed := false
+	defer func() {
+		if !renamed {
+			written.Close()
+			if removed := dir.Remove(temp); removed != nil && err == nil {
+				err = removed
+			}
+		}
+	}()
 	if _, err := written.Write(out); err != nil {
-		written.Close()
 		return err
 	}
 	if err := written.Chmod(info.Mode().Perm()); err != nil {
-		written.Close()
 		return err
 	}
 	if err := written.Sync(); err != nil {
-		written.Close()
 		return err
 	}
 	if err := written.Close(); err != nil {
 		return err
 	}
-	return root.Rename(temp, manifest)
+	if err := dir.Rename(temp, ManifestFile); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 // removeKey removes a key and its value from a mapping node.

@@ -62,7 +62,6 @@ func runFillSign(args []string) error {
 		return err
 	}
 	dir := filepath.Join(input.ProjectDir, "fills", name)
-	manifest := filepath.Join(dir, fill.ManifestFile)
 	f, err := fill.ReadManifest(check, name)
 	if err != nil {
 		return err
@@ -139,7 +138,7 @@ func runFillSign(args []string) error {
 		signature.Signer = fingerprint
 	}
 	signOff := fill.FillSignOff{EvidenceDigest: digest, Signature: signature, SignedAt: time.Now().UTC().Truncate(time.Second)}
-	if err := fill.WriteSignOff(manifest, signOff); err != nil {
+	if err := fill.WriteSignOff(filepath.Join(input.ProjectDir, "fills"), name, signOff); err != nil {
 		return err
 	}
 	event := fill.FillSignedOff{FillName: name, Signer: signature.Signer, EvidenceDigest: digest}

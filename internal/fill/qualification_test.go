@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -197,14 +198,23 @@ func TestReadManifestStaysInFills(t *testing.T) {
 		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"policy.go": strings.Repeat("c", 64)}}
 		signOff := FillSignOff{EvidenceDigest: strings.Repeat("d", 64), Signature: Signature{KeyType: KeySSH, Signer: "listed@example.com", Armored: "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"}, SignedAt: time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)}
 		for _, name := range []string{"linked", "real"} {
-			manifest := filepath.Join(check.ProjectDir, "fills", name, ManifestFile)
 			for what, write := range map[string]func() error{
-				"evidence": func() error { return WriteEvidence(manifest, evidence) },
-				"sign-off": func() error { return WriteSignOff(manifest, signOff) },
+				"evidence": func() error { return WriteEvidence(filepath.Join(check.ProjectDir, "fills"), name, evidence) },
+				"sign-off": func() error { return WriteSignOff(filepath.Join(check.ProjectDir, "fills"), name, signOff) },
 			} {
 				if err := write(); err == nil || strings.Contains(err.Error(), "secret-collection") || !strings.Contains(err.Error(), "escapes") {
 					t.Errorf("the %s of %q through the link gave %v, want a refused link and no quote of the manifest outside", what, name, err)
 				}
+			}
+		}
+		// Security review of PR #9, INFO-1: the writers check the fill name themselves, so a name with .. writes nothing
+		// outside the fills folder, also when a caller did not check it.
+		for _, name := range []string{"../outside", "../../outside", "..", ""} {
+			if err := WriteEvidence(filepath.Join(check.ProjectDir, "fills"), name, evidence); err == nil || !strings.Contains(err.Error(), "fill-name form") {
+				t.Errorf("the evidence of the name %q gave %v, want the fill-name form", name, err)
+			}
+			if err := WriteSignOff(filepath.Join(check.ProjectDir, "fills"), name, signOff); err == nil || !strings.Contains(err.Error(), "fill-name form") {
+				t.Errorf("the sign-off of the name %q gave %v, want the fill-name form", name, err)
 			}
 		}
 		if info, err := os.Lstat(filepath.Join(check.ProjectDir, "fills", "real", ManifestFile)); err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -258,6 +268,69 @@ func TestReadTestReport(t *testing.T) {
 			if (err == nil) != c.pass {
 				t.Errorf("%s: got %v, want pass %v", name, err, c.pass)
 			}
+		}
+	})
+}
+
+func TestFillWriteRace(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T07 A write of the evidence while another process swaps the fill folder and its manifest for links writes nothing outside the fills folder and leaves no temporary file", func(t *testing.T) {
+		// Security review of PR #9 (its test zz_sec9_test.go): fills/x is swapped, during the writes, between the real
+		// folder, an absolute and a relative link to a folder outside, and a folder whose fill.yaml is a link out.
+		const manifest = "kind: fill\nname: x\nimplements: a.b\ncollection: c\n"
+		base := t.TempDir()
+		fills, outside := filepath.Join(base, "project", "fills"), filepath.Join(base, "outside")
+		real, linked, linkedFile := filepath.Join(fills, "x-real"), filepath.Join(fills, "x-link"), filepath.Join(fills, "x-flink")
+		for _, dir := range []string{real, linkedFile, outside} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, file := range []string{filepath.Join(real, ManifestFile), filepath.Join(outside, ManifestFile)} {
+			if err := os.WriteFile(file, []byte(manifest), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Symlink(outside, linked); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(outside, ManifestFile), filepath.Join(linkedFile, ManifestFile)); err != nil {
+			t.Fatal(err)
+		}
+		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"p.go": strings.Repeat("c", 64)}}
+		var stop atomic.Bool
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			targets := []string{real, linked, linkedFile}
+			for i := 0; !stop.Load(); i++ {
+				swap := filepath.Join(fills, "x-swap")
+				_ = os.Remove(swap)
+				target := filepath.Base(targets[i%3]) // a link relative to fills
+				if i%2 == 0 {
+					target = targets[i%3] // an absolute link
+				}
+				_ = os.Symlink(target, swap)
+				_ = os.Rename(swap, filepath.Join(fills, "x"))
+			}
+		}()
+		passed := 0
+		for i := 0; i < 500; i++ {
+			if WriteEvidence(fills, "x", evidence) == nil {
+				passed++
+			}
+		}
+		stop.Store(true)
+		<-done
+		t.Logf("%d of 500 writes passed", passed)
+		entries, err := os.ReadDir(outside)
+		if err != nil || len(entries) != 1 {
+			t.Errorf("the folder outside holds %v (%v), want only its fill.yaml", entries, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(outside, ManifestFile)); err != nil || string(data) != manifest {
+			t.Errorf("the manifest outside changed: %q %v", data, err)
+		}
+		if left, _ := filepath.Glob(filepath.Join(fills, "*", ".fill-*")); len(left) != 0 {
+			t.Errorf("the writes left %d temporary files in the fill folders: %v", len(left), left)
 		}
 	})
 }

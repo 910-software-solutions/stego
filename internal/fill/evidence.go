@@ -56,7 +56,6 @@ func recordOne(check compiler.FillCheck, name string, run TestRun, build buildid
 	result := EvidenceResult{Fill: name}
 	f, err := ReadManifest(check, name)
 	dir := filepath.Join(check.ProjectDir, "fills", name)
-	manifest := filepath.Join(dir, ManifestFile)
 	if err != nil {
 		result.Reason = err.Error()
 		return result
@@ -100,7 +99,7 @@ func recordOne(check compiler.FillCheck, name string, run TestRun, build buildid
 		Compiler:       build,
 		Files:          before.Files,
 	}
-	if err := WriteEvidence(manifest, evidence); err != nil {
+	if err := WriteEvidence(filepath.Join(check.ProjectDir, "fills"), name, evidence); err != nil {
 		result.Reason = fmt.Sprintf("writing its evidence: %v", err)
 		return result
 	}
