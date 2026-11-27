@@ -353,6 +353,211 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 	})
 }
 
+func TestUnlistedModuleFoldersAreHashed(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T19 A changed folder of a checked module that the fill did not list fails the fill of localtest", func(t *testing.T) {
+		// A stand-in cache: the go command extracts example.com/lib v1.0.0 from a file proxy into a module cache of the
+		// test, as an earlier fill or a go command of a test did. The fill of this run does not list it.
+		proxy, cache := t.TempDir(), t.TempDir()
+		plantedModule(t, proxy)
+		t.Cleanup(func() { _ = exec.Command("chmod", "-R", "u+w", cache).Run() })
+		download := exec.Command(goTool(), "mod", "download", "-json", "example.com/lib@v1.0.0")
+		download.Dir = generatedModule(t)
+		download.Env = append(os.Environ(), "GOMODCACHE="+cache, "GOPROXY=file://"+filepath.ToSlash(filepath.Join(proxy, "cache", "download")),
+			"GOSUMDB=off", "GONOSUMDB=", "GOPRIVATE=", "GOFLAGS=-mod=mod", "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local")
+		out, err := download.Output()
+		if err != nil {
+			t.Fatalf("go mod download: %v\n%s", err, out)
+		}
+		var module fillDir
+		if err := json.Unmarshal(out, &module); err != nil || module.Dir == "" || module.Sum == "" {
+			t.Fatalf("go mod download gave no folder and hash: %v\n%s", err, out)
+		}
+		// A temporary folder of the go command, whose name is not a valid version, is not a module folder.
+		if err := os.MkdirAll(filepath.Join(cache, "example.com", "lib@v1.0.0.tmp-1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		checked := map[string]bool{"example.com/lib v1.0.0 " + module.Sum: true, "example.com/lib v1.0.0/go.mod h1:none": true}
+		found, err := cacheDirs(cache, nil, checked)
+		if err != nil || len(found) != 1 || found[0] != module {
+			t.Fatalf("the unlisted folder with a checked hash gives %+v, %v; want only %+v", found, err, module)
+		}
+		if found, err := cacheDirs(cache, []fillDir{module}, checked); err != nil || len(found) != 0 {
+			t.Fatalf("a folder that the fill lists is given again: %+v, %v", found, err)
+		}
+		if found, err := cacheDirs(cache, nil, map[string]bool{}); err != nil || len(found) != 0 {
+			t.Fatalf("a folder with no checked hash is given: %+v, %v", found, err)
+		}
+		if err := verifyCache(cache, nil, checked); err != nil || verifiedDirs != 1 {
+			t.Fatalf("the unchanged unlisted folder fails or is not checked (%d): %v", verifiedDirs, err)
+		}
+		// Another tool puts a file into the folder that this fill did not list.
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(module.Dir, "zz_planted.go"), []byte("package lib\n\nfunc init() { println(\"ALTERED\") }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err = verifyCache(cache, nil, checked)
+		if err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("the changed unlisted folder is not refused: %v", err)
+		}
+	})
+}
+
+// downloadedLib extracts example.com/lib v1.0.0 from a file proxy into a new module cache of the test, as an earlier
+// fill or a go command of a test did, and gives the cache, the module and its checked go.sum line.
+func downloadedLib(t *testing.T) (string, fillDir, map[string]bool) {
+	t.Helper()
+	proxy, cache := t.TempDir(), t.TempDir()
+	plantedModule(t, proxy)
+	t.Cleanup(func() { _ = exec.Command("chmod", "-R", "u+w", cache).Run() })
+	download := exec.Command(goTool(), "mod", "download", "-json", "example.com/lib@v1.0.0")
+	download.Dir = generatedModule(t)
+	download.Env = append(os.Environ(), "GOMODCACHE="+cache, "GOPROXY=file://"+filepath.ToSlash(filepath.Join(proxy, "cache", "download")),
+		"GOSUMDB=off", "GONOSUMDB=", "GOPRIVATE=", "GOFLAGS=-mod=mod", "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local")
+	out, err := download.Output()
+	if err != nil {
+		t.Fatalf("go mod download: %v\n%s", err, out)
+	}
+	var module fillDir
+	if err := json.Unmarshal(out, &module); err != nil || module.Dir == "" || module.Sum == "" {
+		t.Fatalf("go mod download gave no folder and hash: %v\n%s", err, out)
+	}
+	if err := exec.Command("chmod", "-R", "u+w", cache).Run(); err != nil {
+		t.Fatal(err)
+	}
+	return cache, module, map[string]bool{"example.com/lib v1.0.0 " + module.Sum: true}
+}
+
+// changedCopy copies the folder of the module to a new folder outside the cache, named as the module folder, with
+// lib.go changed, and gives the folder that holds the copy.
+func changedCopy(t *testing.T, module fillDir) string {
+	t.Helper()
+	elsewhere := t.TempDir()
+	copied := filepath.Join(elsewhere, filepath.Base(module.Dir))
+	if out, err := exec.Command("cp", "-r", module.Dir, copied).CombinedOutput(); err != nil {
+		t.Fatalf("cp: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(copied, "lib.go"), []byte("package lib\n\nfunc Planted() string { return \"ALTERED\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return elsewhere
+}
+
+func TestModuleCacheLinks(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T25 A symbolic link or a folder name that does not unescape in the module cache fails the fill of localtest", func(t *testing.T) {
+		// Security review of PR #14, L1: the walk of cacheDirs did not follow a link, so a module folder or a folder of
+		// a path that is a link to a changed copy was never hashed, and the go command built from it.
+		for _, form := range []string{"module folder", "path folder"} {
+			cache, module, checked := downloadedLib(t)
+			elsewhere := changedCopy(t, module)
+			link, target := module.Dir, filepath.Join(elsewhere, filepath.Base(module.Dir))
+			if form == "path folder" {
+				link, target = filepath.Join(cache, "example.com"), elsewhere
+			}
+			if err := os.RemoveAll(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			for _, dirs := range [][]fillDir{nil, {module}} {
+				err := verifyCache(cache, dirs, checked)
+				if err == nil || !strings.Contains(err.Error(), "holds the symbolic link") {
+					t.Errorf("%s, %d listed folders: a link in the module cache is not refused: %v", form, len(dirs), err)
+				}
+			}
+		}
+		// The start of a module path, such as gonum.org/v1, is no module path, and an escaped upper case is fine.
+		cache, module, checked := downloadedLib(t)
+		for _, name := range []string{filepath.Join("gonum.org", "v1"), filepath.Join("github.com", "!burnt!sushi")} {
+			if err := os.MkdirAll(filepath.Join(cache, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := verifyCache(cache, []fillDir{module}, checked); err != nil {
+			t.Errorf("the folders of the start of a module path fail the fill: %v", err)
+		}
+		// A link in cache/download is the go command's own business; the walk does not go there.
+		cache, module, checked = downloadedLib(t)
+		if err := os.Symlink(t.TempDir(), filepath.Join(cache, "cache", "download", "planted")); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyCache(cache, []fillDir{module}, checked); err != nil {
+			t.Errorf("a link under cache/download fails the fill: %v", err)
+		}
+		// A folder name that is not an escaped path, or path and version: a file system that ignores case opens
+		// Example.com for example.com.
+		for _, name := range []string{"Example.com", filepath.Join("example.com", "Lib@v1.0.0"), filepath.Join("example.com", "lib@V1.0.0"), filepath.Join("example.com", "!1")} {
+			cache, module, checked := downloadedLib(t)
+			if err := os.MkdirAll(filepath.Join(cache, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			err := verifyCache(cache, []fillDir{module}, checked)
+			if err == nil || !strings.Contains(err.Error(), "which is not an escaped module path") {
+				t.Errorf("the folder %s in the module cache is not refused: %v", name, err)
+			}
+		}
+	})
+	t.Run("ST-STD-LOCAL-R03-T26 A module folder that holds a symbolic link fails the fill of localtest, also after its stamp was kept", func(t *testing.T) {
+		// Security review of PR #14, L2: lib.go as a link to a same copy passed the hash, and the stamp then kept the
+		// size and time of the link, so an edit of the target was not hashed again.
+		for _, dirs := range []bool{false, true} {
+			cache, module, checked := downloadedLib(t)
+			var listed []fillDir
+			if dirs {
+				listed = []fillDir{module}
+			}
+			if err := verifyCache(cache, listed, checked); err != nil || hashedDirs != 1 {
+				t.Fatalf("the unchanged folder fails or is not hashed (%d): %v", hashedDirs, err)
+			}
+			target := filepath.Join(t.TempDir(), "lib.go")
+			data, err := os.ReadFile(filepath.Join(module.Dir, "lib.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(target, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(module.Dir, "lib.go")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(module.Dir, "lib.go")); err != nil {
+				t.Fatal(err)
+			}
+			err = verifyCache(cache, listed, checked)
+			if err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: ") || !strings.Contains(err.Error(), "which is not a regular file or a folder") {
+				t.Errorf("listed %v: a module folder with a link to the same content is not refused: %v", dirs, err)
+			}
+		}
+	})
+}
+
+func TestFillChecksTheWholeCache(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T27 The check at the end of a fill refuses a changed folder of a checked module that the fill did not list", func(t *testing.T) {
+		// Security review of PR #14, I1: T19 calls verifyCache, and no test failed when the fill called verifyDirs over
+		// its own folders alone.
+		cache, module, checked := downloadedLib(t)
+		var lines []string
+		for line := range checked {
+			lines = append(lines, line)
+		}
+		root, err := filepath.Abs(filepath.Join("..", ".."))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyFilled(cache, root, nil, lines); err != nil {
+			t.Fatalf("the unchanged cache fails the check of the fill: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(module.Dir, "zz_planted.go"), []byte("package lib\n\nfunc init() { println(\"ALTERED\") }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyFilled(cache, root, nil, lines); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("the check of the fill passes a changed folder that the fill did not list: %v", err)
+		}
+	})
+}
+
 func TestFirstFill(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R05-T10 The first fill of the module cache of localtest names the folder, its size and STEGO_TEST_RUNS, and is refused with less than two times its size free", func(t *testing.T) {
 		// Owner disk note, 2026-11-27: the cache of about 3 GB went to the user cache folder with no word.

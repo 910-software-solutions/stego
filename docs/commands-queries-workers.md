@@ -496,6 +496,13 @@ again. (A provision of an ID that is active answers 409 with the code
 tenant ID. A retire changes only the service that gets it: retire the tenant
 in each service of the chain.
 
+With more than one API replica, a Provision or a Retire reaches the other
+replicas within 5 seconds (`tenant.MaxGateAge`): in that time another replica
+can still refuse the new tenant with 403 `tenant.not_provisioned`, or admit
+a request of the retired tenant, which then runs to its end. Thus a retire
+is done 5 seconds plus the longest request time after it answered. See
+[Provision or retire a tenant on more than one replica](operations.md#provision-or-retire-a-tenant-on-more-than-one-replica).
+
 The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later
@@ -1759,6 +1766,28 @@ when the revocation of the create completed, because the wait ends then. This
 is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
+
+### Release notes for runtime v0.208.0
+
+- A refusal before the router gives its fixed problem code to the access
+  line of the request (`otel.SetErrorCode`): the 401 of the authentication
+  its code, such as `SVC-AUT-001`, and the tenant check
+  `tenant.not_provisioned` for 403, `unavailable` for 503 and `internal` for
+  500 (erp-demo production run, ST-SUP-Q210). The code is the fixed code of
+  the problem, never a token, a claim or the tenant. From otel-tracing
+  1.26.0, the local access line of each request with a status of 400 or
+  more holds it as `stego.error_code`; the line of an answer before the
+  router still has no `http.route`.
+- The telemetry runtime that otel-tracing generates imports no package of
+  the runtime library: it gives each request a place under the key
+  `otel.SharedErrorCodeKey`, an unnamed struct type, which
+  `otel.SetErrorCode` fills and `otel.ErrorCode` reads too.
+- `otel.SetErrorCode` also takes upper-case letters, for the fixed codes of
+  the problem documents such as `SVC-AUT-001`. A code with any other
+  character, such as a space, is still ignored.
+- rest-crud 3.277.0, rpc-service 1.277.0 and browser-service 1.277.0 pin
+  this runtime. It holds each change of v0.206.0 too.
+- apidiff against v0.206.0: compatible (added `otel.SharedErrorCodeKey`).
 
 ### Release notes for runtime v0.203.0
 

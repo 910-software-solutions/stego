@@ -10,7 +10,11 @@ name: otel-tracing
 # runtime samples each trace ID there (security review of PR #495, I2; ST-SUP-RC17-OC15). Its runtime gives its
 # instance identity (Instance), which the runtime of the service takes, so each line of one process names one
 # instance (core49 follow-up; ST-SUP-RP03-LC16).
-version: 1.25.0
+# Version 1.26.0: the local access line of a request answered with a status of 400 or more, or a panic, holds the
+# fixed error code that the runtime gave the request (stego.error_code, through registry/runtime/otel), also for an
+# answer before the router, such as a 401 of the authentication or a 403 tenant.not_provisioned (erp-demo production
+# run, ST-SUP-RC17-OC20).
+version: 1.26.0
 stage: ga
 output_namespace: tracing
 
