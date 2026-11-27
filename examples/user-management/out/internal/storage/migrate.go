@@ -81,9 +81,13 @@ type Migration struct {
 // clear column From is there, is the seal checkpoint of the change, the rows
 // of the listed tenants with Old set and New empty, and the running releases
 // (ST-SUP-RC01-OC50).
+//
+// Index, for the contract step of a relax with the item searchable, is the
+// search index that the step drops, with Drop: the check is the running
+// releases alone while the index is there (ST-SUP-RC01-OC53).
 type ContractStep struct {
 	Change, Schema, Table, Check, Definition, Trigger, Expand string
-	From, Old, New, TenantColumn, TenantSchema                string
+	From, Old, New, TenantColumn, TenantSchema, Index         string
 	Statements                                                []ContractStatement
 	Drop, Seal                                                bool
 }
@@ -1264,11 +1268,15 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 	}
 	if c.Drop {
 		// A drop has no sync trigger and no backfill: while its old column or table is there, the check refuses
-		// while a release that still reads it runs, and when it is gone a run before dropped it.
+		// while a release that still reads it runs, and when it is gone a run before dropped it. The contract of a
+		// relax with the item searchable checks its search index in the same way.
 		var there bool
 		query := "SELECT pg_catalog.to_regclass($1) IS NOT NULL"
 		args := []any{table}
-		if c.From != "" {
+		switch {
+		case c.Index != "":
+			args = []any{quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Index)}
+		case c.From != "":
 			query = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)"
 			args = append(args, c.From)
 		}
@@ -1485,7 +1493,10 @@ func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	if len(running) > 0 {
 		// The contract of a drop of an entity drops a table, and every other contract step an old column.
 		old := "the old column"
-		if c.Drop && c.From == "" {
+		switch {
+		case c.Drop && c.Index != "":
+			old = "the search index " + c.Index
+		case c.Drop && c.From == "":
 			old = "the old table"
 		}
 		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need %s; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand, old), wait: releaseWait}
@@ -1553,5 +1564,5 @@ func dropInvalid(ctx context.Context, conn *sql.Conn, index string) error {
 func registerGenerated() {
 	RegisterSQL("001_initial", InitialTables)
 	RegisterSQL("100_tenancy_row_security", stegotenancy.RowSecurity)
-	RegisterStep("step_0001_organization-description-relax_expand", "DROP INDEX public.\"organizations_description_search\";\n")
+	RegisterStep("step_0001_organization-description-relax_expand", "CREATE TABLE IF NOT EXISTS stego_schema.releases (\n\tholder text PRIMARY KEY,\n\trelease text NOT NULL,\n\tversion text NOT NULL,\n\tevery_ms integer NOT NULL,\n\tseen_at timestamptz NOT NULL\n);\nCREATE INDEX IF NOT EXISTS releases_seen_at ON stego_schema.releases (seen_at);\nREVOKE ALL ON TABLE stego_schema.releases FROM PUBLIC;\nCREATE OR REPLACE FUNCTION stego_schema.release_beat(text, text, text, integer)\n RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'\n AS $stego_release$BEGIN\n  IF $1 IS NULL OR $2 IS NULL OR $3 IS NULL OR $4 IS NULL OR $1 !~ '^[0-9a-f]{32}$' OR $2 !~ '^[0-9a-z_-]{1,200}$'\n   OR $3 !~ '^[ -~]{0,64}$' OR $4 < 1000 OR $4 > 60000 THEN\n    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'stego release report: an argument is out of range';\n  END IF;\n  INSERT INTO stego_schema.releases AS r (holder, release, version, every_ms, seen_at)\n   VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp())\n   ON CONFLICT (holder) DO UPDATE SET release = EXCLUDED.release, version = EXCLUDED.version, every_ms = EXCLUDED.every_ms,\n   seen_at = EXCLUDED.seen_at;\nEND$stego_release$;\nCREATE OR REPLACE FUNCTION stego_schema.release_stop(text)\n RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'\n AS $stego_release$DELETE FROM stego_schema.releases r WHERE r.holder = $1$stego_release$;\nREVOKE ALL ON FUNCTION stego_schema.release_beat(text, text, text, integer) FROM PUBLIC;\nREVOKE ALL ON FUNCTION stego_schema.release_stop(text) FROM PUBLIC;\nGRANT USAGE ON SCHEMA stego_schema TO \"user_management_runtime\";\nGRANT EXECUTE ON FUNCTION stego_schema.release_beat(text, text, text, integer) TO \"user_management_runtime\";\nGRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO \"user_management_runtime\";\n")
 }
