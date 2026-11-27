@@ -1295,12 +1295,8 @@ require example.com/erp/workflow v0.0.0
 replace example.com/erp/workflow => ./workflow
 ```
 
-List the module in the declaration:
-
-```yaml
-fill_modules:
-  - {module: example.com/erp/workflow, reason: the fills share the workflow rules}
-```
+List the module in the declaration, under `fill_modules` as above, such as
+`{module: example.com/erp/workflow, reason: the fills share the workflow rules}`.
 
 Then run `stego apply`, `stego deps`, `stego test` and `stego fill sign` for
 each fill, and `stego apply` again. The rules:

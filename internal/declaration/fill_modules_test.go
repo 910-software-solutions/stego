@@ -8,7 +8,7 @@ import (
 )
 
 func TestFillModulePath(t *testing.T) {
-	t.Run("ST-EXT-UC01-R03-T15 Validate faults a fill_modules entry whose module path has no dot in its first element, at the entry", func(t *testing.T) {
+	t.Run("ST-DECL-INV108-T Validate faults a fill_modules entry whose module path has no dot in its first element, at the entry", func(t *testing.T) {
 		// spike-localfill (2026-11-27): module workflow was refused only as "may not import workflow", with no fault
 		// at the entry and no word of the dot.
 		decl := &types.ServiceDeclaration{FillModules: []types.FillModule{
