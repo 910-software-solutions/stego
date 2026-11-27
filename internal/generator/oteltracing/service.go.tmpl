@@ -71,6 +71,8 @@ type localRecord struct {
  HTTPRoute string `json:"http.route,omitempty"`
  HTTPStatus int `json:"http.response.status_code,omitempty"`
  ErrorType string `json:"error.type,omitempty"`
+ // ErrorCode is the fixed error code of a refused or failed request, never a value.
+ ErrorCode string `json:"stego.error_code,omitempty"`
  RPCMethod string `json:"rpc.method,omitempty"`
  RPCStatus string `json:"rpc.response.status_code,omitempty"`
  Time time.Time `json:"timestamp"`
@@ -135,7 +137,7 @@ func(record localRecord)appendLine(b []byte)[]byte{
  str:=func(name,value string){if value!=""{key(name);b=text(b,value)}}
  str("http.request.method",record.HTTPMethod);str("http.route",record.HTTPRoute)
  if record.HTTPStatus!=0{key("http.response.status_code");b=strconv.AppendInt(b,int64(record.HTTPStatus),10)}
- str("error.type",record.ErrorType);str("rpc.method",record.RPCMethod);str("rpc.response.status_code",record.RPCStatus)
+ str("error.type",record.ErrorType);str("stego.error_code",record.ErrorCode);str("rpc.method",record.RPCMethod);str("rpc.response.status_code",record.RPCStatus)
  str("stego.startup.stage",record.Stage);str("stego.db.call",record.DatabaseCall);str("stego.operation",record.Operation);str("stego.outcome",record.Outcome)
  if record.Retry{key("stego.retry");b=append(b,"true"...)}
  if record.Dropped!=0{key("stego.dropped");b=strconv.AppendUint(b,record.Dropped,10)}

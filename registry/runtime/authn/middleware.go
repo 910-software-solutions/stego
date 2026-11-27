@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 type contextKey struct{}
@@ -166,6 +168,10 @@ func (v *Verifier) deny(w http.ResponseWriter, r *http.Request, challenge string
 	if v != nil && v.code != "" {
 		body.Type, body.Code = v.problem, v.code
 	}
+	// The fixed code of the problem goes to the access line of the request: the 401 comes before the router, so the
+	// line has no route, and the code tells an operator why. It is the code of the settings, never a token, a claim or
+	// a key (erp-demo production run, ST-SUP-Q210).
+	otel.SetErrorCode(r.Context(), body.Code)
 	data, err := json.Marshal(body)
 	if err != nil {
 		data = []byte(`{"type":"about:blank","title":"Unauthorized","status":401}`)
