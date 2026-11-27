@@ -1021,10 +1021,11 @@ func holdReleaseAfterRenew(t *testing.T, during bool) {
 		// does not go to the database, and the test is the case of a renew after the end of ctx.
 		waitLocked(t, d, renewStatement)
 		cancel()
-		// The renew answers with the end of ctx; only then does the lock go. The client does not cancel the
-		// statement on the server, so the UPDATE of the renew can commit when the lock goes and give the row the
-		// next token, which the holder does not know (ST-SUP-RP09-LC06-T06). The release must also make that
-		// lease expire.
+		// The lock goes when the gate has sent the renew. The client does not cancel the statement on the server,
+		// so the UPDATE of the renew commits when the lock goes and gives the row the next token. The renew then
+		// answers with the end of ctx, and the holder does not know the next token (ST-SUP-RP09-LC06-T06); or,
+		// when the reply of the server comes before the client sees the end of ctx, the renew gives the holder
+		// the next token. The release must make the lease expire in each case.
 		<-gate.returned
 		if err := lock.Rollback(); err != nil {
 			t.Fatal(err)
@@ -1038,8 +1039,8 @@ func holdReleaseAfterRenew(t *testing.T, during bool) {
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrLost) {
 		t.Fatalf("Hold returned %v, want the end of ctx and not a lost lease, as when ctx ends first", err)
 	}
-	if h.Token() != token {
-		t.Fatalf("the holder has token %d, want %d: the renew gave no answer", h.Token(), token)
+	if h.Token() != token && !(during && h.Token() == token+1) {
+		t.Fatalf("the holder has token %d, want %d (or %d in the case during)", h.Token(), token, token+1)
 	}
 	// leaseRow gives the epoch for -infinity. In the case during, the renew can have committed on the server after
 	// its client stopped, so the row can hold the next token; the lease must be released with either token.
