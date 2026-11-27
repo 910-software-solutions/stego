@@ -33,7 +33,17 @@ import (
 
 // TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
 // removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
-func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
+//
+// The child process of ST-SUP-RC20-OC33-T02 (legacyMuxMarker) does not fill the cache: it runs only that test, which
+// runs no go command. The fill takes about ten seconds, which is the time limit of the child, so with the fill the
+// child was killed (signal: killed) before it could exit. A go command of the child still gets the cache through
+// localtest.GoEnv, which fills it on its first call.
+func TestMain(m *testing.M) {
+	if os.Getenv(legacyMuxMarker) == "1" {
+		os.Exit(localtest.Main(m))
+	}
+	os.Exit(localtest.MainModules(m))
+}
 
 //go:embed testdata/crud_test.go
 var crudChecks []byte
