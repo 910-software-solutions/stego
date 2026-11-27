@@ -1721,6 +1721,24 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.207.0
+
+- A refusal before the router gives its fixed problem code to the access
+  line of the request (`otel.SetErrorCode`): the 401 of the authentication
+  its code, such as `SVC-AUT-001`, and the tenant check
+  `tenant.not_provisioned` for 403, `unavailable` for 503 and `internal` for
+  500 (erp-demo production run, ST-SUP-Q210). The code is the fixed code of
+  the problem, never a token, a claim or the tenant. From otel-tracing
+  1.26.0, the local access line of each request with a status of 400 or
+  more holds it as `stego.error_code`; the line of an answer before the
+  router still has no `http.route`.
+- `otel.SetErrorCode` also takes upper-case letters, for the fixed codes of
+  the problem documents such as `SVC-AUT-001`. A code with any other
+  character, such as a space, is still ignored.
+- rest-crud 3.276.0, rpc-service 1.276.0 and browser-service 1.276.0 pin
+  this runtime. It holds each change of v0.206.0 too.
+- apidiff against v0.206.0: compatible (no change of the exported API).
+
 ### Release notes for runtime v0.203.0
 
 - `STEGO_SPICEDB_CA_FILE` names a PEM file of certificate authorities that

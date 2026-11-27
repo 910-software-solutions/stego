@@ -1,6 +1,8 @@
 package oteltracing_test
 
 import (
+	"golang.org/x/mod/modfile"
+
 	"bytes"
 	_ "embed"
 	"fmt"
@@ -103,6 +105,12 @@ func TestGeneratedCommandRoute(t *testing.T) {
 	testGeneratedTracing(t, "^TestLocalCommandRoute")
 }
 
+// TestGeneratedRefusalCode runs ST-SUP-RC17-OC20-T06 of the generated tracing, with the runtime library of this
+// commit: the access line of a refusal before the router holds its fixed problem code.
+func TestGeneratedRefusalCode(t *testing.T) {
+	testGeneratedTracing(t, "^TestLocalAccessLineEdges$/^ST-SUP-RC17-OC20-T06")
+}
+
 func TestGeneratedOutboxTelemetry(t *testing.T) {
 	testGeneratedTracing(t, "^TestOutboxMetrics")
 }
@@ -127,8 +135,23 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	form = bytes.Replace(form, []byte("\npackage logline\n"), []byte("\npackage tracing\n"), 1)
 	form = bytes.Replace(form, []byte("\nfunc Check(line []byte) error {"), []byte("\nfunc CheckLine(line []byte) error {"), 1)
 	files = append(files, gen.File{Path: "tracing/logline_test.go", Content: form})
+	runtimeDir, err := filepath.Abs(filepath.Join("..", "..", "..", "registry", "runtime"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeMod, err := os.ReadFile(filepath.Join(runtimeDir, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeGo := modfile.ModulePath(runtimeMod)
+	if file, err := modfile.ParseLax("go.mod", runtimeMod, nil); err != nil || file.Go == nil {
+		t.Fatalf("the go.mod of the runtime library has no go version: %v", err)
+	} else {
+		runtimeGo = file.Go.Version
+	}
 	var module strings.Builder
-	module.WriteString("module example.com/records\ngo 1.26.0\nrequire (\n")
+	// The go version of the runtime library, which a service requires.
+	module.WriteString("module example.com/records\ngo " + runtimeGo + "\nrequire (\n")
 	var names []string
 	for name := range wiring.GoModRequires {
 		names = append(names, name)
@@ -137,7 +160,10 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	for _, name := range names {
 		fmt.Fprintf(&module, "%s %s\n", name, wiring.GoModRequires[name])
 	}
-	module.WriteString(")\n")
+	// The generated access line reads the fixed error code through the otel package of the runtime library, which a
+	// service requires at its archetype pin; the test takes the runtime of this commit.
+	module.WriteString("github.com/910-software-solutions/stego/registry/runtime v0.0.0\n)\n")
+	module.WriteString("replace github.com/910-software-solutions/stego/registry/runtime => " + runtimeDir + "\n")
 	files = append(files, gen.File{Path: "go.mod", Content: []byte(module.String())})
 	project := t.TempDir()
 	for _, file := range files {
@@ -149,7 +175,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 			t.Fatal(err)
 		}
 	}
-	commands := [][]string{{"mod", "tidy", "-go=1.26.0"}}
+	commands := [][]string{{"mod", "tidy", "-go=" + runtimeGo}}
 	if pattern == "" {
 		commands = append(commands, []string{"vet", "./..."})
 	}
@@ -158,7 +184,10 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 		testArgs = append(testArgs, "-run", pattern)
 	}
 	controllerCheck := pattern == "^TestController"
-	if controllerCheck {
+	// A pattern of one subtest must run it: the output must show that it passed.
+	parent, subtest, oneSubtest := strings.Cut(pattern, "/^")
+	parent = strings.Trim(parent, "^$")
+	if controllerCheck || oneSubtest {
 		testArgs = append(testArgs, "-v")
 	}
 	commands = append(commands, append(testArgs, "./..."))
@@ -178,6 +207,8 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 				t.Fatalf("controller trace check skipped a case: %s", output)
 			}
 			t.Logf("generated controller trace results:\n%s", output)
+		} else if oneSubtest && args[0] == "test" && (!strings.Contains(string(output), "--- PASS: "+parent+"/"+subtest) || strings.Contains(string(output), "--- SKIP:")) {
+			t.Fatalf("the subtest %s of %s did not run and pass:\n%s", subtest, parent, output)
 		}
 		if args[0] == "mod" {
 			localtest.CheckSums(t, project)

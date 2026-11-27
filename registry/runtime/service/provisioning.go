@@ -17,6 +17,7 @@ import (
 	"github.com/910-software-solutions/stego/registry/runtime/authn"
 	"github.com/910-software-solutions/stego/registry/runtime/authz"
 	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
@@ -274,16 +275,24 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 		case err == nil:
 			next.ServeHTTP(w, r)
 		case errors.Is(err, errNotProvisioned):
-			writeTenantProblem(w, http.StatusForbidden, tp.problemType, tenant.ErrNotProvisionedCode)
+			refuseTenant(w, r, http.StatusForbidden, tp.problemType, tenant.ErrNotProvisionedCode)
 		case tenant.Unavailable(err):
 			// A tenant list that the database cannot serve now is 503 with Retry-After, never a bare 500
 			// (walkthrough 10, B7; ST-SUP-RP10-LC43).
 			w.Header().Set("Retry-After", authz.RetryAfter())
-			writeTenantProblem(w, http.StatusServiceUnavailable, tp.problemType, command.ErrorCodeUnavailable)
+			refuseTenant(w, r, http.StatusServiceUnavailable, tp.problemType, command.ErrorCodeUnavailable)
 		default:
-			writeTenantProblem(w, http.StatusInternalServerError, tp.problemType, command.ErrorCodeInternal)
+			refuseTenant(w, r, http.StatusInternalServerError, tp.problemType, command.ErrorCodeInternal)
 		}
 	})
+}
+
+// refuseTenant writes the problem response of a refused tenant, as writeTenantProblem does, and gives its fixed code
+// to the access line of the request (otel.SetErrorCode): the tenant check answers before the router, so the line has
+// no route, and the code tells an operator why (erp-demo production run, ST-SUP-Q210).
+func refuseTenant(w http.ResponseWriter, r *http.Request, httpStatus int, base, code string) {
+	otel.SetErrorCode(r.Context(), code)
+	writeTenantProblem(w, httpStatus, base, code)
 }
 
 // writeTenantProblem writes the problem response (RFC 9457) of a refused tenant, with the fixed code only, for the

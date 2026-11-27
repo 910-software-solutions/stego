@@ -20,6 +20,9 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	rtotel "github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 func TestServiceLogsLocalAndOTLP(t *testing.T) {
@@ -539,6 +542,63 @@ func TestLocalAccessLineEdges(t *testing.T) {
 		noRequestValue(t, output.Bytes())
 		if bytes.Contains(output.Bytes(), []byte("G\\u0001T")) {
 			t.Fatalf("the local output holds the method: %s", output.Bytes())
+		}
+	})
+	t.Run("ST-SUP-RC17-OC20-T06 The access line of a refusal before the router holds its fixed problem code and no value", func(t *testing.T) {
+		// erp-demo production run (2026-11-27): a 401 of the authentication and a 403 tenant.not_provisioned of the
+		// tenant check came before the router, so their access lines had only the status.
+		traceEnvironment(t)
+		var output bytes.Buffer
+		runtime, err := newRuntime(formOf(&output))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const token, tenantID = "eyJhbGciOiJFZERTQSJ9.secret-token-value.sig", "acme-tenant-4711"
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, r *http.Request) {
+			// A code that a handler gives for a request that then passes does not reach its line.
+			rtotel.SetErrorCode(r.Context(), "unused")
+		})
+		// The real authentication of the runtime library: a Verifier with no keys answers each request 401.
+		var verifier *authn.Verifier
+		authenticated := runtime.Handler(verifier.Middleware(runtime.Route(mux)))
+		request := httptest.NewRequest("GET", "/records/"+tenantID+"?tenant="+tenantID, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		answer := httptest.NewRecorder()
+		authenticated.ServeHTTP(answer, request)
+		if answer.Code != http.StatusUnauthorized {
+			t.Fatalf("the authentication gave %d, want 401", answer.Code)
+		}
+		// The tenant check of the runtime library gives the code as service.refuseTenant does, before the router; a
+		// code with text of a value is not a code and is ignored.
+		gated := runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rtotel.SetErrorCode(r.Context(), "tenant "+tenantID)
+			rtotel.SetErrorCode(r.Context(), "tenant.not_provisioned")
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		gated.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records/"+tenantID, nil))
+		runtime.Handler(runtime.Route(mux)).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records/"+tenantID, nil))
+		runtime.Close()
+		access := linesOf(localLines(t, &output), "http.server.request.completed")
+		if len(access) != 3 {
+			t.Fatalf("%d access lines, want 3", len(access))
+		}
+		for i, want := range []struct {
+			status float64
+			code   string
+		}{{401, "AUT-001"}, {403, "tenant.not_provisioned"}, {200, ""}} {
+			if _, routed := access[i]["http.route"]; access[i]["http.response.status_code"] != want.status || i < 2 && routed {
+				t.Fatalf("access line %d is %v, want the status %v and no route", i, access[i], want.status)
+			}
+			code, _ := access[i]["stego.error_code"].(string)
+			if code != want.code {
+				t.Errorf("access line %d holds the error code %q, want %q: %v", i, code, want.code, access[i])
+			}
+		}
+		for _, value := range []string{token, "secret-token-value", tenantID, "Bearer"} {
+			if bytes.Contains(output.Bytes(), []byte(value)) {
+				t.Errorf("the local output holds the value %q: %s", value, output.Bytes())
+			}
 		}
 	})
 }
