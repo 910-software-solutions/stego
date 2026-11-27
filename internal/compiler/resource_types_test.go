@@ -60,6 +60,10 @@ func TestBaseResourceTypes(t *testing.T) {
 				[]string{"Todo"}, []string{`gives Todo no resource type`}},
 			{"two entities swap their types", declaration(typed("Todo", "folder", ""), typed("Folder", "document", ""), typed("Board", "board", "board-drop")),
 				[]string{"Todo", "Folder"}, []string{`gives Todo the resource type "folder"`, `gives Folder the resource type "document"`}},
+			// Security review sec-21-14c, L-21a: the check must read the dropped entities of the head, or the base of
+			// the next release would not keep board for Board.
+			{"a dropped entity of the head changes its type", declaration(typed("Todo", "document", ""), typed("Folder", "folder", ""), typed("Board", "board2", "board-drop")),
+				[]string{"Board"}, []string{`gives Board the resource type "board2", and the base gives it the resource type "board"`}},
 		}
 		for _, c := range cases {
 			faults := resourceTypeFaults(base, c.head)
@@ -72,6 +76,16 @@ func TestBaseResourceTypes(t *testing.T) {
 					t.Errorf("%s: the fault %q does not say %q", c.name, faults[i].Message, words)
 				}
 			}
+		}
+		// Security review sec-21-14c, L-21a: an entity of the base with no resource type may take a type of its own,
+		// but not the type of another entity of the base.
+		untyped := declaration(typed("Todo", "document", ""), typed("Setting", "", ""))
+		if faults := resourceTypeFaults(untyped, declaration(typed("Todo", "document", ""), typed("Setting", "setting", ""))); len(faults) != 0 {
+			t.Errorf("an entity of the base with no type that takes a type of its own gives the faults %+v", faults)
+		}
+		faults := resourceTypeFaults(untyped, declaration(typed("Todo", "document", ""), typed("Setting", "document", "")))
+		if got := names(faults); !slices.Equal(got, []string{"Setting"}) || !strings.Contains(faults[0].Message, `gives Setting the resource type "document", which the entity Todo has in the base`) {
+			t.Errorf("an entity of the base with no type that takes document of Todo: faults for %q, want Setting: %+v", got, faults)
 		}
 		// Two entities of the base that share a type and keep it get no fault here: the declaration check refuses
 		// them (ST-DECL-INV107), and their move needs no fault of a reuse.
