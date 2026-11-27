@@ -103,9 +103,9 @@ type goScan struct {
 	consts map[string]ast.Expr
 	// constants are the values of the package constants (const) only, not of package variables, which code can set.
 	constants map[string]ast.Expr
-	fields map[string][]goSite
-	faults []string
-	seen   map[string]bool
+	fields    map[string][]goSite
+	faults    []string
+	seen      map[string]bool
 	// commands is the number of inner go commands in scope.
 	commands int
 }
