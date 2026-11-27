@@ -29,6 +29,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	rtotel "github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 const QueueSize = 256
@@ -248,8 +250,11 @@ func (r *Runtime) Close() {
 func (r *Runtime) ShutdownFailures() uint64 { return r.shutdownFailures.Load() }
 
 // Handler writes one local access line for each request, with and without a
-// collector: method, registered route pattern, status and duration. Enabled
-// tracing also exports them. It does not record request URLs, headers, or bodies.
+// collector: method, registered route pattern, status and duration, and for a
+// status of 400 or more the fixed error code that the runtime gave the request
+// (rtotel.SetErrorCode), also for an answer before the router, such as a 401 of
+// the authentication or a 403 tenant.not_provisioned. Enabled tracing also
+// exports them. It does not record request URLs, headers, or bodies.
 func (r *Runtime) Handler(next http.Handler) http.Handler {
 	if r.provider == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -257,7 +262,7 @@ func (r *Runtime) Handler(next http.Handler) http.Handler {
 				next.ServeHTTP(w, request)
 				return
 			}
-			ctx := r.Context(request.Context())
+			ctx := rtotel.WithErrorCode(r.Context(request.Context()))
 			method := request.Method
 			switch method {
 			case "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH":
@@ -289,7 +294,7 @@ func (r *Runtime) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, request)
 			return
 		}
-		ctx := r.Context(request.Context())
+		ctx := rtotel.WithErrorCode(r.Context(request.Context()))
 		values := request.Header.Values("traceparent")
 		if len(values) == 1 && len(values[0]) == 55 {
 			ctx = (propagation.TraceContext{}).Extract(ctx, propagation.MapCarrier{"traceparent": values[0]})
@@ -366,7 +371,8 @@ func (r *Runtime) Route(next http.Handler) http.Handler {
 // accessLine queues the one local line of a request, http.server.request.completed:
 // INFO for a normal status, WARN for 400 to 499, ERROR for 500 or higher and for a
 // handler that panicked (status 0). It holds the method, the route pattern, the
-// status, the error type and the duration, and never a path, query, header or body.
+// status, the error type, the fixed error code (stego.error_code) of a status of
+// 400 or more or a panic, and the duration, and never a path, query, header or body.
 func (r *Runtime) accessLine(ctx context.Context, start, end time.Time, method, route string, status int) {
 	if r.service.local == nil {
 		return
@@ -380,6 +386,11 @@ func (r *Runtime) accessLine(ctx context.Context, start, end time.Time, method, 
 		local.Severity, local.ErrorType = "ERROR", strconv.Itoa(status)
 	case status >= 400:
 		local.Severity = "WARN"
+	}
+	if status == 0 || status >= 400 {
+		if code, ok := rtotel.ErrorCode(ctx); ok {
+			local.ErrorCode = code
+		}
 	}
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		local.TraceID = sc.TraceID().String()
