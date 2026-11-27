@@ -16,6 +16,8 @@ package proxytest
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,10 +38,10 @@ import (
 )
 
 // Source is the module cache that Start copies the modules from, and the environment of the go command that fills
-// it. Env must set GOMODCACHE to Cache. Give a cache whose go command checks each module against go.sum or a sum
-// database before it writes the module, such as the module cache of localtest (localtest.ModuleCache, with
-// localtest.FillEnv and GOFLAGS cleared). Do not give the shared GOMODCACHE: other tools fill it with modules that
-// no sum database checked (security review of PR #510, M1).
+// it. Give a cache whose go command checks each module against go.sum or a sum database before it writes the module,
+// such as the module cache of localtest (localtest.ModuleCache, with localtest.FillEnv and GOFLAGS cleared). Do not
+// give the shared GOMODCACHE: other tools fill it with modules that no sum database checked (security review of PR
+// #510, M1). CheckSource names the sources that Start refuses.
 type Source struct {
 	Cache string
 	Env   []string
@@ -60,17 +62,14 @@ type Servers struct {
 
 // Start serves the modules mods, each module@version, from the module cache of from, which the go command goTool
 // fills with the environment of from when the cache does not hold a module, and stops both servers when the test
-// ends. Start fails the test when mods is not empty and from has no cache, or its environment does not name that
-// cache as GOMODCACHE. The record of each module in the sum database is its go.sum lines, as the hashes of its zip and its
-// go.mod in the proxy folder give them.
+// ends. When mods is not empty, Start fails the test for a source that CheckSource refuses. The record of each module
+// in the sum database is its go.sum lines: the hashes that the go command checked, which the zip and the go.mod in
+// the proxy folder must have (add).
 func Start(t testing.TB, goTool string, from Source, mods ...string) *Servers {
 	t.Helper()
 	if len(mods) > 0 {
-		if from.Cache == "" {
-			t.Fatal("proxytest: no module cache to take the modules from")
-		}
-		if cache := lastSetting(from.Env, "GOMODCACHE"); cache != from.Cache {
-			t.Fatalf("proxytest: the environment of the source names the module cache %q, not %q", cache, from.Cache)
+		if err := CheckSource(goTool, from); err != nil {
+			t.Fatal("proxytest: " + err.Error())
 		}
 	}
 	s := &Servers{Folder: t.TempDir(), records: map[module.Version][]byte{}}
@@ -100,6 +99,51 @@ func Start(t testing.TB, goTool string, from Source, mods ...string) *Servers {
 	t.Cleanup(proxyServer.Close)
 	s.ProxyURL, s.SumDBURL = proxyServer.URL, sumServer.URL
 	return s
+}
+
+// CheckSource gives an error for a source whose go command can write a module that no sum database or go.sum
+// checked: a source with no cache; an environment whose GOMODCACHE is not the cache, or that reads the go env file
+// (GOENV is not off), which can turn a check off; a cache that is the shared GOMODCACHE of goTool, or a folder in it,
+// as localtest refuses it; and an environment whose last value of a setting turns the checks off: GOSUMDB=off, a
+// GONOSUMDB, GONOSUMCHECK, GOPRIVATE or GOINSECURE that is not empty, or GOFLAGS with -insecure.
+func CheckSource(goTool string, from Source) error {
+	if from.Cache == "" {
+		return errors.New("no module cache to take the modules from")
+	}
+	cache, err := filepath.Abs(from.Cache)
+	if err != nil {
+		return err
+	}
+	if got := lastSetting(from.Env, "GOMODCACHE"); got != from.Cache {
+		return fmt.Errorf("the environment of the source names the module cache %q, not %q", got, from.Cache)
+	}
+	if got := lastSetting(from.Env, "GOENV"); got != "off" {
+		return fmt.Errorf("the environment of the source sets GOENV=%q, not off, so the go env file can turn a check off", got)
+	}
+	if got := lastSetting(from.Env, "GOSUMDB"); got == "off" {
+		return errors.New("the environment of the source sets GOSUMDB=off")
+	}
+	for _, key := range []string{"GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE"} {
+		if got := lastSetting(from.Env, key); got != "" {
+			return fmt.Errorf("the environment of the source sets %s=%s, which turns the check of a module off", key, got)
+		}
+	}
+	for _, flag := range strings.Fields(lastSetting(from.Env, "GOFLAGS")) {
+		if flag == "-insecure" || strings.HasPrefix(flag, "-insecure=") || flag == "--insecure" || strings.HasPrefix(flag, "--insecure=") {
+			return fmt.Errorf("the environment of the source sets GOFLAGS with %s", flag)
+		}
+	}
+	// The shared module cache is the GOMODCACHE that goTool takes from the environment of the test, as
+	// localtest.cacheFolder reads it.
+	shared, err := exec.Command(goTool, "env", "GOMODCACHE").Output()
+	if err != nil {
+		return fmt.Errorf("read the shared GOMODCACHE with %s: %v", goTool, err)
+	}
+	if abs, err := filepath.Abs(strings.TrimSpace(string(shared))); err == nil && strings.TrimSpace(string(shared)) != "" &&
+		(cache == abs || strings.HasPrefix(cache, abs+string(filepath.Separator))) {
+		return fmt.Errorf("the module cache %s is the shared GOMODCACHE %s, or a folder in it", cache, abs)
+	}
+	return nil
 }
 
 // lastSetting gives the value of the last entry key=value of env, as the go command takes it, or "".
@@ -136,24 +180,29 @@ func ModulesOf(t testing.TB, goSum string) []string {
 	return mods
 }
 
-// add copies the info, the go.mod and the zip of the module from the module cache into the proxy folder, and
-// keeps its go.sum lines as its record. A module whose zip the cache does not hold, because only its go.mod is in
-// a module graph, gets its go.mod only, and its record names the go.mod alone.
+// add copies the info, the go.mod and the zip of the module from the module cache of the source into the proxy
+// folder, and keeps its go.sum lines as its record. The go command of the source downloads the module, or finds it in
+// the cache, and gives the hashes that it checked (go mod download -json: Sum and GoModSum). add fails the test when
+// the zip or the go.mod that it copied does not have that hash, as a file of the cache that was changed after the
+// check has not (security review of PR #8, F1). A module whose zip the go command cannot give, because only its
+// go.mod is in a module graph, gets its go.mod only, and its record names the go.mod alone: add never serves a zip
+// that the go command did not give.
 func (s *Servers) add(t testing.TB, goTool string, from Source, m module.Version) {
 	t.Helper()
-	// The modules come from the module cache of the source, which the go command fills with the environment of the
-	// source, and never from the shared GOMODCACHE, which other tools fill unchecked (security review of PR #510, M1).
 	download := exec.Command(goTool, "mod", "download", "-json", m.Path+"@"+m.Version)
 	download.Dir = t.TempDir()
 	download.Env = append([]string(nil), from.Env...)
-	if output, err := download.Output(); err != nil {
-		// A version that the proxy of the environment does not serve whole, such as one that only a module graph
-		// names, is served with its go.mod alone.
-		info := exec.Command(goTool, "list", "-m", "-json", m.Path+"@"+m.Version)
-		info.Dir, info.Env = download.Dir, download.Env
-		if out, err := info.Output(); err != nil {
-			t.Fatalf("proxytest: download %s: %v\n%s%s", m, err, output, out)
-		}
+	var stderr bytes.Buffer
+	download.Stderr = &stderr
+	output, downloadErr := download.Output()
+	var got struct{ Info, GoMod, Zip, Sum, GoModSum, Error string }
+	if err := json.Unmarshal(output, &got); err != nil || got.GoModSum == "" || got.GoMod == "" || got.Info == "" {
+		// Not even the go.mod of the version is checked.
+		t.Fatalf("proxytest: download %s: %v\n%s%s", m, downloadErr, output, stderr.Bytes())
+	}
+	whole := downloadErr == nil && got.Error == ""
+	if whole && (got.Zip == "" || got.Sum == "") {
+		t.Fatalf("proxytest: download %s gave no zip or no hash of it:\n%s", m, output)
 	}
 	escapedPath, err := module.EscapePath(m.Path)
 	if err != nil {
@@ -163,18 +212,25 @@ func (s *Servers) add(t testing.TB, goTool string, from Source, m module.Version
 	if err != nil {
 		t.Fatal(err)
 	}
-	cached := filepath.Join(from.Cache, "cache", "download", filepath.FromSlash(escapedPath), "@v")
+	cache, err := filepath.Abs(from.Cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := filepath.Join(cache, "cache", "download", filepath.FromSlash(escapedPath), "@v")
 	to := filepath.Join(s.Folder, filepath.FromSlash(escapedPath), "@v")
 	if err := os.MkdirAll(to, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	whole := true
-	for _, extension := range []string{".info", ".mod", ".zip"} {
-		data, err := os.ReadFile(filepath.Join(cached, escapedVersion+extension))
-		if err != nil && extension == ".zip" && os.IsNotExist(err) {
-			whole = false
-			continue
+	files := map[string]string{".info": got.Info, ".mod": got.GoMod}
+	if whole {
+		files[".zip"] = got.Zip
+	}
+	for extension, name := range files {
+		// The go command names the files of the cache of the source; a file elsewhere is not of that cache.
+		if want := filepath.Join(cached, escapedVersion+extension); filepath.Clean(name) != want {
+			t.Fatalf("proxytest: the go command gives %s for %s, not the file %s of the cache of the source", name, m, want)
 		}
+		data, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("proxytest: %s: %v", m, err)
 		}
@@ -194,11 +250,17 @@ func (s *Servers) add(t testing.TB, goTool string, from Source, m module.Version
 	if err != nil {
 		t.Fatal(err)
 	}
+	if modSum != got.GoModSum {
+		t.Fatalf("proxytest: the go.mod of %s in the cache has the hash %s, not the checked hash %s", m, modSum, got.GoModSum)
+	}
 	record := fmt.Sprintf("%s %s/go.mod %s\n", m.Path, m.Version, modSum)
 	if whole {
 		zipSum, err := dirhash.HashZip(filepath.Join(to, escapedVersion+".zip"), dirhash.Hash1)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if zipSum != got.Sum {
+			t.Fatalf("proxytest: the zip of %s in the cache has the hash %s, not the checked hash %s", m, zipSum, got.Sum)
 		}
 		record = fmt.Sprintf("%s %s %s\n", m.Path, m.Version, zipSum) + record
 	}

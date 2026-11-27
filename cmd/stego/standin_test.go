@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/appbuild"
 	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The proofs that a download against the local stand-ins of proxy.golang.org and sum.golang.org (proxytest and
@@ -124,6 +128,65 @@ func TestLocalModuleStandIns(t *testing.T) {
 		servers.Use(t)
 		if err := standInDownload(t, standInModule+" "+standInVersion+" "+standInSum+"\n"); err != nil {
 			t.Fatalf("the same download against the key that signed the answers failed: %v", err)
+		}
+	})
+}
+
+// callsChecked tells if the expression is a call of checkedModules.
+func callsChecked(expression ast.Expr) bool {
+	call, ok := expression.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	fn, ok := call.Fun.(*ast.Ident)
+	return ok && fn.Name == "checkedModules"
+}
+
+func TestStandInsTakeTheCheckedCache(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T17 Each proxytest.Start of cmd/stego takes checkedModules, which is the checked module cache of localtest", func(t *testing.T) {
+		names, err := filepath.Glob("*.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fset := token.NewFileSet()
+		calls := 0
+		for _, name := range names {
+			file, err := parser.ParseFile(fset, name, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Start" {
+					return true
+				}
+				if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != "proxytest" {
+					return true
+				}
+				calls++
+				if len(call.Args) < 3 {
+					t.Errorf("%s: proxytest.Start has no source", fset.Position(call.Pos()))
+					return true
+				}
+				if !callsChecked(call.Args[2]) {
+					t.Errorf("%s: proxytest.Start takes a source that is not checkedModules(t)", fset.Position(call.Pos()))
+				}
+				return true
+			})
+		}
+		if calls == 0 {
+			t.Fatal("no proxytest.Start in cmd/stego: the scan read nothing")
+		}
+		source := checkedModules(t)
+		if want := localtest.ModuleCache(t); source.Cache != want {
+			t.Fatalf("checkedModules gives the module cache %s, not the cache of localtest %s", source.Cache, want)
+		}
+		if err := proxytest.CheckSource(pinnedGo(t), source); err != nil {
+			t.Fatalf("proxytest refuses checkedModules: %v", err)
 		}
 	})
 }
