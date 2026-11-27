@@ -73,12 +73,17 @@ func Start(t testing.TB, goTool string, from Source, mods ...string) *Servers {
 		}
 	}
 	s := &Servers{Folder: t.TempDir(), records: map[module.Version][]byte{}}
+	versions := make([]module.Version, 0, len(mods))
 	for _, mod := range mods {
 		path, version, ok := strings.Cut(mod, "@")
 		if !ok {
 			t.Fatalf("proxytest: %q is not module@version", mod)
 		}
-		s.add(t, goTool, from, module.Version{Path: path, Version: version})
+		versions = append(versions, module.Version{Path: path, Version: version})
+	}
+	downloaded := download(t, goTool, from, versions)
+	for _, m := range versions {
+		s.add(t, from, m, downloaded[m])
 	}
 	signerKey, verifierKey, err := note.GenerateKey(rand.Reader, "stego-proxytest")
 	if err != nil {
@@ -300,29 +305,75 @@ func ModulesOf(t testing.TB, goSum string) []string {
 	return mods
 }
 
-// add copies the info, the go.mod and the zip of the module from the module cache of the source into the proxy
-// folder, and keeps its go.sum lines as its record. The go command of the source downloads the module, or finds it in
-// the cache, and gives the hashes that it checked (go mod download -json: Sum and GoModSum). add fails the test when
-// the zip or the go.mod that it copied does not have that hash, as a file of the cache that was changed after the
-// check has not (security review of PR #8, F1). A module whose zip the go command cannot give, because only its
-// go.mod is in a module graph, gets its go.mod only, and its record names the go.mod alone: add never serves a zip
-// that the go command did not give.
-func (s *Servers) add(t testing.TB, goTool string, from Source, m module.Version) {
+// downloaded is what the go command of the source gives for one module in go mod download -json: the files of the
+// cache and the hashes that it checked, and the error of the module, if any.
+type downloaded struct {
+	Path, Version                         string
+	Info, GoMod, Zip, Sum, GoModSum, Error string
+	// whole tells that the go command gave the module with no error, so its zip too.
+	whole bool
+}
+
+// download runs one go mod download -json of the source for all the modules, not one for each: the go command checks
+// each module as it does in a run of its own, against go.sum or the sum database of the source, and gives one result
+// for each (Error for a module that it could not give whole). For the 59 modules of the go.sum of the runtime library
+// one run takes a third of the time of a run for each, and the tests of Building start them about twenty times. A run
+// that fails with no module that reports an error, or that gives no result for a module, fails the test: no module is
+// then taken as checked.
+func download(t testing.TB, goTool string, from Source, mods []module.Version) map[module.Version]downloaded {
 	t.Helper()
-	download := exec.Command(goTool, "mod", "download", "-json", m.Path+"@"+m.Version)
-	download.Dir = t.TempDir()
-	download.Env = append([]string(nil), from.Env...)
-	var stderr bytes.Buffer
-	download.Stderr = &stderr
-	output, downloadErr := download.Output()
-	var got struct{ Info, GoMod, Zip, Sum, GoModSum, Error string }
-	if err := json.Unmarshal(output, &got); err != nil || got.GoModSum == "" || got.GoMod == "" || got.Info == "" {
-		// Not even the go.mod of the version is checked.
-		t.Fatalf("proxytest: download %s: %v\n%s%s", m, downloadErr, output, stderr.Bytes())
+	results := map[module.Version]downloaded{}
+	if len(mods) == 0 {
+		return results
 	}
-	whole := downloadErr == nil && got.Error == ""
+	args := []string{"mod", "download", "-json"}
+	for _, m := range mods {
+		args = append(args, m.Path+"@"+m.Version)
+	}
+	command := exec.Command(goTool, args...)
+	command.Dir = t.TempDir()
+	command.Env = append([]string(nil), from.Env...)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, downloadErr := command.Output()
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	failed := false
+	for decoder.More() {
+		var got downloaded
+		if err := decoder.Decode(&got); err != nil {
+			t.Fatalf("proxytest: download %v: %v\n%s%s", mods, err, output, stderr.Bytes())
+		}
+		got.whole = got.Error == ""
+		failed = failed || !got.whole
+		results[module.Version{Path: got.Path, Version: got.Version}] = got
+	}
+	if downloadErr != nil && !failed {
+		t.Fatalf("proxytest: download %v: %v, and no module gives an error\n%s%s", mods, downloadErr, output, stderr.Bytes())
+	}
+	for _, m := range mods {
+		if _, ok := results[m]; !ok {
+			t.Fatalf("proxytest: download %s: the go command gave no result for it: %v\n%s%s", m, downloadErr, output, stderr.Bytes())
+		}
+	}
+	return results
+}
+
+// add copies the info, the go.mod and the zip of the module from the module cache of the source into the proxy
+// folder, and keeps its go.sum lines as its record. got is what the go command of the source gave for the module
+// (download): the files of the cache and the hashes that it checked (Sum and GoModSum). add fails the test when the
+// zip or the go.mod that it copied does not have that hash, as a file of the cache that was changed after the check
+// has not (security review of PR #8, F1). A module whose zip the go command cannot give, because only its go.mod is
+// in a module graph, gets its go.mod only, and its record names the go.mod alone: add never serves a zip that the go
+// command did not give.
+func (s *Servers) add(t testing.TB, from Source, m module.Version, got downloaded) {
+	t.Helper()
+	if got.GoModSum == "" || got.GoMod == "" || got.Info == "" {
+		// Not even the go.mod of the version is checked.
+		t.Fatalf("proxytest: download %s: %s", m, got.Error)
+	}
+	whole := got.whole
 	if whole && (got.Zip == "" || got.Sum == "") {
-		t.Fatalf("proxytest: download %s gave no zip or no hash of it:\n%s", m, output)
+		t.Fatalf("proxytest: download %s gave no zip or no hash of it: %+v", m, got)
 	}
 	escapedPath, err := module.EscapePath(m.Path)
 	if err != nil {
