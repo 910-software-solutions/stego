@@ -519,11 +519,32 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 	}); err != nil {
 		return result, err
 	}
-	if state.Completed && !state.Stale {
+	// A pass that a runtime before v0.208.0 completed or moved went over the active tenants only, so it can have
+	// passed the rows of a retired tenant, which stay in clear. Before the job trusts a completed pass, or goes on
+	// with a pass after its last tenant, it reads whether a tenant of the list that the pass went over still has a
+	// row with a clear value and no sealed value, and starts a new pass when one has (security review of PR #20, H1;
+	// decision ST-SUP-Q219 (a)).
+	again := false
+	if state.Started && !state.Stale && (state.Completed || state.LastTenant != "") {
+		before := state.LastTenant
+		if state.Completed {
+			before = ""
+		}
+		left, err := j.clearLeft(ctx, c, before)
+		if err != nil {
+			return result, err
+		}
+		if left {
+			slog.WarnContext(ctx, "command: a pass of the seal went over a tenant that still has a row with a clear value and no sealed value, as a runtime before v0.208.0 passed the retired tenants; the pass starts again", otel.SlogEventKey, "command.seal.clear_left",
+				"change", c.Change, "completed", state.Completed)
+			again = true
+		}
+	}
+	if state.Completed && !state.Stale && !again {
 		result.Sealed, result.Checked, result.Completed = state.Sealed, state.Checked, true
 		return result, nil
 	}
-	if !state.Started || state.Stale {
+	if !state.Started || state.Stale || again {
 		if state.Waiting {
 			result.Waits = true
 			return result, nil
@@ -606,6 +627,44 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 	}
 	result.Completed = true
 	return result, nil
+}
+
+// clearLeftQuery tells, in the transaction of a tenant, whether the table %s has a row of that tenant whose clear
+// column %s holds a value and whose sealed column %s does not: the forced row-level security of the table keeps the
+// rows of the tenant of the transaction alone. It stops at the first such row.
+const clearLeftQuery = `SELECT EXISTS (SELECT 1 FROM %s WHERE %s IS NOT NULL AND %s IS NULL)`
+
+// clearLeft tells whether a tenant of the tenant list, retired too, whose ID sorts before the ID before, or each
+// tenant when before is empty, has a row of the column c with a clear value and no sealed value. It reads one tenant
+// at a time in its own transaction, and stops at the first such tenant.
+func (j *SealJob) clearLeft(ctx context.Context, c SealColumn, before string) (bool, error) {
+	tenants, err := j.tenants(ctx)
+	if err != nil {
+		return false, err
+	}
+	slices.SortFunc(tenants, func(a, b tenant.Tenant) int { return strings.Compare(a.ID(), b.ID()) })
+	query := fmt.Sprintf(clearLeftQuery, sealTable(c.Table), quoteColumn(c.Clear), quoteColumn(c.Sealed))
+	for _, t := range tenants {
+		if before != "" && t.ID() >= before {
+			break
+		}
+		var left bool
+		err := tenant.Each(ctx, j.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, _ tenant.Tenant) error {
+			return tx.QueryRowContext(ctx, query).Scan(&left)
+		})
+		if err != nil {
+			return false, unwrapEach(err)
+		}
+		if left {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// quoteColumn quotes the name of a column of a seal.
+func quoteColumn(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // batch seals and checks at most SealBatch rows of the column c of the tenant t after the ID after, in the

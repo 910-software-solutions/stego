@@ -637,7 +637,15 @@ passed over the active tenants only, so after a retire each pass completed
 and the contract refused for ever with `rows of the listed tenants with a
 clear value and no sealed value` (walkthrough 29, SEAL-RETIRE). To end that
 wait, deploy the release of the expand step again with runtime v0.208.0 or
-later and let the seal job complete a pass.
+later. Its seal job does not trust a pass of the earlier runtime: before it
+takes a completed pass as done, or goes on with a pass after its last
+tenant, it reads each tenant of the tenant list that the pass went over for a
+row with a clear value and no sealed value, one query for each tenant and
+sealed column. When it finds one, it logs `command.seal.clear_left` and
+starts a new pass, which seals the rows of the retired tenants. When that
+pass completes, run the migration Job of the contract step again. The read
+runs at each run of the seal job while the pass is completed and the
+contract has not run, so keep the seal open no longer than you need.
 
 The contract does not wait for the release of the expand step to stop, as the
 contract of a drop or a rename does not wait for the release of its expand

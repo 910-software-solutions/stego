@@ -1733,6 +1733,22 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 				Relation: "worker_retired_export",
 				Subject:  &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "retired-export"}}}}}})
 		must(t, err)
+		// An administrator of the tenant of the earlier release on its tenant-qualified service-level resource: with
+		// no service tuple, the check through tenant->service denies (walkthrough 29, RELATE-TSVC).
+		admin := "pre-admin-" + uuid.NewString()[:8]
+		qualified, err := authz.ResourceID(s.as("u-resource", preTenant).tenant, serviceName)
+		must(t, err)
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: qualified},
+				Relation: "admin",
+				Subject:  &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: admin}}}}}})
+		must(t, err)
+		s.awaitUserPermission(t, "tenant", resource, "auditor_view", admin, false)
+		// A tenant of the earlier release that is retired: the reconcile gives it no tuple. Its ID sorts before the
+		// one of the active tenant, so the reconcile passed it when the active tenant has its tuples.
+		retired := "zz-old-" + uuid.NewString()[:8]
+		execAll(t, s.admin, "INSERT INTO stego_tenants (tenant_id, retired_at) VALUES ('"+retired+"', now())")
 		s.restart(t)
 		// The schema declares the relation service of the type tenant, so the reconcile also gives the tenant of the
 		// earlier release the tuple that a Provision of this release writes (decision ST-SUP-Q220 (a)).
@@ -1744,6 +1760,14 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		got := s.awaitTuples(t, resource, want)
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant the service tuple, each worker's own tuple and no tuple of retired-export:\n%s", preTenant, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		// The administrator now reads through tenant->service, as in a tenant that this release provisions.
+		s.awaitUserPermission(t, "tenant", resource, "auditor_view", admin, true)
+		if got := s.relations(t, "tenant", s.tenantResource(t, retired), ""); len(got) != 0 {
+			t.Fatalf("the reconcile gave the retired tenant %s the tuples %v, want none", retired, got)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1`, retired); n != 0 {
+			t.Fatalf("the reconcile staged %d messages for the retired tenant %s, want none", n, retired)
 		}
 		// One audit row in the tenant's own chain, of the actor kind system.
 		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'reconcile-worker-tuples'
