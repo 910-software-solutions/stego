@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The system tests of ST-DECL-UC06-R04 on a running service: the service generated from the declaration of
@@ -58,7 +60,7 @@ func td03OnRuntimePath(t *testing.T) string {
 
 // TestRelationshipOutbox generates the service of ST-DECL-TD03 with stego apply, builds it with the pinned Go, and
 // runs the check of testdata/relationship_outbox/check in its module once, against the local PostgreSQL server of
-// STEGO_TEST_POSTGRES_DSN. A missing server fails the test: a missing result is not a pass.
+// localtest (STEGO_TEST_POSTGRES_DSN, else a container that the test binary starts). A missing server fails the test: a missing result is not a pass.
 func TestRelationshipOutbox(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs a generated service")
@@ -67,9 +69,7 @@ func TestRelationshipOutbox(t *testing.T) {
 	// so it does not run at the same time as them: the test runs in parallel, and its check holds postgresTLS
 	// (runTLSCheck).
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	p := newRegistryProject(t, stegoBinary(t), runtimeArchetype)
 	schema, err := os.ReadFile(filepath.Join(td03Folder, "authz", "schema.zed"))
 	if err != nil {
@@ -90,7 +90,7 @@ func TestRelationshipOutbox(t *testing.T) {
 	p.goCommand("mod", "tidy")
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
-	output, runErr := runTLSCheck(p.dir, "./out/relationshipcheck", wiringGoEnv("STEGO_RELATIONSHIP_BINARY="+binary),
+	output, runErr := runTLSCheck(p.dir, "./out/relationshipcheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_RELATIONSHIP_BINARY="+binary),
 		"-test.count=1", "-test.timeout=300s", "-test.v", "-test.run", "^TestRelationshipOutbox$")
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {

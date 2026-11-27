@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 //go:embed testdata/database_config_test.go
@@ -26,7 +28,7 @@ func TestGeneratedDatabaseConfiguration(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-race", "-count=1", "-timeout=30s", "./...")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("database configuration: %v %s", err, output)
 	}

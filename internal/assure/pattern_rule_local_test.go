@@ -485,8 +485,9 @@ var outsideFaults = []struct {
 }
 
 // localModuleProxy is the text that shows that a test file runs its module fetches with no hosted proxy: GOPROXY off,
-// or a file proxy that the test writes.
-var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(`)
+// a file proxy that the test writes, or the environment of localtest.GoEnv (ST-SUP-TOOL16), which sets GOPROXY off
+// over the module cache that it fills once per test binary.
+var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(|localtest\.GoEnv\(`)
 
 // reachesOutside gives each sign that the test file reaches a system outside the product, with no local module proxy
 // in the file for a module fetch.
@@ -551,18 +552,36 @@ var serviceVariable = regexp.MustCompile(`(?:Getenv|LookupEnv)\("([A-Z0-9_]*(?:_
 // startsPinnedServices proves ST-PAT-LOCAL-TEST-R04 in the domain: each test file of the domain's packages that
 // starts a container names each image it can start by a whole digest; no test connects to a service at a fixed
 // local port; and no test needs a service that runs already: one that reads a service address from the environment
-// and fails or skips without it, when no file of its package starts the service and sets the variable.
+// and fails or skips without it, when no file of its package starts the service and sets the variable. For a test
+// file under a testdata folder, a test file of the host folder above testdata that sets the variable counts too.
 func (p localProof) startsPinnedServices(t *testing.T) {
 	var faults []string
 	files := p.packageFiles()
 	sets := map[string]map[string]bool{} // folder -> variables that a file of the folder sets
-	for file, data := range files {
-		text := strings.Join(codeLines(file, data), "\n")
-		for _, match := range regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+`).FindAllStringSubmatch(text, -1) {
-			if sets[path.Dir(file)] == nil {
-				sets[path.Dir(file)] = map[string]bool{}
+	setter := regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+`)
+	record := func(folder string, data []byte, name string) {
+		for _, match := range setter.FindAllStringSubmatch(strings.Join(codeLines(name, data), "\n"), -1) {
+			if sets[folder] == nil {
+				sets[folder] = map[string]bool{}
 			}
-			sets[path.Dir(file)][match[1]+match[2]] = true
+			sets[folder][match[1]+match[2]] = true
+		}
+	}
+	for file, data := range files {
+		record(path.Dir(file), data, file)
+	}
+	// A test file under a testdata folder runs in a module that a test of the host folder, the folder above testdata,
+	// generates and starts: the variables that a test file of the host folder sets reach it, so they count for it too.
+	for file := range files {
+		host, _, inTestdata := strings.Cut(file, "/testdata/")
+		if !inTestdata {
+			continue
+		}
+		for _, name := range p.tree.paths() {
+			if path.Dir(name) == host && strings.HasSuffix(name, "_test.go") {
+				data, _ := p.tree.File(name)
+				record(path.Dir(file), data, name)
+			}
 		}
 	}
 	for file, data := range files {
@@ -697,6 +716,7 @@ func TestDeclaringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DECL")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T03 Declaring's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T03 Each test file of Declaring belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T03 Each obligation of Declaring that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T03 Declaring's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T03 Each obligation of Declaring with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }

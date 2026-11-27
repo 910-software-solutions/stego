@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 //go:embed testdata/task_lifecycle_test.go
@@ -88,7 +89,7 @@ func TestGeneratedBackgroundLifecycle(t *testing.T) {
 			}
 			command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "./...")
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("generated lifecycle: %v\n%s", err, output)
 			}
@@ -98,7 +99,7 @@ func TestGeneratedBackgroundLifecycle(t *testing.T) {
 				t.Helper()
 				command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "-count=1", "-run", "^("+tests+")$", "-v", "./...")
 				command.Dir = project
-				command.Env = append(append(os.Environ(), "GOWORK=off"), env...)
+				command.Env = localtest.GoEnv(env...)
 				output, err := command.CombinedOutput()
 				if err != nil || strings.Count(string(output), "--- PASS: ") < strings.Count(tests, "|")+1 {
 					t.Fatalf("generated supervisor %s %v: %v\n%s", tests, env, err, output)
@@ -115,7 +116,7 @@ func TestGeneratedBackgroundLifecycle(t *testing.T) {
 				for _, target := range []struct{ os, arch string }{{"windows", "amd64"}, {"darwin", "arm64"}} {
 					command := exec.Command("go", "test", "-c", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "task-test"))
 					command.Dir = project
-					command.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
+					command.Env = localtest.GoEnv("CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
 					if output, err := command.CombinedOutput(); err != nil {
 						t.Fatalf("cross compilation %s/%s: %v\n%s", target.os, target.arch, err, output)
 					}

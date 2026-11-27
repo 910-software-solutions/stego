@@ -75,6 +75,9 @@ type Auth struct {
 	// gives the verifier's own default, RS256 and sub (ST-SUP-RP13-LC03, LC13).
 	Algorithms   []string
 	SubjectClaim string
+	// AcceptIDToken is the declared opt-in of oidc-auth to an OpenID Connect ID token as the bearer
+	// (accept_id_token, ST-SUP-Q218). Only the declaration sets it: no setting of the environment turns it on.
+	AcceptIDToken bool
 	// Component is the registry component of the auth provider, such as jwt-auth, oidc-auth or rh-sso-auth, which
 	// the stage of a refused verifier setting names; empty is jwt-auth.
 	Component string
@@ -107,6 +110,8 @@ type Settings struct {
 	// Algorithms and SubjectClaim are the declared accepted algorithms and subject claim, or empty.
 	Algorithms   []string
 	SubjectClaim string
+	// AcceptIDToken is the declared opt-in to an ID token as the bearer (ST-SUP-Q218).
+	AcceptIDToken bool
 	// Header and RoleClaim are the token header and the role claim that the declaration states, or empty.
 	Header, RoleClaim string
 	// SpiceDB is how the service reaches SpiceDB.
@@ -222,6 +227,7 @@ func readSettingsOf(stated Auth, api bool) (Settings, error) {
 	}
 	s.Header, s.RoleClaim = stated.Header, stated.RoleClaim
 	s.Algorithms, s.SubjectClaim = slices.Clone(stated.Algorithms), stated.SubjectClaim
+	s.AcceptIDToken = stated.AcceptIDToken
 	s.KeysURL, s.KeysFile = os.Getenv(KeysURLSetting), os.Getenv(KeysFileSetting)
 	if s.CAFile = os.Getenv(CAFileSetting); stated.CAFile != "" {
 		if s.CAFile != "" && s.CAFile != stated.CAFile {
