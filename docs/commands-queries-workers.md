@@ -1716,9 +1716,10 @@ give the permission of the reference:
 - **What it does not cover.** The command's own permission on the new row
   (a `Get`, `Update`, `Relate` of it after its create), a move to a new
   parent, and an update or a delete of a new child are decided at SpiceDB
-  as today. So is every reference when the schema that SpiceDB serves is
-  not the one that the release's migration job recorded (a rolling deploy
-  of a newer schema), or when SpiceDB cannot tell.
+  as today. So is every reference while the schema that SpiceDB serves is
+  not the one compiled into the pod's own release (a rolling deploy of a
+  newer schema: up to about 7 s after it is served, an older pod can still
+  use its proof), or when SpiceDB does not answer.
 
 Validate refuses the opt-in when no reference has a proof, and warns
 `new-reference-decided` of each reference that has none. Each such
