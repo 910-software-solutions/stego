@@ -508,6 +508,14 @@ func TestSealRetired(t *testing.T) {
 				if again, err := j.Run(n.ctx); err != nil || !again[0].Completed || again[0].Checked != 9 || again[0].Sealed != results[0].Sealed {
 					t.Fatalf("a run again gave %+v and %v, want the completed pass of 9 notes", again, err)
 				}
+				// A pass of this runtime that stopped after org-b goes on from its checkpoint: the read covers only
+				// the tenants before it, which the pass sealed, and not org-c, which the pass has still to seal.
+				n.exec(`UPDATE notes SET body_sealed = NULL WHERE tenant_id = 'org-c'`,
+					`UPDATE stego_schema.seals SET completed_at = NULL, last_tenant = 'org-b', last_id = NULL WHERE change_id = '`+noteChange+`'`)
+				resumed, err := j.Run(n.ctx)
+				if err != nil || !resumed[0].Completed || resumed[0].Checked != 15 || resumed[0].Sealed != results[0].Sealed+3 {
+					t.Fatalf("the resumed pass gave %+v and %v, want it to go on from org-b: 15 checked and the 3 notes of org-c sealed", resumed, err)
+				}
 			})
 		}
 	})
