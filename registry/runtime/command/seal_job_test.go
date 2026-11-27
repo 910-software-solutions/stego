@@ -366,6 +366,75 @@ func TestSealStep(t *testing.T) {
 
 // TestSealContract holds the release of the expand step of a seal after its contract step (walkthrough 14, W14-B6
 // and W14-B7).
+func TestSealRetired(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC50-T10 The seal job of the tenant list seals the rows of a retired tenant, so no clear value is left with no sealed value", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		for _, id := range []string{"org-a", "org-b", "org-c"} {
+			if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, id), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// org-b is retired before the seal job runs, and org-c after a first pass: a Retire deletes no row, so each
+		// keeps its notes, which a release before wrote in clear.
+		if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-b"), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"org-a", "org-b", "org-c"} {
+			for i := range 3 {
+				n.exec(fmt.Sprintf(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('%s', '%s', 'x', 'secret-%s-%d')`, id, uuid.NewString(), id, i))
+			}
+		}
+		j, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		results, err := j.Run(n.ctx)
+		if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 9 || results[0].Sealed != 9 {
+			t.Fatalf("the seal job gave %+v and %v, want the pass completed with the 9 notes of the three tenants sealed", results, err)
+		}
+		// A row that a release before writes later in the retired org-c, as before its retire, and a new pass.
+		late := uuid.NewString()
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-c', '` + late + `', 'x', 'secret-org-c-late')`)
+		if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-c"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`UPDATE stego_schema.seals SET completed_at = NULL, pass_started = NULL, last_tenant = NULL, last_id = NULL WHERE change_id = '` + noteChange + `'`)
+		results, err = j.Run(n.ctx)
+		if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 10 || results[0].Sealed != 1 {
+			t.Fatalf("the second pass gave %+v and %v, want 10 notes checked and the late note of the retired org-c sealed", results, err)
+		}
+		if left := n.count(`SELECT count(*) FROM notes WHERE body IS NOT NULL AND body_sealed IS NULL`); left != 0 {
+			t.Fatalf("%d notes hold a clear value and no sealed value, want none", left)
+		}
+		rows, err := n.admin.QueryContext(n.ctx, `SELECT tenant_id, id FROM notes`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var all [][2]string
+		for rows.Next() {
+			var row [2]string
+			if err := rows.Scan(&row[0], &row[1]); err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, row)
+		}
+		if err := rows.Close(); err != nil || len(all) != 10 {
+			t.Fatalf("%d notes (%v), want 10", len(all), err)
+		}
+		for _, row := range all {
+			if clear, set, opened, ok := n.opened(row[0], row[1]); !set || !ok || opened != clear {
+				t.Fatalf("the note %s of %s holds the clear %t and a sealed value that opens to the clear value %t", row[1], row[0], set, ok && opened == clear)
+			}
+		}
+	})
+}
+
 func TestSealContract(t *testing.T) {
 	const secret = "member-0042@example.com"
 	t.Run("ST-SUP-RP10-LC49-T02 After the contract step drops the clear column, the release of the expand step reads and writes the sealed column alone", func(t *testing.T) {

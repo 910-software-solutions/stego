@@ -633,6 +633,99 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC50-T08 A seal over the rows of a tenant retired before or during the seal completes its contract and leaves no clear value", func(t *testing.T) {
+		own, db, reader := base(t)
+		retire := func(id string) {
+			t.Helper()
+			if code := write(t, db, id, `SELECT public.stego_retire_tenant($1)`, id); code != "" {
+				t.Fatalf("the retire of %s: %s", id, code)
+			}
+		}
+		// tenant-b is retired before the expand step of the seal, and tenant-a while the seal is open. A Retire
+		// deletes no row, so the vaults of both stay with their clear values.
+		retire("tenant-b")
+		expand(t, own, db)
+		retire("tenant-a")
+		var active int
+		if err := db.QueryRow(`SELECT count(*) FROM public.stego_tenants WHERE retired_at IS NULL`).Scan(&active); err != nil || active != 0 {
+			t.Fatalf("%d active tenants after the retires (%v), want none", active, err)
+		}
+		// The clear values that the contract drops, by tenant and row.
+		type value struct{ note, code sql.NullString }
+		values := map[string]value{}
+		rows, err := db.Query(`SELECT "tenant_id" || '/' || "id"::text, "note", "code" FROM public."vaults"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var key string
+			var v value
+			if err := rows.Scan(&key, &v.note, &v.code); err != nil {
+				t.Fatal(err)
+			}
+			values[key] = v
+		}
+		if err := rows.Close(); err != nil || len(values) != 60 {
+			t.Fatalf("%d vaults (%v), want the 60 of the two retired tenants", len(values), err)
+		}
+		for _, r := range job(t, reader) {
+			if !r.Completed || r.Checked != 60 {
+				t.Fatalf("the seal job gave %+v, want the pass completed over the 60 vaults of the retired tenants", r)
+			}
+		}
+		if n := agree(t, db); n != 60 {
+			t.Fatalf("%d vaults agree, want 60", n)
+		}
+		var clearOnly int
+		if err := db.QueryRow(`SELECT count(*) FROM public."vaults" WHERE ("note" IS NOT NULL AND "note_sealed" IS NULL) OR ("code" IS NOT NULL AND "code_sealed" IS NULL)`).Scan(&clearOnly); err != nil || clearOnly != 0 {
+			t.Fatalf("%d vaults hold a clear value with no sealed value after the pass (%v), want none", clearOnly, err)
+		}
+		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); err != nil {
+			t.Fatalf("the contract after a completed pass with retired tenants: %v", err)
+		}
+		// No clear column stays, and each sealed value of each retired tenant opens to the value that it held in
+		// clear.
+		for _, c := range columns(t, db, "vaults") {
+			if c.Name == "note" || c.Name == "code" {
+				t.Errorf("the clear column %s is still there after the contract", c.Name)
+			}
+		}
+		rows, err = db.Query(`SELECT "tenant_id", "id"::text, "note_sealed", "code_sealed" FROM public."vaults"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			var tenant, id string
+			var noteSealed, codeSealed []byte
+			if err := rows.Scan(&tenant, &id, &noteSealed, &codeSealed); err != nil {
+				t.Fatal(err)
+			}
+			v := values[tenant+"/"+id]
+			for _, c := range []struct {
+				column string
+				clear  sql.NullString
+				raw    []byte
+			}{{"note_sealed", v.note, noteSealed}, {"code_sealed", v.code, codeSealed}} {
+				if !c.clear.Valid {
+					if c.raw != nil {
+						t.Errorf("the vault %s of %s holds a sealed %s and had no value", id, tenant, c.column)
+					}
+					continue
+				}
+				plain, err := ring.Open(c.raw, sealed.Place{Tenant: tenant, Table: "vaults", Column: c.column, Row: id})
+				if err != nil || string(plain) != c.clear.String {
+					t.Errorf("the vault %s of %s holds a %s that is not its value before the contract (%v)", id, tenant, c.column, err)
+				}
+			}
+			n++
+		}
+		if err := rows.Err(); err != nil || n != 60 {
+			t.Fatalf("%d vaults after the contract (%v), want 60", n, err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T07 A contract of a seal that waits for its pass gives the failure record its fault class, the table, the remedy and the cause class", func(t *testing.T) {
 		own, db, _ := base(t)
 		expand(t, own, db)

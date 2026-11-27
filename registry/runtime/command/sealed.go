@@ -314,7 +314,7 @@ type Reseal struct {
 	tenants func(ctx context.Context) ([]tenant.Tenant, error)
 }
 
-// NewReseal makes the re-seal job of the columns over the tenants of the tenant list of schema, on db, a pool that
+// NewReseal makes the re-seal job of the columns over each tenant of the tenant list of schema, retired too, on db, a pool that
 // tenant.Open returned, with the key ring.
 func NewReseal(db *sql.DB, schema string, ring *sealed.Ring, columns []ResealColumn) (*Reseal, error) {
 	switch {
@@ -329,11 +329,13 @@ func NewReseal(db *sql.DB, schema string, ring *sealed.Ring, columns []ResealCol
 		}
 	}
 	r := &Reseal{db: db, schema: schema, ring: ring, columns: columns}
-	r.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, db, schema) }
+	// A retired tenant keeps its rows, so the job moves its values too: an earlier key that goes after a run with
+	// left 0 leaves no value that does not open (decision ST-SUP-Q219 (a)).
+	r.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.ListAll(ctx, db, schema) }
 	return r, nil
 }
 
-// Run moves each sealed value of each column of each provisioned tenant that is not sealed with the first key of the
+// Run moves each sealed value of each column of each tenant of the tenant list, retired too, that is not sealed with the first key of the
 // ring to it, in the transaction of its tenant, a page at a time in ID order. It changes no other column, and writes
 // no audit row and no event, because the value does not change. A value that does not open is logged with its
 // column and row, never a value, and left as it is, so one bad row does not stop the column (security review of PR

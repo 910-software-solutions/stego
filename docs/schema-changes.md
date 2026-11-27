@@ -609,8 +609,8 @@ The contract migration refuses, changes no schema and writes no ledger row:
   the start of its server and the table of the seal checkpoints. A restore
   and a restart of the database server make a new instance, so the seal job
   must complete a new pass after each (postgres-adapter 6.21.0 or later);
-- while a row of a tenant of the tenant list has a clear value and no sealed
-  value.
+- while a row of a tenant of the tenant list, active or retired, has a clear
+  value and no sealed value.
 
 Each refusal names the change and the remedy: run the migration Job of the
 release of the expand step and then that release, with its controller, until
@@ -625,6 +625,19 @@ clear column, which drops its CHECK and its indexes, and deletes the seal
 checkpoint. Each statement takes a short lock, with the lock timeout and the
 retries of the other contract steps, and a run again after a failure part
 way goes on. After the contract the field is in `<column>_sealed` alone.
+
+A retired tenant stays in the tenant list, and a retire deletes no row, so
+its rows keep their clear values. From runtime v0.208.0 the seal job seals
+the rows of each tenant of the tenant list, also of a tenant that you retire
+before the expand step or while the seal is open, and the re-seal job moves
+their values to the first key of the ring (decision ST-SUP-Q219 (a)). A
+retire does not stop the contract, and no clear value of a retired tenant
+stays in the table after it. With a runtime before v0.208.0 the seal job
+passed over the active tenants only, so after a retire each pass completed
+and the contract refused for ever with `rows of the listed tenants with a
+clear value and no sealed value` (walkthrough 29, SEAL-RETIRE). To end that
+wait, deploy the release of the expand step again with runtime v0.208.0 or
+later and let the seal job complete a pass.
 
 The contract does not wait for the release of the expand step to stop, as the
 contract of a drop or a rename does not wait for the release of its expand

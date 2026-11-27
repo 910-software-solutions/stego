@@ -394,4 +394,53 @@ func TestSealedFields(t *testing.T) {
 		}
 		v.noValueAnywhere(token)
 	})
+	t.Run("ST-SUP-RP10-LC46-T03 The re-seal job of the tenant list moves the values of a retired tenant, so left 0 leaves no value on the earlier key", func(t *testing.T) {
+		oldKey, newKey := throwawayKey(t), throwawayKey(t)
+		v := newVaultEnv(t, vaultRing(t, "1 "+oldKey))
+		migration, err := tenant.Migration("public", v.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		v.exec(migration)
+		for i, tn := range []string{"org-a", "org-b", "org-a", "org-b"} {
+			if i < 2 {
+				if err := tenant.Provision(v.ctx, v.pool, "public", mustTenant(t, tn), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := v.write(tn, fmt.Sprintf("k%d", i), func(ctx context.Context, r *Repository[vault]) error {
+				_, err := r.Create(ctx, vault{ID: fmt.Sprintf("v%03d", i), Label: "x", Token: sealed.SecretOf(fmt.Sprintf("%s-%03d", token, i))})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// org-b is retired: its rows stay, sealed with the key 1.
+		if err := tenant.Retire(v.ctx, v.pool, "public", mustTenant(t, "org-b"), nil); err != nil {
+			t.Fatal(err)
+		}
+		rotated := vaultRing(t, "2 "+newKey, "1 "+oldKey)
+		job, err := NewReseal(v.pool, "public", rotated, vaultReseal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := job.Run(v.ctx)
+		if err != nil || len(results) != 1 || results[0].Moved != 4 || results[0].Left != 0 || results[0].Failed != 0 {
+			t.Fatalf("the re-seal job gave %+v and %v, want the 4 values of both tenants moved and none left", results, err)
+		}
+		if n := v.count(`SELECT count(*) FROM vaults WHERE substring(token from 1 for 5) <> $1`, sealed.Prefix(2)); n != 0 {
+			t.Fatalf("%d values are not sealed with the key 2 after a run with left 0, want none", n)
+		}
+		// The key 1 goes: each value of the retired tenant still opens with the key 2 alone.
+		onlyNew := vaultRing(t, "2 "+newKey)
+		for _, id := range []string{"v001", "v003"} {
+			var raw []byte
+			if err := v.admin.QueryRowContext(v.ctx, `SELECT token FROM vaults WHERE tenant_id = 'org-b' AND id = $1`, id).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := onlyNew.Open(raw, sealed.Place{Tenant: "org-b", Table: "vaults", Column: "token", Row: id}); err != nil {
+				t.Fatalf("the value %s of the retired org-b does not open with the key 2 alone: %v", id, err)
+			}
+		}
+	})
 }

@@ -383,7 +383,7 @@ type SealJob struct {
 	batched func()
 }
 
-// NewSealJob makes the seal job of the columns over the tenants of the tenant list of schema, on db, a pool of the
+// NewSealJob makes the seal job of the columns over each tenant of the tenant list of schema, retired too, on db, a pool of the
 // runtime role that tenant.Open returned, with the key ring, under the lease of each change for the holder.
 func NewSealJob(db *sql.DB, schema string, ring *sealed.Ring, columns []SealColumn, holder string, settings lease.Settings) (*SealJob, error) {
 	switch {
@@ -398,7 +398,9 @@ func NewSealJob(db *sql.DB, schema string, ring *sealed.Ring, columns []SealColu
 		}
 	}
 	j := &SealJob{db: db, schema: schema, ring: ring, columns: columns, holder: holder, settings: settings, pause: SealPause, contracted: map[string]bool{}, stray: map[string]bool{}}
-	j.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, db, schema) }
+	// The pass reaches the rows of a retired tenant too, which a Retire keeps: the contract step checks each row of
+	// the table, and no clear value of a retired tenant stays (decision ST-SUP-Q219 (a)).
+	j.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.ListAll(ctx, db, schema) }
 	return j, nil
 }
 
