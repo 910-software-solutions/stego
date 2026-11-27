@@ -532,7 +532,8 @@ const WorkerTuplesInterval = time.Hour
 
 // workerReconcile gives the reconcile of the worker tuples when the service declares its tenant provisioning, which
 // binds authorization, and its schema declares the definition tenant, and else nil (ST-SUP-RC35-OC13). It runs with
-// no declared worker too, so the tuples of the last removed worker are deleted.
+// no declared worker too, so the tuples of the last removed worker are deleted; when the schema declares the relation
+// service of the type tenant, it also touches the service tuple of each active tenant (decision ST-SUP-Q220 (a)).
 func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
 	if svc.tenants == nil || !svc.parts.declaresTenant() {
 		return nil, nil
@@ -540,7 +541,16 @@ func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
 	if svc.provider == nil {
 		return nil, errors.New("service: the reconcile of the worker tuples needs the SpiceDB provider")
 	}
-	return command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider, svc.parts.Release)
+	r, err := command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider, svc.parts.Release)
+	if err != nil || svc.tenants.service == "" {
+		return r, err
+	}
+	// The tenants provisioned before the release that added the relation service of the type tenant get its tuple
+	// (decision ST-SUP-Q220 (a)).
+	if err := r.RelateService(svc.tenants.service); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // resealJob gives the re-seal job of the readable secret fields of the service, or nil for a service with none

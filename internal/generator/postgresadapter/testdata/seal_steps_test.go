@@ -633,6 +633,176 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC50-T08 A seal over the rows of a tenant retired before or during the seal completes its contract and leaves no clear value", func(t *testing.T) {
+		own, db, reader := base(t)
+		// A vault with the zero UUID, which the first page of the seal job reads too (FirstNull; confirmation review
+		// of PR #20, F2).
+		if code := write(t, db, "tenant-b", `INSERT INTO public."vaults" ("id", "title", "note", "code") VALUES ('00000000-0000-0000-0000-000000000000', 'zero', 'zero@example.com', 'c-zero')`); code != "" {
+			t.Fatalf("no vault with the zero UUID: %s", code)
+		}
+		retire := func(id string) {
+			t.Helper()
+			if code := write(t, db, id, `SELECT public.stego_retire_tenant($1)`, id); code != "" {
+				t.Fatalf("the retire of %s: %s", id, code)
+			}
+		}
+		// tenant-b is retired before the expand step of the seal, and tenant-a while the seal is open. A Retire
+		// deletes no row, so the vaults of both stay with their clear values.
+		retire("tenant-b")
+		expand(t, own, db)
+		retire("tenant-a")
+		var active int
+		if err := db.QueryRow(`SELECT count(*) FROM public.stego_tenants WHERE retired_at IS NULL`).Scan(&active); err != nil || active != 0 {
+			t.Fatalf("%d active tenants after the retires (%v), want none", active, err)
+		}
+		// The clear values that the contract drops, by tenant and row.
+		type value struct{ note, code sql.NullString }
+		values := map[string]value{}
+		rows, err := db.Query(`SELECT "tenant_id" || '/' || "id"::text, "note", "code" FROM public."vaults"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var key string
+			var v value
+			if err := rows.Scan(&key, &v.note, &v.code); err != nil {
+				t.Fatal(err)
+			}
+			values[key] = v
+		}
+		if err := rows.Close(); err != nil || len(values) != 61 {
+			t.Fatalf("%d vaults (%v), want the 61 of the two retired tenants", len(values), err)
+		}
+		for _, r := range job(t, reader) {
+			if !r.Completed || r.Checked != 61 {
+				t.Fatalf("the seal job gave %+v, want the pass completed over the 61 vaults of the retired tenants", r)
+			}
+		}
+		if n := agree(t, db); n != 61 {
+			t.Fatalf("%d vaults agree, want 61", n)
+		}
+		var clearOnly int
+		if err := db.QueryRow(`SELECT count(*) FROM public."vaults" WHERE ("note" IS NOT NULL AND "note_sealed" IS NULL) OR ("code" IS NOT NULL AND "code_sealed" IS NULL)`).Scan(&clearOnly); err != nil || clearOnly != 0 {
+			t.Fatalf("%d vaults hold a clear value with no sealed value after the pass (%v), want none", clearOnly, err)
+		}
+		if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); err != nil {
+			t.Fatalf("the contract after a completed pass with retired tenants: %v", err)
+		}
+		// No clear column stays, and each sealed value of each retired tenant opens to the value that it held in
+		// clear.
+		for _, c := range columns(t, db, "vaults") {
+			if c.Name == "note" || c.Name == "code" {
+				t.Errorf("the clear column %s is still there after the contract", c.Name)
+			}
+		}
+		rows, err = db.Query(`SELECT "tenant_id", "id"::text, "note_sealed", "code_sealed" FROM public."vaults"`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			var tenant, id string
+			var noteSealed, codeSealed []byte
+			if err := rows.Scan(&tenant, &id, &noteSealed, &codeSealed); err != nil {
+				t.Fatal(err)
+			}
+			v := values[tenant+"/"+id]
+			for _, c := range []struct {
+				column string
+				clear  sql.NullString
+				raw    []byte
+			}{{"note_sealed", v.note, noteSealed}, {"code_sealed", v.code, codeSealed}} {
+				if !c.clear.Valid {
+					if c.raw != nil {
+						t.Errorf("the vault %s of %s holds a sealed %s and had no value", id, tenant, c.column)
+					}
+					continue
+				}
+				plain, err := ring.Open(c.raw, sealed.Place{Tenant: tenant, Table: "vaults", Column: c.column, Row: id})
+				if err != nil || string(plain) != c.clear.String {
+					t.Errorf("the vault %s of %s holds a %s that is not its value before the contract (%v)", id, tenant, c.column, err)
+				}
+			}
+			n++
+		}
+		if err := rows.Err(); err != nil || n != 61 {
+			t.Fatalf("%d vaults after the contract (%v), want 61", n, err)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC50-T09 After a pass of a runtime before v0.207.0 that passed a retired tenant, completed or cut, the seal job of this runtime seals its rows and the contract passes", func(t *testing.T) {
+		for _, mode := range []string{"completed", "cut"} {
+			t.Run(mode, func(t *testing.T) {
+				own, db, reader := base(t)
+				expand(t, own, db)
+				if code := write(t, db, "tenant-a", `SELECT public.stego_retire_tenant('tenant-a')`); code != "" {
+					t.Fatalf("the retire of tenant-a: %s", code)
+				}
+				// The seal job of a runtime before v0.207.0 read the active tenants alone: it runs here over a copy of
+				// the tenant list that holds only them.
+				for _, statement := range []string{"CREATE SCHEMA oldlist",
+					"CREATE TABLE oldlist.stego_tenants AS SELECT * FROM public.stego_tenants WHERE retired_at IS NULL",
+					"GRANT USAGE ON SCHEMA oldlist TO " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize(),
+					"GRANT SELECT ON oldlist.stego_tenants TO " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize()} {
+					if _, err := db.Exec(statement); err != nil {
+						t.Fatalf("%.60s: %v", statement, err)
+					}
+				}
+				old, err := command.NewSealJob(reader, "oldlist", ring, seal.SealColumns, "holder-old", lease.Settings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, r := range func() []command.SealResult {
+					results, err := old.Run(ctx)
+					if err != nil {
+						t.Fatalf("the old seal job: %v", err)
+					}
+					return results
+				}() {
+					if !r.Completed || r.Checked != 30 {
+						t.Fatalf("the old seal job gave %+v, want the pass completed over the 30 vaults of tenant-b", r)
+					}
+				}
+				if mode == "cut" {
+					// The old binary stopped after tenant-b, before the end of its pass, as at the rollout.
+					if _, err := db.Exec(`UPDATE stego_schema.seals SET completed_at = NULL`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var clearOnly int
+				if err := db.QueryRow(`SELECT count(*) FROM public."vaults" WHERE "tenant_id" = 'tenant-a' AND "code" IS NOT NULL AND "code_sealed" IS NULL`).Scan(&clearOnly); err != nil || clearOnly != 30 {
+					t.Fatalf("the old pass left %d codes of tenant-a in clear (%v), want 30", clearOnly, err)
+				}
+				// The contract refuses while the rows of tenant-a are in clear.
+				var refused interface{ Refusal() string }
+				if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); !errors.As(err, &refused) {
+					t.Fatalf("the contract after the old pass ends with %v, want a refusal", err)
+				}
+				// This runtime: the seal job of the tenant list starts a new pass.
+				for _, r := range job(t, reader) {
+					if !r.Completed || r.Checked != 60 {
+						t.Fatalf("the seal job of this runtime gave %+v, want a new pass completed over the 60 vaults", r)
+					}
+				}
+				if n := agree(t, db); n != 60 {
+					t.Fatalf("%d vaults agree, want 60", n)
+				}
+				if err := db.QueryRow(`SELECT count(*) FROM public."vaults" WHERE ("note" IS NOT NULL AND "note_sealed" IS NULL) OR ("code" IS NOT NULL AND "code_sealed" IS NULL)`).Scan(&clearOnly); err != nil || clearOnly != 0 {
+					t.Fatalf("%d vaults hold a clear value with no sealed value (%v), want none", clearOnly, err)
+				}
+				if err := release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }); err != nil {
+					t.Fatalf("the contract after the pass of this runtime: %v", err)
+				}
+				for _, c := range columns(t, db, "vaults") {
+					if c.Name == "note" || c.Name == "code" {
+						t.Errorf("the clear column %s is still there after the contract", c.Name)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC50-T07 A contract of a seal that waits for its pass gives the failure record its fault class, the table, the remedy and the cause class", func(t *testing.T) {
 		own, db, _ := base(t)
 		expand(t, own, db)

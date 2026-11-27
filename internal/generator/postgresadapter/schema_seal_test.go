@@ -119,8 +119,8 @@ func TestSealSteps(t *testing.T) {
 		}
 		sealedColumns := generated(t, files[1], "seal/sealed_columns.go")
 		for _, want := range []string{
-			`{Change: "vault-note-seal", Entity: "Vault", Table: "vaults", Clear: "note", Sealed: "note_sealed",`,
-			`Select: "SELECT \"id\"::text, \"note\"::text, \"note_sealed\" FROM public.\"vaults\" WHERE \"tenant_id\" = $1 AND \"id\" > $2::uuid ORDER BY \"id\" LIMIT $3 FOR UPDATE"`,
+			`{Change: "vault-note-seal", Entity: "Vault", Table: "vaults", Clear: "note", Sealed: "note_sealed", FirstNull: true,`,
+			`Select: "SELECT \"id\"::text, \"note\"::text, \"note_sealed\" FROM public.\"vaults\" WHERE \"tenant_id\" = $1 AND ($2::uuid IS NULL OR \"id\" > $2::uuid) ORDER BY \"id\" LIMIT $3 FOR UPDATE"`,
 			`Update: "UPDATE public.\"vaults\" SET \"note_sealed\" = $3 WHERE \"tenant_id\" = $1 AND \"id\" = $2::uuid"`,
 			`Column: "note_sealed"`,
 		} {

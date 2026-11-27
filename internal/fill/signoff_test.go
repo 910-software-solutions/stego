@@ -3,6 +3,7 @@ package fill
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,9 @@ func newTestKeys() (*testKeys, error) {
 		cmd.Env = append(os.Environ(), "GNUPGHOME="+k.gnupgHome)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return "", &exec.ExitError{ProcessState: cmd.ProcessState, Stderr: out}
+			// The error itself, with the output: a tool that does not start, such as a host with no gpg, has no
+			// ProcessState, and an exec.ExitError of it printed only <nil> (security review of PR #12).
+			return "", fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, out)
 		}
 		return string(out), nil
 	}

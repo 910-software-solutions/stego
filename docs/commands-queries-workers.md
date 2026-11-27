@@ -622,6 +622,8 @@ alone (walkthrough 28, GRPC-CODES):
 | The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
 | The same key while the first request runs | 409 | `Aborted` | `idempotency-key-in-progress` |
 | A message that cannot be read | 400 | `InvalidArgument` | `bad_request` |
+| An `authz-revocation-after` value that is not a revocation, or more than one `authz-revocation-after` value | 400 | `InvalidArgument` | `bad_request` |
+| A call that its client cancelled, or whose deadline passed, during the wait for a revocation | none | `Canceled` or `DeadlineExceeded`, the status of the context | the text of the context error |
 | A value that the checks of the command refuse | 400 | `InvalidArgument`, with a `google.rpc.BadRequest` detail that names the field | `invalid` |
 | The caller does not have the permission on the row, or the row is not there | 404 | `NotFound` | `denied` |
 | The fill returns `command.ErrNotFound` | 404 | `NotFound` | `not_found` |
@@ -1689,6 +1691,49 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+In one command, the fill cannot do this yet. When a fill creates a row and
+then a row that refers to it, with the loaded value that the first `Create`
+returned, the runtime decides the reference at SpiceDB. SpiceDB does not
+hold the tuples of the new row before the relay writes them after the
+commit, so the decision is a deny: `Create` gives `command.ErrNotFound`,
+the command answers 404 `not_found`, and the transaction commits nothing
+(ST-SUP-RP10-LC05-T26). Today, create the row in one call and the rows that
+refer to it in a second call that sends `Authz-Revocation-After`, and make
+each call idempotent.
+
+ST-SUP-Q221 decided a declared opt-in, `creates_with_children: true` on a
+command or a worker (ST-SUP-RP10-LC59, ST-DECL-INV108). It is not built.
+With it, the `Create` of a row that refers to a row that a `Create` of the
+same attempt wrote is decided with no call of SpiceDB, only when validate
+proved from the schema that the decisions and tuples of the first create
+give the permission of the reference:
+
+- **The union-subset rule.** Holding D proves X when D is a term of X's
+  union, directly or through more unions only; arrows are followed when
+  they are plain (`->` or `.any()`). `view = edit + reader` proves `view`
+  from `edit`, and so does `view = edit2 + reader` with
+  `edit2 = edit + member`. Any intersection (`&`), exclusion (`-`),
+  `.all()`, caveat or expiration on that path makes it unprovable, and so
+  does a subset that is not a term: `edit = owner + admin` does not prove
+  `view = owner + admin + member`.
+- **What counts as held.** Only what the runtime decided: a command decides
+  the permission that the reference names, or its own; a worker decides its
+  own permission, whatever the reference names; a consuming worker also
+  decides the stager's, which is proved only from the stager's decisions. A
+  caller relationship of the new row counts for the caller. An optional
+  reference is never a witness.
+- **What it does not cover.** The command's own permission on the new row
+  (a `Get`, `Update`, `Relate` of it after its create), a move to a new
+  parent, and an update or a delete of a new child are decided at SpiceDB
+  as today. So is every reference while the schema that SpiceDB serves is
+  not the one compiled into the pod's own release (a rolling deploy of a
+  newer schema: up to about 7 s after it is served, an older pod can still
+  use its proof), or when SpiceDB does not answer.
+
+Validate refuses the opt-in when no reference has a proof, and warns
+`new-reference-decided` of each reference that has none. Each such
+decision writes the info line `command.reference.decided_by_create`.
+
 ### Act at once on a row that another user created
 
 A second user of the same tenant can also act at once on a new row, such as
@@ -1722,7 +1767,7 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
-### Release notes for runtime v0.207.0
+### Release notes for runtime v0.208.0
 
 - A refusal before the router gives its fixed problem code to the access
   line of the request (`otel.SetErrorCode`): the 401 of the authentication
@@ -1740,7 +1785,7 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
 - `otel.SetErrorCode` also takes upper-case letters, for the fixed codes of
   the problem documents such as `SVC-AUT-001`. A code with any other
   character, such as a space, is still ignored.
-- rest-crud 3.276.0, rpc-service 1.276.0 and browser-service 1.276.0 pin
+- rest-crud 3.277.0, rpc-service 1.277.0 and browser-service 1.277.0 pin
   this runtime. It holds each change of v0.206.0 too.
 - apidiff against v0.206.0: compatible (added `otel.SharedErrorCodeKey`).
 

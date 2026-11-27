@@ -206,6 +206,42 @@ func TestTenantProvisioning(t *testing.T) {
 			t.Fatalf("the tenant list holds %d rows and the hook ran %d times, want the one tenant of 255 bytes", rows, hookRuns)
 		}
 	})
+	t.Run("ST-SUP-RP04-LC07-T06 ListAll gives the retired tenants with the active ones, and List only the active ones", func(t *testing.T) {
+		env := newPG(t)
+		ctx := context.Background()
+		for _, id := range []string{"t3", "t1", "t2"} {
+			if err := Provision(ctx, env.runtimeDB, "public", mustRequested(t, id), nil); err != nil {
+				t.Fatalf("provision %s: %v", id, err)
+			}
+		}
+		if err := Retire(ctx, env.runtimeDB, "public", mustRequested(t, "t2"), nil); err != nil {
+			t.Fatalf("retire t2: %v", err)
+		}
+		ids := func(tenants []Tenant, err error) string {
+			t.Helper()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, tenant := range tenants {
+				out = append(out, tenant.ID())
+			}
+			return strings.Join(out, ",")
+		}
+		if got := ids(ListAll(ctx, env.runtimeDB, "public")); got != "t1,t2,t3" {
+			t.Fatalf("ListAll gave %s, want t1,t2,t3 with the retired t2", got)
+		}
+		if got := ids(List(ctx, env.runtimeDB, "public")); got != "t1,t3" {
+			t.Fatalf("List gave %s, want t1,t3 with no retired tenant", got)
+		}
+		if _, err := ListAll(ctx, env.runtimeDB, ""); err == nil {
+			t.Fatal("ListAll with no schema gave no error")
+		}
+		if _, err := ListAll(ctx, nil, "public"); err == nil {
+			t.Fatal("ListAll with no database gave no error")
+		}
+	})
+
 	t.Run("ST-SUP-RP04-LC07-T05 The migration text of the tenant list runs again with no error", func(t *testing.T) {
 		env := newPG(t)
 		ctx := context.Background()

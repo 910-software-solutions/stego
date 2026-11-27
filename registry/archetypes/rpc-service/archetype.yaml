@@ -8,7 +8,7 @@ version: 1.276.0
 runtime:
   module: github.com/910-software-solutions/stego/registry/runtime
   version: v0.207.0
-  sum: h1:lUcccus+e5JNlEQBT4yOo481+obhJBWHlpG3UEEtRVY=
+  sum: h1:43/jGJ7ihN3x89zFEax/jlaNLVvo+GprEMXMSZFQ4Ns=
 components:
   - postgres-adapter
   - domain-probe

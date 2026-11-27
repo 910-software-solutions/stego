@@ -77,7 +77,7 @@ the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more, and `stego.error_code`, the fixed code of the answer, for a status of 400 or more, such as `SVC-AUT-001` for a 401 of the authentication, `tenant.not_provisioned` for a 403 of the tenant check, `unavailable` or `internal` (from otel-tracing 1.26.0 and runtime v0.207.0; never a value of the request). The router sets `http.route`, so an answer that comes before the router has no `http.route`, also on a path that a route matches: a 401 of the authentication; a 403 `tenant.not_provisioned` and a 503 of the tenant check, such as when the database takes no connection; a 503 of a process that does not run the api mode; and a 400 or 413 of the request check of a collection body, such as a body that is not JSON, or a missing `Idempotency-Key` on a route that requires the key (walkthrough 27, R-ROUTE; walkthrough 28, R-ROUTE2). A path that no route matches has none too. To find why such a request was refused, read `stego.error_code`. To find such lines of one route, filter on the status and the method. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more, and `stego.error_code`, the fixed code of the answer, for a status of 400 or more, such as `SVC-AUT-001` for a 401 of the authentication, `tenant.not_provisioned` for a 403 of the tenant check, `unavailable` or `internal` (from otel-tracing 1.26.0 and runtime v0.208.0; never a value of the request). The router sets `http.route`, so an answer that comes before the router has no `http.route`, also on a path that a route matches: a 401 of the authentication; a 403 `tenant.not_provisioned` and a 503 of the tenant check, such as when the database takes no connection; a 503 of a process that does not run the api mode; and a 400 or 413 of the request check of a collection body, such as a body that is not JSON, or a missing `Idempotency-Key` on a route that requires the key (walkthrough 27, R-ROUTE; walkthrough 28, R-ROUTE2). A path that no route matches has none too. To find why such a request was refused, read `stego.error_code`. To find such lines of one route, filter on the status and the method. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
 | `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
 | `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
 | `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
@@ -693,9 +693,13 @@ Wait until both rollouts complete before you start the next phase.
    ring no longer holds. The run logs the first three such rows with their
    column and row, and then one count for the column and the tenant.
 3. Remove the old key only when both of these are true:
-   - each column logged `left=0` in one complete run that started after both
-     rollouts of phase 2 completed. A run that started earlier can miss
-     values that an old pod wrote;
+   - each column logged `left=0` in one complete run of runtime v0.207.0 or
+     later that started after both rollouts of phase 2 completed. A run that
+     started earlier can miss values that an old pod wrote. A run of a runtime
+     before v0.207.0 passed over the active tenants alone, so its `left=0`
+     does not count the values of a retired tenant, which stay on the old key
+     (decision ST-SUP-Q219 (a)). After an upgrade from such a runtime, wait for
+     one complete run of the new runtime before you remove a key;
    - the idempotency retention of the service (24 hours when the declaration
      gives none) has passed since phase 2. An idempotency key of that time
      holds a fingerprint of the old key, and a retry with that key needs the

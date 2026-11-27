@@ -80,6 +80,9 @@ type tenantProvisioning struct {
 	// rt is the command runtime of Provision and Retire, on which the controller mode reconciles the worker tuples
 	// (ST-SUP-RC35-OC13).
 	rt *command.Runtime
+	// service is the resource type of the provisioning when the schema declares the relation service of the type
+	// tenant, whose tuple the reconcile touches on each active tenant, and else empty (decision ST-SUP-Q220 (a)).
+	service string
 }
 
 // newProvisioning makes the handlers of the declared provisioning p on the command runtime rt, whose tenant list in
@@ -120,6 +123,9 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	// A schema that declares the relation service of the type tenant gets the tuple that relates the tenant resource
 	// to the service-level resource of the tenant (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52).
 	spec.ServiceRelation = slices.Contains(svc.parts.Relations, authz.Relation{ResourceType: authz.TenantType, Name: command.TenantServiceRelation})
+	if spec.ServiceRelation {
+		tp.service = p.ResourceType
+	}
 	var err error
 	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
 	if p.AdminRelation != "" {

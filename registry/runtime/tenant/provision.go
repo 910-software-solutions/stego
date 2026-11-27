@@ -107,6 +107,19 @@ func Migration(schema, runtimeRole string) (string, error) {
 // ID order (ST-SUP-RP04-LC07). It names the table with its schema, so a temporary table of the same name is not
 // read. It reads as the role of db, which is the runtime role in a service.
 func List(ctx context.Context, db *sql.DB, schema string) ([]Tenant, error) {
+	return list(ctx, db, schema, " WHERE retired_at IS NULL")
+}
+
+// ListAll reads every tenant of the tenant list of schema, active and retired, in tenant ID order: the tenants
+// whose rows stay in the database, as a Retire deletes no row. Only a job that must reach each row that the database
+// holds reads it, such as the seal job and the re-seal job of a secret column, so no clear or old sealed value of a
+// retired tenant stays (decision ST-SUP-Q219 (a), ST-SUP-RP04-LC07); a job that acts for a tenant reads List.
+func ListAll(ctx context.Context, db *sql.DB, schema string) ([]Tenant, error) {
+	return list(ctx, db, schema, "")
+}
+
+// list reads the tenants of stego_tenants of schema that the filter where keeps, in tenant ID order.
+func list(ctx context.Context, db *sql.DB, schema, where string) ([]Tenant, error) {
 	if db == nil {
 		return nil, errors.New("tenant: no database")
 	}
@@ -115,7 +128,7 @@ func List(ctx context.Context, db *sql.DB, schema string) ([]Tenant, error) {
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, "SELECT tenant_id FROM "+quotedSchema+
-		".stego_tenants WHERE retired_at IS NULL ORDER BY tenant_id COLLATE \"C\"")
+		".stego_tenants"+where+" ORDER BY tenant_id COLLATE \"C\"")
 	if err != nil {
 		return nil, fmt.Errorf("tenant: read the tenant list: %w", err)
 	}

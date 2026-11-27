@@ -960,28 +960,24 @@ var verifiedDirs, hashedDirs int
 // the checked hash, a stamp of its files: their names, sizes, modes and modification times.
 const verifiedFile = "verified-dirs.json"
 
-// errIrregular is the refusal of a module folder that holds an entry that is not a regular file or a folder.
-var errIrregular = errors.New("holds an entry that is not a regular file or a folder, which no module zip holds")
-
 // dirStamp gives the stamp of the files of the folder dir: a hash of the name, size, mode and modification time of
-// each entry. A file that is added, removed or written changes it. It refuses with errIrregular an entry that is not
-// a regular file or a folder, such as a symbolic link (security review of PR #14, L2): a module zip holds none, and
-// the stamp of a link is that of the link, so an edit of its target changed no stamp.
+// each entry. A file that is added, removed or written changes it.
 func dirStamp(dir string) (string, error) {
 	h := sha256.New()
 	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !entry.Type().IsRegular() && !entry.IsDir() {
-			rel, _ := filepath.Rel(dir, name)
-			return fmt.Errorf("%w: %s", errIrregular, rel)
-		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, name)
+		// The go command extracts only folders and regular files. A link, which Lstat sees and the hash of dirhash
+		// follows, would let a stamp stay the same while the file it names changes (security review of PR #7, I2).
+		if !entry.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s holds %s, which is not a regular file or a folder", dir, rel)
+		}
 		fmt.Fprintf(h, "%q %d %o %d\n", rel, info.Size(), info.Mode(), info.ModTime().UnixNano())
 		return nil
 	})
@@ -1024,14 +1020,15 @@ func verifyDirs(dirs []fillDir, stampsFile string) error {
 			defer wg.Done()
 			for d := range work {
 				stamp, err := dirStamp(d.Dir)
-				why := ""
-				if errors.Is(err, errIrregular) {
+				if err != nil {
+					// A folder that cannot be stamped, such as one that holds a link, is refused, not hashed.
 					failedMu.Lock()
-					failed = append(failed, fmt.Sprintf("%s %s: its folder %s %v", d.Path, d.Version, d.Dir, err))
+					failed = append(failed, fmt.Sprintf("%s %s: %v", d.Path, d.Version, err))
 					failedMu.Unlock()
 					continue
 				}
-				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
+				why := ""
+				if known[d.Dir] == (record{d.Sum, stamp}) {
 					failedMu.Lock()
 					passed[d.Dir] = record{d.Sum, stamp}
 					failedMu.Unlock()
@@ -1172,10 +1169,51 @@ func cacheFolder(goTool string) (string, error) {
 			return "", fmt.Errorf("the module cache of localtest %s is in the shared GOMODCACHE %s", folder, abs)
 		}
 	}
+	if _, err := os.Stat(folder); errors.Is(err, fs.ErrNotExist) {
+		if err := firstFill(folder, os.Stderr, freeSpace); err != nil {
+			return "", err
+		}
+	}
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		return "", fmt.Errorf("make the module cache of localtest %s: %w", folder, err)
 	}
 	return folder, nil
+}
+
+// cacheSize is about the size of the module cache of localtest when it is full: the modules of testdata/modules,
+// testdata/modules-other and the build of ./cmd/stego.
+const cacheSize = 3 << 30
+
+// freeSpace gives the bytes that the file system of the path has free for this user.
+var freeSpace = func(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
+
+// firstFill is the step before the first fill of the module cache of localtest in folder, which does not exist yet:
+// it writes one notice line with the folder, its size when full and how to keep it elsewhere or remove it, and
+// refuses the fill when the file system of the folder has less than two times that size free (owner disk note,
+// 2026-11-27). free gives the free bytes of the nearest folder that exists.
+func firstFill(folder string, out io.Writer, free func(string) (uint64, error)) error {
+	fmt.Fprintf(out, "localtest: the first fill writes the checked module cache, about %d GB, to %s; set STEGO_TEST_RUNS to a folder to keep it there, or remove the folder to free the space\n", cacheSize>>30, folder)
+	existing := filepath.Dir(folder)
+	for {
+		if _, err := os.Stat(existing); err == nil || filepath.Dir(existing) == existing {
+			break
+		}
+		existing = filepath.Dir(existing)
+	}
+	available, err := free(existing)
+	if err != nil {
+		return fmt.Errorf("find the free space for the module cache of localtest at %s: %w", existing, err)
+	}
+	if available < 2*cacheSize {
+		return fmt.Errorf("the module cache of localtest needs about %d GB at %s, and its file system has %d MB free, less than %d GB; free space there, or set STEGO_TEST_RUNS to a folder on a file system with more free space", cacheSize>>30, folder, available>>20, 2*cacheSize>>30)
+	}
+	return nil
 }
 
 // command runs the tool and gives its standard output, or an error with its standard error.
