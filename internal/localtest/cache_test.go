@@ -3,6 +3,7 @@ package localtest
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -378,6 +379,11 @@ func TestFirstFill(t *testing.T) {
 		err := firstFill(folder, &out, free(2*cacheSize-1))
 		if err == nil || !strings.Contains(err.Error(), folder) || !strings.Contains(err.Error(), "less than 6 GB") || !strings.Contains(err.Error(), "STEGO_TEST_RUNS") {
 			t.Errorf("the fill with less than two times the size free gave %v, want a refusal that names the folder, 6 GB and STEGO_TEST_RUNS", err)
+		}
+		// A free space that cannot be read refuses the fill too (security review of PR #13, missing test).
+		err = firstFill(folder, &out, func(string) (uint64, error) { return 1 << 40, errors.New("statfs: input/output error") })
+		if err == nil || !strings.Contains(err.Error(), "find the free space") || !strings.Contains(err.Error(), "input/output error") {
+			t.Errorf("the fill whose free space cannot be read gave %v, want a refusal with the cause", err)
 		}
 	})
 }
