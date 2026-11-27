@@ -50,6 +50,12 @@ comma-separated list of `name=origin`, such as
   does not give each declared name one time, gives a name that the
   declaration does not give, or gives an address that is not an HTTPS origin
   on another host than the console, or that is the origin of the issuer.
+  From browser-backend 4.19.0 the failure record of such a start gives the
+  fault `browser.settings`, the object `stego_browser_api_urls` and a
+  remedy that says what the list must hold. The record never gives the list.
+  A refused `STEGO_BROWSER_ORIGIN`, `STEGO_BROWSER_API_URL`,
+  `STEGO_BROWSER_ISSUER` or TLS setting gives the same fault with its own
+  variable and remedy.
 - A request goes to the one origin of the API whose prefix its path is
   under. No header, query or path part of a request can choose another host.
   A path with an encoded slash gets 400. The router of the service sends a

@@ -44,7 +44,7 @@ func NewBrowserBackendWithTelemetry(runtime *telemetry.Runtime,ctx context.Conte
 func NewBrowserBackend(ctx context.Context,db *sql.DB)(*Backend,error){
  if err:=startupStep(ctx,telemetry.StartupBrowserTransport,func(context.Context)error{
   if ctx==nil||db==nil{return errors.New("browser startup requires a context and database")}
-  if os.Getenv("STEGO_HTTP_TLS_CERT")==""||os.Getenv("STEGO_HTTP_TLS_KEY")==""{return errors.New("browser backend requires HTTPS")}
+  if os.Getenv("STEGO_HTTP_TLS_CERT")==""||os.Getenv("STEGO_HTTP_TLS_KEY")==""{return settingFaultOf("STEGO_HTTP_TLS_CERT","browser backend requires HTTPS",tlsRemedy)}
   return nil
  });err!=nil{return nil,err}
  o:=options{Origin:os.Getenv("STEGO_BROWSER_ORIGIN"),Upstream:os.Getenv("STEGO_BROWSER_API_URL"),Upstreams:os.Getenv("STEGO_BROWSER_API_URLS"),UpstreamCA:os.Getenv("STEGO_BROWSER_API_CA_FILE"),Issuer:os.Getenv("STEGO_BROWSER_ISSUER"),IssuerCA:os.Getenv("STEGO_BROWSER_ISSUER_CA_FILE"),ClientID:os.Getenv("STEGO_BROWSER_CLIENT_ID"),SecretFile:os.Getenv("STEGO_BROWSER_CLIENT_SECRET_FILE"),KeyFile:os.Getenv("STEGO_BROWSER_SESSION_KEY_FILE")}
@@ -64,9 +64,9 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  err:=startupStep(ctx,telemetry.StartupBrowserConfiguration,func(context.Context)error{
   if ctx==nil||db==nil{return errors.New("browser startup requires a context and database")}
   var err error
-  origin,err=httpsURL(o.Origin);if err!=nil||origin.Path!=""||origin.RawQuery!=""||origin.ForceQuery{return errors.New("browser backend requires an HTTPS origin")}
-  {{if .LocalApplication}}if o.Upstream!=""||o.Upstreams!=""||o.UpstreamCA!="" {return errors.New("local application address is compiler-owned")}{{else}}upstreamURL,err:=httpsURL(o.Upstream);if err!=nil||upstreamURL.Path!=""||upstreamURL.RawQuery!=""||upstreamURL.ForceQuery||cookieHost(upstreamURL)==cookieHost(origin){return errors.New("browser API requires a separate HTTPS cookie host")}{{end}}
-  issuer,err:=httpsURL(o.Issuer);if err!=nil||cookieHost(issuer)==cookieHost(origin){return errors.New("browser issuer requires a separate HTTPS cookie host")}
+  origin,err=httpsURL(o.Origin);if err!=nil||origin.Path!=""||origin.RawQuery!=""||origin.ForceQuery{return settingFaultOf("STEGO_BROWSER_ORIGIN","browser backend requires an HTTPS origin",originRemedy)}
+  {{if .LocalApplication}}if o.Upstream!=""||o.Upstreams!=""||o.UpstreamCA!="" {return errors.New("local application address is compiler-owned")}{{else}}upstreamURL,err:=httpsURL(o.Upstream);if err!=nil||upstreamURL.Path!=""||upstreamURL.RawQuery!=""||upstreamURL.ForceQuery||cookieHost(upstreamURL)==cookieHost(origin){return settingFaultOf("STEGO_BROWSER_API_URL","browser API requires a separate HTTPS cookie host",apiURLRemedy)}{{end}}
+  issuer,err:=httpsURL(o.Issuer);if err!=nil||cookieHost(issuer)==cookieHost(origin){return settingFaultOf("STEGO_BROWSER_ISSUER","browser issuer requires a separate HTTPS cookie host",issuerRemedy)}
   return nil
  });if err!=nil{return nil,err}
  var keys [][]byte
@@ -135,25 +135,43 @@ func declaredAPIs(o options,origin *url.URL)([]apiRoute,error){
  issuer,err:=httpsURL(o.Issuer);if err!=nil{return nil,errors.New("browser issuer requires an HTTPS URL")}
  var declared configuration
  if json.Unmarshal([]byte(generatedConfiguration),&declared)!=nil{return nil,errors.New("invalid generated browser configuration")}
- if len(declared.APIs)==0{if o.Upstreams!=""{return nil,errors.New("STEGO_BROWSER_API_URLS is given, and the declaration has no apis")};return nil,nil}
+ if len(declared.APIs)==0{if o.Upstreams!=""{return nil,apiURLsFault("STEGO_BROWSER_API_URLS is given, and the declaration has no apis")};return nil,nil}
  given:=map[string]string{}
  for _,item:=range strings.Split(o.Upstreams,","){
   name,address,ok:=strings.Cut(strings.TrimSpace(item),"=")
-  if !ok||name==""{return nil,errors.New("STEGO_BROWSER_API_URLS requires a list of name=origin")}
-  if _,again:=given[name];again{return nil,errors.New("STEGO_BROWSER_API_URLS gives the API "+name+" two times")}
+  if !ok||name==""{return nil,apiURLsFault("STEGO_BROWSER_API_URLS requires a list of name=origin")}
+  if _,again:=given[name];again{return nil,apiURLsFault("STEGO_BROWSER_API_URLS gives the API "+name+" two times")}
   given[name]=address
  }
  var routes []apiRoute
  for _,api:=range declared.APIs{
-  address,ok:=given[api.Name];if !ok{closeAPIs(routes);return nil,errors.New("STEGO_BROWSER_API_URLS gives no origin for the API "+api.Name)}
+  address,ok:=given[api.Name];if !ok{closeAPIs(routes);return nil,apiURLsFault("STEGO_BROWSER_API_URLS gives no origin for the API "+api.Name)}
   delete(given,api.Name)
-  target,err:=httpsURL(address);if err!=nil||target.Path!=""||target.RawQuery!=""||target.ForceQuery||cookieHost(target)==cookieHost(origin)||(cookieHost(target)==cookieHost(issuer)&&target.Port()==issuer.Port()){closeAPIs(routes);return nil,errors.New("browser API "+api.Name+" requires an HTTPS origin other than those of the console and the issuer")}
+  target,err:=httpsURL(address);if err!=nil||target.Path!=""||target.RawQuery!=""||target.ForceQuery||cookieHost(target)==cookieHost(origin)||(cookieHost(target)==cookieHost(issuer)&&target.Port()==issuer.Port()){closeAPIs(routes);return nil,apiURLsFault("browser API "+api.Name+" requires an HTTPS origin other than those of the console and the issuer")}
   c,err:=client.New(client.Options{BaseURL:address,CAFile:o.UpstreamCA});if err!=nil{closeAPIs(routes);return nil,err}
   routes=append(routes,apiRoute{name:api.Name,prefix:api.Prefix,upstream:c})
  }
- for name:=range given{closeAPIs(routes);return nil,errors.New("STEGO_BROWSER_API_URLS names the API "+name+", which the declaration does not give")}
+ for name:=range given{closeAPIs(routes);return nil,apiURLsFault("STEGO_BROWSER_API_URLS names the API "+name+", which the declaration does not give")}
  return routes,nil
 }
+// settingFault is a setting of the browser backend that the start refuses (walkthrough 29, BB-FAIL): the failure record
+// of the service names its fault class, the variable in lower case as its object and a fixed remedy, and never the
+// value. Before, the record gave the stage alone, and the operator needed three restarts to find the setting.
+type settingFault struct{variable,text,remedy string}
+func(f *settingFault)Error()string{return f.text}
+func(f *settingFault)FaultClass()string{return "browser.settings"}
+func(f *settingFault)FaultObject()string{return strings.ToLower(f.variable)}
+func(f *settingFault)FaultRemedy()string{return f.remedy}
+func settingFaultOf(variable,text,remedy string)error{return &settingFault{variable:variable,text:text,remedy:remedy}}
+func apiURLsFault(text string)error{return settingFaultOf("STEGO_BROWSER_API_URLS",text,apiURLsRemedy)}
+// The fixed remedies of the refused settings of the browser backend.
+const(
+ tlsRemedy="set STEGO_HTTP_TLS_CERT and STEGO_HTTP_TLS_KEY to the files of the certificate and the key of the service: the browser backend serves HTTPS only; then start the service again"
+ originRemedy="set STEGO_BROWSER_ORIGIN to the HTTPS origin of the console, with no path, no query and no fragment; then start the service again"
+ apiURLRemedy="set STEGO_BROWSER_API_URL to the HTTPS origin of the API of api_prefix, with no path and on a cookie host other than that of STEGO_BROWSER_ORIGIN; then start the service again"
+ issuerRemedy="set STEGO_BROWSER_ISSUER to the HTTPS URL of the identity provider, on a cookie host other than that of STEGO_BROWSER_ORIGIN; then start the service again"
+ apiURLsRemedy="set STEGO_BROWSER_API_URLS to name=origin for each API of the setting apis of the declaration, joined by commas: each declared name once and no other name, each origin an HTTPS origin with no path, on a cookie host other than those of the console and the issuer; then start the service again"
+)
 func closeAPIs(routes []apiRoute){for _,r:=range routes{r.upstream.Close()}}
 // apiPrefix gives the prefix and the client of the API whose prefix the path is under, at a whole segment: the
 // declared prefixes do not overlap, so at most one matches. It gives no client for a path under no API prefix.
