@@ -328,7 +328,7 @@ func checkSchema(s schema, models map[string]schema, depth int) error {
 	}
 	for key := range s {
 		switch key {
-		case "$ref", "type", "format", "nullable", "properties", "required", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "readOnly", "writeOnly", "description", "title", "default", "example", "deprecated", "externalDocs", "xml", "x-sensitive", "x-kept", "x-stego-opaque", "x-output-only":
+		case "$ref", "type", "format", "nullable", "properties", "required", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "pattern", "minItems", "maxItems", "minProperties", "maxProperties", "readOnly", "writeOnly", "description", "title", "default", "example", "deprecated", "externalDocs", "xml", "x-sensitive", "x-kept", "x-stego-opaque", "x-output-only":
 		default:
 			return fmt.Errorf("unsupported TypeScript schema keyword %q", key)
 		}
@@ -358,7 +358,7 @@ func checkSchema(s schema, models map[string]schema, depth int) error {
 	}{
 		{"object", []string{"properties", "required", "additionalProperties", "minProperties", "maxProperties"}},
 		{"array", []string{"items", "minItems", "maxItems"}},
-		{"string", []string{"minLength", "maxLength"}},
+		{"string", []string{"minLength", "maxLength", "pattern"}},
 		{"number", []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}},
 	} {
 		for _, key := range rule.names {
@@ -366,6 +366,14 @@ func checkSchema(s schema, models map[string]schema, depth int) error {
 				return fmt.Errorf("TypeScript constraint %q requires an explicit matching type", key)
 			}
 		}
+	}
+	if _, present := s["pattern"]; present {
+		// A pattern of a string field is a field attribute of the declaration, which the service checks (walkthrough
+		// 29, TS-PATTERN). The client does not check it: the client would run each pattern of the document in the
+		// browser, and a pattern such as (a+)+$ takes exponential time on some values. The generator removes the
+		// pattern from the contract of the client, so no code of the client reads it. The OpenAPI loader refuses a
+		// pattern that is not a string.
+		delete(s, "pattern")
 	}
 	if format, ok := s["format"].(string); ok {
 		switch format {
