@@ -19,6 +19,7 @@ import (
 	"github.com/910-software-solutions/stego/registry/runtime/authn"
 	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
@@ -341,6 +342,79 @@ func TestWorkerReconcileGuard(t *testing.T) {
 		}
 		if (Parts{}).declaresTenant() {
 			t.Fatal("parts with no definitions declare the definition tenant")
+		}
+	})
+}
+
+func TestRefusalCodes(t *testing.T) {
+	t.Run("ST-SUP-RP03-LC12-T04 A refusal before the router gives its fixed problem code, and no token or tenant, to the access line of the request", func(t *testing.T) {
+		// erp-demo production run (2026-11-27): a 401 of the authentication and a 403 tenant.not_provisioned of the
+		// tenant check logged only their status, so an operator could not tell why from the log of the service.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := listener.Addr().String()
+		_ = listener.Close()
+		db, err := sql.Open("pgx", "postgres://runtime:none@"+closed+"/app?sslmode=disable&connect_timeout=5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		unavailable := gateFixture(t)
+		if unavailable.gate, err = tenant.NewGate(db, "public", time.Second); err != nil {
+			t.Fatal(err)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		withClaim, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			TenantClaim: "tenant", Keys: keys})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(withClaim.Stop)
+		// A verifier with no tenant claim gives an identity that names no tenant: 403 tenant.not_provisioned.
+		noClaim, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS", Keys: keys})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(noClaim.Stop)
+		const tenantID = "initech-4711"
+		claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
+		claims["tenant"] = tenantID
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		router := http.NewServeMux()
+		router.HandleFunc("GET /api/v1/orders", func(http.ResponseWriter, *http.Request) {})
+		for _, c := range []struct {
+			name    string
+			handler http.Handler
+			bearer  string
+			status  int
+			code    string
+		}{
+			{"no token", withClaim.Middleware(unavailable.gated(router, router)), "", http.StatusUnauthorized, "ORDERS-AUT-001"},
+			{"a token that does not verify", withClaim.Middleware(unavailable.gated(router, router)), token + "x", http.StatusUnauthorized, "ORDERS-AUT-001"},
+			{"no tenant", noClaim.Middleware(gateFixture(t).gated(router, router)), token, http.StatusForbidden, tenant.ErrNotProvisionedCode},
+			{"a tenant list that cannot be read", withClaim.Middleware(unavailable.gated(router, router)), token, http.StatusServiceUnavailable, "unavailable"},
+		} {
+			r := httptest.NewRequest("GET", "/api/v1/orders?tenant="+tenantID, nil)
+			if c.bearer != "" {
+				r.Header.Set("Authorization", "Bearer "+c.bearer)
+			}
+			// The place for the code that the telemetry runtime of the service gives each request (otel.WithErrorCode).
+			r = r.WithContext(otel.WithErrorCode(r.Context()))
+			w := httptest.NewRecorder()
+			c.handler.ServeHTTP(w, r)
+			code, ok := otel.ErrorCode(r.Context())
+			if w.Code != c.status || !ok || code != c.code {
+				t.Errorf("%s: the answer is %d and the code of the access line %q (%t), want %d and %q", c.name, w.Code, code, ok, c.status, c.code)
+			}
+			if strings.Contains(code, tenantID) || strings.Contains(code, token) {
+				t.Errorf("%s: the code of the access line %q holds a value of the request", c.name, code)
+			}
 		}
 	})
 }
