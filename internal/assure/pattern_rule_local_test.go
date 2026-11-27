@@ -760,8 +760,17 @@ func reachesOutside(file string, data []byte) []string {
 // the product is marked external, and each obligation of the domain that an external test proves also has an
 // automated test that is not external, which runs against a local stand-in.
 func (p localProof) hasLocalStandIn(t *testing.T) {
+	report(t, "ST-STD-LOCAL-R03", p.standInFaults())
+}
+
+// standInFaults gives the faults of ST-PAT-LOCAL-TEST-R03 in the domain, for hasLocalStandIn.
+func (p localProof) standInFaults() []string {
 	local := map[string]bool{}
 	external := map[string][]string{}
+	// signs holds the signs of each file that a test that is not external names: many tests name one file, and the
+	// signs of a file depend on its bytes alone, so each file is read once (the reading of each test again took
+	// minutes in Supplying, whose 2,500 tests name a few hundred files).
+	signs := map[string][]string{}
 	var faults []string
 	for _, test := range p.tests {
 		if test.external() {
@@ -770,7 +779,12 @@ func (p localProof) hasLocalStandIn(t *testing.T) {
 		}
 		local[test.parent] = true
 		if data, held := p.files[test.file]; held {
-			for _, sign := range reachesOutside(test.file, data) {
+			fileSigns, read := signs[test.file]
+			if !read {
+				fileSigns = reachesOutside(test.file, data)
+				signs[test.file] = fileSigns
+			}
+			for _, sign := range fileSigns {
 				faults = append(faults, fmt.Sprintf("%s is not external, but %s", test.id, sign))
 			}
 		}
@@ -780,7 +794,7 @@ func (p localProof) hasLocalStandIn(t *testing.T) {
 			faults = append(faults, fmt.Sprintf("%s is proved only by tests that reach an outside system: %s", parent, strings.Join(tests, ", ")))
 		}
 	}
-	report(t, "ST-STD-LOCAL-R03", faults)
+	return faults
 }
 
 // An image that a test names: a reference with a tag or a digest, with or without a registry host and a repository
@@ -803,6 +817,11 @@ var serviceVariable = regexp.MustCompile(`(?:Getenv|LookupEnv)\("([A-Z0-9_]*(?:_
 // and fails or skips without it, when no file of its package starts the service and sets the variable. For a test
 // file under a testdata folder, a test file of the host folder above testdata that sets the variable counts too.
 func (p localProof) startsPinnedServices(t *testing.T) {
+	report(t, "ST-STD-LOCAL-R04", p.pinnedServiceFaults())
+}
+
+// pinnedServiceFaults gives the faults of ST-PAT-LOCAL-TEST-R04 in the domain, for startsPinnedServices.
+func (p localProof) pinnedServiceFaults() []string {
 	var faults []string
 	files := p.packageFiles()
 	sets := map[string]map[string]bool{} // folder -> variables that a file of the folder sets
@@ -826,16 +845,25 @@ func (p localProof) startsPinnedServices(t *testing.T) {
 	}
 	// A test file under a testdata folder runs in a module that a test of the host folder, the folder above testdata,
 	// generates and starts: the variables that a test file of the host folder sets reach it, so they count for it too.
+	// The test files of each folder of the tree are listed once, not once for each file under testdata: the listing
+	// of the whole tree for each such file took most of a minute in Supplying on the proof run.
+	treeTests := map[string][]string{} // folder -> its _test.go files in the tree
+	for _, name := range p.tree.paths() {
+		if strings.HasSuffix(name, "_test.go") {
+			treeTests[path.Dir(name)] = append(treeTests[path.Dir(name)], name)
+		}
+	}
+	// The files of one testdata folder take the same variables of the host: they are recorded for the folder once.
+	hosted := map[[2]string]bool{}
 	for file := range files {
 		host, _, inTestdata := strings.Cut(file, "/testdata/")
-		if !inTestdata {
+		if !inTestdata || hosted[[2]string{path.Dir(file), host}] {
 			continue
 		}
-		for _, name := range p.tree.paths() {
-			if path.Dir(name) == host && strings.HasSuffix(name, "_test.go") {
-				data, _ := p.tree.File(name)
-				record(path.Dir(file), data, name)
-			}
+		hosted[[2]string{path.Dir(file), host}] = true
+		for _, name := range treeTests[host] {
+			data, _ := p.tree.File(name)
+			record(path.Dir(file), data, name)
 		}
 	}
 	for file, data := range files {
@@ -865,7 +893,7 @@ func (p localProof) startsPinnedServices(t *testing.T) {
 			}
 		}
 	}
-	report(t, "ST-STD-LOCAL-R04", faults)
+	return faults
 }
 
 // containerImage tells if the text uses the image as the image of a container: in a constant or a variable whose

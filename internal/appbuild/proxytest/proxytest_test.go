@@ -38,55 +38,69 @@ func testGo() string {
 	return filepath.Join(runtime.GOROOT(), "bin", "go")
 }
 
-// upstream is a module proxy in a folder and a sum database that holds the true go.sum lines of its modules.
+// upstream is a module proxy in a folder and a sum database that holds the true go.sum lines of its modules. zipSum
+// and modSum are the hashes of upstreamModule; sums holds those of each module.
 type upstream struct {
 	folder, sumDB, key string
 	zipSum, modSum     string
+	sums               map[string][2]string // module path -> zip hash ("" with no zip), go.mod hash
 }
 
 // newUpstream writes the module upstreamModule into a proxy folder, with its zip when zip is true, and serves a sum
 // database with its true hashes until the test ends.
 func newUpstream(t *testing.T, zip bool) *upstream {
 	t.Helper()
-	u := &upstream{folder: t.TempDir()}
-	at := filepath.Join(u.folder, upstreamModule, "@v")
-	if err := os.MkdirAll(at, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mod := []byte("module " + upstreamModule + "\n\ngo 1.21\n")
-	write := func(name string, data []byte) {
-		if err := os.WriteFile(filepath.Join(at, name), data, 0o644); err != nil {
+	return newUpstreamOf(t, map[string]bool{upstreamModule: zip})
+}
+
+// newUpstreamOf is newUpstream for each module path of mods at upstreamVersion, with its zip when its value is true.
+func newUpstreamOf(t *testing.T, mods map[string]bool) *upstream {
+	t.Helper()
+	u := &upstream{folder: t.TempDir(), sums: map[string][2]string{}}
+	records := map[string]string{}
+	for path, zip := range mods {
+		at := filepath.Join(u.folder, path, "@v")
+		if err := os.MkdirAll(at, 0o755); err != nil {
 			t.Fatal(err)
 		}
-	}
-	write("list", []byte(upstreamVersion+"\n"))
-	write(upstreamVersion+".info", []byte(`{"Version":"`+upstreamVersion+`","Time":"2026-01-01T00:00:00Z"}`))
-	write(upstreamVersion+".mod", mod)
-	var err error
-	u.modSum, err = dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(mod)), nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := upstreamModule + " " + upstreamVersion + "/go.mod " + u.modSum + "\n"
-	if zip {
-		var buf bytes.Buffer
-		files := []modzip.File{memFile{"go.mod", mod}, memFile{"in.go", []byte("package in\n")}}
-		if err := modzip.Create(&buf, module.Version{Path: upstreamModule, Version: upstreamVersion}, files); err != nil {
+		mod := []byte("module " + path + "\n\ngo 1.21\n")
+		write := func(name string, data []byte) {
+			if err := os.WriteFile(filepath.Join(at, name), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("list", []byte(upstreamVersion+"\n"))
+		write(upstreamVersion+".info", []byte(`{"Version":"`+upstreamVersion+`","Time":"2026-01-01T00:00:00Z"}`))
+		write(upstreamVersion+".mod", mod)
+		modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(mod)), nil })
+		if err != nil {
 			t.Fatal(err)
 		}
-		write(upstreamVersion+".zip", buf.Bytes())
-		if u.zipSum, err = dirhash.HashZip(filepath.Join(at, upstreamVersion+".zip"), dirhash.Hash1); err != nil {
-			t.Fatal(err)
+		record := path + " " + upstreamVersion + "/go.mod " + modSum + "\n"
+		zipSum := ""
+		if zip {
+			var buf bytes.Buffer
+			files := []modzip.File{memFile{"go.mod", mod}, memFile{"in.go", []byte("package in\n")}}
+			if err := modzip.Create(&buf, module.Version{Path: path, Version: upstreamVersion}, files); err != nil {
+				t.Fatal(err)
+			}
+			write(upstreamVersion+".zip", buf.Bytes())
+			if zipSum, err = dirhash.HashZip(filepath.Join(at, upstreamVersion+".zip"), dirhash.Hash1); err != nil {
+				t.Fatal(err)
+			}
+			record = path + " " + upstreamVersion + " " + zipSum + "\n" + record
 		}
-		records = upstreamModule + " " + upstreamVersion + " " + u.zipSum + "\n" + records
+		records[path] = record
+		u.sums[path] = [2]string{zipSum, modSum}
 	}
+	u.zipSum, u.modSum = u.sums[upstreamModule][0], u.sums[upstreamModule][1]
 	signer, verifier, err := note.GenerateKey(rand.Reader, "proxytest-upstream")
 	if err != nil {
 		t.Fatal(err)
 	}
 	database := sumdb.NewTestServer(signer, func(path, version string) ([]byte, error) {
-		if path == upstreamModule && version == upstreamVersion {
-			return []byte(records), nil
+		if record, ok := records[path]; ok && version == upstreamVersion {
+			return []byte(record), nil
 		}
 		return nil, os.ErrNotExist
 	})
@@ -213,6 +227,40 @@ func TestStartServesOnlyCheckedModules(t *testing.T) {
 		failure, _ = startFails(t, from, mod)
 		if !strings.Contains(failure, "not the checked hash "+u.zipSum) {
 			t.Fatalf("Start served a changed zip of the cache; its failure is %q", failure)
+		}
+		// One go mod download gives all the modules of a Start: a module whose zip the go command could not give
+		// still gets its go.mod alone, and a changed zip of another module of the same run is still refused.
+		const other = "example.com/stand/other"
+		several := newUpstreamOf(t, map[string]bool{upstreamModule: true, other: false})
+		from = several.source(t)
+		both := []string{mod, other + "@" + upstreamVersion}
+		failure, servers = startFails(t, from, both...)
+		if failure != "" {
+			t.Fatalf("Start refused the modules of a checked source: %s", failure)
+		}
+		whole := string(servers.records[module.Version{Path: upstreamModule, Version: upstreamVersion}])
+		if whole != upstreamModule+" "+upstreamVersion+" "+several.zipSum+"\n"+upstreamModule+" "+upstreamVersion+"/go.mod "+several.modSum+"\n" {
+			t.Fatalf("the record of %s is %q, want its zip and go.mod lines", upstreamModule, whole)
+		}
+		alone := string(servers.records[module.Version{Path: other, Version: upstreamVersion}])
+		if alone != other+" "+upstreamVersion+"/go.mod "+several.sums[other][1]+"\n" {
+			t.Fatalf("the record of %s is %q, want the go.mod line alone", other, alone)
+		}
+		if _, err := os.Stat(servers.ZipPath(t, other, upstreamVersion)); !os.IsNotExist(err) {
+			t.Fatalf("Start serves a zip of %s that the go command did not give: %v", other, err)
+		}
+		if _, err := os.Stat(servers.ZipPath(t, upstreamModule, upstreamVersion)); err != nil {
+			t.Fatalf("Start serves no zip of %s: %v", upstreamModule, err)
+		}
+		zip = filepath.Join(from.Cache, "cache", "download", upstreamModule, "@v", upstreamVersion+".zip")
+		if err := os.Chmod(zip, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(zip, changed.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if failure, _ := startFails(t, from, both...); !strings.Contains(failure, "not the checked hash "+several.zipSum) {
+			t.Fatalf("Start served a changed zip of the cache beside another module; its failure is %q", failure)
 		}
 	})
 	t.Run("ST-STD-LOCAL-R03-T15 Start serves no zip of a module whose zip the go command could not give", func(t *testing.T) {
