@@ -95,7 +95,7 @@ func internalRegistration(function *ast.FuncDecl, imports map[string]string) boo
 		return false
 	}
 	pkg, ok := selector.X.(*ast.Ident)
-	return ok && strings.HasPrefix(imports[pkg.Name], "github.com/jsell-rh/stego/registry/runtime/internal/")
+	return ok && strings.HasPrefix(imports[pkg.Name], "github.com/910-software-solutions/stego/registry/runtime/internal/")
 }
 
 // tableFill is the other form of init that ST-STD-RUNTIME-R01 admits: one loop that fills a package-level map from
@@ -373,13 +373,13 @@ func TestRuntimeLibraryStandard(t *testing.T) {
 
 // knownDriverImport tells if the import is one that the record of the runtime package names as a gap of
 // ST-STD-RUNTIME-R06 not closed yet: ST-SUP-RP04-LF08 (registry/runtime/pgconn/connect.go) is not written, so the
-// tenant runtime's connector and session guard still sit in package tenant, and the command runtime reads the
-// error type of pgconn. The list holds each file and import by name, so a new driver import fails the test.
+// tenant runtime's connector and session guard still sit in package tenant, and the command runtime and the
+// transaction of the tenant runtime read the error type of pgconn. The list holds each file and import by name, so a new driver import fails the test.
 func knownDriverImport(name, imported string) bool {
 	known := map[string][]string{
 		"registry/runtime/tenant/owner.go":     {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn", "github.com/jackc/pgx/v5/stdlib"},
 		"registry/runtime/tenant/provision.go": {"github.com/jackc/pgx/v5"},
-		"registry/runtime/tenant/tx.go":        {"github.com/jackc/pgx/v5"},
+		"registry/runtime/tenant/tx.go":        {"github.com/jackc/pgx/v5", "github.com/jackc/pgx/v5/pgconn"},
 		"registry/runtime/command/handle.go":   {"github.com/jackc/pgx/v5/pgconn"},
 	}
 	return slices.Contains(known[name], imported)
@@ -410,7 +410,7 @@ func importNames(file *ast.File) map[string]string {
 var gitopsImports = map[string]bool{
 	"bytes": true, "errors": true, "fmt": true, "io": true, "maps": true, "math": true, "net": true, "net/url": true,
 	"path": true, "regexp": true, "slices": true, "sort": true, "strconv": true, "strings": true, "time": true,
-	"unicode": true, "unicode/utf8": true, "gopkg.in/yaml.v3": true, "github.com/jsell-rh/stego/internal/appbuild": true,
+	"unicode": true, "unicode/utf8": true, "gopkg.in/yaml.v3": true, "github.com/910-software-solutions/stego/internal/appbuild": true,
 }
 
 // gitopsNames are the only names that a file of the delivery package may use from an admitted import that can
@@ -419,7 +419,7 @@ var gitopsImports = map[string]bool{
 // appbuild.Download (review of PR #504, M2 and N1).
 var gitopsNames = map[string][]string{
 	"net": {"SplitHostPort"},
-	"github.com/jsell-rh/stego/internal/appbuild": {"GoVersion", "BuildFlags", "BuildEnvironment"},
+	"github.com/910-software-solutions/stego/internal/appbuild": {"GoVersion", "BuildFlags", "BuildEnvironment"},
 }
 
 // gitopsReads are the functions of package os and io/ioutil that read the environment or a file. A file of the
