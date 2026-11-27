@@ -75,13 +75,14 @@ func EvidenceDigest(f *Fill) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// WriteEvidence writes the evidence into the fill manifest at path, in place
-// of the evidence it held, and leaves the rest of the manifest as it was.
-func WriteEvidence(path string, evidence FillEvidence) error {
+// WriteEvidence writes the evidence into the manifest of the fill name in the
+// folder fills, in place of the evidence it held, and leaves the rest of the
+// manifest as it was. It refuses a name outside the fill-name form.
+func WriteEvidence(fills, name string, evidence FillEvidence) error {
 	if err := evidence.check(); err != nil {
 		return err
 	}
-	return writeSection(path, "evidence", evidence)
+	return writeSection(fills, name, "evidence", evidence)
 }
 
 // validDigest tells if a digest is 64 lower-case hexadecimal digits.

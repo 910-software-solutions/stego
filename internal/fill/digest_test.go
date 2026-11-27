@@ -114,25 +114,30 @@ func TestFillDigest(t *testing.T) {
 
 	t.Run("ST-EXT-DS01-T03 Recording evidence or a sign-off in the fill manifest does not change the fill digest", func(t *testing.T) {
 		files := untestedFillFiles()
-		dir := writeFiles(t, files, sortedNames(files, false))
+		// The writers take the fills folder and the fill name, which has the fill-name form.
+		fills := t.TempDir()
+		dir := filepath.Join(fills, "untested-fill")
+		if err := os.Rename(writeFiles(t, files, sortedNames(files, false)), dir); err != nil {
+			t.Fatal(err)
+		}
 		manifest := filepath.Join(dir, ManifestFile)
 		first := mustDigest(t, dir)
 		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"policy.go": strings.Repeat("c", 64)}}
-		if err := WriteEvidence(manifest, evidence); err != nil {
+		if err := WriteEvidence(fills, "untested-fill", evidence); err != nil {
 			t.Fatal(err)
 		}
 		withEvidence := mustDigest(t, dir)
 		signOff := FillSignOff{EvidenceDigest: strings.Repeat("d", 64), Signature: Signature{KeyType: KeySSH, Signer: "listed@example.com", Armored: "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"}, SignedAt: time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)}
-		if err := WriteSignOff(manifest, signOff); err != nil {
+		if err := WriteSignOff(fills, "untested-fill", signOff); err != nil {
 			t.Fatal(err)
 		}
 		withSignOff := mustDigest(t, dir)
 		evidence.FillDigest, evidence.PassedAt = strings.Repeat("e", 64), evidence.PassedAt.Add(time.Hour)
 		signOff.EvidenceDigest, signOff.Signature.Signer = strings.Repeat("f", 64), "other@example.com"
-		if err := WriteEvidence(manifest, evidence); err != nil {
+		if err := WriteEvidence(fills, "untested-fill", evidence); err != nil {
 			t.Fatal(err)
 		}
-		if err := WriteSignOff(manifest, signOff); err != nil {
+		if err := WriteSignOff(fills, "untested-fill", signOff); err != nil {
 			t.Fatal(err)
 		}
 		changed := mustDigest(t, dir)
