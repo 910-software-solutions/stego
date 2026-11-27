@@ -148,11 +148,13 @@ func crudContext() gen.Context {
 				References: map[string]types.Reference{"card_id": {Relation: "parent", Permission: "edit"}}}},
 		// Memo gives long text fields on a listed entity (erp-demo G10, decision ST-DECL-Q50): body of at most 4000
 		// characters and summary of at most 1000, which can each pass the size of a b-tree entry, so they are out of the
-		// search; tag of at most 40 with searchable: false; and title of at most 200, which a list searches.
+		// search; tag of at most 40 with searchable: false; title of at most 200, which a list searches; and aside, pii of
+		// at most 1000, which a 400 never names (security review of PR #22, MK).
 		types.Entity{Name: "Memo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString, MaxLength: memoLength(200)},
 			{Name: "body", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(4000)},
 			{Name: "summary", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(1000)},
-			{Name: "tag", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(40), Searchable: memoSearchable(false)}},
+			{Name: "tag", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(40), Searchable: memoSearchable(false)},
+			{Name: "aside", Type: types.FieldTypeString, Optional: true, MaxLength: memoLength(1000), Sensitivity: "pii"}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "memo", Permissions: permissions(types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 	)
 	return withSchema(gen.Context{

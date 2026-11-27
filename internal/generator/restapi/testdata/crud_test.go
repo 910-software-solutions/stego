@@ -3296,6 +3296,14 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 				t.Errorf("the list of memos with %s answered %d %s, want 400 with a detail that names %s", c.query, r.status, r.body, c.field)
 			}
 		}
+		// A search or an order of the pii field aside, out of the search, answers the 400 that names no field, as for a
+		// field that the entity does not declare: the answer does not tell that a pii field is there (security review
+		// of PR #22, MK).
+		for _, q := range []string{"search=" + url.QueryEscape("aside = 'x'"), "orderBy=aside"} {
+			if r := e.send(a, http.MethodGet, "/api/v1/memos?"+q, "", ""); r.status != http.StatusBadRequest || strings.Contains(string(r.body), "aside") || strings.Contains(string(r.body), "searchable") {
+				t.Errorf("the list of memos with %s answered %d %s, want 400 that names no field", q, r.status, r.body)
+			}
+		}
 		// A search of a field that the entity does not declare, and one that is not well formed, stay the 400 that
 		// names no field; title is searched and orders the list.
 		for _, q := range []string{"search=" + url.QueryEscape("colour = 'red'"), "search=" + url.QueryEscape("body = b")} {
