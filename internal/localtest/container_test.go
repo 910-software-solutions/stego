@@ -103,7 +103,7 @@ func waitFor(limit time.Duration, ok func() bool) bool {
 }
 
 func TestSpiceDBContainer(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R04-T02 The SpiceDB container runs pinned, unprivileged and limited, podman first, and is removed", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R04-T03 The SpiceDB container runs pinned, unprivileged and limited, podman first, and is removed", func(t *testing.T) {
 		dir := t.TempDir()
 		podmanLog, dockerLog := filepath.Join(dir, "podman.log"), filepath.Join(dir, "docker.log")
 		// podman is on PATH but cannot start the container, as a rootless podman without cgroup controllers cannot;
@@ -157,7 +157,7 @@ func TestSpiceDBContainer(t *testing.T) {
 			t.Error("the reaper and its timer still run after the removal")
 		}
 	})
-	t.Run("ST-STD-LOCAL-R04-T03 With neither podman nor docker on PATH, the SpiceDB container fails with the reason", func(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R04-T04 With neither podman nor docker on PATH, the SpiceDB container fails with the reason", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		_, name, err := startSpiceDB([]string{"serve-testing"})
 		if err == nil || name != "" || !strings.Contains(err.Error(), "neither podman nor docker") {
