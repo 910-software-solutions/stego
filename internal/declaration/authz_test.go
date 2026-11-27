@@ -404,3 +404,34 @@ func TestDroppedEntitySchema(t *testing.T) {
 		}
 	})
 }
+
+func TestSharedResourceType(t *testing.T) {
+	service, schema := td03Files(t)
+	// A second entity, Note, with the resource type of Todo or with one of its own.
+	second := func(resourceType string) string {
+		return change(t, service, "collections:\n", "  - name: Note\n    fields:\n      - {name: body, type: string}\n    resource_type: "+resourceType+
+			"\n    public_reasons: {create: a new note has no resource to decide on before it exists}\n    permissions: {create: public, read: view, update: edit, delete: edit, list: view}\n"+
+			"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\ncollections:\n  notes:\n    entity: Note\n    operations: [create, read, list]\n")
+	}
+	t.Run("ST-DECL-INV107-T Two entities with one resource type are refused, as a row of one with the ID of a row of the other would share its SpiceDB object", func(t *testing.T) {
+		// PRIORITY follow-up (2026-11-27): the SpiceDB object of a row is <resource type>:<tenant-qualified ID>, with
+		// no part that names the entity, and a fill chooses the row ID.
+		var shared []ValidationError
+		for _, fault := range checkTD03(t, second("document"), schema) {
+			if fault.Rule == "resource-type-shared" {
+				shared = append(shared, fault)
+			}
+		}
+		if len(shared) != 1 || shared[0].Path != "entities[1].resource_type" || shared[0].Found != "document" ||
+			!strings.Contains(shared[0].Message, "entity Note has the resource type \"document\" of the entity Todo") {
+			t.Fatalf("want one fault resource-type-shared at entities[1].resource_type that names Note and Todo, got %+v", shared)
+		}
+		// A resource type of its own is not refused by the rule.
+		schemaWithNote := schema + "\ndefinition note {\n\trelation owner: user\n\tpermission view = owner\n\tpermission edit = owner\n}\n"
+		for _, fault := range checkTD03(t, second("note"), schemaWithNote) {
+			if fault.Rule == "resource-type-shared" {
+				t.Errorf("an entity with a resource type of its own is refused: %+v", fault)
+			}
+		}
+	})
+}

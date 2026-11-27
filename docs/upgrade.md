@@ -316,7 +316,28 @@ archetype does not have the change.
 | 3.273.0 | 1.273.0 | 1.273.0 | Runtime v0.204.0 and oidc-auth 0.2.0. oidc-auth takes the setting `accept_id_token` (`true` or `false`, `false` by default): with `true`, the verifier accepts an OpenID Connect ID token as the bearer, for a web client and an API that share one client ID at a provider that gives no JWT access token, such as tsidp (decision ST-SUP-Q218 (b)). It accepts a token that is marked as an ID token (`nonce`, `at_hash`, `c_hash` or the payload `typ` `ID`) only when its `aud` is exactly the `audience` (a string, or an array of that one member) and its `azp`, when present, is the `audience`; a payload `typ` may then be `Bearer` or `ID`. A token with no marker is checked as an access token: its `aud` must hold the `audience`. So the backend-for-frontend must send a `nonce` in every authorization request. A logout token (`events`) is always refused, every other check stays, and access tokens do not change. With no setting, each ID token is refused, as before. No environment variable turns it on. jwt-auth and rh-sso-auth do not change. | None. To accept ID tokens, set `accept_id_token: true` under `oidc-auth` in `service.yaml` only when the `audience` is the client ID of the web client. Send a `nonce` in every authorization request, keep the ID token on the server side and its lifetime short, and use POST for an RP-initiated logout or leave out `id_token_hint`. The browser-backend that STEGO generates sends the access token, so the opt-in is for a backend-for-frontend that STEGO does not generate. See [Accept an ID token as the bearer](operations.md#accept-an-id-token-as-the-bearer-oidc-auth). |
 | 3.274.0 | 1.274.0 | 1.274.0 | Runtime v0.204.0, rest-api 4.44.0 and command 1.31.0. A 400 for a value out of the bounds of an integer field gives the bound as an integer, such as `number must be at most 2147483647` in the validation entry of a collection write and `more than max 2147483647` in the reason of a command. Before, it gave the bound as `2.147483647e+09` (walkthrough 28, MSG-MAX). A bound of a `float32` or a `float64` field does not change. `stego validate` and `stego plan` give the warning `worker-relation` for a worker whose permission on its resource type, or on the type of an entity that it writes or reads, does not reach its relation `tenant#worker_<name>` (walkthrough 28, CHK-WREL). | None. A client that matches the text of the message accepts the new form. For a `worker-relation` warning, add the arm `tenant->worker_<name>` to the permission, as the warning says. |
 | 3.275.0 | 1.275.0 | 1.275.0 | Runtime v0.206.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.206.0 at h1:bZPMRT7stxVW4w0BN0Z/lMf4ypiW90UWocm9VmqvwJU=. The runtime code works as the code of v0.204.0. Only a test and a comment of the lease package change: the test of ST-SUP-RP09-LC06-T05 now ends the context while the renew statement waits on the lease row in the database, and accepts the next token in the holder and in the released row, because the UPDATE of that renew can commit on the server after its client stopped. The comment of the renew branch of `Hold` says that the release also tries the next token after a renew that failed with no answer. | None. |
+| the next stego release | the next stego release | the next stego release | `stego validate`, `plan` and `apply` refuse a declaration in which two entities name the same `resource_type`, with the rule `resource-type-shared` at the second entity (ST-DECL-INV107). The SpiceDB object of a row is its resource type and its tenant-qualified ID, with no part that names the entity, and a fill chooses the ID of a new row, so a row of one entity with the ID of a row of the other, in the same tenant, took that row's relationships and grants. The runtime and the object IDs do not change, so a service whose entities each have a type of their own needs no change and no data migration. | Only for a declaration that the rule refuses: see [Give each entity a resource type of its own](#give-each-entity-a-resource-type-of-its-own). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
+
+## Give each entity a resource type of its own
+
+From the next stego release, two entities may not name the same
+`resource_type` (ST-DECL-INV107). For a service that `stego validate` refuses
+with `resource-type-shared`:
+
+1. Add a definition for the second entity to the schema, such as
+   `definition note` beside `definition document`, with the relations and
+   permissions that the entity uses.
+2. Set the `resource_type` of the second entity to the new type.
+3. Write the relationships of each row of that entity again on the new
+   type, with the same tenant-qualified ID, as
+   [Give the rows that are there a new relation](#give-the-rows-that-are-there-a-new-relation)
+   shows for one relation. Until you do, a check on a row of that entity
+   finds no relationship and is denied.
+4. When no release reads the old relationships, delete them from the
+   shared type. Before, check that no row of the first entity has the same
+   ID as a row of the second entity in the same tenant: such a pair shared
+   one object, and each took the grants of the other.
 
 ## Move a browser-service database to the owner and migrator logins
 
