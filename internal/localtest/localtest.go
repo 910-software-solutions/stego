@@ -64,6 +64,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/sumdb/dirhash"
 )
 
@@ -542,28 +543,10 @@ func CheckSums(t testing.TB, dir string) {
 
 // SumsChecked is CheckSums as an error, for a step that runs in a goroutine of its own.
 func SumsChecked(dir string) error {
-	known := map[string]bool{}
 	root := filepath.Join(filepath.Dir(ModulesFolder()), "..", "..", "..")
-	for _, name := range []string{filepath.Join(ModulesFolder(), "go.sum"), filepath.Join(filepath.Dir(ModulesFolder()), "modules-other", "go.sum"),
-		filepath.Join(root, "go.sum"), filepath.Join(root, "registry", "runtime", "go.sum")} {
-		data, err := os.ReadFile(name)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", name, err)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				known[line] = true
-			}
-		}
-	}
-	// The runtime pins of the shipped registry: stego deps stages the pin from registry/runtime, whose zip hash the
-	// archetype states and whose go.mod hash is that of registry/runtime/go.mod, and a test serves the same folder.
-	pins, err := runtimePins(root)
+	known, err := repositoryLines(root)
 	if err != nil {
 		return err
-	}
-	for _, line := range pins {
-		known[line] = true
 	}
 	if moduleCache != "" {
 		data, err := os.ReadFile(filepath.Join(moduleCache, checkedSumsFile))
@@ -594,6 +577,87 @@ func SumsChecked(dir string) error {
 			dir, strings.Join(unknown, "\n"))
 	}
 	return nil
+}
+
+// repositoryLines gives the checked go.sum lines of the repository in root: the lines of the go.sum of testdata/
+// modules, testdata/modules-other, the root module and registry/runtime, and the lines of the runtime pins of the
+// shipped registry. stego deps stages a pin from registry/runtime, whose zip hash the archetype states and whose
+// go.mod hash is that of registry/runtime/go.mod, and a test serves the same folder.
+func repositoryLines(root string) (map[string]bool, error) {
+	known := map[string]bool{}
+	for _, name := range []string{filepath.Join(ModulesFolder(), "go.sum"), filepath.Join(filepath.Dir(ModulesFolder()), "modules-other", "go.sum"),
+		filepath.Join(root, "go.sum"), filepath.Join(root, "registry", "runtime", "go.sum")} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				known[line] = true
+			}
+		}
+	}
+	pins, err := runtimePins(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range pins {
+		known[line] = true
+	}
+	return known, nil
+}
+
+// cacheDirs gives each extracted module folder of the module cache cache that dirs does not name and whose zip has a
+// checked hash in lines (go.sum lines "path version h1:..."), with that hash. Such a folder is in the cache from an
+// earlier fill, or from a go command of a test, and the go command builds from it with no new hash when a go.sum
+// names its version, so verifyDirs must hash it too (security review of PR #7, round 3, I4). A folder whose version
+// has no checked hash is not given: a build from it needs a go.sum line for it, which CheckSums refuses. The walk
+// does not go into the download folder (cache/download) or into a module folder, and it skips a name that is not
+// a valid escaped module path and version. A temporary folder of the go command, such as lib@v1.0.0.tmp-1, has no
+// checked hash, so it is not given.
+func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, error) {
+	sums := map[string]string{}
+	for line := range lines {
+		if fields := strings.Fields(line); len(fields) == 3 && !strings.HasSuffix(fields[1], "/go.mod") {
+			sums[fields[0]+"@"+fields[1]] = fields[2]
+		}
+	}
+	named := map[string]bool{}
+	for _, d := range dirs {
+		if d.Dir != "" && d.Sum != "" {
+			named[filepath.Clean(d.Dir)] = true
+		}
+	}
+	var found []fillDir
+	err := filepath.WalkDir(cache, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() || name == cache {
+			return nil
+		}
+		rel, err := filepath.Rel(cache, name)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "cache" {
+			return filepath.SkipDir
+		}
+		escapedPath, escapedVersion, ok := strings.Cut(rel, "@")
+		if !ok {
+			return nil
+		}
+		path, pathErr := module.UnescapePath(escapedPath)
+		version, versionErr := module.UnescapeVersion(escapedVersion)
+		if pathErr == nil && versionErr == nil && !named[filepath.Clean(name)] {
+			if sum, ok := sums[path+"@"+version]; ok {
+				found = append(found, fillDir{Path: path, Version: version, Sum: sum, Dir: name})
+			}
+		}
+		return filepath.SkipDir
+	})
+	return found, err
 }
 
 // ModuleCache gives the module cache of localtest, and fills it as the first call of GoEnv does. A test that copies
@@ -834,9 +898,30 @@ func downloadModules() {
 	// The go command does not hash an extracted folder again when it finds it in the cache, so a file that a tool
 	// or a writable cache (-modcacherw) put into the folder of a checked module would build with no error. Each folder
 	// is hashed again, on each fill and on each reuse of the cache, as go mod verify does (security review of PR #7).
-	if err := verifyDirs(dirs, filepath.Join(moduleCache, verifiedFile)); err != nil {
+	// So is each other folder of the cache whose version has a checked hash: the fill of this run did not list it, but
+	// a go command of GoEnv builds from it when a go.sum names its version (security review of PR #7, round 3, I4).
+	lines, err := repositoryLines(root)
+	if err != nil {
+		fail(moduleCache, err, nil)
+		return
+	}
+	for _, line := range checked {
+		lines[line] = true
+	}
+	if err := verifyCache(moduleCache, dirs, lines); err != nil {
 		fail(moduleCache, err, nil)
 	}
+}
+
+// verifyCache hashes the folders of the module cache cache as verifyDirs does: each folder of dirs, and each other
+// module folder of the cache whose zip has a checked hash in lines (cacheDirs). Its stamps are in verifiedFile of
+// the cache.
+func verifyCache(cache string, dirs []fillDir, lines map[string]bool) error {
+	others, err := cacheDirs(cache, dirs, lines)
+	if err != nil {
+		return err
+	}
+	return verifyDirs(append(slices.Clip(dirs), others...), filepath.Join(cache, verifiedFile))
 }
 
 // fillDir is a module that the fill downloaded: its path, its version, the hash of its zip that the go command

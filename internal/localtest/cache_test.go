@@ -266,3 +266,54 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 		}
 	})
 }
+
+func TestUnlistedModuleFoldersAreHashed(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T14 A changed folder of a checked module that the fill did not list fails the fill of localtest", func(t *testing.T) {
+		// A stand-in cache: the go command extracts example.com/lib v1.0.0 from a file proxy into a module cache of the
+		// test, as an earlier fill or a go command of a test did. The fill of this run does not list it.
+		proxy, cache := t.TempDir(), t.TempDir()
+		plantedModule(t, proxy)
+		t.Cleanup(func() { _ = exec.Command("chmod", "-R", "u+w", cache).Run() })
+		download := exec.Command(goTool(), "mod", "download", "-json", "example.com/lib@v1.0.0")
+		download.Dir = generatedModule(t)
+		download.Env = append(os.Environ(), "GOMODCACHE="+cache, "GOPROXY=file://"+filepath.ToSlash(filepath.Join(proxy, "cache", "download")),
+			"GOSUMDB=off", "GONOSUMDB=", "GOPRIVATE=", "GOFLAGS=-mod=mod", "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local")
+		out, err := download.Output()
+		if err != nil {
+			t.Fatalf("go mod download: %v\n%s", err, out)
+		}
+		var module fillDir
+		if err := json.Unmarshal(out, &module); err != nil || module.Dir == "" || module.Sum == "" {
+			t.Fatalf("go mod download gave no folder and hash: %v\n%s", err, out)
+		}
+		// A temporary folder of the go command, whose name is not a valid version, is not a module folder.
+		if err := os.MkdirAll(filepath.Join(cache, "example.com", "lib@v1.0.0.tmp-1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		checked := map[string]bool{"example.com/lib v1.0.0 " + module.Sum: true, "example.com/lib v1.0.0/go.mod h1:none": true}
+		found, err := cacheDirs(cache, nil, checked)
+		if err != nil || len(found) != 1 || found[0] != module {
+			t.Fatalf("the unlisted folder with a checked hash gives %+v, %v; want only %+v", found, err, module)
+		}
+		if found, err := cacheDirs(cache, []fillDir{module}, checked); err != nil || len(found) != 0 {
+			t.Fatalf("a folder that the fill lists is given again: %+v, %v", found, err)
+		}
+		if found, err := cacheDirs(cache, nil, map[string]bool{}); err != nil || len(found) != 0 {
+			t.Fatalf("a folder with no checked hash is given: %+v, %v", found, err)
+		}
+		if err := verifyCache(cache, nil, checked); err != nil || verifiedDirs != 1 {
+			t.Fatalf("the unchanged unlisted folder fails or is not checked (%d): %v", verifiedDirs, err)
+		}
+		// Another tool puts a file into the folder that this fill did not list.
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(module.Dir, "zz_planted.go"), []byte("package lib\n\nfunc init() { println(\"ALTERED\") }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err = verifyCache(cache, nil, checked)
+		if err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("the changed unlisted folder is not refused: %v", err)
+		}
+	})
+}
