@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // compositionFaults reads a declaration as stego validate reads it and gives the faults of its composition with

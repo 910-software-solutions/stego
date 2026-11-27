@@ -5,6 +5,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/tenancy"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/tenancy"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 //go:embed testdata/tables_test.go
@@ -159,8 +160,8 @@ type tableEvent struct {
 
 // tableModule writes the generated module of the order service, of the release before it, of the widget service
 // and of their tenancy components, runs its test file on PostgreSQL and gives the subtests that passed there with
-// the test log. Both tenancy components name the same roles, so one role migration serves both.
-func tableModule(t *testing.T) (map[string]bool, string) {
+// the output of each test. Both tenancy components name the same roles, so one role migration serves both.
+func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 	t.Helper()
 	project := t.TempDir()
 	write := func(files []gen.File) {
@@ -231,7 +232,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.196.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/910-software-solutions/stego/registry/runtime v0.203.0\n)\n\nreplace github.com/910-software-solutions/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -260,39 +261,96 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off", "STEGO_TEST_MARKER_BEFORE="+string(before[1]))
 	output, _ := run.CombinedOutput()
 	passed := map[string]bool{}
-	var log strings.Builder
+	// The output of the module is collected in a local builder and kept as a string. A strings.Builder that holds
+	// text keeps its own address, which can be a stack address, so a copy of it in a value that the caller keeps
+	// points into a stack that can be freed: the garbage collector then stops the process with "found pointer to
+	// free object" (the first CI run of #521).
+	out := tableOutput{tests: map[string]*strings.Builder{}, actions: map[string]string{}}
+	var module strings.Builder
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	scanner.Buffer(make([]byte, 1<<20), 1<<24)
 	for scanner.Scan() {
 		var event tableEvent
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			log.WriteString(scanner.Text() + "\n")
+			module.WriteString(scanner.Text() + "\n")
 			continue
 		}
-		log.WriteString(event.Output)
-		if event.Action == "pass" && event.Test != "" {
+		if event.Test == "" {
+			module.WriteString(event.Output)
+			continue
+		}
+		own := out.tests[event.Test]
+		if own == nil {
+			own = &strings.Builder{}
+			out.tests[event.Test] = own
+			out.order = append(out.order, event.Test)
+		}
+		own.WriteString(event.Output)
+		switch event.Action {
+		case "pass", "fail", "skip":
+			out.actions[event.Test] = event.Action
+		}
+		if event.Action == "pass" {
 			passed[event.Test] = true
 		}
 	}
-	return passed, log.String()
+	out.module = module.String()
+	return passed, out
+}
+
+// tableOutput is the output of the go test of the generated module: the output of each test and subtest by its name,
+// in the order of its first line, the action that ended each, and the output of the module that no test holds, such
+// as a build failure, a panic or a timeout.
+type tableOutput struct {
+	tests   map[string]*strings.Builder
+	actions map[string]string
+	order   []string
+	module  string
+}
+
+// of gives the output of the generated subtest name and of each of its own subtests, each with the action that ended
+// it. When the module ran no such subtest, it gives the output of the module that no test holds, which tells why.
+func (o tableOutput) of(name string) string {
+	var text strings.Builder
+	for _, test := range o.order {
+		if test != name && !strings.HasPrefix(test, name+"/") {
+			continue
+		}
+		action := o.actions[test]
+		if action == "" {
+			action = "no end: the run stopped in it"
+		}
+		fmt.Fprintf(&text, "--- %s (%s)\n%s", test, action, o.tests[test].String())
+	}
+	if text.Len() == 0 {
+		fmt.Fprintf(&text, "the generated module ran no subtest %s; the output of the module:\n%s", name, o.module)
+	}
+	return text.String()
 }
 
 // passedThere fails the test when the generated subtest of id under TestTables did not pass: the subtest itself, not
 // only one of its own subtests, whose names have the same prefix.
-func passedThere(t *testing.T, passed map[string]bool, log, id string) {
+func passedThere(t *testing.T, passed map[string]bool, out tableOutput, id string) {
 	t.Helper()
-	passedIn(t, passed, log, "TestTables", id)
+	passedIn(t, passed, out, "TestTables", id)
 }
 
-// passedIn fails the test when the generated subtest of id under the generated test top did not pass.
-func passedIn(t *testing.T, passed map[string]bool, log, top, id string) {
+// passedIn fails the test when the generated subtest of id under the generated test top did not pass, and gives the
+// output of that subtest and its own subtests (a skip is not a pass), not the output of each other test.
+func passedIn(t *testing.T, passed map[string]bool, out tableOutput, top, id string) {
 	t.Helper()
 	for name := range passed {
 		if rest, ok := strings.CutPrefix(name, top+"/"+id+"_"); ok && !strings.Contains(rest, "/") {
 			return
 		}
 	}
-	t.Errorf("the generated test of %s did not pass:\n%s", id, log)
+	for _, name := range out.order {
+		if rest, ok := strings.CutPrefix(name, top+"/"+id+"_"); ok && !strings.Contains(rest, "/") {
+			t.Errorf("the generated test of %s did not pass:\n%s", id, out.of(name))
+			return
+		}
+	}
+	t.Errorf("the generated test of %s did not pass:\n%s", id, out.of(top+"/"+id))
 }
 
 // golden compares got with the golden file of name; STEGO_UPDATE_GOLDEN=1 writes it again.
@@ -319,7 +377,7 @@ func golden(t *testing.T, name, got string) {
 
 func TestTables(t *testing.T) {
 	var passed map[string]bool
-	var log string
+	var log tableOutput
 	database := os.Getenv("STEGO_TEST_POSTGRES_DSN") != ""
 	if database {
 		passed, log = tableModule(t)

@@ -383,6 +383,48 @@ func TestUnavailable(t *testing.T) {
 	})
 }
 
+func TestUnavailableAtConnect(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC43-T05 A database that takes no new connection is unavailable, and the same state of a statement is not", func(t *testing.T) {
+		env := newPG(t)
+		ctx := context.Background()
+		// The server is up and the database takes no new connection (walkthrough 26, U-503): SQLSTATE 55000 at
+		// connect. A fresh pool has no open connection, so Begin connects and meets the refusal.
+		adminExec(t, env.admin, "ALTER DATABASE "+env.name+" ALLOW_CONNECTIONS false")
+		t.Cleanup(func() { adminExec(t, env.admin, "ALTER DATABASE "+env.name+" ALLOW_CONNECTIONS true") })
+		closed, err := sql.Open("pgx", env.dsn(env.runtime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = closed.Close() })
+		_, err = Begin(ctx, closed, mustTenant(t, "tenant-a"), nil)
+		var coded interface{ SQLState() string }
+		if err == nil || !errors.As(err, &coded) || coded.SQLState() != "55000" {
+			t.Fatalf("Begin on a database that takes no connection gave %v, want SQLSTATE 55000", err)
+		}
+		if !Unavailable(err) {
+			t.Fatalf("Begin on a database that takes no connection gave %v, which Unavailable does not report", err)
+		}
+		adminExec(t, env.admin, "ALTER DATABASE "+env.name+" ALLOW_CONNECTIONS true")
+		// The same SQLSTATE of a statement on a live connection (currval before nextval) is an error of the
+		// statement, not of the server: not unavailable.
+		adminExec(t, env.ownerDB, "CREATE SEQUENCE IF NOT EXISTS t05_seq", "GRANT USAGE ON SEQUENCE t05_seq TO "+env.runtime)
+		tx, err := Begin(ctx, env.runtimeDB, mustTenant(t, "tenant-a"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.ExecContext(ctx, "SELECT currval('t05_seq')")
+		_ = tx.Rollback()
+		if err == nil || !errors.As(err, &coded) || coded.SQLState() != "55000" || Unavailable(err) {
+			t.Fatalf("currval before nextval gave %v (unavailable %v), want SQLSTATE 55000 that is not unavailable", err, Unavailable(err))
+		}
+		for code, want := range map[string]bool{"57P05": true, "53000": true, "53100": true, "53200": true, "55000": false, "55P03": false} {
+			if got := Unavailable(fmt.Errorf("wrapped: %w", sqlStateError(code))); got != want {
+				t.Fatalf("SQLSTATE %s of a statement is unavailable %v, want %v", code, got, want)
+			}
+		}
+	})
+}
+
 // sqlStateError is an error with a SQLSTATE, as a driver gives one.
 type sqlStateError string
 

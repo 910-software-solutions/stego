@@ -1,10 +1,10 @@
-// Package outbox generates the durable outbox wiring of a service on github.com/jsell-rh/stego/registry/runtime/outbox
+// Package outbox generates the durable outbox wiring of a service on github.com/910-software-solutions/stego/registry/runtime/outbox
 // (runtime.go, ST-SUP-RC18-OC30). The queue table, its policies, its relay functions, the queue and the worker come
 // from the runtime library; this package emits only what varies with the declaration.
 package outbox
 
 import (
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 type Generator struct{}

@@ -524,7 +524,7 @@ func TestSchemaStepPlan(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)
 		record := s.read(t, ".stego/state.yaml")
-		pin := regexp.MustCompile(`(module: github.com/jsell-rh/stego/registry/runtime\n\s+version: )(v[0-9.]+)`)
+		pin := regexp.MustCompile(`(module: github.com/910-software-solutions/stego/registry/runtime\n\s+version: )(v[0-9.]+)`)
 		found := pin.FindStringSubmatch(record)
 		if found == nil {
 			t.Fatalf("the record pins no runtime library:\n%s", record)

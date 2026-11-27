@@ -2,7 +2,7 @@ package browserapplication
 
 import (
 	"encoding/json"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 	"strings"
 	"testing"
 )

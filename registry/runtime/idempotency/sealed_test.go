@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
 )
 
 // ringSealer is the Sealer of the command runtime over a throwaway key ring.

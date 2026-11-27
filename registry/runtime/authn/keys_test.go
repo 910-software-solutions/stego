@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 )
 
 // modulus makes an odd number of exactly the bits, as the public part of an RSA key that the key set reads. The

@@ -1,6 +1,6 @@
 package fill
 
-import "github.com/jsell-rh/stego/internal/types"
+import "github.com/910-software-solutions/stego/internal/types"
 
 // FillScaffolded tells that a new fill and its test were written for one slot
 // and collection (ST-EXT-EV01). It is delivered in process.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# runtime-workspace.sh writes a Go workspace file that resolves github.com/jsell-rh/stego/registry/runtime from this
+# runtime-workspace.sh writes a Go workspace file that resolves github.com/910-software-solutions/stego/registry/runtime from this
 # checkout's registry/runtime folder, for local development and tests (ST-SUP-TOOL12).
 #
 # Usage: scripts/runtime-workspace.sh <module folder> <work file>
@@ -11,7 +11,7 @@
 # outside the module folder, so that no committed tree holds it, and do not use it for stego deps or stego build:
 # they resolve from the pin.
 #
-# When the module folder requires github.com/jsell-rh/stego/registry/runtime at a version, the work file also
+# When the module folder requires github.com/910-software-solutions/stego/registry/runtime at a version, the work file also
 # replaces that one version with the folder. Without it, the go command fetches the go.mod of the pinned version to
 # load the module graph as soon as the runtime module has a requirement of its own, and the build fails with no
 # network.
@@ -42,7 +42,7 @@ if [ -z "$version" ]; then
 	exit 1
 fi
 
-pin="$(sed -n -E 's#^[[:space:]]*(require[[:space:]]+)?github\.com/jsell-rh/stego/registry/runtime[[:space:]]+(v[^[:space:]]+).*$#\2#p' "$module/go.mod" | head -n 1)"
+pin="$(sed -n -E 's#^[[:space:]]*(require[[:space:]]+)?github\.com/910-software-solutions/stego/registry/runtime[[:space:]]+(v[^[:space:]]+).*$#\2#p' "$module/go.mod" | head -n 1)"
 
 mkdir -p "$(dirname "$2")"
 # A work file inside the module folder could be committed, and one named go.work above it is found by every go
@@ -71,7 +71,7 @@ fi
 {
 	printf 'go %s\n\nuse (\n\t%s\n\t%s\n)\n' "$version" "$module" "$runtime"
 	if [ -n "$pin" ]; then
-		printf '\nreplace github.com/jsell-rh/stego/registry/runtime %s => %s\n' "$pin" "$runtime"
+		printf '\nreplace github.com/910-software-solutions/stego/registry/runtime %s => %s\n' "$pin" "$runtime"
 	fi
 } >"$2"
 echo "$2"

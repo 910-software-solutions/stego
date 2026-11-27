@@ -21,20 +21,20 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	"github.com/jsell-rh/stego/registry/runtime/modes"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/modes"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // ReachTimeout bounds the check that SpiceDB answers, which New makes before it gives the service.
@@ -872,13 +872,14 @@ func (e *spiceDBError) CauseClass() string {
 	return "connection_failed"
 }
 
-// DialSpiceDB connects to SpiceDB with its preshared key, over verified TLS 1.2 or later, or without TLS to a
-// loopback address when the settings allow it for a local test.
+// DialSpiceDB connects to SpiceDB with its preshared key, over TLS 1.2 or later that the roots of the settings verify
+// (the system roots, with the CA file added; ST-SUP-RP14-LC14), or without TLS to a loopback address when the
+// settings allow it for a local test.
 func DialSpiceDB(s SpiceDB) (*grpc.ClientConn, error) {
 	if s.Endpoint == "" || s.Key == "" {
 		return nil, fmt.Errorf("service: SpiceDB needs the settings %s and %s", SpiceDBEndpointSetting, SpiceDBKeyFileSetting)
 	}
-	transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
+	transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: s.Roots})
 	if s.InsecureLoopback {
 		transport = insecure.NewCredentials()
 	}

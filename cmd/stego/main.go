@@ -18,46 +18,46 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/delivery"
-	"github.com/jsell-rh/stego/internal/fill"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/auditlog"
-	"github.com/jsell-rh/stego/internal/generator/browserbackend"
-	"github.com/jsell-rh/stego/internal/generator/browsertelemetry"
-	"github.com/jsell-rh/stego/internal/generator/cliapplication"
-	"github.com/jsell-rh/stego/internal/generator/command"
-	"github.com/jsell-rh/stego/internal/generator/controller"
-	"github.com/jsell-rh/stego/internal/generator/domainprobe"
-	"github.com/jsell-rh/stego/internal/generator/gosdk"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
-	"github.com/jsell-rh/stego/internal/generator/healthcheck"
-	"github.com/jsell-rh/stego/internal/generator/httpapplication"
-	"github.com/jsell-rh/stego/internal/generator/idempotency"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
-	"github.com/jsell-rh/stego/internal/generator/kafkaconsumer"
-	"github.com/jsell-rh/stego/internal/generator/kafkaproducer"
-	"github.com/jsell-rh/stego/internal/generator/keycloakprovider"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesclient"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesservice"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesworkload"
-	"github.com/jsell-rh/stego/internal/generator/oidcauth"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
-	"github.com/jsell-rh/stego/internal/generator/outbox"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/postgresclient"
-	querygen "github.com/jsell-rh/stego/internal/generator/query"
-	"github.com/jsell-rh/stego/internal/generator/restapi"
-	"github.com/jsell-rh/stego/internal/generator/rhssoauth"
-	"github.com/jsell-rh/stego/internal/generator/runtimeconfig"
-	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
-	"github.com/jsell-rh/stego/internal/generator/tenancy"
-	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
-	workergen "github.com/jsell-rh/stego/internal/generator/worker"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/slot"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/delivery"
+	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/auditlog"
+	"github.com/910-software-solutions/stego/internal/generator/browserbackend"
+	"github.com/910-software-solutions/stego/internal/generator/browsertelemetry"
+	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
+	"github.com/910-software-solutions/stego/internal/generator/command"
+	"github.com/910-software-solutions/stego/internal/generator/controller"
+	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/generator/gosdk"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/generator/healthcheck"
+	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
+	"github.com/910-software-solutions/stego/internal/generator/idempotency"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/generator/kafkaconsumer"
+	"github.com/910-software-solutions/stego/internal/generator/kafkaproducer"
+	"github.com/910-software-solutions/stego/internal/generator/keycloakprovider"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesclient"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesservice"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesworkload"
+	"github.com/910-software-solutions/stego/internal/generator/oidcauth"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/generator/outbox"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/postgresclient"
+	querygen "github.com/910-software-solutions/stego/internal/generator/query"
+	"github.com/910-software-solutions/stego/internal/generator/restapi"
+	"github.com/910-software-solutions/stego/internal/generator/rhssoauth"
+	"github.com/910-software-solutions/stego/internal/generator/runtimeconfig"
+	"github.com/910-software-solutions/stego/internal/generator/spicedbauthz"
+	"github.com/910-software-solutions/stego/internal/generator/tenancy"
+	"github.com/910-software-solutions/stego/internal/generator/typescriptsdk"
+	workergen "github.com/910-software-solutions/stego/internal/generator/worker"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/slot"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1360,7 +1360,7 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 	result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: projectDir})
 	if err != nil {
-		return compiler.ReconcilerInput{}, err
+		return compiler.ReconcilerInput{}, &registryResolveError{err: err}
 	}
 
 	moduleName, goVersion, err := compiler.ProjectModuleSettings(projectDir, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
@@ -1379,14 +1379,21 @@ func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 		ModuleName:   moduleName,
 		RegistrySHA:  result.Ref,
 		OutDir:       outDir,
-		ReadFill:     fill.ReadCollection,
-		ReadFillSlot: fill.ReadImplements,
+		ReadFill:     fill.DecodeCollection,
+		ReadFillSlot: fill.DecodeImplements,
 		QualifyFills: fill.QualificationFaults,
 
 		WriteRequirements: writeRequirements,
 		WriteDeployment:   writeDeployment,
 	}, nil
 }
+
+// registryResolveError is a registry that the resolver could not resolve for the project, such as a source that
+// cannot be read. Its text is the text of the error of the resolver.
+type registryResolveError struct{ err error }
+
+func (e *registryResolveError) Error() string { return e.err.Error() }
+func (e *registryResolveError) Unwrap() error { return e.err }
 
 // writeDeployment gives the compiler's port for the Kubernetes base and the delivery object to Delivering
 // (delivery.WriteDeployment, ST-DLV-CMD03, ST-DLV-PO04): the platform requirements of the run and the probes of the

@@ -14,11 +14,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/modes"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/modes"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // parkedService is a service of the fixture with SpiceDB, with the parked-message routes on a router behind its

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // selectionRegistry writes a registry whose archetype plain holds the ga component api, with a runtime block, and
@@ -20,7 +20,7 @@ func selectionRegistry(t *testing.T) *registry.Registry {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"archetypes/plain/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
+		"archetypes/plain/archetype.yaml": "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
 			"name: plain\nlanguage: go\nversion: 1.0.0\ncomponents: [api]\nconventions:\n  layout: flat\n",
 		"components/api/component.yaml": "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    http-api: inbound\nname: api\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/api\nrequires: []\nprovides: [http-api]\nslots: []\n",
 	}

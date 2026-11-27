@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
-	"github.com/jsell-rh/stego/internal/generator/healthcheck"
-	"github.com/jsell-rh/stego/internal/generator/httpapplication"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/generator/healthcheck"
+	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 )
 
 func TestGeneratedHealth(t *testing.T) {

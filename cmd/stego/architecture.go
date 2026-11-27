@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // architectureUsage is the exit status of stego architecture for a usage error: a subcommand, flag, format, view or

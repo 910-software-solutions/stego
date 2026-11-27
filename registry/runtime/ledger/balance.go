@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/money"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/money"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // A snapshot covers the posted entries of its account whose transaction ID is below its through_xid. The snapshot

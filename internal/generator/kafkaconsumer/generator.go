@@ -1,6 +1,6 @@
 // Package kafkaconsumer is the generator of the kafka-consumer component (ST-SUP-RC38). For each declared
 // subscription, in the order of the declaration, it emits the declaration of the subscription and the constructor of
-// its Kafka inbox on the runtime library, kafkainbox of the pinned github.com/jsell-rh/stego/registry/runtime
+// its Kafka inbox on the runtime library, kafkainbox of the pinned github.com/910-software-solutions/stego/registry/runtime
 // (ST-SUP-RP01-LC35 to ST-SUP-RP01-LC38), and once the migration text of the table of the refused records. The worker
 // mode of the service runtime runs each inbox. The checks, the inbox write, the offsets and the refusals live in the
 // runtime library; the generated code holds what varies with the declaration (ST-STD-RUNTIME-R05). The orchestrator
@@ -16,8 +16,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // Generator is the generator of the kafka-consumer component.
@@ -92,7 +92,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	}
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "// Package %s holds the declared subscriptions of the service and the constructor of the Kafka inbox of each, which\n// the worker mode runs (ST-SUP-RC38-OC01).\npackage %s\n\n", p.Package, p.Package)
-	b.WriteString("import (\n\t\"errors\"\n\n\t\"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox\"\n\t\"github.com/jsell-rh/stego/registry/runtime/service\"\n)\n\n")
+	b.WriteString("import (\n\t\"errors\"\n\n\t\"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkainbox\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/service\"\n)\n\n")
 	b.WriteString("// Subscriptions are the declared subscriptions, in the order of the declaration: the name of each is the destination\n// that its worker consumes and the stager of each message, and the worker's service account is the staging principal\n// of each message (ST-SUP-RP10-LC16). Each reads its topic in a consumer group of its own, with the settings of its\n// name (ST-SUP-RP01-LC38).\n")
 	b.WriteString("var Subscriptions = []kafkainbox.Subscription{\n")
 	for _, s := range p.Subscriptions {

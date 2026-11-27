@@ -21,14 +21,14 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/txhold"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The commands of the tenant provisioning, which the audit rows name as their action (ST-SUP-RC27-OC10).
@@ -798,6 +798,13 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 			// A Retire deletes the admin tuples of the tenant with its worker tuples (security review of PR #414, L4).
 			if err := unrelateAdmins(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
+			}
+			// A Retire deletes the counts of wrong attempts of the tenant in its transaction, so they go only with the
+			// retire; it deletes no row of an entity (decision ST-SUP-Q216 (a), ST-SUP-RC27-OC12).
+			if spec.Action == tenant.RetireAction {
+				if _, err := tx.ExecContext(ctx, PurgeTenantStatement, t.ID()); err != nil {
+					return idempotency.Response{}, fmt.Errorf("command: the counts of wrong attempts of the tenant were not deleted: %w", err)
+				}
 			}
 			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the
 			// key stages none again (ST-SUP-RC35-OC13).

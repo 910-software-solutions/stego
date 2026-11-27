@@ -5,13 +5,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 const maxTrackedFileBytes = 64 << 20

@@ -1,4 +1,4 @@
-// Package auditlog generates the audit wiring of a service on the audit runtime, github.com/jsell-rh/stego/registry/runtime/audit
+// Package auditlog generates the audit wiring of a service on the audit runtime, github.com/910-software-solutions/stego/registry/runtime/audit
 // (ST-SUP-RC28). It emits only what changes with the declaration: the audit settings, the sensitive fields of each
 // entity, the migration call with the runtime role, the anchor period and the retention, the jobs of controller
 // mode at the anchor period, and the database grants. The DDL text, the hash chain, the redaction, the writer, the
@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // SinkPort is the port of the audit sink, which the platform binds (ST-DECL-EN10, ST-GEN-INV37). A declaration's
@@ -233,7 +233,7 @@ func render(p plan) []byte {
 	pii := map[string]string{"redact": "audit.PIIRedact", "keep": "audit.PIIKeep"}[p.PII]
 	sensitivity := map[string]string{"pii": "audit.PII", "secret": "audit.Secret"}
 	fmt.Fprintf(&b, "// Package %s is the audit wiring of the service on the audit runtime (ST-SUP-RC28).\n", p.Package)
-	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"database/sql\"\n\t\"time\"\n\n\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n)\n\n", p.Package)
+	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"database/sql\"\n\t\"time\"\n\n\t\"github.com/910-software-solutions/stego/registry/runtime/audit\"\n)\n\n", p.Package)
 	b.WriteString("// Settings are the audit settings of the service declaration (ST-DECL-EN10). Both pii settings redact the\n// audit record: keep binds the source record only.\n")
 	fmt.Fprintf(&b, "var Settings = audit.Settings{Level: %s, PII: %s}\n\n", level, pii)
 	b.WriteString("// AnchorPeriod is the anchor period of the audit-log component (ST-SUP-RC28-OC08).\n")

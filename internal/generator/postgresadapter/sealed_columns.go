@@ -6,7 +6,7 @@ import (
 	"go/format"
 	"path"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // generateSealedColumns gives the file sealed_columns.go of a service with a readable secret field: ResealColumns,
@@ -50,7 +50,7 @@ func generateSealedColumns(ctx gen.Context) (gen.File, bool, error) {
 		return gen.File{}, false, err
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
+	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/910-software-solutions/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
 	out.WriteString("// ResealColumns are the readable secret fields of the service: the re-seal job of the controller moves each\n// sealed value to the first key of the key ring (ST-SUP-RP10-LC46).\nvar ResealColumns = []command.ResealColumn{\n")
 	out.Write(b.Bytes())
 	out.WriteString("}\n")

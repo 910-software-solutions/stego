@@ -1,6 +1,6 @@
 {
  "commit": "8bcc0d4c853a274bdf33cf80035a0937a6ad03f4",
- "source": "GET https://api.github.com/repos/jsell-rh/stego/attestations/sha256:fd93598974da9e71f21957c530a88b8c166e87bcdfb7328acb2a2997458a7988 on 2026-10-31, and trusted_root.json from Sigstore's public-good TUF repository on the same day",
+ "source": "GET https://api.github.com/repos/910-software-solutions/stego/attestations/sha256:fd93598974da9e71f21957c530a88b8c166e87bcdfb7328acb2a2997458a7988 on 2026-10-31, and trusted_root.json from Sigstore's public-good TUF repository on the same day",
  "trustedRoot": {
   "mediaType": "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
   "tlogs": [

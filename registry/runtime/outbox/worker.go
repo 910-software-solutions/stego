@@ -17,7 +17,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // Handler delivers one message to its destination. tx is a transaction of the message's tenant, which the worker
@@ -639,7 +639,7 @@ type metrics struct {
 	enabled bool
 }
 
-const instrumentation = "github.com/jsell-rh/stego/registry/runtime/outbox"
+const instrumentation = "github.com/910-software-solutions/stego/registry/runtime/outbox"
 
 func newMetrics(provider metric.MeterProvider, logs otellog.LoggerProvider, w *Worker) (*metrics, error) {
 	m := &metrics{}

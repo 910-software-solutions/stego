@@ -6,12 +6,12 @@ import (
 	"go/format"
 	"path"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // The outbox on the runtime (ST-SUP-RC18-OC30). The generated commands and queries carry all data access
 // (ST-SUP-RC20-OC39), and the queue table, its policies and its relay functions come from the runtime outbox
-// migration, outbox.Migration of the pinned github.com/jsell-rh/stego/registry/runtime (ST-SUP-RP01-LC19), and this component emits only
+// migration, outbox.Migration of the pinned github.com/910-software-solutions/stego/registry/runtime (ST-SUP-RP01-LC19), and this component emits only
 // what varies with the declaration (ST-STD-RUNTIME-R05): the destinations of the service with their payload
 // limits, the migration call with the roles, and the wiring of the queue and the worker. With the kafka-producer
 // component the worker gets the Kafka destination of the runtime, kafkaoutbox (ST-SUP-RC18-OC31). It emits no queue table,
@@ -23,10 +23,10 @@ const runtimeFile = "outbox.go"
 
 // The runtime packages that the emitted wiring imports.
 const (
-	runtimeOutbox      = "github.com/jsell-rh/stego/registry/runtime/outbox"
-	runtimeAudit       = "github.com/jsell-rh/stego/registry/runtime/audit"
-	runtimeAuditOutbox = "github.com/jsell-rh/stego/registry/runtime/audit/auditoutbox"
-	runtimeKafkaOutbox = "github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
+	runtimeOutbox      = "github.com/910-software-solutions/stego/registry/runtime/outbox"
+	runtimeAudit       = "github.com/910-software-solutions/stego/registry/runtime/audit"
+	runtimeAuditOutbox = "github.com/910-software-solutions/stego/registry/runtime/audit/auditoutbox"
+	runtimeKafkaOutbox = "github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
 )
 
 // kafkaComponent is the component whose change events go to Kafka through the outbox (ST-SUP-RC18-OC31).
@@ -113,7 +113,7 @@ func generateRuntime(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 // renderRuntime writes the source of the outbox wiring package.
 func renderRuntime(p runtimePlan) []byte {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "// Package %s is the outbox wiring of the service on the outbox runtime, github.com/jsell-rh/stego/registry/runtime/outbox\n", p.Package)
+	fmt.Fprintf(&b, "// Package %s is the outbox wiring of the service on the outbox runtime, github.com/910-software-solutions/stego/registry/runtime/outbox\n", p.Package)
 	b.WriteString("// (ST-SUP-RC18-OC30). The queue table, its policies and its relay functions come from the runtime migration; this\n// package names the destinations of the service and wires the queue and the worker.\n")
 	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"database/sql\"\n", p.Package)
 	if p.Audit {

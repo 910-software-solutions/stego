@@ -1,6 +1,6 @@
 package compiler
 
-import "github.com/jsell-rh/stego/internal/gen"
+import "github.com/910-software-solutions/stego/internal/gen"
 
 const httpTLSSource = `
 

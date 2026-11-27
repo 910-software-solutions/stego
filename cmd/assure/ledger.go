@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 )
 
 // ledger (ST-ASR-CH03) is assure ledger (ST-ASR-CLI04). It builds the proof ledger of the commit from verified

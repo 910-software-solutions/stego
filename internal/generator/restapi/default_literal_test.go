@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // panicCalls counts the calls of panic in the Go files of files whose path holds part.

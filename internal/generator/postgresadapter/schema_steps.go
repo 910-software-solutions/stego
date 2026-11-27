@@ -12,8 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The schema steps of the runtime data path (ST-SUP-RC01-OC22): 001_initial is the baseline, the tables of the
@@ -354,8 +354,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 					body.WriteString(text + ";\n")
 				}
 			}
+			var earlier []string
+			if change.Kind == "drop" {
+				earlier = []string{ledgerDigest(dropBodyBefore(contract))}
+			}
 			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase,
-				Body: body.String(), Contract: contract, Expand: expand})
+				Body: body.String(), Contract: contract, Expand: expand, Earlier: earlier})
 			before = after
 			continue
 		}

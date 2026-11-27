@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/money"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/money"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The errors of the two-phase state machine (ST-SUP-RP08-LC04). PostPending and Void return no other error of the

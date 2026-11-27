@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // allowedStandard is the fill allow list of the standard library (ST-EXT-UC01-R03). The print functions of fmt and
@@ -158,7 +158,7 @@ func declaredFillFaults(check compiler.FillCheck) ([]compiler.FillFault, error) 
 		add(f.Fill, f.Path, workerSlot)
 	}
 	for _, binding := range check.Bindings {
-		f, err := ReadManifest(filepath.Join(check.ProjectDir, "fills", binding.Fill, ManifestFile), check)
+		f, err := ReadManifest(check, binding.Fill)
 		if err != nil {
 			// The binding faults name a manifest that cannot be read.
 			continue

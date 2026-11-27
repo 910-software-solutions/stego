@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The secret fields of an entity (ST-SUP-RP10-LC44, decision ST-DECL-Q44): the generated Values gives each readable
@@ -141,6 +141,12 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 			// attempt that read it: a copy to another row would get a new count of 0 (security review of PR #479,
 			// L1).
 			if a.value.IsCounted() && !s.boundTo(a.value, attemptKey{counter: a.counter, row: a.row}) {
+				return nil, sealedf("command: a counted compare-only value of %s is written to another field or row than the one it was read from",
+					a.counter.spec.Entity)
+			}
+			// A stored counted value whose count a delete of this transaction deleted is not written again: a create
+			// of the same ID would carry the old PIN to a count of 0 (security review of PR #511, L1).
+			if a.value.IsCounted() && s.purgedBinding(a.value) {
 				return nil, sealedf("command: a counted compare-only value of %s is written to another field or row than the one it was read from",
 					a.counter.spec.Entity)
 			}

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 const todoBase = "https://errors.example.com/todo/"
@@ -220,7 +220,7 @@ func TestGolden(t *testing.T) {
 	})
 }
 
-// runtimeConstant reads the text of a string constant of the runtime package github.com/jsell-rh/stego/registry/runtime/idempotency from
+// runtimeConstant reads the text of a string constant of the runtime package github.com/910-software-solutions/stego/registry/runtime/idempotency from
 // its source in this repository's registry/runtime folder.
 func runtimeConstant(t *testing.T, file, name string) string {
 	t.Helper()

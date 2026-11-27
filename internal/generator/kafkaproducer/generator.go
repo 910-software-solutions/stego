@@ -1,5 +1,5 @@
 // Package kafkaproducer is the generator of the kafka-producer component. It emits no code: the Kafka destination
-// of the runtime outbox, kafkaoutbox of the pinned github.com/jsell-rh/stego/registry/runtime, publishes each change
+// of the runtime outbox, kafkaoutbox of the pinned github.com/910-software-solutions/stego/registry/runtime, publishes each change
 // event (ST-SUP-RP01-LC30 to ST-SUP-RP01-LC32). The component marks the service whose change events go to Kafka: the
 // outbox wiring registers that destination on the worker (ST-SUP-RC18-OC31), and each generated write of a
 // collection stages its change event in the transaction of its command (ST-SUP-RC20-OC40). The owner decided
@@ -9,7 +9,7 @@ package kafkaproducer
 import (
 	"errors"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 type Generator struct{}

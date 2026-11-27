@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	schema "github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	schema "github.com/910-software-solutions/stego/internal/types"
 )
 
 // Import paths can end in a predeclared Go name. Such an import must not

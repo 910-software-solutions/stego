@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // recorder is the recording fake provider of the tests: it stores each request it gets and answers from its rules.

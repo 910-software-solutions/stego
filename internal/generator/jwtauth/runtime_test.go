@@ -8,8 +8,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 )
 
 func TestGeneratedAuthenticationRuntime(t *testing.T) {

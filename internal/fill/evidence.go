@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // TestRun runs the tests of the fill in the folder and gives an error when
@@ -54,9 +54,9 @@ func RecordEvidence(check compiler.FillCheck, run TestRun, build buildidentity.R
 // recordOne records the evidence of one fill.
 func recordOne(check compiler.FillCheck, name string, run TestRun, build buildidentity.Record, now func() time.Time) EvidenceResult {
 	result := EvidenceResult{Fill: name}
+	f, err := ReadManifest(check, name)
 	dir := filepath.Join(check.ProjectDir, "fills", name)
 	manifest := filepath.Join(dir, ManifestFile)
-	f, err := ReadManifest(manifest, check)
 	if err != nil {
 		result.Reason = err.Error()
 		return result

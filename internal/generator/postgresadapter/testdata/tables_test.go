@@ -30,13 +30,13 @@ import (
 	"example.com/tables-check/storage"
 	"example.com/tables-check/tenancy"
 	"example.com/tables-check/widgets"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	runtimetenant "github.com/910-software-solutions/stego/registry/runtime/tenant"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	runtimetenant "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // server opens the PostgreSQL server of STEGO_TEST_POSTGRES_DSN as its administrator and drops the roles of the

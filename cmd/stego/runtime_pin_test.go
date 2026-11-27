@@ -14,10 +14,10 @@ import (
 
 	"golang.org/x/mod/modfile"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // allocationTask is the file that the component hello emits: a background task that splits 10.00 USD in three
@@ -28,7 +28,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jsell-rh/stego/registry/runtime/money"
+	"github.com/910-software-solutions/stego/registry/runtime/money"
 )
 
 // Task prints one allocation of the runtime library.
@@ -267,7 +267,7 @@ func TestRuntimePinBuildsWithNoNetwork(t *testing.T) {
 		workspace.Dir = input.ProjectDir
 		workspace.Env = offlineGo(t, goTool, empty, "GOWORK="+work)
 		goOutput(t, workspace)
-		if entries, err := os.ReadDir(filepath.Join(empty, "cache", "download", "github.com", "jsell-rh", "stego")); err == nil && len(entries) > 0 {
+		if entries, err := os.ReadDir(filepath.Join(empty, "cache", "download", "github.com", "910-software-solutions", "stego")); err == nil && len(entries) > 0 {
 			t.Fatalf("the workspace build put the runtime library in the module cache: %v", entries)
 		}
 		if line := runAllocation(t, binary); line != want {

@@ -1,9 +1,9 @@
-module github.com/jsell-rh/stego/cmd/assure
+module github.com/910-software-solutions/stego/cmd/assure
 
 go 1.26.11
 
 require (
-	github.com/jsell-rh/stego/internal/assure v0.0.0
+	github.com/910-software-solutions/stego/internal/assure v0.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -81,4 +81,4 @@ require (
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
 
-replace github.com/jsell-rh/stego/internal/assure => ../../internal/assure
+replace github.com/910-software-solutions/stego/internal/assure => ../../internal/assure

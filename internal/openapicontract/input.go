@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/jsell-rh/stego/internal/gen"
 	"gopkg.in/yaml.v3"
 )
 

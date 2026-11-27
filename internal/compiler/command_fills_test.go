@@ -4,11 +4,11 @@ import (
 	"reflect"
 	"testing"
 
-	commandgen "github.com/jsell-rh/stego/internal/generator/command"
-	querygen "github.com/jsell-rh/stego/internal/generator/query"
-	workergen "github.com/jsell-rh/stego/internal/generator/worker"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	commandgen "github.com/910-software-solutions/stego/internal/generator/command"
+	querygen "github.com/910-software-solutions/stego/internal/generator/query"
+	workergen "github.com/910-software-solutions/stego/internal/generator/worker"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func TestCommandFillCheck(t *testing.T) {

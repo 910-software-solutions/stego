@@ -180,7 +180,9 @@ func safeRoute(pattern string) string {
 	if !hasMethod {
 		route = pattern
 	}
-	if strings.HasPrefix(route, "/") && strings.Trim(route, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-{}$") == "" {
+	// A colon is allowed, so a declared command route, a custom method such as /jobs/{job_id}/status:convert, has its
+	// template too (walkthrough 26, L-ROUTE). The pattern is the registered one, never the path of the request.
+	if strings.HasPrefix(route, "/") && strings.Trim(route, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-{}$:") == "" {
 		return route
 	}
 	return ""

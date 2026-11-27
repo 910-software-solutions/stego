@@ -1,9 +1,9 @@
 package gosdk
 
 import (
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/openapicontract"
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/openapicontract"
 )
 
 func (*Generator) InputFiles(config map[string]any) ([]gen.InputFile, error) {

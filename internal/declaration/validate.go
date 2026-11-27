@@ -11,9 +11,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ValidationError is one fault of a declaration as structured data (ST-DECL-RM01): the rule it breaks, the path in
@@ -353,6 +353,10 @@ var (
 	// uuidForm is the form of a ref default: the key of a row, a UUID as the runtime reads it (command.ValidUUID).
 	uuidForm = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
+
+// ValidFillName tells whether name has the form of a fill name (ST-DECL-INV86). A reader of fills/<name> skips a name
+// outside the form, which checking refuses with its path, so that no such name names a path outside the fills folder.
+func ValidFillName(name string) bool { return fillNameForm.MatchString(name) }
 
 // workerSuffix is the end that a service name may not have (ST-DECL-INV86): the split Kubernetes base names the
 // Deployment and the ServiceAccount of the worker and controller modes <service>-worker (ST-DLV-UC07-R07).

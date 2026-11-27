@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // validateWritable holds the declaration to ST-DECL-INV100. The writable setting of a field, when it is given, is

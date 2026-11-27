@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/browserassets"
+	"github.com/910-software-solutions/stego/internal/browserassets"
 )
 
 // PackBrowserAssets is the handler of ST-GEN-CMD04, Capture a browser asset

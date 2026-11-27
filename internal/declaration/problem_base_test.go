@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // td02RuleFaults reads ST-DECL-TD02 with the top-level text given added and gives its faults of the rule.
