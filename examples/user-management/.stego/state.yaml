@@ -41,7 +41,7 @@ last_applied:
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 33fa1f427c01fdde079e815d7146cd3ef48662c957966f593175c4c4f658eab0
+    registry_content_sha256: 1c93d03dd1f78243c7fa00041969aff97ba4d2605ceebff18a96494c9c184839
     components:
         audit-log:
             version: 1.2.0
@@ -68,8 +68,8 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.32.0
-            sha: 3097ca6b5215e4466fe506bd788544ec599444e682e11dc61b82c4685afc9dda
+            version: 6.33.0
+            sha: cd5710819aad2653d7eb0dff48f58ff8ae3096e44f3e56d5fe6bdf4625335185
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
@@ -161,7 +161,7 @@ last_applied:
         internal/outbox/outbox.go: 44c456e439649d2507ee29860bff906e4a9c1f6db2faa91a60b64a6923623eaa
         internal/stegoruntime/runtime.go: 7f8522ed2679b16b3057b74d8e6658190fda96bf728aa1c2fc0d565a6ed88db2
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
-        internal/storage/migrate.go: 1c219f4a7bb86f1ed889f1822368218b96cce6f9b04468c899ed600b44d0f995
+        internal/storage/migrate.go: dee0838b28657be5fdaa20c4d6758b05f575fce69a2bfc10d6a6b373f15eb2c4
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
         internal/storage/runtime_access.go: d2513e30f2c844fd275a3e8ebc54b967330165e68f96236e9c74402b4d78f6ce
         internal/storage/schema_generation.go: ff7f059441677f4253c98670350c304d3111b391d877ba049b943a4ae1d9671e
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: c6a7cd5eac82298efc2746b74383946d93e669ed5dab0a1ecfae09414b0cec98
-        architecture/index.html: 12a72a165db4dc988efd57b21a8026c9b7e6e628959cfbe0df82e599046368fa
+        architecture/architecture.json: a4b7ffd6fbd906fd2b3c9c7fc75c5b181a0ce527fe7d0a2435db5b80f178901c
+        architecture/index.html: 79255b480e48db2f59ef4ac3319bda01c8839430d11bf35f38ce07d495efd272
         deploy/base/deployment.yaml: 4c02284480b1642e8b09aa9eee8b7206d3d80f9583bc470dc3da98ae908b3d05
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: 229d74b385ed0393a18dae1711327f0e6ee1015c144e59dcd8ea0cf338d82dce
