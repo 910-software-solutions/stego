@@ -27,9 +27,9 @@ last_applied:
                 mode: 420
             service.yaml:
                 exists: true
-                sha256: f86e8a1e8d1d8e8af56f84a9e273102e305eb6a00e2918288569fe100ed9f5f0
+                sha256: 578fbfdf7f15dcd6ac392b5e27482bce47e2477cca4f3cf218373ea9d93ef821
                 mode: 420
-        sha256: 8dd3430433323ad14e1ceac39b0c9e5407671d095469acbdb069da703aaf1a73
+        sha256: 97fed0f0346c82a353650870b4049faa9a8069f75a8727733dd731edcf1721b3
     compiler_build:
         go_version: go1.26.11
         goos: linux
@@ -39,9 +39,9 @@ last_applied:
         revision: unknown
         source_state: unknown
     service_name: user-management
-    service_hash: f86e8a1e8d1d8e8af56f84a9e273102e305eb6a00e2918288569fe100ed9f5f0
+    service_hash: 578fbfdf7f15dcd6ac392b5e27482bce47e2477cca4f3cf218373ea9d93ef821
     registry_sha: env-override
-    registry_content_sha256: 0d3d70ed6b7d0dc25ecf6abb57620615ce8b19214057b5fa93fc11e0d6092b37
+    registry_content_sha256: 6538f4aa953167f370f3c24a687c197570ccf16bd1b9beafb5c6c84ae5118b82
     components:
         audit-log:
             version: 1.2.0
@@ -65,8 +65,8 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.33.0
-            sha: c63ed9fdd832b22ed38dba6ced60ec53ac2349ab76b51f1b487f786698a10769
+            version: 6.34.0
+            sha: e1aa6af903ac1d7574e5aed6c03a6ad65d213bdc8645f06a66c46360bcedd4dd
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
@@ -144,7 +144,7 @@ last_applied:
         internal/authz/authz.go: e4afb414fcb9e43ff2b7b67ac9eea28697b0d35975d303f30c8a396a2a765b59
         internal/authz/schema.zed: dd0aeb78dcda920a7adf1c59f491c6104f10082df9c35ca6885f89d5ea0c5d5c
         internal/outbox/outbox.go: 44c456e439649d2507ee29860bff906e4a9c1f6db2faa91a60b64a6923623eaa
-        internal/stegoruntime/runtime.go: abe32db0c43fc54b4341b5186e8a176ac66b1fe393485a71fb7dab00e313acec
+        internal/stegoruntime/runtime.go: eddb8a626893307ee1a294dcf9a3b2a6b65a2ea771644a42c49977aaf2b65ae0
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
         internal/storage/migrate.go: 07d6e045d771292f2de9dca74f975f191f0fb53ae0801b6e5f17aba45082f607
         internal/storage/migrations/001_initial.sql: ab78775163028811859a9a67ca89769c43529c4a72451340e6551134668393f9
@@ -196,8 +196,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 9a7b6ca52a1e14afe3d82ebe2be90b1ecacf117ba083e0b73bed38fc2f053a4a
-        architecture/index.html: 33ef41a120b166e283aa7662696003a555207ae30ab141e6b75fa0abd74a01c1
+        architecture/architecture.json: 4d7e57aaf2780fd64579268d9d47523a45463c814f6e8b47769f4b4c35aa5bee
+        architecture/index.html: 048719899953ddba0628010aef3f0e5defb37405b38c13ba0535b3e5ab7e8640
         deploy/base/deployment.yaml: 13226d027d0bb9f36d3cda86b47465b4388110eb268533ac18e10a723082a8d6
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: a02465eddd432cbfbbec7c9838a3e1ad6ebe7e0476ac42caac2139104cbe6889
