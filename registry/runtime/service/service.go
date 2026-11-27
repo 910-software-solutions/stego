@@ -859,7 +859,8 @@ func (e *spiceDBError) FaultRemedy() string {
 		return "the settings of SpiceDB are refused: set " + SpiceDBEndpointSetting + " and " + SpiceDBKeyFileSetting + ", then start the service again"
 	}
 	return "the service cannot reach SpiceDB or SpiceDB does not serve: the service starts again; when it does not pass, check that SpiceDB runs and serves, that " +
-		SpiceDBEndpointSetting + " names it and that " + SpiceDBKeyFileSetting + " holds its preshared key"
+		SpiceDBEndpointSetting + " names it, that " + SpiceDBKeyFileSetting + " holds its preshared key, and, for a certificate of SpiceDB that a private authority signs, that " +
+		SpiceDBCAFileSetting + " names the file of that authority"
 }
 
 // CauseClass gives the class of the cause: invalid_setting for refused settings, not_serving for a health check that
