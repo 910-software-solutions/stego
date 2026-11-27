@@ -183,7 +183,7 @@ go 1.26.11
 require (
  github.com/google/uuid v1.6.0
  github.com/jackc/pgx/v5 v5.11.0
- github.com/910-software-solutions/stego/registry/runtime v0.204.0
+ github.com/910-software-solutions/stego/registry/runtime v0.206.0
 )
 
 replace github.com/910-software-solutions/stego/registry/runtime => ` + runtimeDir + "\n"
