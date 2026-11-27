@@ -38,9 +38,6 @@ var serviceTests []byte
 //go:embed testdata/schema.zed
 var serviceSchema []byte
 
-// spiceDBImage is the pinned SpiceDB image of the authorization runtime's tests.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
 // pinnedGo is the Go command that builds the generated service: STEGO_TEST_PINNED_GO, else bin/go of the SDK that
 // runs the test.
 func pinnedGo() string {

@@ -1,6 +1,7 @@
 package localtest
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,16 +15,21 @@ import (
 // L4). They run with stand-ins for podman and docker, shell scripts that write each call to a log, so they run on a
 // host with no container engine. The run of the real image is CI's.
 
+// The runs of the stand-in tools: one that creates the container, one that cannot, and one that takes a second and
+// writes run-end to the log when it ends.
+const (
+	runStarts = `echo 0123456789ab`
+	runFails  = `echo "cannot start: no cgroup controllers" >&2; exit 125`
+	runSlow   = `sleep 1; echo run-end >> "$log"; echo 0123456789ab`
+)
+
 // fakeTool writes a stand-in for the tool name into dir. It writes each call, one line of its arguments, to the
-// file log. A run fails when fail is true, and else prints an ID; a port prints the address port.
-func fakeTool(t *testing.T, dir, name, log string, fail bool, port string) {
+// file log. A run runs the shell code run; a port prints the address port.
+func fakeTool(t *testing.T, dir, name, log, run, port string) {
 	t.Helper()
-	run := `echo 0123456789ab`
-	if fail {
-		run = `echo "cannot start: no cgroup controllers" >&2; exit 125`
-	}
 	script := "#!/bin/sh\n" +
-		`echo "$*" >> '` + log + "'\n" +
+		`log='` + log + "'\n" +
+		`echo "$*" >> "$log"` + "\n" +
 		`case "$1" in` + "\n" +
 		`run) ` + run + ` ;;` + "\n" +
 		`port) echo '` + port + `' ;;` + "\n" +
@@ -102,8 +108,8 @@ func TestSpiceDBContainer(t *testing.T) {
 		podmanLog, dockerLog := filepath.Join(dir, "podman.log"), filepath.Join(dir, "docker.log")
 		// podman is on PATH but cannot start the container, as a rootless podman without cgroup controllers cannot;
 		// docker is tried next.
-		fakeTool(t, dir, "podman", podmanLog, true, "")
-		fakeTool(t, dir, "docker", dockerLog, false, "127.0.0.1:43123")
+		fakeTool(t, dir, "podman", podmanLog, runFails, "")
+		fakeTool(t, dir, "docker", dockerLog, runStarts, "127.0.0.1:43123")
 		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		endpoint, name, err := startSpiceDB([]string{"serve-testing"})
 		if err != nil {
@@ -160,12 +166,32 @@ func TestSpiceDBContainer(t *testing.T) {
 	})
 }
 
+// fastReaper makes the removals of a reaper after an end that is not clean one second apart, and two in all, for the
+// test.
+func fastReaper(t *testing.T) {
+	every, times := reaperEvery, reaperTimes
+	reaperEvery, reaperTimes = time.Second, 1
+	t.Cleanup(func() { reaperEvery, reaperTimes = every, times })
+}
+
+// removals counts the calls rm --force name in the log.
+func removals(t *testing.T, log, name string) int {
+	count := 0
+	for _, c := range calls(t, log) {
+		if slices.Equal(c, []string{"rm", "--force", name}) {
+			count++
+		}
+	}
+	return count
+}
+
 func TestContainerReaper(t *testing.T) {
+	fastReaper(t)
 	start := func(t *testing.T, life time.Duration) (*reaper, string) {
 		t.Helper()
 		dir := t.TempDir()
 		log := filepath.Join(dir, "tool.log")
-		fakeTool(t, dir, "docker", log, false, "")
+		fakeTool(t, dir, "docker", log, runStarts, "")
 		r, err := newReaper(filepath.Join(dir, "docker"), "stego-localtest-c1", life)
 		if err != nil {
 			t.Fatal(err)
@@ -185,6 +211,10 @@ func TestContainerReaper(t *testing.T) {
 		}
 		if !waitFor(5*time.Second, func() bool { return !groupAlive(t, r.pid) }) {
 			t.Error("the reaper or its timer still runs")
+		}
+		// It removes the container again, for a run of the tool that ended after the first removal.
+		if got := removals(t, log, "stego-localtest-c1"); got != 2 {
+			t.Errorf("the reaper removed the container %d times, not 2", got)
 		}
 	})
 	t.Run("ST-STD-LOCAL-R05-T06 The reaper removes the container at the time limit while the test binary runs", func(t *testing.T) {
@@ -207,6 +237,77 @@ func TestContainerReaper(t *testing.T) {
 		}
 		if removed(t, log) {
 			t.Error("the reaper removed the container after a clean exit")
+		}
+	})
+}
+
+func TestContainerRemovalDuringItsRun(t *testing.T) {
+	fastReaper(t)
+	// begin starts the container c1 with a docker whose run takes a second, in a goroutine, and waits until the run is
+	// in flight.
+	begin := func(t *testing.T) (string, chan error) {
+		t.Helper()
+		dir := t.TempDir()
+		log := filepath.Join(dir, "docker.log")
+		fakeTool(t, dir, "docker", log, runSlow, "")
+		result := make(chan error, 1)
+		go func() {
+			result <- runContainer(context.Background(), filepath.Join(dir, "docker"), "stego-localtest-c1", time.Hour, nil, []string{"run", "--rm", "--name", "stego-localtest-c1"})
+		}()
+		if !waitFor(5*time.Second, func() bool { return len(calls(t, log)) > 0 }) {
+			t.Fatal("the run did not start")
+		}
+		return log, result
+	}
+	// order gives the first word of each call in the log, and run-end.
+	order := func(t *testing.T, log string) []string {
+		var words []string
+		for _, c := range calls(t, log) {
+			words = append(words, c[0])
+		}
+		return words
+	}
+	t.Run("ST-STD-LOCAL-R05-T08 A removal during the run of the container waits for the end of the run", func(t *testing.T) {
+		log, result := begin(t)
+		mu.Lock()
+		r := running["stego-localtest-c1"].reaper
+		mu.Unlock()
+		// As the SIGINT path of Main does while a test starts the container.
+		removeContainer("stego-localtest-c1")
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		if got := order(t, log); !slices.Equal(got, []string{"run", "run-end", "rm"}) {
+			t.Fatalf("the calls are %v, not run, run-end and rm", got)
+		}
+		if !waitFor(5*time.Second, func() bool { return !groupAlive(t, r.pid) }) {
+			t.Error("the reaper was not told done after the removal")
+		}
+	})
+	t.Run("ST-STD-LOCAL-R05-T09 When the removal cannot wait for the end of the run, the reaper removes the container after it", func(t *testing.T) {
+		wait := removeWait
+		removeWait = 100 * time.Millisecond
+		t.Cleanup(func() { removeWait = wait })
+		log, result := begin(t)
+		mu.Lock()
+		r := running["stego-localtest-c1"].reaper
+		mu.Unlock()
+		removeContainer("stego-localtest-c1")
+		if !groupAlive(t, r.pid) {
+			t.Fatal("the reaper was told done before the run ended")
+		}
+		// The end of the binary closes the pipe of the reaper.
+		_ = r.stop.Close()
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		if !waitFor(10*time.Second, func() bool { return !groupAlive(t, r.pid) }) {
+			t.Fatal("the reaper still runs")
+		}
+		got := order(t, log)
+		end := slices.Index(got, "run-end")
+		if end < 0 || !slices.Contains(got[end:], "rm") {
+			t.Fatalf("no removal after the end of the run: %v", got)
 		}
 	})
 }

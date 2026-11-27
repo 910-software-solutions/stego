@@ -340,10 +340,12 @@ func lifeLimit() time.Duration {
 	return defaultLife
 }
 
-// started is one container that localtest started: its tool and its reaper.
+// started is one container that localtest started: its tool, its reaper, and a channel that is closed when the run
+// of the tool that creates it has ended.
 type started struct {
 	tool   string
 	reaper *reaper
+	ran    chan struct{}
 }
 
 // runContainer starts the reaper of the container name, with the time limit life, records the container, and runs
@@ -353,26 +355,45 @@ func runContainer(ctx context.Context, path, name string, life time.Duration, en
 	if err != nil {
 		return fmt.Errorf("start the reaper of the container: %w", err)
 	}
+	c := &started{tool: path, reaper: r, ran: make(chan struct{})}
 	mu.Lock()
-	running[name] = &started{tool: path, reaper: r}
+	running[name] = c
 	mu.Unlock()
 	_, err = commandEnv(ctx, env, path, args...)
+	close(c.ran)
 	return err
 }
 
 // reaperScript removes the container $2 with the tool $1 when the test binary ends, or when the time limit of $3
 // seconds ends. It reads one line from its standard input, a pipe whose write end only the test binary holds: the end
 // of the binary on any path, also a kill, closes the pipe and ends the read, so no PID is watched. The line done is a
-// clean exit, after which localtest removed the container itself. A timer in the background removes the container
-// at the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the
-// timer, so it leaves no process.
+// clean exit, after which localtest removed the container itself. After any other end, it removes the container, and
+// again every $4 seconds, $5 more times: a run of the tool that the binary started and that did not end before the
+// binary ended can create the container after the first removal. A timer in the background removes the container at
+// the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the timer,
+// so it leaves no process.
 const reaperScript = `( sleep "$3"; "$1" rm --force "$2" >/dev/null 2>&1 ) &
 read -r line
-[ "$line" = done ] || "$1" rm --force "$2" >/dev/null 2>&1
+if [ "$line" != done ]; then
+	n=0
+	while :; do
+		"$1" rm --force "$2" >/dev/null 2>&1
+		[ "$n" -ge "$5" ] && break
+		n=$((n + 1))
+		sleep "$4"
+	done
+fi
 trap '' TERM
 kill -TERM 0 2>/dev/null
 exit 0
 `
+
+// reaperEvery and reaperTimes are the removals of the reaper after an end that is not clean: every five seconds for
+// the start limit of a container.
+var (
+	reaperEvery = 5 * time.Second
+	reaperTimes = int(startLimit / (5 * time.Second))
+)
 
 // reaper is one reaper process: the write end of the pipe that it reads, and its process ID, which is also the ID of
 // its process group.
@@ -389,7 +410,8 @@ func newReaper(path, name string, life time.Duration) (*reaper, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)))
+	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)),
+		fmt.Sprintf("%d", max(int(reaperEvery.Seconds()), 1)), fmt.Sprintf("%d", reaperTimes))
 	cmd.Stdin = read
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -415,9 +437,11 @@ func remove() {
 	}
 }
 
-// removeContainer removes the container name, if localtest started it, and stops its reaper. A removal that fails
-// leaves the reaper, which removes the container when the binary ends. It is safe to call more than once, and with
-// an empty name.
+// removeContainer removes the container name, if localtest started it, and stops its reaper. It first waits, up to
+// removeWait, for the end of the run of the tool that creates the container: the SIGINT path of Main can come while a
+// test starts it, and a run that ends after the removal creates the container. A removal that fails, or that did not
+// wait for the end of the run, leaves the reaper, which removes the container again when the binary ends (security
+// review of PR #7, N4). It is safe to call more than once, and with an empty name.
 func removeContainer(name string) {
 	mu.Lock()
 	c := running[name]
@@ -426,15 +450,28 @@ func removeContainer(name string) {
 	if c == nil {
 		return
 	}
+	ended := true
+	select {
+	case <-c.ran:
+	case <-time.After(removeWait):
+		ended = false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if _, err := command(ctx, c.tool, "rm", "--force", name); err != nil {
 		fmt.Fprintf(os.Stderr, "localtest: remove the container %s: %v\n", name, err)
 		return
 	}
+	if !ended {
+		fmt.Fprintf(os.Stderr, "localtest: the run of the container %s did not end; its reaper removes it again when the tests end\n", name)
+		return
+	}
 	_, _ = c.reaper.stop.WriteString("done\n")
 	_ = c.reaper.stop.Close()
 }
+
+// removeWait is the time that removeContainer waits for the end of the run of a container: its start limit.
+var removeWait = startLimit
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
 // environment of the test with no work file, no toolchain switch, GOFLAGS cleared and the go env file not read
