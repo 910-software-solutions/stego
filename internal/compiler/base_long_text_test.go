@@ -76,6 +76,28 @@ func TestBaseLongText(t *testing.T) {
 			"  - {change: user-display-name-relax, phase: expand}\n"), "6.34.0"); len(faults) != 0 {
 			t.Errorf("a relax of User.display_name to 4000 characters with the item searchable: got %+v, want no fault", faults)
 		}
+		// A relax with the item searchable of a field that is still in the search after it is refused by the check,
+		// not only by generation (security review of PR #22, MF).
+		searched := withChanges(td01, "  - {id: user-display-name-relax, kind: relax, entity: User, field: display_name, definition: searchable}\n",
+			"  - {change: user-display-name-relax, phase: expand}\n")
+		for _, adapter := range []string{"6.32.0", "6.34.0"} {
+			refused := false
+			for _, fault := range longTextFaults(t, td01, searched, adapter) {
+				refused = refused || fault.Field == "display_name"
+			}
+			if !refused {
+				t.Errorf("a relax with the item searchable of User.display_name, which stays in the search, on a %s base is accepted", adapter)
+			}
+		}
+		// A long text field of an entity that no collection lists has no search index, so a 6.32.0 base needs no relax
+		// for it (security review of PR #22, MG).
+		unlisted := strings.Replace(td01, "    operations: [create, read, delete, list]\n", "    operations: [create, read, delete]\n", 1)
+		if unlisted == td01 {
+			t.Fatal("the base has no list of organizations to take away")
+		}
+		if faults := longTextFaults(t, unlisted, unlisted, "6.32.0"); len(faults) != 0 {
+			t.Errorf("a 6.32.0 base with Organization.description on an entity that no collection lists: got %+v, want no fault", faults)
+		}
 		// A record with no postgres-adapter pin, or a pin that does not parse, counts as a base that gave long text its
 		// search index, so the check fails closed (security review of PR #22, L2).
 		data := []byte(td01)
