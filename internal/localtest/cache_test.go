@@ -468,8 +468,24 @@ func TestModuleCacheLinks(t *testing.T) {
 				}
 			}
 		}
-		// The start of a module path, such as gonum.org/v1, is no module path, and an escaped upper case is fine.
+		// Security review sec-21-14c, L-14a: WalkDir does not go into a root that is a link, so a cache that a user
+		// moved to another disk and linked back gave no unlisted folder, and a planted file in one was not found.
 		cache, module, checked := downloadedLib(t)
+		linked := filepath.Join(t.TempDir(), "localtest-modules")
+		if err := os.Symlink(cache, linked); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyCache(linked, nil, checked); err != nil || verifiedDirs != 1 {
+			t.Errorf("the unchanged unlisted folder of a linked cache fails or is not checked (%d): %v", verifiedDirs, err)
+		}
+		if err := os.WriteFile(filepath.Join(module.Dir, "zz_planted.go"), []byte("package lib\n\nfunc init() { println(\"ALTERED\") }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyCache(linked, nil, checked); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Errorf("a planted file in an unlisted folder of a linked cache is not refused: %v", err)
+		}
+		// The start of a module path, such as gonum.org/v1, is no module path, and an escaped upper case is fine.
+		cache, module, checked = downloadedLib(t)
 		for _, name := range []string{filepath.Join("gonum.org", "v1"), filepath.Join("github.com", "!burnt!sushi")} {
 			if err := os.MkdirAll(filepath.Join(cache, name), 0o755); err != nil {
 				t.Fatal(err)

@@ -619,18 +619,26 @@ func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, 
 			named[filepath.Clean(d.Dir)] = true
 		}
 	}
+	// WalkDir does not go into a root that is a symbolic link, so a cache that a user moved to another disk and
+	// linked back would give no folder, and no unlisted folder would be hashed (security review sec-21-14c, L-14a).
+	// The walk starts at the folder that the link names, and gives each folder below cache, as the go command does.
+	walkRoot, err := filepath.EvalSymlinks(cache)
+	if err != nil {
+		return nil, err
+	}
 	var found []fillDir
-	err := filepath.WalkDir(cache, func(name string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(walkRoot, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if name == cache {
+		if name == walkRoot {
 			return nil
 		}
-		rel, err := filepath.Rel(cache, name)
+		rel, err := filepath.Rel(walkRoot, name)
 		if err != nil {
 			return err
 		}
+		name = filepath.Join(cache, rel)
 		rel = filepath.ToSlash(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("the module cache %s holds the symbolic link %s, which no go command makes: remove the cache", cache, rel)
