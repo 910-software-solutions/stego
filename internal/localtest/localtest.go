@@ -598,9 +598,14 @@ func repositoryLines(root string) (map[string]bool, error) {
 // earlier fill, or from a go command of a test, and the go command builds from it with no new hash when a go.sum
 // names its version, so verifyDirs must hash it too (security review of PR #7, round 3, I4). A folder whose version
 // has no checked hash is not given: a build from it needs a go.sum line for it, which CheckSums refuses. The walk
-// does not go into the download folder (cache/download) or into a module folder, and it skips a name that is not
-// a valid escaped module path and version. A temporary folder of the go command, such as lib@v1.0.0.tmp-1, has no
-// checked hash, so it is not given.
+// does not go into the download folder (cache/download) or into a module folder. A temporary folder of the go
+// command, such as lib@v1.0.0.tmp-1, has no checked hash, so it is not given.
+//
+// It fails on a symbolic link below the cache and outside cache/download, and on a folder whose name is not a valid
+// escaped module path, or path and version (security review of PR #14, L1). The go command never makes either. The
+// walk does not follow a link, so a module folder, or a folder of a path such as example.com, that is a link to a
+// changed copy was never hashed, and the go command built from it. A name that does not unescape, such as
+// Example.com, was skipped, but a file system that ignores case opens it for example.com.
 func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, error) {
 	sums := map[string]string{}
 	for line := range lines {
@@ -619,7 +624,7 @@ func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, 
 		if err != nil {
 			return err
 		}
-		if !entry.IsDir() || name == cache {
+		if name == cache {
 			return nil
 		}
 		rel, err := filepath.Rel(cache, name)
@@ -627,16 +632,28 @@ func cacheDirs(cache string, dirs []fillDir, lines map[string]bool) ([]fillDir, 
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("the module cache %s holds the symbolic link %s, which no go command makes: remove the cache", cache, rel)
+		}
+		if !entry.IsDir() {
+			return nil
+		}
 		if rel == "cache" {
 			return filepath.SkipDir
 		}
 		escapedPath, escapedVersion, ok := strings.Cut(rel, "@")
+		path, pathErr := module.UnescapePath(escapedPath)
 		if !ok {
+			if pathErr != nil {
+				return fmt.Errorf("the module cache %s holds the folder %s, which is not an escaped module path: remove the cache", cache, rel)
+			}
 			return nil
 		}
-		path, pathErr := module.UnescapePath(escapedPath)
 		version, versionErr := module.UnescapeVersion(escapedVersion)
-		if pathErr == nil && versionErr == nil && !named[filepath.Clean(name)] {
+		if pathErr != nil || versionErr != nil {
+			return fmt.Errorf("the module cache %s holds the folder %s, which is not an escaped module path and version: remove the cache", cache, rel)
+		}
+		if !named[filepath.Clean(name)] {
 			if sum, ok := sums[path+"@"+version]; ok {
 				found = append(found, fillDir{Path: path, Version: version, Sum: sum, Dir: name})
 			}
@@ -886,17 +903,23 @@ func downloadModules() {
 	// is hashed again, on each fill and on each reuse of the cache, as go mod verify does (security review of PR #7).
 	// So is each other folder of the cache whose version has a checked hash: the fill of this run did not list it, but
 	// a go command of GoEnv builds from it when a go.sum names its version (security review of PR #7, round 3, I4).
+	if err := verifyFilled(moduleCache, root, dirs, checked); err != nil {
+		fail(moduleCache, err, nil)
+	}
+}
+
+// verifyFilled is the check of the module cache cache at the end of a fill: verifyCache over the folders dirs of
+// the fill and over each other folder of the cache whose zip has a checked hash, in the go.sum files of the
+// repository root or in checked, the lines that the fill checked (security review of PR #14, I1).
+func verifyFilled(cache, root string, dirs []fillDir, checked []string) error {
 	lines, err := repositoryLines(root)
 	if err != nil {
-		fail(moduleCache, err, nil)
-		return
+		return err
 	}
 	for _, line := range checked {
 		lines[line] = true
 	}
-	if err := verifyCache(moduleCache, dirs, lines); err != nil {
-		fail(moduleCache, err, nil)
-	}
+	return verifyCache(cache, dirs, lines)
 }
 
 // verifyCache hashes the folders of the module cache cache as verifyDirs does: each folder of dirs, and each other
@@ -922,13 +945,22 @@ var verifiedDirs, hashedDirs int
 // the checked hash, a stamp of its files: their names, sizes, modes and modification times.
 const verifiedFile = "verified-dirs.json"
 
+// errIrregular is the refusal of a module folder that holds an entry that is not a regular file or a folder.
+var errIrregular = errors.New("holds an entry that is not a regular file or a folder, which no module zip holds")
+
 // dirStamp gives the stamp of the files of the folder dir: a hash of the name, size, mode and modification time of
-// each entry. A file that is added, removed or written changes it.
+// each entry. A file that is added, removed or written changes it. It refuses with errIrregular an entry that is not
+// a regular file or a folder, such as a symbolic link (security review of PR #14, L2): a module zip holds none, and
+// the stamp of a link is that of the link, so an edit of its target changed no stamp.
 func dirStamp(dir string) (string, error) {
 	h := sha256.New()
 	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if !entry.Type().IsRegular() && !entry.IsDir() {
+			rel, _ := filepath.Rel(dir, name)
+			return fmt.Errorf("%w: %s", errIrregular, rel)
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -978,6 +1010,12 @@ func verifyDirs(dirs []fillDir, stampsFile string) error {
 			for d := range work {
 				stamp, err := dirStamp(d.Dir)
 				why := ""
+				if errors.Is(err, errIrregular) {
+					failedMu.Lock()
+					failed = append(failed, fmt.Sprintf("%s %s: its folder %s %v", d.Path, d.Version, d.Dir, err))
+					failedMu.Unlock()
+					continue
+				}
 				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
 					failedMu.Lock()
 					passed[d.Dir] = record{d.Sum, stamp}
