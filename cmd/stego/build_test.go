@@ -23,6 +23,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
 	"github.com/910-software-solutions/stego/internal/compiler"
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 )
 
@@ -111,9 +112,17 @@ func folderNames(t *testing.T, folder string) []string {
 // (ST-STD-LOCAL-R03). They serve the modules mods, module@version. The records still name proxy.golang.org.
 func localModuleSources(t *testing.T, mods ...string) *proxytest.Servers {
 	t.Helper()
-	servers := proxytest.Start(t, pinnedGo(t), mods...)
+	servers := proxytest.Start(t, pinnedGo(t), checkedModules(t), mods...)
 	servers.Use(t)
 	return servers
+}
+
+// checkedModules is the source of the modules of proxytest: the module cache of localtest, which its fill checks
+// against go.sum or sum.golang.org, with the environment of that fill (ST-STD-LOCAL-R03). proxytest is of Building,
+// which does not import Supplying (ST-STD-CODE-R03), so this cmd package gives it the cache.
+func checkedModules(t testing.TB) proxytest.Source {
+	t.Helper()
+	return proxytest.Source{Cache: localtest.ModuleCache(t), Env: append(localtest.FillEnv(t), "GOFLAGS=")}
 }
 
 // runtimeModuleSources starts the local stand-ins with each module that the go.sum of registry/runtime names, as the

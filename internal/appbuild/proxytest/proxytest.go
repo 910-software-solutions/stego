@@ -7,6 +7,10 @@
 // those modules, signed by a key that Start makes for each run with note.GenerateKey. No key is committed. The sum
 // database answers 404 for a module that the proxy does not hold. Use then points internal/appbuild at both servers
 // (appbuild.UseTestModuleSources) until the test ends.
+//
+// The caller gives the module cache that Start copies the modules from (Source). proxytest does not import
+// internal/localtest, which gives the checked module cache: Building does not import Supplying (ST-STD-CODE-R03).
+// The tests of cmd/stego, which can import each domain, give the module cache of localtest.
 package proxytest
 
 import (
@@ -29,8 +33,17 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/910-software-solutions/stego/internal/appbuild"
-	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// Source is the module cache that Start copies the modules from, and the environment of the go command that fills
+// it. Env must set GOMODCACHE to Cache. Give a cache whose go command checks each module against go.sum or a sum
+// database before it writes the module, such as the module cache of localtest (localtest.ModuleCache, with
+// localtest.FillEnv and GOFLAGS cleared). Do not give the shared GOMODCACHE: other tools fill it with modules that
+// no sum database checked (security review of PR #510, M1).
+type Source struct {
+	Cache string
+	Env   []string
+}
 
 // Servers are the local module proxy and sum database of one test.
 type Servers struct {
@@ -45,19 +58,28 @@ type Servers struct {
 	records map[module.Version][]byte
 }
 
-// Start serves the modules mods, each module@version, from the module cache of the go command goTool, which
-// downloads them with the proxy of the environment when the cache does not hold them, and stops both servers when
-// the test ends. The record of each module in the sum database is its go.sum lines, as the hashes of its zip and its
+// Start serves the modules mods, each module@version, from the module cache of from, which the go command goTool
+// fills with the environment of from when the cache does not hold a module, and stops both servers when the test
+// ends. Start fails the test when mods is not empty and from has no cache, or its environment does not name that
+// cache as GOMODCACHE. The record of each module in the sum database is its go.sum lines, as the hashes of its zip and its
 // go.mod in the proxy folder give them.
-func Start(t testing.TB, goTool string, mods ...string) *Servers {
+func Start(t testing.TB, goTool string, from Source, mods ...string) *Servers {
 	t.Helper()
+	if len(mods) > 0 {
+		if from.Cache == "" {
+			t.Fatal("proxytest: no module cache to take the modules from")
+		}
+		if cache := lastSetting(from.Env, "GOMODCACHE"); cache != from.Cache {
+			t.Fatalf("proxytest: the environment of the source names the module cache %q, not %q", cache, from.Cache)
+		}
+	}
 	s := &Servers{Folder: t.TempDir(), records: map[module.Version][]byte{}}
 	for _, mod := range mods {
 		path, version, ok := strings.Cut(mod, "@")
 		if !ok {
 			t.Fatalf("proxytest: %q is not module@version", mod)
 		}
-		s.add(t, goTool, module.Version{Path: path, Version: version})
+		s.add(t, goTool, from, module.Version{Path: path, Version: version})
 	}
 	signerKey, verifierKey, err := note.GenerateKey(rand.Reader, "stego-proxytest")
 	if err != nil {
@@ -78,6 +100,17 @@ func Start(t testing.TB, goTool string, mods ...string) *Servers {
 	t.Cleanup(proxyServer.Close)
 	s.ProxyURL, s.SumDBURL = proxyServer.URL, sumServer.URL
 	return s
+}
+
+// lastSetting gives the value of the last entry key=value of env, as the go command takes it, or "".
+func lastSetting(env []string, key string) string {
+	value := ""
+	for _, entry := range env {
+		if k, v, ok := strings.Cut(entry, "="); ok && k == key {
+			value = v
+		}
+	}
+	return value
 }
 
 // ModulesOf gives each module@version that the go.sum file names, for Start.
@@ -106,13 +139,13 @@ func ModulesOf(t testing.TB, goSum string) []string {
 // add copies the info, the go.mod and the zip of the module from the module cache into the proxy folder, and
 // keeps its go.sum lines as its record. A module whose zip the cache does not hold, because only its go.mod is in
 // a module graph, gets its go.mod only, and its record names the go.mod alone.
-func (s *Servers) add(t testing.TB, goTool string, m module.Version) {
+func (s *Servers) add(t testing.TB, goTool string, from Source, m module.Version) {
 	t.Helper()
-	// The modules come from the module cache of localtest, which the go command fills with the sum database on, and
-	// never from the shared GOMODCACHE, which other tools fill unchecked (security review of PR #510, M1).
+	// The modules come from the module cache of the source, which the go command fills with the environment of the
+	// source, and never from the shared GOMODCACHE, which other tools fill unchecked (security review of PR #510, M1).
 	download := exec.Command(goTool, "mod", "download", "-json", m.Path+"@"+m.Version)
 	download.Dir = t.TempDir()
-	download.Env = append(localtest.FillEnv(t), "GOFLAGS=")
+	download.Env = append([]string(nil), from.Env...)
 	if output, err := download.Output(); err != nil {
 		// A version that the proxy of the environment does not serve whole, such as one that only a module graph
 		// names, is served with its go.mod alone.
@@ -122,7 +155,6 @@ func (s *Servers) add(t testing.TB, goTool string, m module.Version) {
 			t.Fatalf("proxytest: download %s: %v\n%s%s", m, err, output, out)
 		}
 	}
-	cache := localtest.ModuleCache(t)
 	escapedPath, err := module.EscapePath(m.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -131,14 +163,14 @@ func (s *Servers) add(t testing.TB, goTool string, m module.Version) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	from := filepath.Join(cache, "cache", "download", filepath.FromSlash(escapedPath), "@v")
+	cached := filepath.Join(from.Cache, "cache", "download", filepath.FromSlash(escapedPath), "@v")
 	to := filepath.Join(s.Folder, filepath.FromSlash(escapedPath), "@v")
 	if err := os.MkdirAll(to, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	whole := true
 	for _, extension := range []string{".info", ".mod", ".zip"} {
-		data, err := os.ReadFile(filepath.Join(from, escapedVersion+extension))
+		data, err := os.ReadFile(filepath.Join(cached, escapedVersion+extension))
 		if err != nil && extension == ".zip" && os.IsNotExist(err) {
 			whole = false
 			continue

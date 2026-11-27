@@ -191,7 +191,7 @@ func builtApplication(t *testing.T) applicationFixture {
 		source, revision := buildSourceIn(t, root)
 		goTool := pinnedGo(t)
 		cache := filepath.Join(root, "cache")
-		servers := proxytest.Start(t, goTool, tinyModule+"@"+tinyVersion)
+		servers := proxytest.Start(t, goTool, checkedModules(t), tinyModule+"@"+tinyVersion)
 		restore, err := appbuild.UseTestModuleSources(servers.ProxyURL, servers.SumDBKey, servers.SumDBURL)
 		if err != nil {
 			return "", err
