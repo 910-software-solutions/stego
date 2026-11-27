@@ -1094,9 +1094,15 @@ Do these steps in the schema for each worker:
    The worker `fulfill-orders` writes `Order` and `StockItem`, so the types
    `order` and `stock_item` both have the permission `fulfill`.
 
-Validate examines the permission on `resource_type` only. If another type in
-`writes` does not give the permission through the worker relation, the
-runtime refuses each read and write of the worker on those rows.
+Validate refuses a type in `writes` or `reads` that does not have the
+permission. From rest-crud 3.274.0, validate and plan also give the warning
+`worker-relation` for each such type, and for `resource_type`, whose
+permission does not reach the worker relation (walkthrough 28, CHK-WREL).
+Without that path, the worker has the permission only on a row that gives
+it to `service_account:<worker name>` in another way, such as an owner
+relation of a row that the worker created. The runtime refuses each read
+and write of the worker on the other rows, and a consuming worker parks
+each such event after its retries.
 
 3. When the worker creates a row with no parent, give the type `tenant` the
    permission of the worker too. A row has no parent when its entity has a

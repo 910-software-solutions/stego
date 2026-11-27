@@ -90,7 +90,10 @@ func scopedAccessWarnings(service *types.ServiceDeclaration, projectDir string) 
 	}
 	// An entity that a worker can create with no parent needs the worker's permission on the type tenant
 	// (ST-SUP-RP10-LC17, ST-SUP-Q164 (b)).
-	return append(declaration.ScopedAccessWarnings(service, schema), declaration.RootCreateWarnings(service, schema)...)
+	// A worker's permission on each resource type it decides reaches its relation on the type tenant (walkthrough 28,
+	// CHK-WREL).
+	warnings := append(declaration.ScopedAccessWarnings(service, schema), declaration.RootCreateWarnings(service, schema)...)
+	return append(warnings, declaration.WorkerRelationWarnings(service, schema)...)
 }
 
 // aliasNotices gives, for each deprecated alias that the declaration binds, one notice that names the mixins of the

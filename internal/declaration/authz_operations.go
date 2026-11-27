@@ -2,6 +2,9 @@ package declaration
 
 import (
 	"fmt"
+	"strings"
+
+	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 
 	"github.com/910-software-solutions/stego/internal/types"
 )
@@ -167,6 +170,105 @@ func validateWorkerAuthorization(service *types.ServiceDeclaration, schema *Auth
 		}
 	}
 	return faults
+}
+
+// WorkerRelationWarnings gives one warning for each resource type on which a worker decides its own permission, the
+// resource type of the worker and that of each entity it writes or reads, when that permission on the type cannot
+// reach the relation worker_<name> of the type tenant, which provisioning gives the worker in each tenant
+// (ST-SUP-RC35-OC13). The worker then holds the permission only on a row that grants it to its service account in
+// another way, and the runtime denies each other row: a consuming worker parks each such event after its retries
+// (walkthrough 28, CHK-WREL). The reach counts each arm of a union, an intersection and an exclusion, so a warning
+// means that no arm can reach the relation. A schema that is nil gives none.
+func WorkerRelationWarnings(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	if schema == nil {
+		return nil
+	}
+	var warnings []ValidationError
+	for i, worker := range service.Workers {
+		relation := WorkerRelationPrefix + strings.ReplaceAll(worker.Name, "-", "_")
+		resourceTypes := []string{worker.ResourceType}
+		for _, name := range append(append([]string(nil), worker.Writes...), worker.Reads...) {
+			if _, entity := entityIndex(service.Entities, name); entity != nil {
+				resourceTypes = append(resourceTypes, entity.ResourceType)
+			}
+		}
+		seen := map[string]bool{}
+		for _, resourceType := range resourceTypes {
+			if resourceType == "" || resourceType == TenantResourceType || seen[resourceType] || !schema.declaresPermission(resourceType, worker.Permission) {
+				continue
+			}
+			seen[resourceType] = true
+			if schema.reaches(resourceType, worker.Permission, relation, map[string]bool{}) {
+				continue
+			}
+			warnings = append(warnings, ValidationError{Category: "worker", Rule: "worker-relation", Path: workerPath(i) + ".permission", Found: resourceType + "#" + worker.Permission,
+				Message: fmt.Sprintf("worker %q decides its permission %s on %s, and in the schema %s no arm of %s on %s reaches %s#%s, the relation that each tenant gives the worker (ST-SUP-RC35-OC13); the worker then holds %s only on a row that grants it to %s:%s in another way, and the runtime denies each other row; add the arm %s->%s to permission %s of definition %s", worker.Name, worker.Permission, resourceType, schema.Path, worker.Permission, resourceType, TenantResourceType, relation, worker.Permission, types.SystemSubjectType, worker.Name, TenantRelation, relation, worker.Permission, resourceType)})
+		}
+	}
+	return warnings
+}
+
+// reaches tells whether the permission or relation name of the type typeName can reach the relation target of the
+// type tenant: through each permission that it names, each arm of a union, an intersection or an exclusion, each
+// arrow into each subject type of its tupleset, and each subject set that a relation admits, such as group#member.
+func (s *AuthzSchema) reaches(typeName, name, target string, visited map[string]bool) bool {
+	if typeName == TenantResourceType && name == target {
+		return true
+	}
+	definition, ok := s.definitions[typeName]
+	if !ok || visited[typeName+"#"+name] {
+		return false
+	}
+	visited[typeName+"#"+name] = true
+	if !definition.permissions[name] {
+		for _, subject := range definition.subjects[name] {
+			if subject.relation != "" && s.reaches(subject.namespace, subject.relation, target, visited) {
+				return true
+			}
+		}
+		return false
+	}
+	var rewrite func(r *core.UsersetRewrite) bool
+	rewrite = func(r *core.UsersetRewrite) bool {
+		var children []*core.SetOperation_Child
+		switch {
+		case r.GetUnion() != nil:
+			children = r.GetUnion().GetChild()
+		case r.GetIntersection() != nil:
+			children = r.GetIntersection().GetChild()
+		case r.GetExclusion() != nil:
+			children = r.GetExclusion().GetChild()
+		}
+		for _, c := range children {
+			var tupleset, computed string
+			switch {
+			case c.GetComputedUserset() != nil:
+				if s.reaches(typeName, c.GetComputedUserset().GetRelation(), target, visited) {
+					return true
+				}
+				continue
+			case c.GetTupleToUserset() != nil:
+				tupleset, computed = c.GetTupleToUserset().GetTupleset().GetRelation(), c.GetTupleToUserset().GetComputedUserset().GetRelation()
+			case c.GetFunctionedTupleToUserset() != nil:
+				f := c.GetFunctionedTupleToUserset()
+				tupleset, computed = f.GetTupleset().GetRelation(), f.GetComputedUserset().GetRelation()
+			case c.GetUsersetRewrite() != nil:
+				if rewrite(c.GetUsersetRewrite()) {
+					return true
+				}
+				continue
+			default:
+				continue
+			}
+			for _, subject := range definition.subjects[tupleset] {
+				if s.reaches(subject.namespace, computed, target, visited) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return definition.rewrites[name] != nil && rewrite(definition.rewrites[name])
 }
 
 // workerPermission is one permission that a worker decides on each row it touches: its own, or that of a stager of
