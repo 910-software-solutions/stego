@@ -338,9 +338,26 @@ func (s *state) failOf(ctx context.Context, e sealSwitch, step string, err error
 //   - Select reads the ID text, the clear value as text and the sealed value of at most $3 rows after the ID $2, in
 //     ID order, FOR UPDATE, so a write of a command waits for the batch or the batch for it;
 //   - Update sets the sealed column of the row of ID $2 to $3.
+//
+// FirstNull states that Select takes NULL as $2 for the first page of a tenant, so the page starts before every ID,
+// also the zero UUID, as the relate job does (postgres-adapter 6.33.0; confirmation review of PR #20, F2). Without it,
+// as in the code of an earlier adapter, the first page starts after the zero UUID, and a row with that ID is not read.
 type SealColumn struct {
 	Change, Entity, Table, Clear, Sealed string
 	Select, Update                       string
+	FirstNull                            bool
+}
+
+// firstPage gives the statement value of the ID after which a page starts: after, or, for the first page, NULL when
+// the statement takes it and the zero UUID when it does not.
+func firstPage(after string, firstNull bool) any {
+	switch {
+	case after != "":
+		return after
+	case firstNull:
+		return nil
+	}
+	return firstID
 }
 
 // SealBatch is the most rows that one batch of the seal job reads.
@@ -578,7 +595,8 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 		if state.LastTenant != "" && t.ID() < state.LastTenant {
 			continue
 		}
-		after := firstID
+		// The first page of a tenant starts before every ID (FirstNull).
+		after := ""
 		if t.ID() == state.LastTenant && state.LastID != "" {
 			after = state.LastID
 		}
@@ -629,11 +647,6 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 	return result, nil
 }
 
-// clearLeftQuery tells, in the transaction of a tenant, whether the table %s has a row of that tenant whose clear
-// column %s holds a value and whose sealed column %s does not: the forced row-level security of the table keeps the
-// rows of the tenant of the transaction alone. It stops at the first such row.
-const clearLeftQuery = `SELECT EXISTS (SELECT 1 FROM %s WHERE %s IS NOT NULL AND %s IS NULL)`
-
 // clearLeft tells whether a tenant of the tenant list, retired too, whose ID sorts before the ID before, or each
 // tenant when before is empty, has a row of the column c with a clear value and no sealed value. It reads one tenant
 // at a time in its own transaction, and stops at the first such tenant.
@@ -643,13 +656,21 @@ func (j *SealJob) clearLeft(ctx context.Context, c SealColumn, before string) (b
 		return false, err
 	}
 	slices.SortFunc(tenants, func(a, b tenant.Tenant) int { return strings.Compare(a.ID(), b.ID()) })
-	query := fmt.Sprintf(clearLeftQuery, sealTable(c.Table), quoteColumn(c.Clear), quoteColumn(c.Sealed))
+	// The read tells, in the transaction of a tenant, whether the table of the schema public has a row of that tenant
+	// whose clear column holds a value and whose sealed column does not: the forced row-level security of the table
+	// keeps the rows of the tenant of the transaction alone. It stops at the first such row.
+	query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM public.%s WHERE %s IS NOT NULL AND %s IS NULL)", quoteColumn(c.Table), quoteColumn(c.Clear), quoteColumn(c.Sealed))
 	for _, t := range tenants {
 		if before != "" && t.ID() >= before {
 			break
 		}
 		var left bool
+		// The read has the lock and statement timeouts of a batch: a read that does not end in them fails the run,
+		// and the pass is not trusted (confirmation review of PR #20, I1).
 		err := tenant.Each(ctx, j.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, _ tenant.Tenant) error {
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", sealLockTimeout, sealStatementTimeout); err != nil {
+				return err
+			}
 			return tx.QueryRowContext(ctx, query).Scan(&left)
 		})
 		if err != nil {
@@ -662,7 +683,7 @@ func (j *SealJob) clearLeft(ctx context.Context, c SealColumn, before string) (b
 	return false, nil
 }
 
-// quoteColumn quotes the name of a column of a seal.
+// quoteColumn quotes the name of a table or a column of a seal.
 func quoteColumn(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
@@ -674,7 +695,7 @@ func (j *SealJob) batch(ctx context.Context, tx tenant.Querier, held *lease.Held
 	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", sealLockTimeout, sealStatementTimeout); err != nil {
 		return 0, after, err
 	}
-	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), after, SealBatch)
+	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), firstPage(after, c.FirstNull), SealBatch)
 	if err != nil {
 		return 0, after, err
 	}

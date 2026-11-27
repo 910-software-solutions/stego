@@ -645,7 +645,10 @@ sealed column. When it finds one, it logs `command.seal.clear_left` and
 starts a new pass, which seals the rows of the retired tenants. When that
 pass completes, run the migration Job of the contract step again. The read
 runs at each run of the seal job while the pass is completed and the
-contract has not run, so keep the seal open no longer than you need.
+contract has not run, so keep the seal open no longer than you need. Each
+read has the lock timeout (2 s) and the statement timeout (10 s) of a batch
+of the seal job; a read that does not end in them fails the run, which then
+trusts no pass, and the next run tries again.
 
 The contract does not wait for the release of the expand step to stop, as the
 contract of a drop or a rename does not wait for the release of its expand

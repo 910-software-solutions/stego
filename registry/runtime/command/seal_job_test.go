@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
 	"github.com/910-software-solutions/stego/registry/runtime/lease"
@@ -517,6 +518,90 @@ func TestSealRetired(t *testing.T) {
 					t.Fatalf("the resumed pass gave %+v and %v, want it to go on from org-b: 15 checked and the 3 notes of org-c sealed", resumed, err)
 				}
 			})
+		}
+	})
+	t.Run("ST-SUP-RP10-LC50-T12 The first page of a tenant starts before every ID, so the job seals a row with the zero UUID and a run again trusts the pass", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const zero = "00000000-0000-0000-0000-000000000000"
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '`+zero+`', 'x', 'secret-zero')`,
+			`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '`+uuid.NewString()+`', 'x', 'secret-other')`)
+		// The seal column as postgres-adapter 6.33.0 gives it: the first page takes NULL.
+		first := []SealColumn{noteSeal[0]}
+		first[0].FirstNull = true
+		first[0].Select = "SELECT id, body::text, body_sealed FROM notes WHERE tenant_id = $1 AND ($2::text IS NULL OR id > $2) ORDER BY id LIMIT $3 FOR UPDATE"
+		j, err := NewSealJob(n.pool, "public", n.ring, first, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		results, err := j.Run(n.ctx)
+		if err != nil || !results[0].Completed || results[0].Checked != 2 || results[0].Sealed != 2 {
+			t.Fatalf("the seal job gave %+v and %v, want the 2 notes, the zero UUID too, checked and sealed", results, err)
+		}
+		if clear, set, opened, ok := n.opened("org-a", zero); !set || !ok || opened != clear {
+			t.Fatal("the note with the zero UUID holds no sealed value that opens to its clear value")
+		}
+		// The check of the rows in clear finds none, so a run again trusts the pass and starts none.
+		for range 2 {
+			if again, err := j.Run(n.ctx); err != nil || !again[0].Completed || again[0].Checked != 2 || again[0].Sealed != 2 {
+				t.Fatalf("a run again gave %+v and %v, want the completed pass of 2 notes", again, err)
+			}
+		}
+		if strings.Contains(logs.String(), "command.seal.clear_left") {
+			t.Fatalf("a run again started a new pass for a row in clear:\n%s", logs.String())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC50-T13 The read of the rows in clear has the lock timeout of a batch, and a read that does not end fails the run and trusts no pass", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '` + uuid.NewString() + `', 'x', 'secret-a')`)
+		j, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		if results, err := j.Run(n.ctx); err != nil || !results[0].Completed {
+			t.Fatalf("the first pass gave %+v and %v", results, err)
+		}
+		// A session holds a lock on the table that the read waits for: the read ends at the lock timeout of a batch,
+		// long before the deadline of the test, and the run fails with no completed pass.
+		lock, err := n.admin.BeginTx(n.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = lock.Rollback() }()
+		if _, err := lock.ExecContext(n.ctx, `LOCK TABLE notes IN ACCESS EXCLUSIVE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
+		defer cancel()
+		started := time.Now()
+		results, err := j.Run(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || time.Since(started) > 15*time.Second {
+			t.Fatalf("the run while the table is locked gave %v after %s, want the lock timeout 55P03 of the read", err, time.Since(started))
+		}
+		if len(results) != 0 && results[0].Completed {
+			t.Fatalf("the run whose read timed out gave %+v, want no completed pass", results)
 		}
 	})
 }

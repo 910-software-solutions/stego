@@ -443,4 +443,33 @@ func TestSealedFields(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-SUP-RP10-LC46-T04 The first page of a tenant starts before every ID, so the re-seal job moves a value with the zero UUID", func(t *testing.T) {
+		oldKey, newKey := throwawayKey(t), throwawayKey(t)
+		v := newVaultEnv(t, vaultRing(t, "1 "+oldKey))
+		const zero = "00000000-0000-0000-0000-000000000000"
+		for i, id := range []string{zero, "v001"} {
+			if err := v.write("org-a", fmt.Sprintf("z%d", i), func(ctx context.Context, r *Repository[vault]) error {
+				_, err := r.Create(ctx, vault{ID: id, Label: "x", Token: sealed.SecretOf(token + "-" + id)})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The re-seal column as postgres-adapter 6.33.0 gives it: the first page takes NULL.
+		first := []ResealColumn{vaultReseal[0]}
+		first[0].FirstNull = true
+		first[0].Select = "SELECT id, token FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2 AND ($4::text IS NULL OR id > $4) ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED"
+		job, err := NewReseal(v.pool, "unused", vaultRing(t, "2 "+newKey, "1 "+oldKey), first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.tenants = func(context.Context) ([]tenant.Tenant, error) { return []tenant.Tenant{mustTenant(t, "org-a")}, nil }
+		results, err := job.Run(v.ctx)
+		if err != nil || results[0].Moved != 2 || results[0].Left != 0 || results[0].Failed != 0 {
+			t.Fatalf("the re-seal job gave %+v and %v, want the 2 values, the zero UUID too, moved and none left", results, err)
+		}
+		if n := v.count(`SELECT count(*) FROM vaults WHERE substring(token from 1 for 5) <> $1`, sealed.Prefix(2)); n != 0 {
+			t.Fatalf("%d values are not sealed with the key 2, want none", n)
+		}
+	})
 }

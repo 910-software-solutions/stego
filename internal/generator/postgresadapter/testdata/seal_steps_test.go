@@ -635,6 +635,11 @@ func TestSealSteps(t *testing.T) {
 
 	t.Run("ST-SUP-RC01-OC50-T08 A seal over the rows of a tenant retired before or during the seal completes its contract and leaves no clear value", func(t *testing.T) {
 		own, db, reader := base(t)
+		// A vault with the zero UUID, which the first page of the seal job reads too (FirstNull; confirmation review
+		// of PR #20, F2).
+		if code := write(t, db, "tenant-b", `INSERT INTO public."vaults" ("id", "title", "note", "code") VALUES ('00000000-0000-0000-0000-000000000000', 'zero', 'zero@example.com', 'c-zero')`); code != "" {
+			t.Fatalf("no vault with the zero UUID: %s", code)
+		}
 		retire := func(id string) {
 			t.Helper()
 			if code := write(t, db, id, `SELECT public.stego_retire_tenant($1)`, id); code != "" {
@@ -665,16 +670,16 @@ func TestSealSteps(t *testing.T) {
 			}
 			values[key] = v
 		}
-		if err := rows.Close(); err != nil || len(values) != 60 {
-			t.Fatalf("%d vaults (%v), want the 60 of the two retired tenants", len(values), err)
+		if err := rows.Close(); err != nil || len(values) != 61 {
+			t.Fatalf("%d vaults (%v), want the 61 of the two retired tenants", len(values), err)
 		}
 		for _, r := range job(t, reader) {
-			if !r.Completed || r.Checked != 60 {
-				t.Fatalf("the seal job gave %+v, want the pass completed over the 60 vaults of the retired tenants", r)
+			if !r.Completed || r.Checked != 61 {
+				t.Fatalf("the seal job gave %+v, want the pass completed over the 61 vaults of the retired tenants", r)
 			}
 		}
-		if n := agree(t, db); n != 60 {
-			t.Fatalf("%d vaults agree, want 60", n)
+		if n := agree(t, db); n != 61 {
+			t.Fatalf("%d vaults agree, want 61", n)
 		}
 		var clearOnly int
 		if err := db.QueryRow(`SELECT count(*) FROM public."vaults" WHERE ("note" IS NOT NULL AND "note_sealed" IS NULL) OR ("code" IS NOT NULL AND "code_sealed" IS NULL)`).Scan(&clearOnly); err != nil || clearOnly != 0 {
@@ -721,8 +726,8 @@ func TestSealSteps(t *testing.T) {
 			}
 			n++
 		}
-		if err := rows.Err(); err != nil || n != 60 {
-			t.Fatalf("%d vaults after the contract (%v), want 60", n, err)
+		if err := rows.Err(); err != nil || n != 61 {
+			t.Fatalf("%d vaults after the contract (%v), want 61", n, err)
 		}
 	})
 

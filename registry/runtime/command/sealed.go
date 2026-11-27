@@ -285,9 +285,14 @@ func (a answerSealer) OpenAnswer(tenant, column, row string, data []byte) ([]byt
 //   - Left counts, with no lock, the rows whose value does not start with $2, after the pages: a row that SKIP
 //     LOCKED passed or that a command wrote in between counts until a later run moves it (security re-review of PR
 //     #441, N1).
+//
+// FirstNull states that Select takes NULL as $4 for the first page of a tenant, so the page starts before every ID,
+// also the zero UUID (postgres-adapter 6.33.0; confirmation review of PR #20, F2). Without it, as in the code of an
+// earlier adapter, the first page starts after the zero UUID.
 type ResealColumn struct {
 	Entity, Table, Column string
 	Select, Update, Left  string
+	FirstNull             bool
 }
 
 // ResealBatch is the most rows that one statement of the re-seal job reads.
@@ -373,7 +378,7 @@ func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 // are left, and those of them that it read and that do not open. It logs the first maxFailedLogs rows that do not
 // open, and then one count for the column and the tenant (security re-review of PR #441, N4).
 func (r *Reseal) tenantColumn(ctx context.Context, t tenant.Tenant, c ResealColumn, prefix []byte) (moved, left, failed int64, err error) {
-	last := firstID
+	last := ""
 	for {
 		var p page
 		err := tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
@@ -417,7 +422,7 @@ type page struct {
 // batch moves at most ResealBatch values of one column of one tenant after the ID after, in its transaction.
 func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, c ResealColumn, prefix []byte, after string, failedBefore int64) (page, error) {
 	var p page
-	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), prefix, ResealBatch, after)
+	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), prefix, ResealBatch, firstPage(after, c.FirstNull))
 	if err != nil {
 		return p, err
 	}
