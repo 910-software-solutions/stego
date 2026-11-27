@@ -4,9 +4,13 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -570,6 +574,37 @@ func TestFillChecksTheWholeCache(t *testing.T) {
 		}
 		if err := verifyFilled(cache, root, nil, lines); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
 			t.Fatalf("the check of the fill passes a changed folder that the fill did not list: %v", err)
+		}
+	})
+	t.Run("ST-STD-LOCAL-R03-T29 The fill of localtest ends with the check of the whole cache, verifyFilled, and with no other check", func(t *testing.T) {
+		// Security review sec-21-14c, I1a: no test runs downloadModules, which fills about 3 GB, so no test failed
+		// when it called verifyDirs over its own folders in place of verifyFilled. This test reads its code.
+		files := token.NewFileSet()
+		file, err := parser.ParseFile(files, "localtest.go", nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var calls []string
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "downloadModules" {
+				ast.Inspect(fn.Body, func(node ast.Node) bool {
+					if call, ok := node.(*ast.CallExpr); ok {
+						if name, ok := call.Fun.(*ast.Ident); ok && slices.Contains([]string{"verifyFilled", "verifyCache", "verifyDirs"}, name.Name) {
+							var args []string
+							for _, arg := range call.Args {
+								if ident, ok := arg.(*ast.Ident); ok {
+									args = append(args, ident.Name)
+								}
+							}
+							calls = append(calls, name.Name+"("+strings.Join(args, ", ")+")")
+						}
+					}
+					return true
+				})
+			}
+		}
+		if want := []string{"verifyFilled(moduleCache, root, dirs, checked)"}; !slices.Equal(calls, want) {
+			t.Errorf("downloadModules makes the checks %q, want only %q", calls, want)
 		}
 	})
 }
