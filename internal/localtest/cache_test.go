@@ -351,3 +351,33 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 		}
 	})
 }
+
+func TestFirstFill(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R05-T10 The first fill of the module cache of localtest names the folder, its size and STEGO_TEST_RUNS, and is refused with less than two times its size free", func(t *testing.T) {
+		// Owner disk note, 2026-11-27: the cache of about 3 GB went to the user cache folder with no word.
+		folder := filepath.Join(t.TempDir(), "runs", "localtest-modules")
+		var asked string
+		free := func(available uint64) func(string) (uint64, error) {
+			return func(path string) (uint64, error) {
+				asked = path
+				return available, nil
+			}
+		}
+		var out strings.Builder
+		if err := firstFill(folder, &out, free(2*cacheSize)); err != nil {
+			t.Fatalf("the fill with two times the size free is refused: %v", err)
+		}
+		notice := out.String()
+		if strings.Count(notice, "\n") != 1 || !strings.Contains(notice, folder) || !strings.Contains(notice, "about 3 GB") || !strings.Contains(notice, "STEGO_TEST_RUNS") || !strings.Contains(notice, "remove the folder") {
+			t.Errorf("the notice is %q, want one line with the folder, about 3 GB, STEGO_TEST_RUNS and how to remove it", notice)
+		}
+		if asked != filepath.Dir(filepath.Dir(folder)) {
+			t.Errorf("the free space was read at %s, want the nearest folder that exists, %s", asked, filepath.Dir(filepath.Dir(folder)))
+		}
+		out.Reset()
+		err := firstFill(folder, &out, free(2*cacheSize-1))
+		if err == nil || !strings.Contains(err.Error(), folder) || !strings.Contains(err.Error(), "less than 6 GB") || !strings.Contains(err.Error(), "STEGO_TEST_RUNS") {
+			t.Errorf("the fill with less than two times the size free gave %v, want a refusal that names the folder, 6 GB and STEGO_TEST_RUNS", err)
+		}
+	})
+}
