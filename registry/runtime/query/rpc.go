@@ -18,10 +18,10 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // RPC is what the generated code gives ServeRPC for one query that a unary gRPC method serves: only what varies with

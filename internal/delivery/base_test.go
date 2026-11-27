@@ -848,7 +848,7 @@ func TestMigrationJobRequirements(t *testing.T) {
 }
 
 func TestMigrationKeyFiles(t *testing.T) {
-	t.Run("ST-DLV-UC07-R06-T07 The key files that the Job gets are the file settings that the migrate mode of the runtime reads, apart from its own", func(t *testing.T) {
+	t.Run("ST-DLV-UC07-R06-T07 The key files that the Job gets are the secret file settings that the migrate mode of the runtime reads, apart from its own", func(t *testing.T) {
 		// The runtime module does not import internal, and this module does not import the runtime: the test reads
 		// the source of the service runtime. It takes every function of the package that ReadMigrationSettings
 		// calls, at any depth, by its name, and each constant of the package that those functions give a call as an
@@ -923,8 +923,10 @@ func TestMigrationKeyFiles(t *testing.T) {
 			})
 		}
 		walk("ReadMigrationSettings")
-		// The variables that only the migrate mode reads are the Job's own; the registry states them.
+		// The variables that only the migrate mode reads are the Job's own; the registry states them, and the secret
+		// source of each key file.
 		own := map[string]bool{}
+		secretFile := map[string]bool{}
 		components, err := filepath.Glob(filepath.Join("..", "..", "registry", "components", "*", "component.yaml"))
 		if err != nil || len(components) == 0 {
 			t.Fatalf("no component of the registry: %v", err)
@@ -948,6 +950,11 @@ func TestMigrationKeyFiles(t *testing.T) {
 				if variable.ReadByMode == MigrateMode {
 					own[variable.Name] = true
 				}
+				// A file setting with no secret source, such as STEGO_SPICEDB_CA_FILE, is not a key file: the Job
+				// takes its path from the ConfigMap as the Deployment does (ST-SUP-RP14-LC14).
+				if variable.SecretSource != nil {
+					secretFile[variable.Name] = true
+				}
 				// The Secret and the key of each key file of the Job are those that the registry states for it, which
 				// LoadBase holds the mount patch of the Job to.
 				if want, keyFile := MigrationKeyFiles[variable.Name]; keyFile && (variable.SecretSource == nil || *variable.SecretSource != want) {
@@ -957,7 +964,7 @@ func TestMigrationKeyFiles(t *testing.T) {
 		}
 		var want []string
 		for name := range read {
-			if !own[name] {
+			if !own[name] && secretFile[name] {
 				want = append(want, name)
 			}
 		}

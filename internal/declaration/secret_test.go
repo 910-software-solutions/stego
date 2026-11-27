@@ -5,7 +5,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // secretFaults reads the declaration of ST-DECL-TD02 with the fields of Todo and the declaration tail given, and

@@ -42,11 +42,17 @@ type ActivityEntry struct {
 }
 
 // presentEntity wraps an entity with id, kind, and href metadata for
-// envelope-format responses.
+// envelope-format responses. It keeps each member as its JSON text, so a number
+// is answered as it is stored: an int64 above 2^53 does not become a float64
+// (walkthrough 27, W-PREC).
 func presentEntity(entity any, kind, id, href string) map[string]any {
 	data, _ := json.Marshal(entity)
-	result := map[string]any{}
-	json.Unmarshal(data, &result)
+	members := map[string]json.RawMessage{}
+	json.Unmarshal(data, &members)
+	result := make(map[string]any, len(members)+3)
+	for name, value := range members {
+		result[name] = value
+	}
 	result["id"] = id
 	result["kind"] = kind
 	result["href"] = href

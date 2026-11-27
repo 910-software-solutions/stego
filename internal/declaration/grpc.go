@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // MethodKind is the kind of a gRPC method of a proto file: unary, a server stream, a client stream or a stream both

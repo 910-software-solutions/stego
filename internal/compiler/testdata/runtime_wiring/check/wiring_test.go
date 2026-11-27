@@ -41,12 +41,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/kafkatest"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/kafkatest"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 
 	"example.com/shop/out/internal/stegoruntime"
 	"example.com/shop/out/internal/storage"

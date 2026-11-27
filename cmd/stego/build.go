@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/fill"
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 func runBuild(args []string) error {

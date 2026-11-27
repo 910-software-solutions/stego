@@ -28,8 +28,8 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 	"golang.org/x/mod/sumdb/note"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // Servers are the local module proxy and sum database of one test.

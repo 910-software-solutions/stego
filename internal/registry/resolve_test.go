@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -472,7 +472,7 @@ func cloneAndPopulate(t *testing.T, bareRepo, workTree string) {
 	if err := os.MkdirAll(archDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	archYAML := "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: test-arch\nversion: 1.0.0\nlanguage: go\n"
+	archYAML := "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: test-arch\nversion: 1.0.0\nlanguage: go\n"
 	if err := os.WriteFile(filepath.Join(archDir, "archetype.yaml"), []byte(archYAML), 0644); err != nil {
 		t.Fatal(err)
 	}

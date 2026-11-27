@@ -13,7 +13,9 @@ import (
 )
 
 const (
-	trustedWorkflow = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
+	trustedWorkflow = "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
+	// fixtureWorkflow signed testdata/sigstore-proof-run.json, in the repository of STEGO before the move.
+	fixtureWorkflow = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
 	changeRef       = "refs/pull/7/merge"
 )
 
@@ -101,11 +103,11 @@ func proofRunStatement(t *testing.T, commit, reference string, logIndex int64, o
 		source = mergeOf(commit)
 	}
 	return SignedStatement{
-		Subjects:         []StatementSubject{{Name: "git+https://github.com/jsell-rh/stego@" + commit, Digest: SubjectDigest(commit)}},
+		Subjects:         []StatementSubject{{Name: "git+https://github.com/910-software-solutions/stego@" + commit, Digest: SubjectDigest(commit)}},
 		PredicateType:    ProofRunPredicateType,
 		Predicate:        predicate,
 		Signer:           Signer{Issuer: GitHubIssuer, Subject: trustedWorkflow + "@" + reference},
-		SourceRepository: "https://github.com/jsell-rh/stego",
+		SourceRepository: "https://github.com/910-software-solutions/stego",
 		SourceRef:        reference,
 		SourceDigest:     source,
 		LogIndex:         logIndex,
@@ -220,9 +222,11 @@ func TestVerify(t *testing.T) {
 
 		refused := map[string]func(*SignedStatement){
 			"a subject digest of another commit": func(s *SignedStatement) { s.Subjects[0].Digest = SubjectDigest(other) },
-			"a subject name of another commit":   func(s *SignedStatement) { s.Subjects[0].Name = "git+https://github.com/jsell-rh/stego@" + other },
+			"a subject name of another commit": func(s *SignedStatement) {
+				s.Subjects[0].Name = "git+https://github.com/910-software-solutions/stego@" + other
+			},
 			"a second subject": func(s *SignedStatement) {
-				s.Subjects = append(s.Subjects, StatementSubject{Name: "git+https://github.com/jsell-rh/stego@" + other, Digest: SubjectDigest(other)})
+				s.Subjects = append(s.Subjects, StatementSubject{Name: "git+https://github.com/910-software-solutions/stego@" + other, Digest: SubjectDigest(other)})
 			},
 			"no subject":             func(s *SignedStatement) { s.Subjects = nil },
 			"another predicate type": func(s *SignedStatement) { s.PredicateType = "https://slsa.dev/provenance/v1" },
@@ -231,7 +235,7 @@ func TestVerify(t *testing.T) {
 			},
 			"a predicate that is not JSON": func(s *SignedStatement) { s.Predicate = []byte("not JSON") },
 			"another workflow": func(s *SignedStatement) {
-				s.Signer.Subject = "https://github.com/jsell-rh/stego/.github/workflows/checks.yml@" + MainRef
+				s.Signer.Subject = "https://github.com/910-software-solutions/stego/.github/workflows/checks.yml@" + MainRef
 			},
 			"another repository's workflow": func(s *SignedStatement) {
 				s.Signer.Subject = "https://github.com/someone/stego/.github/workflows/proof-run.yml@" + MainRef
@@ -348,7 +352,10 @@ func TestVerify(t *testing.T) {
 		commits := memoryCommits{parents: map[string][]string{
 			"9609dbfd7ade7168ff18d49af5df240f6334778e": {"d7643951379de746ff1d7d812a2333900dc209de", fixture.Commit},
 		}}
-		trust := Trust{Signer: trusted, ChangeRef: "refs/pull/24/merge", Base: "d7643951379de746ff1d7d812a2333900dc209de", Commits: commits}
+		// The fixture is a real bundle that the proof run workflow of the old repository jsell-rh/stego signed before
+		// the move to 910-software-solutions/stego, so it trusts that workflow.
+		fixtureSigner := TrustedSigner{Issuer: GitHubIssuer, Workflow: fixtureWorkflow}
+		trust := Trust{Signer: fixtureSigner, ChangeRef: "refs/pull/24/merge", Base: "d7643951379de746ff1d7d812a2333900dc209de", Commits: commits}
 		store := &memoryStore{bundles: map[string][][]byte{fixture.Commit: {fixture.Bundle}}}
 		verification, err := VerifyAttestation(fixture.Commit, store, verifier, trust)
 		if err != nil {
@@ -364,7 +371,7 @@ func TestVerify(t *testing.T) {
 		want := Attestation{
 			PredicateType: ProofRunPredicateType,
 			Subject:       fixture.Commit,
-			Signer:        Signer{Issuer: GitHubIssuer, Subject: trustedWorkflow + "@refs/pull/24/merge"},
+			Signer:        Signer{Issuer: GitHubIssuer, Subject: fixtureWorkflow + "@refs/pull/24/merge"},
 			LogEntry:      "rekor:3614924958",
 		}
 		if proof.Attestation != want || proof.Grade != ChangeGrade || proof.Run.Commit != fixture.Commit || len(proof.Run.Outcomes) != 239 {

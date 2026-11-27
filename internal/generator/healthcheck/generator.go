@@ -10,8 +10,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/browserapplication"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/browserapplication"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 //go:embed health.go.tmpl

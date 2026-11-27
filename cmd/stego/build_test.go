@@ -19,11 +19,11 @@ import (
 
 	"golang.org/x/mod/sumdb/dirhash"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/appbuild/proxytest"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // These tests run stego build and its subcommands, in process or through the
@@ -315,7 +315,7 @@ func realRuntime(t *testing.T) (map[string]string, string, string) {
 }
 
 func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
-	const version = "v0.196.0"
+	const version = "v0.203.0"
 	t.Run("ST-BLD-UC02-R05-T01 The runtime folder that is STEGO's registry pin supplies it with no module proxy", func(t *testing.T) {
 		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
@@ -326,8 +326,8 @@ func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		zip := filepath.Join(output, "cache", "download", "github.com", "jsell-rh", "stego", "registry", "runtime", "@v", pinned+".zip")
-		if zips := cachedZips(t, output); len(zips) != 1 || zips[0] != "github.com/jsell-rh/stego/registry/runtime/@v/"+pinned+".zip" {
+		zip := filepath.Join(output, "cache", "download", "github.com", "910-software-solutions", "stego", "registry", "runtime", "@v", pinned+".zip")
+		if zips := cachedZips(t, output); len(zips) != 1 || zips[0] != "github.com/910-software-solutions/stego/registry/runtime/@v/"+pinned+".zip" {
 			t.Fatalf("the cache holds the zips %v; expected only the runtime pin", zips)
 		}
 		if found := zipSum(t, zip); found != sum || found != appbuild.RuntimePins()[pinned] {
@@ -468,7 +468,7 @@ func TestBuildDownloadTakesTheRuntimePinFromACheckout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if zips := cachedZips(t, output); len(zips) != 1 || zips[0] != "github.com/jsell-rh/stego/registry/runtime/@v/"+pinned+".zip" {
+		if zips := cachedZips(t, output); len(zips) != 1 || zips[0] != "github.com/910-software-solutions/stego/registry/runtime/@v/"+pinned+".zip" {
 			t.Fatalf("the cache holds the zips %v; expected only the runtime pin", zips)
 		}
 		record := readCacheRecord(t, output)
@@ -534,7 +534,7 @@ func TestBuildDownloadTakesTheRuntimePinFromACheckout(t *testing.T) {
 	})
 	t.Run("ST-BLD-UC02-R05-T12 A --runtime-folder is refused for a source with its own runtime folder, a module with no runtime pin, and a folder with no go.mod", func(t *testing.T) {
 		runtimeModuleSources(t)
-		const version = "v0.196.0"
+		const version = "v0.203.0"
 		folder, sum, modSum := runtimeCheckout(t, fixtureRuntime(), version)
 		own, ownRevision, _ := commitRuntimeSource(t, fixtureRuntime(), version, "", "", "probe")
 		plain, plainRevision := commitUserSource(t, version, sum, modSum, "", "probe")
@@ -812,7 +812,7 @@ func generatedSourceIn(t testing.TB, root, version, sum, imported, require, goSu
 	registry := filepath.Join(root, "registry")
 	files := map[string]string{
 		filepath.Join(project, "service.yaml"):                                "kind: service\nname: tiny\narchetype: tiny-arch\nlanguage: go\nentities:\n  - name: Widget\n    fields:\n      - { name: label, type: string }\ncollections:\n  widgets:\n    entity: Widget\n    operations: [create, read]\n",
-		filepath.Join(registry, "archetypes", "tiny-arch", "archetype.yaml"):  "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: " + version + ", sum: '" + sum + "'}\nname: tiny-arch\nlanguage: go\nversion: 1.0.0\ncomponents:\n  - tiny-api\n  - tiny-store\nconventions:\n  layout: flat\n  error_handling: problem-details-rfc\n  logging: structured-json\n  test_pattern: table-driven\nbindings:\n  storage-adapter: tiny-store\n",
+		filepath.Join(registry, "archetypes", "tiny-arch", "archetype.yaml"):  "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: " + version + ", sum: '" + sum + "'}\nname: tiny-arch\nlanguage: go\nversion: 1.0.0\ncomponents:\n  - tiny-api\n  - tiny-store\nconventions:\n  layout: flat\n  error_handling: problem-details-rfc\n  logging: structured-json\n  test_pattern: table-driven\nbindings:\n  storage-adapter: tiny-store\n",
 		filepath.Join(registry, "components", "tiny-api", "component.yaml"):   "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  serves: [collection operations]\n  ports:\n    storage-adapter: outbound\n    http-server: inbound\nname: tiny-api\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/api\nrequires:\n  - storage-adapter\nprovides:\n  - http-server\nslots: []\n",
 		filepath.Join(registry, "components", "tiny-store", "component.yaml"): "kind: component\nenvironment: []\narchitecture:\n  layer: repository\n  flow: Serves the test.\n  store: TestStore\n  ports:\n    storage-adapter: inbound\nname: tiny-store\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/storage\nrequires: []\nprovides:\n  - storage-adapter\nslots: []\n",
 	}

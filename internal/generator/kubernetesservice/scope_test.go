@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 //go:embed testdata/render_library_test.go

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/oapi-codegen/oapi-codegen/v2/pkg/codegen"
 )
 

@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/logline"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // format is the console form of declared observations.

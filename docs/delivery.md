@@ -372,6 +372,7 @@ was only on a separate log line:
 |---|---|---|---|---|
 | `service.start.spicedb` | `spicedb.connection` | `spicedb` | `unavailable`, `timeout` or another class of the gRPC status code, or `not_serving` | The start cannot reach SpiceDB in 10 s, or SpiceDB answers that it does not serve. The fault is the fault of the migration Job for the same cause. |
 | `service.start.spicedb` | `spicedb.settings` | `spicedb` | `invalid_setting` | `STEGO_SPICEDB_ENDPOINT` or `STEGO_SPICEDB_KEY_FILE` gives no value. |
+| `service.start.setting.spicedb-authz.STEGO_SPICEDB_CA_FILE` | none | none | none | The record gives the stage only, as for each refused setting. From runtime v0.203.0 (rest-crud 3.271.0, rpc-service and browser-service 1.271.0): the file of `STEGO_SPICEDB_CA_FILE` is not there, is not a regular file, is larger than the limit of a setting file, holds no PEM certificate, or has a mode that gives other users access or the group write access (such as 0644). A value together with `STEGO_SPICEDB_INSECURE_LOOPBACK=1` is refused too. See [Trust a SpiceDB that a private CA signs](#trust-a-spicedb-that-a-private-ca-signs). |
 | `service.start.migration` | `migration.pending` | `migration_ledger` | `ledger_missing`, `ledger_not_granted` or `migration_missing` | The ledger is not there, the runtime role may not read it, or it does not hold a migration of the release. Run the migration Job of the release. |
 | `service.start.migration` | `migration.changed` | `migration_ledger` | `digest_changed` | The ledger holds another body of a migration of the release. |
 
@@ -460,6 +461,8 @@ of the release, such as a shared preview database that ran the build of a branch
 before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
 migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
 kubectl rollout status -n <namespace> deployment/<service>
@@ -479,13 +482,38 @@ manifest of the Job with the kustomize library. To run the migration of a servic
 
 Each process of a service keeps pools of database connections of its own.
 `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` (16 when it has no value) bounds each
-pool that reads the setting. At the defaults, one process can open at most:
+pool that reads the setting: the main pool, the audit pool, the pool of the
+worker role (with the lower limit W below) and the pool of the relay role.
+The pool of the charges of counted values does not read it: it is always 4.
+At the defaults, one process can open at most:
 
 | Process | Pools | Most connections |
 |---|---|---|
 | api pod (`--mode=api`) | the main pool (16), the audit pool (16) and the pool of the charges of counted values (4) | 36 |
-| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role (16, and at least the concurrency of the outbox worker + 2) and the pool of the relay role (16) | 68 |
+| worker pod (`--mode=worker`, `--mode=controller`) | the three pools of the api pod, the pool of the worker role and the pool of the relay role (16) | 36 + W + 16; 68 when W is 16 |
 | migration Job | the owner connection and the connections of its steps | a few |
+
+W is the pool of the worker role. It is the larger of
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` and S + 2, where S is the claim slots:
+the larger of the concurrency of the outbox worker (4) and the count of its
+destinations, plus one slot for each Kafka inbox (each declared
+subscription). Each slot holds one connection, and the claims and the purge
+timer hold one more each. For example, a worker that consumes five topics
+and has three destinations has S = 4 + 5 = 9 and W = 16. With
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 4, the same worker has W = 11, not 4.
+
+To count the destinations of the outbox worker, count each of these that
+the service has (walkthrough 27, D-PS):
+
+- `audit-sink`, when the service has the audit-log component.
+- `kafka`, when the service has the kafka-producer component.
+- `rest-api.after-slots`, when the service has the rest-api component, also
+  when no collection binds an after slot.
+- One destination for each topic that a declared worker consumes
+  (`trigger: consumes`).
+
+A service with four destinations or fewer has S = 4 + the Kafka inboxes,
+because the concurrency of the outbox worker is 4.
 
 A pool opens a connection only when it needs one, so an idle service holds
 fewer. But a burst, a slow database or a restart of many pods at the same
@@ -508,13 +536,39 @@ Size the server for the most connections, not for the mean:
    of the worker role keeps at least the concurrency of the outbox worker
    + 2.
 3. Give the server memory for `shared_buffers` and for each connection.
-   Each connection is one server process, which takes some MiB when it is
-   idle and up to `work_mem` for each sort or hash of a statement. A start
-   value: `shared_buffers` 25% of the memory of the server, and about 10 MiB
-   for each connection of `max_connections`. For the 86 connections of
-   walkthrough 25 that is about 1 GiB, more than the 768 MiB of its limit.
-4. Watch the count of connections (`pg_stat_activity`) and the 53300
-   refusals while you change the replicas.
+   Each connection is one server process. An idle process takes some MiB.
+   A statement takes up to `work_mem` more for each sort or hash while it
+   runs. A safe start value: `shared_buffers` 25% of the memory of the
+   server, and about 10 MiB for each connection of `max_connections`. This
+   value assumes that each connection runs a statement at the same time.
+4. Watch the count of connections (`pg_stat_activity`), the memory of the
+   server and the 53300 refusals while you change the replicas.
+
+The sum of step 1 is a ceiling: each pool at its limit at one time. Most
+connections are idle most of the time. In walkthrough 26, four PostgreSQL 17
+servers of 768 MiB each (`shared_buffers` 192 MB, `max_connections` 200)
+served five services each through a rollout of 20 services, with
+`STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 3. Each server held 53 to 71
+connections and used 218 to 331 MiB. No server was killed and none
+refused a connection with 53300. The rule of step 3 asked 2.2 to 2.6 GiB for
+each server. Thus an idle connection takes much less than 10 MiB, and the
+rule is a bound for the worst case, not a measure. Walkthrough 25 shows the
+other side: a server of 768 MiB was killed when about 86 connections started
+together and ran statements.
+
+When the server cannot get the memory of the rule:
+
+- Lower `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` first, so that the sum of
+  step 1 drops. This is the only bound that STEGO holds.
+- Keep `max_connections` at the sum of step 1, so that a burst gets 53300,
+  which a service answers 503 with Retry-After, and the kernel does not stop
+  the server.
+- Keep `work_mem` small (the default, 4 MB), because each sort or hash of
+  each active statement can take it.
+- Measure the server at the peak of a rollout: the count of
+  `pg_stat_activity` by `state`, and the memory of the server or its
+  container. Keep free memory for the count of active statements times
+  `work_mem`.
 
 ## Secrets as files
 
@@ -614,6 +668,106 @@ kubectl get events -n <namespace> --field-selector reason=FailedMount,involvedOb
 ```
 
 The kubelet tries again, and the pod starts when the Secret holds the key.
+
+### Trust a SpiceDB that a private CA signs
+
+From runtime v0.203.0 (rest-crud 3.271.0, rpc-service and browser-service 1.271.0), a service connects to a SpiceDB
+whose certificate a private certificate authority signs, such as a CA issuer of cert-manager. Without
+`STEGO_SPICEDB_CA_FILE`, the service verifies SpiceDB with the system roots only, and the start fails with the stage
+`service.start.spicedb` and the cause `unavailable`. `STEGO_SPICEDB_CA_FILE` names a PEM file of certificate
+authorities. The process adds them to the system roots, and still verifies the name of the server. The api, worker
+and controller modes and the migration Job read the file. The generated Deployments and the migration Job take the
+variable from the ConfigMap. STEGO does not mount the file: the overlay mounts it.
+
+1. Give SpiceDB a certificate from the CA issuer. For example, with cert-manager and the SpiceDB operator:
+
+   ```yaml
+   apiVersion: cert-manager.io/v1
+   kind: Certificate
+   metadata:
+     name: spicedb-grpc
+     namespace: orders
+   spec:
+     secretName: spicedb-grpc-tls
+     dnsNames:
+       - spicedb.orders.svc
+       - spicedb.orders.svc.cluster.local
+     issuerRef:
+       kind: Issuer
+       name: orders-ca
+   ---
+   apiVersion: authzed.com/v1alpha1
+   kind: SpiceDBCluster
+   metadata:
+     name: spicedb
+     namespace: orders
+   spec:
+     secretName: spicedb-config
+     config:
+       datastoreEngine: postgres
+       tlsSecretName: spicedb-grpc-tls
+   ```
+
+   cert-manager writes the key `ca.crt`, the certificate of the CA, into the Secret `spicedb-grpc-tls`. Use the
+   name of the certificate in `STEGO_SPICEDB_ENDPOINT`, such as `spicedb.orders.svc:50051`, not an IP address.
+
+2. Set the path in the ConfigMap, through the `configuration` of the environment file:
+
+   ```yaml
+   configuration:
+     STEGO_SPICEDB_ENDPOINT: spicedb.orders.svc:50051
+     STEGO_SPICEDB_CA_FILE: /etc/orders/spicedb-ca/ca.crt
+   ```
+
+3. Mount only the key `ca.crt` with the mode 0440 (or 0400) on each Deployment and on the migration Job. The process
+   refuses a file that other users can read or that its group can write (the check is `mode & 0o137`). The
+   Kubernetes default mode of a Secret or ConfigMap volume is 0644, and the process refuses it. The mode 0440 needs
+   the pod `fsGroup`, so that the process, which does not run as root, reads the file through its group: on
+   OpenShift the restricted-v2 SCC sets it; on another cluster, list the Component `fs-group` (see
+   [Secrets as files](#secrets-as-files)). A patch of the overlay for the api Deployment:
+
+   ```yaml
+   patches:
+     - target:
+         kind: Deployment
+         name: orders
+       patch: |-
+         - op: add
+           path: /spec/template/spec/volumes/-
+           value:
+             name: spicedb-ca
+             secret:
+               secretName: spicedb-grpc-tls
+               defaultMode: 0440
+               items:
+                 - key: ca.crt
+                   path: ca.crt
+         - op: add
+           path: /spec/template/spec/containers/0/volumeMounts/-
+           value:
+             name: spicedb-ca
+             mountPath: /etc/orders/spicedb-ca
+             readOnly: true
+   ```
+
+   Write the same patch for the worker Deployment (`orders-worker`) when the service has one, and for the
+   migration Job. The name of the Job changes with each release, so select it by its label:
+
+   ```yaml
+     - target:
+         kind: Job
+         labelSelector: app.kubernetes.io/component=migration
+       patch: |-
+         # the same two operations as for the Deployment
+   ```
+
+   The Secret must be in the namespace of the service. When SpiceDB is in another namespace, copy only `ca.crt`
+   there, for example with trust-manager, and give the bundle volume the mode 0440 too.
+
+The process reads the file once, at the start. When the CA changes, restart the pods after the volume holds the
+new certificate, for example with `kubectl rollout restart deployment/orders deployment/orders-worker`, and run the
+next migration Job after the change. Until the restart, a pod verifies with the old CA. During a change of CA, put
+the old and the new certificate in the file, restart, and remove the old one later.
 
 ## The CI file
 

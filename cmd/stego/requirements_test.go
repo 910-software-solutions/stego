@@ -19,9 +19,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/delivery"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/delivery"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // These tests prove that apply writes the platform requirements of a service from the needs that its components

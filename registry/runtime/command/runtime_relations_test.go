@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 // TestRuntimeRelations proves that a command which declares the relation of a reference or of a declared

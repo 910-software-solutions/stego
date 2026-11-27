@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // writeFile writes a file of the test project.
@@ -30,9 +30,9 @@ func TestSlotContracts(t *testing.T) {
 			CommandFills:   []compiler.CommandFill{{Fill: "add-note", Contract: "example.com/shop/out/commands"}},
 			WorkerContract: "example.com/shop/out/workers",
 			ContractRuntime: map[string][]string{
-				"example.com/shop/out/queries":  {"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/query"},
-				"example.com/shop/out/commands": {"github.com/jsell-rh/stego/registry/runtime/command"},
-				"example.com/shop/out/workers":  {"github.com/jsell-rh/stego/registry/runtime/command"},
+				"example.com/shop/out/queries":  {"github.com/910-software-solutions/stego/registry/runtime/audit", "github.com/910-software-solutions/stego/registry/runtime/query"},
+				"example.com/shop/out/commands": {"github.com/910-software-solutions/stego/registry/runtime/command"},
+				"example.com/shop/out/workers":  {"github.com/910-software-solutions/stego/registry/runtime/command"},
 			}}
 		fill := func(name, imports string) string {
 			fillDir := filepath.Join(dir, "fills", name)
@@ -43,22 +43,22 @@ func TestSlotContracts(t *testing.T) {
 			name, fill, implements, imports, refused string
 		}{
 			{"a query fill of out/queries and the runtime query package", "get-order", querySlot,
-				"\t\"example.com/shop/out/queries\"\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n\t\"context\"\n", ""},
+				"\t\"example.com/shop/out/queries\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/query\"\n\t\"context\"\n", ""},
 			{"a query fill of out/slots", "get-order-slots", querySlot, "\t\"example.com/shop/out/slots\"\n", "example.com/shop/out/slots"},
 			{"a query fill of a runtime package that the contract does not reach", "get-order-authz", querySlot,
-				"\t\"example.com/shop/out/queries\"\n\t\"github.com/jsell-rh/stego/registry/runtime/authz\"\n", "github.com/jsell-rh/stego/registry/runtime/authz"},
+				"\t\"example.com/shop/out/queries\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/authz\"\n", "github.com/910-software-solutions/stego/registry/runtime/authz"},
 			{"a query fill of a generated package that the contract imports", "get-order-probes", querySlot,
 				"\t\"example.com/shop/out/queries\"\n\t\"example.com/shop/out/probes\"\n", "example.com/shop/out/probes"},
 			{"a command fill of its command contract and the runtime command package", "add-note", commandSlot,
-				"\t\"example.com/shop/out/commands\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", ""},
+				"\t\"example.com/shop/out/commands\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n", ""},
 			{"a command fill of the query contract", "add-note", commandSlot, "\t\"example.com/shop/out/queries\"\n", "example.com/shop/out/queries"},
 			{"a protobuf slot fill of out/slots", "admin-policy", "rest-api.before_create", "\t\"example.com/shop/out/slots\"\n", ""},
 			{"a protobuf slot fill of a runtime package", "admin-policy-rt", "rest-api.before_create",
-				"\t\"example.com/shop/out/slots\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", "github.com/jsell-rh/stego/registry/runtime/command"},
+				"\t\"example.com/shop/out/slots\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n", "github.com/910-software-solutions/stego/registry/runtime/command"},
 			{"a worker fill of its worker contract and the runtime command package", "sync-orders", workerSlot,
-				"\t\"example.com/shop/out/workers\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", ""},
+				"\t\"example.com/shop/out/workers\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n", ""},
 			{"a worker fill of a runtime package that its contract does not reach", "sync-orders-audit", workerSlot,
-				"\t\"example.com/shop/out/workers\"\n\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n", "github.com/jsell-rh/stego/registry/runtime/audit"},
+				"\t\"example.com/shop/out/workers\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/audit\"\n", "github.com/910-software-solutions/stego/registry/runtime/audit"},
 			{"a worker fill of the command contract", "sync-orders-cmd", workerSlot, "\t\"example.com/shop/out/commands\"\n", "example.com/shop/out/commands"},
 			{"a protobuf slot fill of the query contract", "admin-policy-q", "rest-api.before_create", "\t\"example.com/shop/out/queries\"\n", "example.com/shop/out/queries"},
 		}

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/cliapplication"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).

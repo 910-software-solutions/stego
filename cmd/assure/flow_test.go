@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 )
 
 func TestRecordFlow(t *testing.T) {
@@ -61,7 +61,7 @@ func TestRecordFlow(t *testing.T) {
 		}
 		sum := sha256.Sum256([]byte(f.commit))
 		name, digest := workflowSubject(t, f.commit)
-		if name != "git+https://github.com/jsell-rh/stego@"+f.commit || digest != "sha256:"+hex.EncodeToString(sum[:]) {
+		if name != "git+https://github.com/910-software-solutions/stego@"+f.commit || digest != "sha256:"+hex.EncodeToString(sum[:]) {
 			t.Fatalf("the attest job names the subject %s (%s), not the commit %s", name, digest, f.commit)
 		}
 
@@ -115,7 +115,7 @@ func TestGateFlow(t *testing.T) {
 			"coverage at " + change + ": 5 obligations: 5 designed (100.0%), 2 built (40.0%), 2 proved (40.0%)\n" +
 			"coverage at " + g.base + ": 4 obligations: 4 designed (100.0%), 2 built (50.0%), 2 proved (50.0%)\n" +
 			"proof run: https://github.com/jsell-rh/stego/assure/proof-run/v1 about " + change +
-			", signed by https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/pull/7/merge (issuer https://token.actions.githubusercontent.com), rekor:21\n" +
+			", signed by https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/pull/7/merge (issuer https://token.actions.githubusercontent.com), rekor:21\n" +
 			"code faults (1):\n" +
 			"internal/lend/rules.go (ST-STD-CODE-R02, present at base): FX-LEND-INV02-RL names lend.dueAfterStart, which the file does not declare\n" +
 			"reasons: none\n"
@@ -164,9 +164,9 @@ func TestReleaseFlow(t *testing.T) {
 		decision := "release gate on " + full + ": passed\n" +
 			"coverage at " + full + ": 4 obligations: 4 designed (100.0%), 4 built (100.0%), 4 proved (100.0%)\n" +
 			"proof run: https://github.com/jsell-rh/stego/assure/proof-run/v1 about " + full +
-			", signed by https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com), rekor:31\n" +
+			", signed by https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com), rekor:31\n" +
 			"attestation: https://github.com/jsell-rh/stego/assure/release-decision/v1 about " + full +
-			", for https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com) to sign\n" +
+			", for https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main (issuer https://token.actions.githubusercontent.com) to sign\n" +
 			"code faults: none\n" +
 			"reasons: none\n"
 		want := `{
@@ -185,14 +185,14 @@ func TestReleaseFlow(t *testing.T) {
     "predicateType": "https://github.com/jsell-rh/stego/assure/proof-run/v1",
     "subject": "` + full + `",
     "issuer": "https://token.actions.githubusercontent.com",
-    "signer": "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main",
+    "signer": "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main",
     "logEntry": "rekor:31"
   }
 }
 `
 		sum := sha256.Sum256([]byte(want))
 		predicateLine := "decision predicate " + predicate + " (sha256:" + hex.EncodeToString(sum[:]) + "), type " +
-			"https://github.com/jsell-rh/stego/assure/release-decision/v1, for https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main to sign\n"
+			"https://github.com/jsell-rh/stego/assure/release-decision/v1, for https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main to sign\n"
 		if result.code != 0 || result.stdout != decision+predicateLine {
 			t.Fatalf("assure gate release exited %d with:\n%s%s\nwant:\n%s%s", result.code, result.stdout, result.stderr, decision, predicateLine)
 		}
@@ -204,7 +204,7 @@ func TestReleaseFlow(t *testing.T) {
 			t.Fatalf("the job's step summary does not hold the decision (%v):\n%s", err, data)
 		}
 		name, digest, err := runJobSubjectStep(t, "attest-release", full)
-		if err != nil || name != "git+https://github.com/jsell-rh/stego@"+full || digest != assure.SubjectDigest(full) {
+		if err != nil || name != "git+https://github.com/910-software-solutions/stego@"+full || digest != assure.SubjectDigest(full) {
 			t.Fatalf("the attest-release job names the subject %s (%s), %v, not the release commit", name, digest, err)
 		}
 		again := filepath.Join(g.runnerTemp, "decision", "again.json")

@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
 )
 
 // The settings of the Kafka inbox of one subscription, which the worker mode reads from the process environment by

@@ -393,6 +393,12 @@ spec:
                   key: STEGO_SERVICE_VERSION
                   name: user-management-config
                   optional: true
+            - name: STEGO_SPICEDB_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SPICEDB_CA_FILE
+                  name: user-management-config
+                  optional: true
             - name: STEGO_SPICEDB_ENDPOINT
               valueFrom:
                 configMapKeyRef:

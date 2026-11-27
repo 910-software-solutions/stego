@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // conversionTotal tells whether the conversion is total over the constraints of the field: it is declared total, or
@@ -58,6 +58,12 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 			continue
 		}
 		before, at := gen.RetypeField(change), shape.of(change.Entity, after)
+		// In a widening between two integer types, such as int32 to int64, each side holds only values of the range
+		// of the narrower type while the change is open: the column type of the field before holds the one side, and
+		// the API of the release of the change holds the other (gen.HeldBounds). So the inverse conversion is checked,
+		// and the bounds are compared, within that range; the messages name the declared bounds (ST-DECL-Q48;
+		// walkthrough 26, P3-RT).
+		heldBefore, heldAfter := gen.WithinNarrower(before, after)
 		if !declared {
 			fault("schema-change-value", ".conversion", change.Conversion, "no database component of the service declares conversions, so the retype has none to use")
 			continue
@@ -73,10 +79,10 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 		switch {
 		case !okInverse || inverse.From != after.Type || inverse.To != before.Type:
 			fault("schema-change-value", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not one that the database component declares from %s to %s%s", change.InverseConversion, after.Type, before.Type, at))
-		case !conversionTotal(inverse, after):
+		case !conversionTotal(inverse, heldAfter):
 			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total%s", change.InverseConversion, change.Entity, change.Field, at))
 		}
-		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
+		if reason := checksKept(heldBefore, heldAfter); reason != "" && okForward && okInverse {
 			// A retype with no Definition takes the field before the change as its From type alone, with no
 			// constraint, so the author who left the Definition out is told first to give it, and not that the
 			// bounds differ, which they do not in the author's view (walkthrough 7, K12; walkthrough 8 and 9, B9).
@@ -122,7 +128,7 @@ func sideDefinition(from string, field types.Field) string {
 // checksKept tells why a value that one side of a retype holds could break the CHECK of the column of the other
 // side after its conversion, or gives empty: each side's CHECK holds every value of the other (security review of
 // PR #335, M1, orchestrator under the owner's delegation, 2026-11-14). Between two integer types the bounds min and
-// max of the field before and after the change must be the same; between a number or a boolean and a text, neither
+// max of the field before and after the change must be the same, as gen.WithinNarrower gives them for a widening; between a number or a boolean and a text, neither
 // field may have a min, a max, a min_length, a max_length or values, which the conversion does not keep. A pattern
 // is not a CHECK of the column, so it is not compared.
 func checksKept(before, after types.Field) string {

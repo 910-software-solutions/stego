@@ -26,10 +26,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
 	"github.com/google/uuid"
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
 
 // runTriggers are the deferred constraint triggers of the COMMIT cases on reservations: a SKU fail-commit raises

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/fill"
 )
 
 // probeDeclaration is a rest-crud declaration with a command, a query and three observations over the entity
@@ -116,7 +116,7 @@ func probeProject(t *testing.T) (compiler.ReconcilerInput, string) {
 	putFile(t, project, "fills/reserve-and-charge/fill.yaml", "kind: fill\nname: reserve-and-charge\nimplements: "+declaration.CommandSlot+"\n")
 	putFile(t, project, "fills/open-reservations/fill.yaml", "kind: fill\nname: open-reservations\nimplements: "+declaration.QuerySlot+"\n")
 	input := compiler.ReconcilerInput{ProjectDir: project, RegistryDir: registry, GoVersion: "1.26.11", ModuleName: "example.com/reservations",
-		Generators: defaultGenerators(), OutDir: filepath.Join(project, "out"), ReadFill: fill.ReadCollection, ReadFillSlot: fill.ReadImplements}
+		Generators: defaultGenerators(), OutDir: filepath.Join(project, "out"), ReadFill: fill.DecodeCollection, ReadFillSlot: fill.DecodeImplements}
 	return input, project
 }
 

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/lifecycle"
+	"github.com/910-software-solutions/stego/internal/lifecycle"
 )
 
 // The OpenVEX statuses a statement of the sweep takes.

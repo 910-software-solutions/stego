@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/ports"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/ports"
+	"github.com/910-software-solutions/stego/internal/registry"
 	"gopkg.in/yaml.v3"
 )
 

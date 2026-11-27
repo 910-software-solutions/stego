@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
-	"github.com/jsell-rh/stego/internal/generator/kafkaproducer"
-	"github.com/jsell-rh/stego/internal/generator/outbox"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/postgresclient"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/generator/kafkaproducer"
+	"github.com/910-software-solutions/stego/internal/generator/outbox"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/postgresclient"
 )
 
 func TestPinnedDependenciesGateGoTarget(t *testing.T) {

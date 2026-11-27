@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // pgxListener is the Listener of the tests over one dedicated pgx connection. A service passes the same kind of

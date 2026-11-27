@@ -1,5 +1,5 @@
 // Package spicedbauthz generates the per-service authorization wiring of a service that binds authorization to
-// SpiceDB (ST-SUP-RC29) on top of the runtime library github.com/jsell-rh/stego/registry/runtime/authz (ST-SUP-RP06). It emits only what
+// SpiceDB (ST-SUP-RC29) on top of the runtime library github.com/910-software-solutions/stego/registry/runtime/authz (ST-SUP-RP06). It emits only what
 // varies with the declaration (ST-STD-RUNTIME-R05): the service's schema with the floor marker definition, the
 // permission of each operation, the tenant-qualified resource of each protected entity, the tuples and the tuple
 // writes of each entity's relationships, the migration call with the protected tables and their grants, and the
@@ -22,15 +22,15 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/tenancy"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/tenancy"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // RuntimePackage is the import path of the runtime package that the generated code calls.
-const RuntimePackage = "github.com/jsell-rh/stego/registry/runtime/authz"
+const RuntimePackage = "github.com/910-software-solutions/stego/registry/runtime/authz"
 
 // MarkerDefinition is the floor marker definition that the generator adds to the schema it emits, so the author
 // never writes it (ST-DECL-INV22): the relay TOUCHes stego_floor:floor#marker@stego_floor:floor to raise the
@@ -429,7 +429,7 @@ func sqlString(value string) string {
 
 func render(p plan) []byte {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "// Package %s is the authorization wiring of the service on the authorization runtime\n// github.com/jsell-rh/stego/registry/runtime/authz (ST-SUP-RC29).\n", p.Package)
+	fmt.Fprintf(&b, "// Package %s is the authorization wiring of the service on the authorization runtime\n// github.com/910-software-solutions/stego/registry/runtime/authz (ST-SUP-RC29).\n", p.Package)
 	fmt.Fprintf(&b, "package %s\n\n", p.Package)
 	// strings quotes the worker role in the grants of the protected tables; a service with none has no grant.
 	if len(p.Entities) > 0 {
@@ -438,9 +438,9 @@ func render(p plan) []byte {
 		b.WriteString("import (\n\t\"context\"\n\t\"database/sql\"\n\t\"fmt\"\n\t\"time\"\n\n")
 	}
 	b.WriteString("\tv1 \"github.com/authzed/authzed-go/proto/authzed/api/v1\"\n\totellog \"go.opentelemetry.io/otel/log\"\n\t\"go.opentelemetry.io/otel/metric\"\n\t\"google.golang.org/grpc\"\n\n")
-	fmt.Fprintf(&b, "\tstegoauthz %q\n\t\"github.com/jsell-rh/stego/registry/runtime/outbox\"\n", RuntimePackage)
+	fmt.Fprintf(&b, "\tstegoauthz %q\n\t\"github.com/910-software-solutions/stego/registry/runtime/outbox\"\n", RuntimePackage)
 	if len(p.Entities) > 0 {
-		b.WriteString("\t\"github.com/jsell-rh/stego/registry/runtime/tenant\"\n")
+		b.WriteString("\t\"github.com/910-software-solutions/stego/registry/runtime/tenant\"\n")
 	}
 	b.WriteString(")\n\n")
 

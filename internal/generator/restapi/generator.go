@@ -12,8 +12,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Generator produces the rest-api component's generated code.
@@ -510,11 +510,17 @@ func generateRouter(ns string, entities []types.Entity, collections []types.Coll
 	// entity data with id, kind, and href metadata.
 	if envelope {
 		fmt.Fprintf(&buf, "// presentEntity wraps an entity with id, kind, and href metadata for\n")
-		fmt.Fprintf(&buf, "// envelope-format responses.\n")
+		fmt.Fprintf(&buf, "// envelope-format responses. It keeps each member as its JSON text, so a number\n")
+		fmt.Fprintf(&buf, "// is answered as it is stored: an int64 above 2^53 does not become a float64\n")
+		fmt.Fprintf(&buf, "// (walkthrough 27, W-PREC).\n")
 		fmt.Fprintf(&buf, "func presentEntity(entity any, kind, id, href string) map[string]any {\n")
 		fmt.Fprintf(&buf, "\tdata, _ := json.Marshal(entity)\n")
-		fmt.Fprintf(&buf, "\tresult := map[string]any{}\n")
-		fmt.Fprintf(&buf, "\tjson.Unmarshal(data, &result)\n")
+		fmt.Fprintf(&buf, "\tmembers := map[string]json.RawMessage{}\n")
+		fmt.Fprintf(&buf, "\tjson.Unmarshal(data, &members)\n")
+		fmt.Fprintf(&buf, "\tresult := make(map[string]any, len(members)+3)\n")
+		fmt.Fprintf(&buf, "\tfor name, value := range members {\n")
+		fmt.Fprintf(&buf, "\t\tresult[name] = value\n")
+		fmt.Fprintf(&buf, "\t}\n")
 		fmt.Fprintf(&buf, "\tresult[\"id\"] = id\n")
 		fmt.Fprintf(&buf, "\tresult[\"kind\"] = kind\n")
 		fmt.Fprintf(&buf, "\tresult[\"href\"] = href\n")
@@ -883,7 +889,7 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
 	fmt.Fprintf(&buf, "\tlegacyrouter \"github.com/getkin/kin-openapi/routers/legacy\"\n")
 	fmt.Fprintf(&buf, "\n")
-	fmt.Fprintf(&buf, "\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
+	fmt.Fprintf(&buf, "\t\"github.com/910-software-solutions/stego/registry/runtime/idempotency\"\n")
 	fmt.Fprintf(&buf, ")\n\n")
 
 	// Embedded OpenAPI spec.
@@ -1718,12 +1724,19 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	if f.Pattern != "" {
 		s.Pattern = f.Pattern
 	}
-	// Propagate numeric constraint attributes.
+	// Propagate numeric constraint attributes. A field that an open retype from int32 widens holds the int32 bounds
+	// until the contract step (gen.HeldBounds, ST-DECL-Q48).
 	if f.Min != nil {
 		s.Minimum = f.Min
 	}
 	if f.Max != nil {
 		s.Maximum = f.Max
+	}
+	if f.HeldMin != nil {
+		s.Minimum = f.HeldMin
+	}
+	if f.HeldMax != nil {
+		s.Maximum = f.HeldMax
 	}
 	if f.Default != nil {
 		s.Default = f.Default
@@ -3256,7 +3269,7 @@ type idempotencyHeader struct {
 }
 
 // idempotencyKeys reads the declaration's idempotency setting when the idempotency component is in the service,
-// and gives nil otherwise. The problem types join the slugs of github.com/jsell-rh/stego/registry/runtime/idempotency to the problem base.
+// and gives nil otherwise. The problem types join the slugs of github.com/910-software-solutions/stego/registry/runtime/idempotency to the problem base.
 func idempotencyKeys(ctx gen.Context) *idempotencyHeader {
 	if ctx.Idempotency == nil || ctx.PeerNamespaces["idempotency"] == "" {
 		return nil

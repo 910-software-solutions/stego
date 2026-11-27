@@ -14,12 +14,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/internal/loaded"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/loaded"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The errors of the handle. A fill tells them apart with errors.Is.
@@ -1725,6 +1725,10 @@ type state struct {
 	// check of a counted value did not commit (ST-SUP-RP10-LC54).
 	attempts     map[attemptKey]*attemptRow
 	chargeFailed bool
+	// purged holds the key of each count that a delete of this transaction deleted with its row: a stored counted
+	// value bound to such a key is never written again, so a delete and a create of the same ID cannot carry an old
+	// PIN to a count of 0 (decision ST-SUP-Q216 (a); security review of PR #511, L1).
+	purged map[attemptKey]bool
 	// resets are the counters, as <entity>.<field>, whose attempts the fill of the command may reset
 	// (ST-DECL-INV104, decision ST-SUP-Q205 (c)).
 	resets map[string]bool
@@ -2736,6 +2740,13 @@ func (r *Repository[T]) Delete(ctx context.Context, from Loaded[T], parent ...Re
 	if n == 0 {
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}
 		return s.conflict
+	}
+	// The counts of wrong attempts of the row go with the row, in its transaction (decision ST-SUP-Q216 (a)).
+	if counters := countersOf(e.spec.Name); len(counters) > 0 {
+		if _, err := s.exec(ctx, purgeRowStatement, s.tenant.ID(), counters, strings.ToLower(from2.meta.ID)); err != nil {
+			return s.fail(ctx, "delete the attempts of "+e.spec.Name, err)
+		}
+		s.markPurged(e.spec.Name, from2.meta.ID)
 	}
 	if err := r.unrelateAll(ctx, from2.meta.ID); err != nil {
 		return err

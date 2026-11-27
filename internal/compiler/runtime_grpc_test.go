@@ -2,13 +2,12 @@ package compiler
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The proof of the gRPC application on the runtime data path (ST-SUP-RC07-OC19, ST-SUP-RC33-OC08): a service of the
@@ -108,10 +107,8 @@ func TestRuntimeGRPC(t *testing.T) {
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
 	endpoint, key := startWiringSpiceDB(t)
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestGRPC$", "./out/grpccheck")
-	cmd.Dir = p.dir
-	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_GRPC_BINARY="+binary)
-	output, runErr := runTLSCheck(cmd)
+	output, runErr := runTLSCheck(p.dir, "./out/grpccheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_GRPC_BINARY="+binary),
+		"-test.count=1", "-test.timeout=300s", "-test.v", "-test.run", "^TestGRPC$")
 	for _, id := range grpcCheckIDs {
 		t.Run(id, func(t *testing.T) {
 			name := strings.ReplaceAll(id, " ", "_")

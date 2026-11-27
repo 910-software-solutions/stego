@@ -523,6 +523,17 @@ func TestRoutePattern(t *testing.T) {
 			t.Fatalf("the copied request lost the route: span %q, metric %q, log %q", span, metric, logged)
 		}
 	})
+	t.Run("ST-SUP-RP03-LC14-T04 A declared command route, a custom method with a colon, carries its template", func(t *testing.T) {
+		h := newHarness(t, 1)
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/bids/v1/jobs/{job_id}/status:convert", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		h.runtime.Handler(h.runtime.Route(mux)).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/bids/v1/jobs/private-job/status:convert", nil))
+		const want = "/api/bids/v1/jobs/{job_id}/status:convert"
+		span, metric, logged := routeOf(t, h)
+		if span != want || metric != want || logged != want || h.lastSpan(t).Name() != "POST "+want {
+			t.Fatalf("the command route lost its template: span %q, metric %q, log %q, name %q", span, metric, logged, h.lastSpan(t).Name())
+		}
+	})
 	t.Run("ST-SUP-RP03-LC14-T02 The route pattern is kept at sampling ratio zero", func(t *testing.T) {
 		h := newHarness(t, 0)
 		mux := http.NewServeMux()

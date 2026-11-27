@@ -17,15 +17,15 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/audit/auditsink"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/modes"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit/auditsink"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/modes"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkainbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The fixed names of the connection settings of the worker mode (ST-SUP-RP14-LC04), each with its file form.

@@ -18,9 +18,9 @@ import (
 	"sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/delivery"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/delivery"
 )
 
 // These tests prove that apply writes the Kubernetes base of a service (ST-DLV-UC07), on the service of

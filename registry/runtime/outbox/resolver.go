@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/seal"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // Resolver resolves parked messages in a process that does not deliver them, such as the api mode of a service,

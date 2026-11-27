@@ -111,4 +111,41 @@ func TestDeclaredAPIs(t *testing.T) {
 		w := send(f.backend, "GET", secondPrefix+"/things", "", []*http.Cookie{active}, nil)
 		require(t, w.Code == 200, "a clean path of the declared API was not served")
 	})
+
+	t.Run("ST-SUP-RC02-OC58-T06 With every permit of the backend held by API requests, a login, a sign-out page, the session and an asset still answer", func(t *testing.T) {
+		f := setup(t)
+		active, _ := login(t, f)
+		// Slow APIs hold each permit of the backend: each request to an API takes one before it is routed.
+		for range cap(f.backend.permits) {
+			f.backend.permits <- struct{}{}
+		}
+		defer func() {
+			for range cap(f.backend.permits) {
+				<-f.backend.permits
+			}
+		}()
+		w := send(f.backend, "GET", apiPrefix+"/records/record-1", "", []*http.Cookie{active}, nil)
+		require(t, w.Code == 503, "an API request was served with no permit of the backend left")
+		w = send(f.backend, "GET", "/auth/login?return_to=%2F", "", nil, http.Header{"Sec-Fetch-Site": {"none"}})
+		require(t, w.Code == 302, "a login got no permit while slow APIs held the permits of the backend")
+		w = send(f.backend, "GET", "/auth/session", "", []*http.Cookie{active}, nil)
+		require(t, w.Code == 200, "the session got no permit while slow APIs held the permits of the backend")
+		w = send(f.backend, "GET", "/auth/logout", "", []*http.Cookie{active}, nil)
+		require(t, w.Code == 200, "the sign-out page got no permit while slow APIs held the permits of the backend")
+		for _, path := range []string{"/assets/main.js", "/", "/records/record-1"} {
+			w = send(f.backend, "GET", path, "", nil, nil)
+			require(t, w.Code == 200, "an asset or a document got no permit while slow APIs held the permits of the backend: "+path)
+		}
+		// The reserve is bounded too: with it full as well, a login gets 503.
+		for range cap(f.backend.reserve) {
+			f.backend.reserve <- struct{}{}
+		}
+		w = send(f.backend, "GET", "/auth/login?return_to=%2F", "", nil, http.Header{"Sec-Fetch-Site": {"none"}})
+		for range cap(f.backend.reserve) {
+			<-f.backend.reserve
+		}
+		require(t, w.Code == 503, "a login was served with no permit of the backend and no permit of the reserve left")
+		// A telemetry request does not take the reserve: it is not a route that the backend answers alone.
+		require(t, !f.backend.ownRoute("/telemetry/v1/traces") && !f.backend.ownRoute(secondPrefix+"/things"), "a request of an API or of telemetry may take the reserve")
+	})
 }

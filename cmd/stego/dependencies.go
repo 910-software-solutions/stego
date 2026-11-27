@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild"
 )
 
 func runDependencies(args []string) error {

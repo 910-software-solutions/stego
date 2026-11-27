@@ -47,11 +47,13 @@ the fills is essential complexity.
 
 Every service with data access runs on the runtime data path, the only data
 path: its commands, its queries and its collection operations run on the
-runtime library github.com/jsell-rh/stego/registry/runtime. Its archetype must
+runtime library github.com/910-software-solutions/stego/registry/runtime. Its archetype must
 hold the command and query components; a service that declares entities,
 commands or queries without them is refused. Its main reads the deployment settings from the environment:
 `DATABASE_URL` or `DATABASE_URL_FILE` for the runtime role, `STEGO_SPICEDB_ENDPOINT`
-and `STEGO_SPICEDB_KEY_FILE` for SpiceDB, `STEGO_QUERY_CURSOR_KEY_FILE` for the key
+and `STEGO_SPICEDB_KEY_FILE` for SpiceDB (with `STEGO_SPICEDB_CA_FILE`, the certificate
+authorities that verify a SpiceDB whose certificate a private authority signs, added to
+the system roots), `STEGO_QUERY_CURSOR_KEY_FILE` for the key
 of the list cursors, and `STEGO_SERVICE_VERSION` for the release that each audit
 row names. It takes the issuer and the audience that the declaration states for
 jwt-auth; when the declaration states none, it reads `STEGO_AUTHN_ISSUER` and
@@ -128,7 +130,7 @@ workflows through the generated runtime.
 ## Build from source
 
 ```bash
-git clone https://github.com/jsell-rh/stego.git
+git clone https://github.com/910-software-solutions/stego.git
 cd stego
 go build -o stego ./cmd/stego/
 go test ./...
@@ -323,7 +325,21 @@ names must match in letter case. A patch refuses each other member with a
 400 validation problem that names the member (rest-api 4.24.0), such as a
 field that is not patchable or the new name of a renamed field, and changes
 nothing. The OpenAPI document gives the body of the patch as the schema
-`<Collection>PatchRequest`, with `additionalProperties: false`. The `apply` command of the
+`<Collection>PatchRequest`, with `additionalProperties: false`.
+
+A patch only sets values. It does not clear an optional field: `null` gets
+400 `Value is not nullable`, and an empty text gets 400 when the field has a
+`min_length` (decision ST-SUP-Q214, open). To clear an optional field, send
+an update (`PUT <path>/{id}`) with the whole row and leave the field out:
+an update replaces the row, so the field becomes empty. Thus a collection
+whose optional fields a client must clear needs `update` in its
+`operations`. A field that is the subject of a relationship
+(`subject_source: field`) is set at the create only: an update or a patch
+that changes it, also to empty, gets 400 with the name of the field. Thus
+an update must give that field with its stored value: an update that leaves
+it out changes it to empty, and also gets 400 (walkthrough 27, P2-NULL). To
+clear the other optional fields of such a row, send an update that leaves
+them out and gives the related field. The `apply` command of the
 generated CLI changes a resource that it finds with this patch, so a
 collection is an apply resource only when it has `create`, `list` and
 `patch`, has no scope, and both the create and `patchable` hold a text field

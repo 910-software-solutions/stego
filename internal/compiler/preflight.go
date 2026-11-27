@@ -9,10 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 type resolvedCompilation struct {
@@ -423,6 +423,9 @@ func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaCha
 	// A field that a seal moves is stored in its sealed column, and in its clear column too while the seal is open
 	// (ST-SUP-RC01-OC49).
 	all = gen.SealedNames(all, changes, svcDecl.SchemaHistory)
+	// A field that an open retype from int32 widens holds the int32 bounds in its API and its commands while the
+	// release before runs (ST-DECL-Q48).
+	all = gen.HeldBounds(all, changes, svcDecl.SchemaHistory)
 	for _, entity := range all {
 		if entity.DroppedBy != "" {
 			dropped = append(dropped, entity)

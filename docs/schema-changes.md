@@ -44,8 +44,9 @@ names it by its declared name and STEGO does not map that name to the
 column. These parts are: a reference (`references`, or a field of type
 `ref`), a `unique_composite`, an invariant, the `scope`, the `implicit`
 fields or the `upsert_key` of a collection, and the context fields or the
-generation fields of the entity. The same parts, and also `patchable`, stop
-a retype. `stego validate` and `stego plan` refuse such a change. The fault
+generation fields of the entity. The same parts stop a retype. From
+rest-crud 3.264.0, `patchable` does not stop a retype: the patch request
+takes the field by its name, as the create and the update do. `stego validate` and `stego plan` refuse such a change. The fault
 names the entity, the field and the part that names it, such as `the entity
 Cart: generation does not rename the field customer_ref yet, because the
 collection carts names it by its declared name`. To change the name of such
@@ -138,6 +139,8 @@ enum value taken away, a field made required, and a type change that
 PostgreSQL cannot make without a rewrite, such as an enum made a string with a
 `max_length`. Those still need a new field, a copy and a drop. `stego compat`
 names the relax to declare when you relax a field with no schema change.
+
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
 
 The step's own migration runs one `ALTER TABLE` that reads no row under its
 `ACCESS EXCLUSIVE` lock: the new `CHECK` of the field `NOT VALID` as
@@ -865,7 +868,25 @@ definition organization {
 ```
 
 The field holds the subject ID of the user, as the authorization provider
-holds it for the caller. The runtime sets the subject of a field at the
+holds it for the caller: the base64url of the issuer (the `iss` claim byte
+for byte), a `|`, and the base64url of the `sub` claim, both with no `=`
+padding. The create permission is decided on the tenant-qualified ID of the
+service-level resource: the base64url of the tenant ID, a `/`, and the
+base64url of the service name. A grant on `service:<service name>` gives
+nothing, and each create of the user gets 404. For the service
+`organizations`, the tenant `acme`, the user `dora` of the issuer
+`https://idp.example.test` as the creator, and the user `erin` as the
+approver:
+
+```bash
+b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+iss=$(b64 https://idp.example.test)
+zed relationship create "service:$(b64 acme)/$(b64 organizations)" organization_creator "user:$iss|$(b64 dora)"
+# The value of the field approver in the body of the create or in a stored row:
+printf '%s\n' "$iss|$(b64 erin)"
+```
+
+The runtime sets the subject of a field at the
 create only: an update or a patch that changes the field gets 400 with the
 name of the field. A pod of the release before can still change the field
 during the rollout, and it changes no tuple. The relate job removes the
@@ -1007,6 +1028,59 @@ and a text neither field has a `min`, a `max`, a `min_length`, a
 before the change, with its constraints, in `definition`, such as
 `string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
 a comma.
+
+### Widen an int32 to an int64
+
+A widening from `int32` to `int64` loses no value. From rest-crud 3.264.0
+you can declare it with the same bounds on the two sides, also with no
+`max`, and also for a field that `patchable` names (ST-DECL-Q48):
+
+```yaml
+entities:
+  - name: Item
+    fields:
+      - { name: lead_days, type: int64, min: 0, default: 0 }
+
+schema_changes:
+  - {id: item-lead-days-retype, kind: retype, entity: Item, field: lead_days,
+     from: int32, definition: "int32, min 0, default 0",
+     conversion: integer_to_int64, inverse_conversion: int64_to_integer}
+schema_history:
+  - {change: item-lead-days-retype, phase: expand}
+```
+
+Checking compares the bounds within the range of `int32`, because each side
+holds only such values while the change is open. A missing `min` or `max`
+is the bound of its type. Thus `min 0` and no `max` on the two sides are
+the same bounds, and the inverse conversion `int64_to_integer` is total.
+
+The steps are the steps of each other retype:
+
+1. The release of the expand step adds the column `lead_days_int64` and
+   the sync trigger. Each write of the release before goes to the two
+   columns, and each write of the new release goes back to the old column.
+   The migration job of the new release copies the rows there before the
+   rollout.
+2. While the expand step is open, the new release takes at most
+   2147483647 for the field, in its API and in each command. A larger value
+   gets 400, because the column of the release before cannot hold it. Its
+   OpenAPI document gives `maximum: 2147483647`.
+3. A later release with the contract step drops the old column. That
+   release takes the whole `int64` range, with the bounds that the
+   declaration gives.
+
+The JSON type of the field stays a number. Thus a client of the release
+before keeps working, but only until a value above the `int32` range
+(2147483647) is written. After the contract step, a client that holds the
+field as an `int32`, such as the Go SDK of the release before, cannot read
+a row with such a value: a read of the row fails, and so does each list
+that holds it (walkthrough 27, W-OLD). Do one of these:
+
+- Move each typed client, such as a Go SDK and a TypeScript client, to the
+  release of the expand step before the contract step.
+- Or keep the maximum of the release before (2147483647) in the
+  declaration after the contract step, until all clients use the new
+  release.
 
 The field keeps its name in the API, but its JSON type in the API changes with
 its type: a retype from `int64` to `string` changes the value `14` to `"14"`,

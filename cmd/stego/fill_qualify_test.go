@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/fill"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // The fixtures of Extending's system tests. They run the stego binary from

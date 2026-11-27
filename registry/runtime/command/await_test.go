@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 // amendServe gives the HTTP and the gRPC handler of the command amend, which decides the permission amend on the

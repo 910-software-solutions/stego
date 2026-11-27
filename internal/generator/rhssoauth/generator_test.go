@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestGenerateSharedRuntime(t *testing.T) {

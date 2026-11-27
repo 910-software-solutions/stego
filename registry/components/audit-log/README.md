@@ -1,5 +1,5 @@
 This component generates the audit wiring of a service on the audit runtime
-(github.com/jsell-rh/stego/registry/runtime/audit). It generates only what changes with the
+(github.com/910-software-solutions/stego/registry/runtime/audit). It generates only what changes with the
 declaration:
 
 - the audit settings (level and pii) of the service declaration;

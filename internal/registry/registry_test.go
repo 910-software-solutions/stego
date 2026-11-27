@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/registry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -343,7 +343,7 @@ func TestLoadArchetypeNameMismatch(t *testing.T) {
 	if err := os.MkdirAll(archDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(archDir, "archetype.yaml"), []byte("kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: bar\nversion: 1.0.0\nlanguage: go\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(archDir, "archetype.yaml"), []byte("kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: bar\nversion: 1.0.0\nlanguage: go\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := registry.Load(dir)
@@ -877,7 +877,7 @@ func TestParseErrorLineInfoFromRealYAML(t *testing.T) {
 func TestArchetypeUnmarshal(t *testing.T) {
 	input := `
 kind: archetype
-runtime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
+runtime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}
 name: rest-crud
 language: go
 version: 3.0.0
@@ -1115,7 +1115,7 @@ func TestStrictRegistryDocuments(t *testing.T) {
 		name, input, want string
 		target            any
 	}{
-		{"archetype", "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nconventions: {loging: json}\n", "conventions.loging", &registry.Archetype{}},
+		{"archetype", "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nconventions: {loging: json}\n", "conventions.loging", &registry.Archetype{}},
 		{"component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {port: {type: int, defaut: 8080}}\n", "config.port.defaut", &registry.Component{}},
 		{"nested component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {name: {type: string, optonal: true}}}}\n", "items.name.optonal", &registry.Component{}},
 		{"inline component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {type: string, optonal: true}}}\n", "items.optonal", &registry.Component{}},

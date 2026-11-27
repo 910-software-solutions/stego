@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/fill"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // checkInProcess runs the check of stego validate in this process on a project: the same compiler input that
@@ -27,7 +27,7 @@ func checkInProcess(t *testing.T, project string) []declaration.ValidationError 
 	result, err := compiler.Validate(compiler.ReconcilerInput{
 		ProjectDir: project, RegistryDir: resolved.Dir, RegistryDirs: resolved.Dirs, Generators: defaultGenerators(),
 		GoVersion: goVersion, ModuleName: module, RegistrySHA: resolved.Ref, OutDir: filepath.Join(project, "out"),
-		ReadFill: fill.ReadCollection, ReadFillSlot: fill.ReadImplements, QualifyFills: fill.QualificationFaults,
+		ReadFill: fill.DecodeCollection, ReadFillSlot: fill.DecodeImplements, QualifyFills: fill.QualificationFaults,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	authzschema "github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	authzschema "github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ContractRuntimeImports gives the packages of the runtime library that the command slot contract out/commands
@@ -30,14 +30,14 @@ func ContractRuntimeImports(entities []types.Entity, commands []types.Command) [
 	}
 	var out []string
 	if WritesSensitive(entities, writes) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/audit")
 	}
 	if relations {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/authz")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/authz")
 	}
-	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	out = append(out, "github.com/910-software-solutions/stego/registry/runtime/command")
 	if WritesSecret(entities, writes) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/sealed")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/sealed")
 	}
 	return out
 }
@@ -650,11 +650,20 @@ func renderCheck(w *writer, e *entity) {
 				// A bounded float is finite, as the table CHECK holds (security review of PR #434, I3).
 				rs = append(rs, rule{fmt.Sprintf("!command.Finite(float64(%s))", value), "is not a finite number"})
 			}
-			if d.Min != nil {
-				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*d.Min, 'g', -1, 64)), "less than min " + strconv.FormatFloat(*d.Min, 'g', -1, 64)})
+			// A field that an open retype from int32 widens holds the int32 bounds until the contract step, as the
+			// column of the release before holds no wider value (gen.HeldBounds, ST-DECL-Q48).
+			minimum, maximum := d.Min, d.Max
+			if d.HeldMin != nil {
+				minimum = d.HeldMin
 			}
-			if d.Max != nil {
-				rs = append(rs, rule{fmt.Sprintf("float64(%s) > %s", value, strconv.FormatFloat(*d.Max, 'g', -1, 64)), "more than max " + strconv.FormatFloat(*d.Max, 'g', -1, 64)})
+			if d.HeldMax != nil {
+				maximum = d.HeldMax
+			}
+			if minimum != nil {
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*minimum, 'g', -1, 64)), "less than min " + strconv.FormatFloat(*minimum, 'g', -1, 64)})
+			}
+			if maximum != nil {
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) > %s", value, strconv.FormatFloat(*maximum, 'g', -1, 64)), "more than max " + strconv.FormatFloat(*maximum, 'g', -1, 64)})
 			}
 		}
 		if len(rs) > 0 {

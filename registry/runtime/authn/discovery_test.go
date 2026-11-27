@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 )
 
 // issuerPath is the path of the test issuer on the key server.

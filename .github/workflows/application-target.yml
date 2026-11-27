@@ -61,7 +61,7 @@ jobs:
         working-directory: .
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          repository: jsell-rh/stego
+          repository: 910-software-solutions/stego
           ref: ${{ env.COMPILER_REVISION }}
           persist-credentials: false
           path: compiler
@@ -194,7 +194,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          repository: jsell-rh/stego
+          repository: 910-software-solutions/stego
           ref: ${{ env.COMPILER_REVISION }}
           persist-credentials: false
       - name: Retrieve only the records from the selected build job
@@ -227,7 +227,7 @@ jobs:
           policy = {
               'format': 2, 'repository': os.environ['GITHUB_REPOSITORY'],
               'reference': os.environ['GITHUB_REF'],
-              'signer_repository': 'jsell-rh/stego', 'signer_workflow': '.github/workflows/application-target.yml',
+              'signer_repository': '910-software-solutions/stego', 'signer_workflow': '.github/workflows/application-target.yml',
               'signer_revision': os.environ['SELECTED_SIGNER_REVISION'],
               'revision': os.environ['GITHUB_SHA'], 'compiler_revision': os.environ['COMPILER_REVISION'],
               'compiler_sha256': os.environ['COMPILER_SHA256'],

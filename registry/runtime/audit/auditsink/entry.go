@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 // The kinds of entry that a sink stores or sends.

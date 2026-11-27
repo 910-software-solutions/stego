@@ -21,9 +21,9 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
 )
 
 // pinWallet is a test entity with a compare-only PIN with a limit of wrong attempts, as the generated code declares it
@@ -1912,6 +1912,134 @@ func TestAttemptResetChecksDecided(t *testing.T) {
 		})
 		if err == nil || errors.Is(err, errWrongPIN) || charges.Load() != 0 {
 			t.Fatalf("a check of a from b with a counter of no Reset that unlock resets gave %v and charged %d checks, want an internal error and none", err, charges.Load())
+		}
+	})
+}
+
+func TestAttemptsPurge(t *testing.T) {
+	const walletID, otherID, right = "0198a1b2-0000-7000-8000-0000000000d1", "0198a1b2-0000-7000-8000-0000000000d2", "4711"
+	e := newEnv(t)
+	pinWallets(t, e, walletID, right)
+	if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO pin_wallets (tenant_id, id, balance, pin) SELECT 't1', $1, 5, pin FROM pin_wallets WHERE id = $2`, otherID, walletID); err != nil {
+		t.Fatal(err)
+	}
+	wallets := pinWalletEntity(t)
+	rt := e.runtime(func(c *Config) { c.Entities = []Declared{wallets} })
+	cmd := e.command("close-wallet", nil, wallets)
+	counts := func(tenantID, rowID string) map[string]int {
+		t.Helper()
+		rows, err := e.admin.QueryContext(e.ctx, `SELECT counter, checks FROM attempt_counts WHERE tenant_id = $1 AND row_id = $2`, tenantID, rowID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[string]int{}
+		for rows.Next() {
+			var counter string
+			var checks int
+			if err := rows.Scan(&counter, &checks); err != nil {
+				t.Fatal(err)
+			}
+			out[counter] = checks
+		}
+		return out
+	}
+	// The counts of each wallet in t1 and t2, and a count of another entity's counter under the same row ID, as the
+	// charges and a release before leave them (ST-SUP-RP10-LC54).
+	for _, row := range [][3]string{{"t1", "PinWallet.pin", walletID}, {"t1", "PinWallet.pin", otherID}, {"t1", "PinCard.pin", walletID},
+		{"t2", "PinWallet.pin", walletID}} {
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO attempt_counts (tenant_id, counter, row_id, checks, failures) VALUES ($1, $2, $3, 2, 4)`, row[0], row[1], row[2]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remove := func(key string, fail error) error {
+		_, err := e.runOn(rt, cmd, e.request("t1", u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.GetForDelete(ctx, walletID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if err := r.Delete(ctx, w); err != nil {
+				return idempotency.Response{}, err
+			}
+			return ok, fail
+		})
+		return err
+	}
+	t.Run("ST-SUP-RP10-LC54-T24 A delete of a row deletes the counts of its counters in its transaction, and a delete that rolls back keeps them", func(t *testing.T) {
+		failed := errors.New("refused after the delete")
+		if err := remove("close-1", failed); !errors.Is(err, failed) {
+			t.Fatalf("the delete that fails after its statement gave %v, want the failure", err)
+		}
+		if got := counts("t1", walletID); got["PinWallet.pin"] != 2 {
+			t.Fatalf("a delete that rolled back left the counts %v, want the count of PinWallet.pin kept", got)
+		}
+		if err := remove("close-2", nil); err != nil {
+			t.Fatalf("the delete: %v", err)
+		}
+		if got := counts("t1", walletID); len(got) != 1 || got["PinCard.pin"] != 2 {
+			t.Fatalf("after the delete the row has the counts %v, want only the count of the other entity's counter", got)
+		}
+		if got := counts("t1", otherID); got["PinWallet.pin"] != 2 {
+			t.Fatalf("the delete changed the counts %v of another row", got)
+		}
+		if got := counts("t2", walletID); got["PinWallet.pin"] != 2 {
+			t.Fatalf("the delete changed the counts %v of the same row ID in another tenant", got)
+		}
+	})
+	// recreate deletes the wallet otherID and creates it again with the same ID in one fill, with the PIN that the
+	// read gave or with a new PIN.
+	recreate := func(key string, pin func(old sealed.Compared) sealed.Compared) error {
+		_, err := e.runOn(rt, cmd, e.request("t1", u7(t), key, `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			r, err := Repo(h, wallets)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			w, err := r.GetForDelete(ctx, otherID)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if err := r.Delete(ctx, w); err != nil {
+				return idempotency.Response{}, err
+			}
+			v := w.Value()
+			v.PIN = pin(v.PIN)
+			if _, err := r.Create(ctx, v); err != nil {
+				return idempotency.Response{}, err
+			}
+			return ok, nil
+		})
+		return err
+	}
+	hash := func() string {
+		t.Helper()
+		var stored string
+		if err := e.admin.QueryRowContext(e.ctx, `SELECT pin FROM pin_wallets WHERE tenant_id = 't1' AND id = $1`, otherID).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	t.Run("ST-SUP-RP10-LC54-T25 A delete and a create of the same ID in one command cannot carry the stored PIN of a locked row to a count of 0", func(t *testing.T) {
+		// The wallet otherID is locked: its count is at the cap of its failures (FailureCap(3) = 30).
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE attempt_counts SET checks = 3, failures = 27 WHERE tenant_id = 't1' AND counter = 'PinWallet.pin' AND row_id = $1`, otherID); err != nil {
+			t.Fatal(err)
+		}
+		before := hash()
+		if err := recreate("carry-1", func(old sealed.Compared) sealed.Compared { return old }); err == nil {
+			t.Fatal("a create of the deleted ID with the PIN that the read gave committed")
+		}
+		if got := counts("t1", otherID); got["PinWallet.pin"] != 3 || hash() != before {
+			t.Fatalf("after the refused re-create the count is %v and the hash changed %v; want the count 3 and the same hash", got, hash() != before)
+		}
+		// A re-create with a new PIN gives the row a new value, as a new PIN does: its count is 0.
+		if err := recreate("carry-2", func(sealed.Compared) sealed.Compared { return sealed.ComparedOf("2468") }); err != nil {
+			t.Fatalf("a re-create with a new PIN: %v", err)
+		}
+		if got := counts("t1", otherID); len(got) != 0 || hash() == before {
+			t.Fatalf("after the re-create with a new PIN the counts are %v and the hash is the same %v; want no count and a new hash", got, hash() == before)
 		}
 	})
 }

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
 )
 
 func put(t *testing.T, root, name, value string) {

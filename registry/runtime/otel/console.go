@@ -16,7 +16,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/logline"
 )
 
 // The bounds of the console lines of the log provider (ST-SUP-RP03-LC16).

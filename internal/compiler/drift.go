@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // DriftedFile represents a generated file that has been modified or deleted

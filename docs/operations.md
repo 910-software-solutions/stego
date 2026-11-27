@@ -19,7 +19,17 @@ probe runtime and the console of the log provider write on standard output.
 
 From runtime v0.195.0 (rest-crud 3.261.0, rpc-service and browser-service
 1.261.0), each line of the runtime has one form. A query that reads one
-member reads it on each line. A line holds these members, in this order:
+member reads it on each line.
+During the rollout to this release, the pods of the old release still write
+the old shapes: the fields of an access line at the top level, the fields of
+a worker event under `fields` with no prefix, and a timestamp with the offset
+of the local zone, such as `-05:00`. Until the last pod of the old release
+stops, make each query read both shapes, such as `attributes."http.route"`
+or `http.route`, and `attributes."stego.worker"` or `fields.worker`. Compare
+the times as instants, not as text. After the old release stops, remove the
+old shape from the query.
+
+A line holds these members, in this order:
 
 | Member | Value | On each line |
 |---|---|---|
@@ -67,7 +77,7 @@ the keys under `attributes`:
 
 | Event | When | Fields | Severity |
 |---|---|---|---|
-| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. A request that the authentication refuses (401) before the router has no `http.route`, and a path that no route matches has none too. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
+| `http.server.request.completed` | Each HTTP request, with or without a collector | `http.request.method`, `http.route` (the route template, such as `/orders/{id}`, or `/jobs/{job_id}/status:convert` for a declared command route), `http.response.status_code`, `stego.duration_seconds`, `error.type` for a status of 500 or more. The router sets `http.route`, so an answer that comes before the router has no `http.route`, also on a path that a route matches: a 401 of the authentication; a 403 `tenant.not_provisioned` and a 503 of the tenant check, such as when the database takes no connection; a 503 of a process that does not run the api mode; and a 400 or 413 of the request check of a collection body, such as a body that is not JSON or a missing `Idempotency-Key` (walkthrough 27, R-ROUTE). A path that no route matches has none too. To find such lines of one route, filter on the status and the method. | INFO for a normal status, WARN for 400 to 499, ERROR for 500 or more |
 | `rpc.server.call.completed` | Each gRPC call | `rpc.method`, `rpc.response.status_code`, `stego.duration_seconds`, `error.type` for a server failure | INFO for OK, ERROR for a server failure, WARN for other codes |
 | `command.refused` | A command that answers 400 to 499, such as a declared refusal | `stego.action`, `stego.resource_type`, `stego.status`, `stego.code` (such as `shipment.not_draft`, `denied` or `invalid`), `stego.field` when the refusal names one | INFO |
 | `worker.run.completed` | A worker run that committed: the run of one tenant in a tick, or one consumed message | `stego.worker` | INFO |
@@ -93,6 +103,44 @@ Each database call writes `db.client.operation.completed`. A call that does
 not fail is DEBUG, so it shows only at the level `debug`. A call that fails is
 ERROR. A request makes several database calls, so the access line of the
 request is the INFO line.
+
+### Alert on a full disk or no memory of the database
+
+When the database cannot serve a command now, the command answers 503 with
+`Retry-After`, and the runtime writes one WARN line
+`command.database.unavailable` for each action and step in 10 seconds. The
+line has `stego.action`, `stego.step` and `stego.sqlstate_class`: the class
+of the SQLSTATE only, never the full code and never the message. From runtime
+v0.202.0 (rest-crud 3.269.0, rpc-service and browser-service 1.269.0):
+
+| `stego.sqlstate_class` | Cause | Action |
+|---|---|---|
+| `53` | The server has no resources: a full disk (53100), no memory (53200) or too many connections (53300). | Page the database operator. A retry does not help until the operator adds disk or memory, or lowers the load. |
+| `57` | The server shuts down or restarts, such as for a failover (57P01, 57P03). | Wait for the failover. Page when the lines continue past it. |
+| `08` | A connection was lost or refused by the server. | Look at the network and at the server. |
+| `55` | The database takes no new connection, such as after `ALTER DATABASE ... ALLOW_CONNECTIONS false`. | See the runbook line on an interrupted tenant-database delete below. |
+| `none` | No SQLSTATE, such as a refused TCP connection or a lost socket. | Look at the network and at the server. |
+
+Make an alert on `event.name` `command.database.unavailable` with
+`attributes."stego.sqlstate_class"` `53` a page of its own. A disk or memory
+fault does not end when the clients retry, and the 503 lines alone look like
+an outage. The volume of the database and the memory of its host also need
+alerts of their own in the database platform, so that the operator acts
+before the class 53 lines start.
+
+### An interrupted tenant-database delete
+
+The delete of a tenant database (`DeleteDatabase` of `postgres-client`) sets
+`ALLOW_CONNECTIONS false` on the database before it drops it. When the delete
+stops between the two steps, such as for a lost connection or a stopped
+process, the database stays, and it takes no new connection. Each client of
+that database then gets 503 with `Retry-After`, with
+`stego.sqlstate_class` `55` on the WARN line, until an operator acts. A retry
+of the client does not help.
+
+To end it, run the delete again: it reads its ledger, finds the state
+`deleting` and continues. Do not set `ALLOW_CONNECTIONS true` by hand on a
+database whose ledger row is `deleting`.
 
 No line holds a value of a request: no path value, query, header, body,
 token, tenant, principal, resource ID or error text. The route is the
@@ -331,7 +379,7 @@ key set, and it loads the key set again in these cases:
   no load succeeded in 15 minutes, the pod refuses each token.
 
 The runtime version of your service is in the line
-`github.com/jsell-rh/stego/registry/runtime` of its `go.mod`.
+`github.com/910-software-solutions/stego/registry/runtime` of its `go.mod`.
 
 A browser service loads the key set of the issuer again when a token names an
 unknown key ID.
@@ -756,6 +804,58 @@ Do these steps in this order:
 9. Start the api Deployment: scale it back, or start the sync of Argo CD again.
 10. Do the checks below for the outbox, SpiceDB and the audit sink.
 
+### Drill a restore beside the live database
+
+A drill proves that the backup and the backup of the key ring open together.
+It restores the dump into a second database of the same server, and it does
+not stop the service.
+
+1. Make the drill database, owned by the owner role, and restore the dump
+   into it with no `--create`:
+
+   ```sh
+   psql -v ON_ERROR_STOP=1 -c 'CREATE DATABASE <service>_drill OWNER <service>_owner' postgres
+   pg_restore --no-owner --role=<service>_owner --dbname=<service>_drill <service>.dump
+   ```
+
+2. Copy the environment of the worker Deployment. Change only the database
+   name in `DATABASE_URL` and the other database URLs to `<service>_drill`,
+   and set `STEGO_SECRET_KEY_RING_FILE` to the backup of the key ring.
+3. Start one process of the release with `--mode=controller` alone, on a
+   host or pod that no Service and no client reaches. Do not start
+   `--mode=worker`: its relay would send the outbox of the dump to SpiceDB
+   and Kafka of the live service.
+4. Wait for the line `command.reseal.pass` of each secret column. The
+   controller runs the re-seal job at start. The job opens each value that
+   is not on the first key of the ring, and seals it again:
+   - `failed=0` and `moved` plus `left` equal to the values on earlier keys:
+     the ring opens the dump. When each value of the dump is on the first
+     key, the job moves nothing. Then put the key of the dump second in a
+     copy of the ring with a new first key, and run the drill again.
+   - `failed` above 0, with `command.reseal.skipped` for each row that does
+     not open (or `command.reseal.unopened` with the count after the first
+     three): the ring does not hold the key of those values. The backup of the
+     ring is not usable with this dump.
+
+   For a negative proof, run the drill again with a ring that does not hold
+   the key of the dump. Each value then counts in `failed`.
+5. Stop the process, and drop the drill database:
+
+   ```sh
+   psql -v ON_ERROR_STOP=1 -c 'DROP DATABASE <service>_drill' postgres
+   ```
+
+The drill process logs `service.schema_manifest.fault` with the classes
+`owner` and `trigger`, such as `function stego_outbox.claim has another
+owner`. These faults are expected in the drill. `pg_restore --no-owner`
+gives each object to the role of `--role`, but the schema manifest wants
+some functions owned by other roles of the service, such as the relay role.
+The process starts, and the migration Job would refuse that database. The
+faults do not change the result of the re-seal job. Do not run the
+migration Job on the drill database, and do not use a drill database as the
+database of the service: for a real restore, use `--create` as in
+[Restore](#restore).
+
 ### The offsets of a consumer group
 
 Each subscription has a consumer group of its own, so reset the group of each
@@ -861,6 +961,8 @@ rule when you make release N: it refuses a change that cannot run beside its
 base on a database with rows. Nothing checks a rollback of two or more
 releases. Such a rollback can start, but a contract step of a later release
 can remove what the older release uses.
+
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
 
 At start, a pod reads the migration ledger. It accepts a ledger row of a
 newer release only when the row is a schema step and the pod holds each

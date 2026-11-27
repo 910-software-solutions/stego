@@ -40,17 +40,17 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 
 	"example.com/crud/out/api"
 	"example.com/crud/out/slots"
@@ -1869,6 +1869,47 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC06-T03 A create, its replay, a read, a list, an update and a patch answer an int64 above 2^53 and the int64 bounds exactly", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		// tally reads the member as its JSON text: a float64 of 9007199254740993 is 9007199254740992 (walkthrough 27,
+		// W-PREC).
+		tally := func(what string, r reply, want string) {
+			t.Helper()
+			if r.status != http.StatusOK && r.status != http.StatusCreated {
+				t.Fatalf("%s answered %d %s, want 200 or 201", what, r.status, r.body)
+			}
+			var members map[string]json.RawMessage
+			if err := json.Unmarshal(r.body, &members); err != nil || string(members["tally"]) != want {
+				t.Errorf("%s answered tally %s in %s, want %s", what, members["tally"], r.body, want)
+			}
+		}
+		for _, value := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+			key := "k-" + uuid.NewString()
+			created := e.send(a, http.MethodPost, "/api/v1/todos", key, `{"title":"big","tally":`+value+`}`)
+			tally("the create of "+value, created, value)
+			// The second request of the key gets the stored response, which holds the value exactly too.
+			tally("the replay of the create of "+value, e.send(a, http.MethodPost, "/api/v1/todos", key, `{"title":"big","tally":`+value+`}`), value)
+			id := created.member(t, "id")
+			e.own(a, "todo", id)
+			if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND tally = $2::bigint`, id, value); n != 1 {
+				t.Errorf("%d rows with the tally %s, want 1", n, value)
+			}
+			tally("the read of "+value, e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""), value)
+			tally("the update of "+value, e.send(a, http.MethodPut, "/api/v1/todos/"+id, "", `{"title":"put","tally":`+value+`}`), value)
+			tally("the patch of "+value, e.send(a, http.MethodPatch, "/api/v1/todos/"+id, "k-"+uuid.NewString(), `{"title":"patched"}`), value)
+		}
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		selected := e.send(a, http.MethodGet, "/api/v1/todos?fields=tally", "", "")
+		for what, r := range map[string]reply{"the list": list, "the list with fields=tally": selected} {
+			for _, value := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+				if r.status != http.StatusOK || !strings.Contains(string(r.body), `"tally":`+value+`,`) && !strings.Contains(string(r.body), `"tally":`+value+`}`) {
+					t.Errorf("%s answered %d %s, want the tally %s exactly", what, r.status, r.body, value)
+				}
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
@@ -3320,6 +3361,47 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		// A caller who may not edit the row gets 404, as for any update, and not the 400 of a kept field.
 		if r := e.send(other, http.MethodPut, path, "", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":"s2"}`); r.status != http.StatusNotFound {
 			t.Errorf("an update of a caller who may not edit the row answered %d %s, want 404", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC44-T03 A kept jsonb field compares its numbers exactly, so a value that differs only above 2^53 is refused", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","meta":{"n":9007199254740993,"list":[1,2.5]}}`)
+		path := "/api/v1/tickets/" + id
+		stored := func(what string) {
+			t.Helper()
+			if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND meta = '{"n":9007199254740993,"list":[1,2.5]}'::jsonb`, id); n != 1 {
+				t.Errorf("%s: %d ticket rows that keep the created meta, want 1", what, n)
+			}
+		}
+		// A float64 holds 9007199254740992 and 9007199254740993 as one value; the check must not.
+		for _, c := range []struct{ method, meta string }{
+			{http.MethodPut, `{"n":9007199254740992,"list":[1,2.5]}`},
+			{http.MethodPut, `{"n":9007199254740994,"list":[1,2.5]}`},
+			{http.MethodPut, `{"n":9007199254740993,"list":[1,2.500000000000000001]}`},
+			{http.MethodPut, `{"n":"9007199254740993","list":[1,2.5]}`},
+			{http.MethodPatch, `{"n":9007199254740992,"list":[1,2.5]}`},
+		} {
+			body := `{"folder_id":"` + folder + `","code":"c1","title":"changed","sku":"s1","meta":` + c.meta + `}`
+			key := ""
+			if c.method == http.MethodPatch {
+				body, key = `{"title":"changed","meta":`+c.meta+`}`, "k-"+uuid.NewString()
+			}
+			r := e.send(a, c.method, path, key, body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"meta"`) {
+				t.Errorf("a %s with meta %s answered %d %s, want 400 that names meta", c.method, c.meta, r.status, r.body)
+			}
+			stored("after a " + c.method + " with meta " + c.meta)
+		}
+		// The same value in another form is the stored value.
+		for _, meta := range []string{`{"list":[1.0,25e-1],"n":9007199254740993}`, `{"n":9.007199254740993e15,"list":[10e-1,2.50]}`} {
+			r := e.send(a, http.MethodPut, path, "", `{"folder_id":"`+folder+`","code":"c1","title":"kept","sku":"s1","meta":`+meta+`}`)
+			if r.status != http.StatusOK {
+				t.Errorf("an update with meta %s, the stored value in another form, answered %d %s, want 200", meta, r.status, r.body)
+			}
+			stored("after an update with meta " + meta)
 		}
 	})
 

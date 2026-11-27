@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // userManagementBase reads the declaration of ST-GEN-TD01, examples/user-management, and a record that names it.
@@ -927,7 +927,7 @@ func TestBaseUniqueOfField(t *testing.T) {
 				t.Errorf("runtime %q: the faults are %+v, want one of %s that names %s and the change", runtime, faults, StepLedgerRule, UniqueRuntimeVersion)
 			}
 		}
-		for _, runtime := range []string{UniqueRuntimeVersion, "v0.196.0"} {
+		for _, runtime := range []string{UniqueRuntimeVersion, "v0.203.0"} {
 			if faults := uniqueRuntimeFaults(applied(runtime), base, head); len(faults) != 0 {
 				t.Errorf("runtime %s: refused: %+v", runtime, faults)
 			}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/fill"
 )
 
 // changeRegistryComment gives the project a copy of the built-in registry

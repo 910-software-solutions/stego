@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // selection is one infrastructure component that a declared setting implies (ST-GEN-INV37), with the setting that
@@ -71,7 +72,8 @@ const acceptanceDate = "2006-01-02"
 // acceptanceFault is the one rule of an experimental acceptance (ST-DECL-EN07): a component whose stage is not ga
 // reaches a service only when the declaration accepts it by name, with an acceptance whose date is a date, has not
 // run out, which it holds to the end of its date in UTC, and is not later than the sunset of the component
-// (ST-DECL-INV15). It gives nil for a ga component and for an acceptance that holds, and else the fault: at path when
+// (ST-DECL-INV15, which Declaring holds in declaration.AcceptanceOutlivesSunset; the compiler gives it the sunset of
+// the component from the registry). It gives nil for a ga component and for an acceptance that holds, and else the fault: at path when
 // the declaration does not accept the component, and at experimental_acceptances when its acceptance does not hold.
 // reached says how the component reaches the service, in the words of the message, such as "the tenancy setting
 // selects the component tenancy".
@@ -94,7 +96,7 @@ func acceptanceFault(svc *types.ServiceDeclaration, name string, component *regi
 	case !validDate(accepted.AcceptedUntil) || accepted.AcceptedUntil < today:
 		return &ValidationError{Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
 			Message: fmt.Sprintf("%s, which is %s, and its experimental acceptance until %q has run out or is not a date; %s", reached, component.Stage, accepted.AcceptedUntil, add)}
-	case validDate(component.Sunset) && accepted.AcceptedUntil > component.Sunset:
+	case declaration.AcceptanceOutlivesSunset(accepted.AcceptedUntil, component.Sunset):
 		return &ValidationError{Category: "component", Rule: "experimental-acceptance", Path: "experimental_acceptances", Found: accepted.AcceptedUntil,
 			Message: fmt.Sprintf("%s, which is %s, and its experimental acceptance until %s is later than its sunset %s (ST-DECL-INV15); %s", reached, component.Stage, accepted.AcceptedUntil, component.Sunset, add)}
 	}

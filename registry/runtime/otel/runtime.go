@@ -41,8 +41,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/oteldeadline"
-	"github.com/jsell-rh/stego/registry/runtime/internal/spanevent"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/oteldeadline"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/spanevent"
 )
 
 // The export limits of ST-SUP-RP03-LC10.

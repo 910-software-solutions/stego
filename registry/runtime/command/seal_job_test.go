@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // note is a test entity with a readable secret, body, whose seal step is open: the field is in the clear column

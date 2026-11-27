@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"

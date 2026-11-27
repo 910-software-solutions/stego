@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/mod/sumdb/note"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/appbuild/proxytest"
+	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
 )
 
 // The proofs of the local stand-ins of proxy.golang.org and sum.golang.org that the tests of Building use

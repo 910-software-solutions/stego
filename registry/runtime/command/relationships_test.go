@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 // relationshipEntity is the order entity of the reference tests with two declared relationships and no reference:

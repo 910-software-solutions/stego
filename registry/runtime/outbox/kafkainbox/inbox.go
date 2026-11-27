@@ -23,14 +23,14 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // instrumentation names the logger and the meter of the inbox.
-const instrumentation = "github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
+const instrumentation = "github.com/910-software-solutions/stego/registry/runtime/outbox/kafkainbox"
 
 // The bounds of the inbox.
 const (

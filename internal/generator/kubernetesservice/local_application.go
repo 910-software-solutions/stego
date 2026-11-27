@@ -1,7 +1,7 @@
 package kubernetesservice
 
 import (
-	"github.com/jsell-rh/stego/internal/browserapplication"
+	"github.com/910-software-solutions/stego/internal/browserapplication"
 	"strconv"
 )
 

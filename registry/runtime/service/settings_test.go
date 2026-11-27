@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // secretValue is in the value of each setting of the test, so a refusal that shows a value shows it.

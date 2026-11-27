@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
@@ -330,7 +330,7 @@ func generateService(t *testing.T, ctx gen.Context) *service {
 		t.Fatal(err)
 	}
 	s := &service{t: t, dir: t.TempDir()}
-	s.write("go.mod", "module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.0.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n")
+	s.write("go.mod", "module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.0.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n")
 	sum, err := os.ReadFile(filepath.Join(runtimeDir, "go.sum"))
 	if err != nil {
 		t.Fatal(err)

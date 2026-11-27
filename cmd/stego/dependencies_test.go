@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/registry"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
 )
@@ -306,7 +306,7 @@ func TestDependenciesFollowTheCapturedSource(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			mustRun(t, runDependencies)
 			localtest.CheckSums(t, ".")
-		localtest.CheckSums(t, ".")
+			localtest.CheckSums(t, ".")
 			module, _ := moduleFiles(t)
 			if i == 0 {
 				first = module
@@ -442,8 +442,8 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 		// A go build before stego deps asks for the go.sum entry of the runtime's go.mod, as the fifth walkthrough
 		// found. With it, go list loads the module graph, which needs more than the go.mod of the first apply holds.
 		// The download reads the runtime pin from the registry's runtime folder, so the test needs no published tag.
-		download := exec.Command("go", "mod", "download", "github.com/jsell-rh/stego/registry/runtime")
-		download.Env = append(os.Environ(), "GOPROXY="+runtimeProxy(t)+",off", "GONOSUMDB=github.com/jsell-rh/stego/registry/runtime", "GOFLAGS=-mod=mod")
+		download := exec.Command("go", "mod", "download", "github.com/910-software-solutions/stego/registry/runtime")
+		download.Env = append(os.Environ(), "GOPROXY="+runtimeProxy(t)+",off", "GONOSUMDB=github.com/910-software-solutions/stego/registry/runtime", "GOFLAGS=-mod=mod")
 		if output, err := download.CombinedOutput(); err != nil {
 			t.Fatalf("go mod download: %v\n%s", err, output)
 		}

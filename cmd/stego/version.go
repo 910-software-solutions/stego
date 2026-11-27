@@ -1,6 +1,6 @@
 package main
 
-import "github.com/jsell-rh/stego/internal/buildidentity"
+import "github.com/910-software-solutions/stego/internal/buildidentity"
 
 // compilerIdentity is the identity of the running compiler (ST-DIS-RM04): its version and its build identity.
 type compilerIdentity struct {

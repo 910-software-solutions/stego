@@ -8,7 +8,7 @@ import (
 	"path"
 	"slices"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // declaredModes gives the modes that a declaration states, in the order api, worker, controller, each once; all three

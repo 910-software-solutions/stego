@@ -14,14 +14,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/command"
-	"github.com/jsell-rh/stego/internal/generator/query"
-	"github.com/jsell-rh/stego/internal/generator/restapi"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/command"
+	"github.com/910-software-solutions/stego/internal/generator/query"
+	"github.com/910-software-solutions/stego/internal/generator/restapi"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // archFixtureSchema holds every kind of grant path: an arrow, a userset, a caveat, an intersection, an exclusion, a
