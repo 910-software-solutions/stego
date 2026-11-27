@@ -54,6 +54,8 @@ entities:
     fields:
       - { name: name, type: string, min_length: 1, max_length: 120 }
       - { name: email, type: string, max_length: 255, sensitivity: pii }
+      - { name: notes, type: string, optional: true, max_length: 4000 }
+      - { name: code, type: string, optional: true, max_length: 40, searchable: false }
     events:
       fields: [name, email]
       pii_reasons: {email: the ledger sends each customer a receipt}
@@ -434,7 +436,7 @@ that names it gets 400 with a detail that names the field.
 <!-- excerpt -->
 ```yaml
       - { name: notes, type: string, optional: true, max_length: 4000 }
-      - { name: code, type: string, max_length: 40, searchable: false }
+      - { name: code, type: string, optional: true, max_length: 40, searchable: false }
 ```
 
 A running service whose release before postgres-adapter 6.33.0 built a
