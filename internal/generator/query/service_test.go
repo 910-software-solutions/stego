@@ -22,7 +22,12 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // The service test of the generated query component: testdata/query_test.go runs in the module of the generated
 // test service, with the fills of testdata/fills, against a local PostgreSQL server and a local SpiceDB container.
@@ -32,9 +37,6 @@ var serviceTests []byte
 
 //go:embed testdata/schema.zed
 var serviceSchema []byte
-
-// spiceDBImage is the pinned SpiceDB image of the authorization runtime's tests.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
 
 // pinnedGo is the Go command that builds the generated service: STEGO_TEST_PINNED_GO, else bin/go of the SDK that
 // runs the test.
@@ -50,7 +52,7 @@ func goCommand(t *testing.T, project string, env []string, args ...string) strin
 	t.Helper()
 	cmd := exec.Command(pinnedGo(), args...)
 	cmd.Dir = project
-	cmd.Env = append(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local"), env...)
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, env...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go %v: %v\n%s", args, err, output)
@@ -136,34 +138,22 @@ func shopProject(t *testing.T) string {
 	write("go.mod", []byte("module "+shopModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.206.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
 	goCommand(t, project, nil, "mod", "tidy")
+	localtest.CheckSums(t, project)
 	goCommand(t, project, nil, "vet", "./...")
 	goCommand(t, project, nil, "build", "./...")
 	return project
 }
 
-// startSpiceDB starts the pinned SpiceDB image in serve-testing mode, without privilege, and gives its gRPC endpoint
-// and a preshared key. The container is removed when the test ends.
+// startSpiceDB starts the SpiceDB container of localtest (ST-STD-LOCAL-R04) in serve-testing mode and gives its gRPC
+// endpoint and a preshared key. localtest runs it without privilege and with limits, and removes it when the test
+// ends.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: the service test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
 		t.Fatal(err)
 	}
-	name := "stego-query-spicedb-" + hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::50051", spiceDBImage, "serve-testing")
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("start the SpiceDB container: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-	if err != nil {
-		t.Fatalf("read the port of the SpiceDB container: %v", err)
-	}
-	return strings.TrimSpace(strings.Split(string(out), "\n")[0]), "query-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve-testing"), "query-" + hex.EncodeToString(suffix)
 }
 
 // testEvent is one line of go test -json.
@@ -183,17 +173,11 @@ func TestService(t *testing.T) {
 		checkSlotTypes(t, project)
 	})
 
-	dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("the service test requires STEGO_TEST_POSTGRES_DSN")
-		}
-		t.Skip("STEGO_TEST_POSTGRES_DSN is not set")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	endpoint, key := startSpiceDB(t)
 	cmd := exec.Command(pinnedGo(), "test", "-json", "-count=1", "-timeout=300s", "-run", "^TestService$", "./e2e")
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local",
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod", postgres,
 		"STEGO_TEST_SPICEDB_ENDPOINT="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
 	output, _ := cmd.CombinedOutput()
 	passed, log := map[string]bool{}, map[string]*bytes.Buffer{}

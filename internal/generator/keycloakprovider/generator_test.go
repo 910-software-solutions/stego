@@ -22,7 +22,11 @@ import (
 	"github.com/910-software-solutions/stego/internal/generator/httpclient"
 	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/provider", OutDirName: "out", OutputNamespace: "keycloak", AuthPackage: "example.com/provider/out/auth", PeerNamespaces: map[string]string{"http-application": "application", "jwt-auth": "auth"}}
@@ -239,15 +243,18 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 		t.Fatal(err)
 	}
 	{
+		// The module cache is filled once, before the time limit of the command starts.
+		localtest.RequireModules(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		output, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
 			t.Fatalf("provider dependencies: %v\n%s", err, output)
 		}
+		localtest.CheckSums(t, project)
 	}
 	budget := 60 * time.Second
 	args := []string{"test", "-p=1", "-race", "-count=1", "-timeout=30s", "-v"}
@@ -262,7 +269,7 @@ func ProviderTestRuntime()(*Runtime,*tracetest.SpanRecorder){
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", append(args, "./...")...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	output, err := cmd.CombinedOutput()
 	if live {
 		if destination := os.Getenv("STEGO_KEYCLOAK_PROVIDER_ARTIFACTS"); destination != "" {

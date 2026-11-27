@@ -7,6 +7,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/httpclient"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 	"strings"
 	"testing"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/http_diagnostics_test.go
 var httpDiagnosticTests []byte
@@ -161,7 +165,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	for _, args := range commands {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("generated tracing %v: %v\n%s", args, err, output)
 		} else if controllerCheck && args[0] == "test" {
@@ -175,11 +179,14 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 			}
 			t.Logf("generated controller trace results:\n%s", output)
 		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
+		}
 	}
 	if os.Getenv("STEGO_BENCH_DATABASE") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkDatabaseSignals$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("database benchmark: %v %s", err, output)
@@ -189,7 +196,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	if os.Getenv("STEGO_BENCH_CLIENT") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^Benchmark(ClientSignals|HTTPClientSignals|HTTPTracing|CommandSignals)$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("client benchmark: %v %s", err, output)
@@ -199,7 +206,7 @@ func testGeneratedTracing(t *testing.T, pattern string) {
 	if os.Getenv("STEGO_BENCH_TRACING") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^Benchmark(HTTPTracing|RequestSignals|ServiceLogs|ControllerSignals)$", "-benchtime=200ms", "-count=3", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("tracing benchmark: %v %s", err, output)

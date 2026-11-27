@@ -10,6 +10,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -66,7 +67,7 @@ func TestProtobufPackageDirectoriesCanBeImported(t *testing.T) {
 			}
 			command := exec.Command("go", "build", "-mod=mod", "./...")
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("protobuf import failed: %v\n%s", err, output)
 			}

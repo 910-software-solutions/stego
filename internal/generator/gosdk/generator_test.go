@@ -14,7 +14,11 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 const sample = `openapi: 3.0.3
 info: {title: Sample, version: '1'}
@@ -258,7 +262,7 @@ func testGeneratedSDK(t *testing.T, traced bool) {
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-json", "-race", "-count=1", "-timeout=60s", "./..."}, {"vet", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		output, err := cmd.Output()
@@ -292,6 +296,7 @@ func testGeneratedSDK(t *testing.T, traced bool) {
 			t.Log("generated SDK passed HTTPS, status, and nullable exchange checks")
 		}
 	}
+	localtest.CheckSums(t, root)
 }
 
 const runtimeTest = `package sdk
@@ -605,10 +610,11 @@ func TestPrintedSecretMember(t *testing.T) {
 		for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}, {"test", "-count=1", "-run", "TestRedaction", "./sdk/"}} {
 			cmd := exec.Command("go", args...)
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "GOWORK=off")
+			cmd.Env = localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("go %s: %v\n%s", args[0], err, output)
 			}
+			localtest.CheckSums(t, root)
 		}
 	})
 }

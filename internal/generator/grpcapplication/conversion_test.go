@@ -10,7 +10,11 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func TestGeneratedTimestampConversions(t *testing.T) {
 	for _, namespace := range []string{"grpcapi", "rpc/provider"} {
@@ -56,7 +60,7 @@ func TestGeneratedTimestampConversions(t *testing.T) {
 			for _, args := range [][]string{{"mod", "tidy"}, {"test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./..."}} {
 				command := exec.Command("go", args...)
 				command.Dir = project
-				command.Env = append(os.Environ(), "GOWORK=off")
+				command.Env = localtest.GoEnv()
 				output, err := command.CombinedOutput()
 				if err != nil {
 					t.Fatalf("generated timestamp conversion: %v\n%s", err, output)
@@ -65,6 +69,7 @@ func TestGeneratedTimestampConversions(t *testing.T) {
 					t.Logf("%s", output)
 				}
 			}
+			localtest.CheckSums(t, project)
 		})
 	}
 }

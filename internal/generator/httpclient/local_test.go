@@ -15,7 +15,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/local_test.go
 var localTests []byte
@@ -99,11 +104,13 @@ func TestLocalApplicationTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=20s", "-v", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1", "NO_PROXY=")
+	cmd.Env = localtest.GoEnv("HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1", "NO_PROXY=")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("local application transport: %v\n%s", err, output)

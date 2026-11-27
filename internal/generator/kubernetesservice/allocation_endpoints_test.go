@@ -9,7 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func TestAllocationEndpointValidation(t *testing.T) {
 	for _, value := range []any{nil, true, []any{}, []any{true}, []any{"bad name"}, []any{"api", "api"}, make([]any, 17)} {
@@ -88,7 +93,7 @@ func TestGeneratedAllocationEndpointRenderer(t *testing.T) {
 	}
 	cmd := exec.Command("go", "test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./out/deploy/render")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated endpoint renderer: %v\n%s", err, output)
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,20 +93,21 @@ func Commands()command.Application{return command.Application{VersionCommand:tru
 	}
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = project
-	tidy.Env = append(os.Environ(), "GOWORK=off")
+	tidy.Env = localtest.GoEnv()
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("CLI dependencies: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	command := exec.Command("go", "test", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./...")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated CLI: %v\n%s", err, output)
 	}
 	if os.Getenv("STEGO_BENCH_IMMUTABLE_APPLY") == "1" {
 		bench := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkImmutableApplyComparison$", "-benchmem", "-benchtime=200ms", "-count=3", "./out/cli/command")
 		bench.Dir = project
-		bench.Env = append(os.Environ(), "GOWORK=off")
+		bench.Env = localtest.GoEnv()
 		output, err := bench.CombinedOutput()
 		if err != nil {
 			t.Fatalf("immutable apply benchmark: %v\n%s", err, output)
@@ -134,7 +136,7 @@ func testVersionBuilds(t *testing.T, project string) {
 			t.Helper()
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.Dir = project
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+			cmd.Env = localtest.GoEnv("GOFLAGS=", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s: %v\n%s", args[0], err, out)

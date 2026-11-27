@@ -17,7 +17,11 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/secret_state_test.go
 var secretStateTests []byte
@@ -163,10 +167,11 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	if telemetry {
 		cmd := exec.Command("go", "mod", "tidy")
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("telemetry dependencies: %v\n%s", err, output)
 		}
+		localtest.CheckSums(t, project)
 	}
 	budget := "30s"
 	if telemetry && os.Getenv("STEGO_KUBERNETES_LIVE_ROTATION") == "1" {
@@ -178,10 +183,11 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	}
 	cmd := exec.Command("go", append(arguments, "./...")...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var rotation []string
 	if !telemetry {
-		cmd.Env = append(cmd.Env, "STEGO_KUBERNETES_LIVE_ROTATION=0")
+		rotation = append(rotation, "STEGO_KUBERNETES_LIVE_ROTATION=0")
 	}
+	cmd.Env = localtest.GoEnv(rotation...)
 	output, runErr := cmd.CombinedOutput()
 	if dir := os.Getenv("STEGO_KUBERNETES_ROTATION_ARTIFACTS"); dir != "" {
 		if !telemetry {
@@ -237,7 +243,7 @@ func TestPinnedAdmissionTemplate(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-p=1", "-count=1", "-timeout=15s", "./...")
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("pinned policy renderer: %v\n%s", err, output)
 	}
