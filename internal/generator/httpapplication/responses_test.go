@@ -14,8 +14,12 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 const responseFixture = `openapi: 3.0.3
 info: {title: Dispatch, version: '1'}
@@ -226,7 +230,7 @@ type Record struct {ID,Title,Creator string; CreatedTime time.Time; Count int64;
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		output, err := cmd.Output()
@@ -260,6 +264,7 @@ type Record struct {ID,Title,Creator string; CreatedTime time.Time; Count int64;
 		t.Log("generated response checks passed:", required)
 		results = passed
 	}
+	localtest.CheckSums(t, root)
 	return results
 }
 

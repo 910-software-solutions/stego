@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 
 	"github.com/910-software-solutions/stego/internal/types"
 )
@@ -2614,7 +2615,7 @@ func TestStatusTypes(t *testing.T) {
 `)
 		command := exec.Command("go", "test", "-count=1", "./...")
 		command.Dir = dir
-		command.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+		command.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("the problems of the statuses: %v\n%s", err, output)
 		}

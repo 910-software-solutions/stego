@@ -14,6 +14,14 @@
 // reaper of the runtime module's pgtest does. When neither podman nor docker is on PATH, each test that needs the
 // server fails with the reason: a missing result is not a pass.
 //
+// SpiceDB (ST-STD-LOCAL-R04): SpiceDB starts one container of SpiceDBImage for each test that calls it, with podman
+// first and docker next, as the PostgreSQL container does: as the image's own unprivileged user (65532), with no
+// capabilities and no new privileges, with 256 MiB of memory, one CPU and at most 512 processes, published on
+// 127.0.0.1 at a free port only. The image holds only the spicedb and grpc_health_probe programs, so it has no timeout
+// program for an entrypoint. Its time limit is the --timeout of podman, and for both tools the reaper, which removes
+// the container when the time limit ends. The cleanup of the test, Main and the reaper remove it (ST-STD-LOCAL-R05).
+// When neither podman nor docker is on PATH, the test fails with the reason.
+//
 // Modules (ST-STD-LOCAL-R03): localtest keeps a module cache of its own, apart from the GOMODCACHE of the developer,
 // which other tools and tests fill with modules that no sum database checked. It is the folder localtest-modules in
 // STEGO_TEST_RUNS when that variable names a folder, else in the user cache folder (os.UserCacheDir); never in the
@@ -32,12 +40,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -46,6 +56,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +70,10 @@ import (
 // PostgresImage is the pinned PostgreSQL server image: postgres:18.6-alpine, by the digest of the image that the CI job
 // services of STEGO run.
 const PostgresImage = "docker.io/library/postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2"
+
+// SpiceDBImage is the pinned SpiceDB image of the local stand-in: version 1.57.0 at its digest, the image of the
+// runtime's own SpiceDB tests.
+const SpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
 
 const (
 	// PostgresVariable names an existing server, a superuser URL; when it is set, no container starts.
@@ -74,10 +89,9 @@ var (
 	dsn          string
 	failWhy      string
 
-	mu        sync.Mutex
-	tool      string
-	container string
-	stop      *reaper
+	mu sync.Mutex
+	// running holds each container that localtest started and did not remove yet, by its name.
+	running = map[string]*started{}
 
 	modulesOnce sync.Once
 	modulesWhy  string
@@ -88,7 +102,7 @@ var (
 // checkedSumsFile is the file in the module cache of localtest that holds the go.sum lines that its last fill checked.
 const checkedSumsFile = "checked-sums.txt"
 
-// Main runs the tests of m, removes the PostgreSQL container that a test started, if any, and gives the exit code
+// Main runs the tests of m, removes each container that a test started, if any, and gives the exit code
 // for os.Exit. It also removes it when the process gets SIGINT. It does not watch SIGTERM, which tests of a shutdown
 // send to their own process; the reaper and the time limit of the container cover a process that is killed.
 //
@@ -101,7 +115,7 @@ func Main(m *testing.M) int {
 		select {
 		case s := <-signals:
 			remove()
-			fmt.Fprintf(os.Stderr, "localtest: %v: the PostgreSQL container is removed\n", s)
+			fmt.Fprintf(os.Stderr, "localtest: %v: the containers are removed\n", s)
 			os.Exit(2)
 		case <-done:
 		}
@@ -141,6 +155,14 @@ func PostgresDSN(t testing.TB) string {
 	return dsn
 }
 
+// PostgresEnv gives the environment entries that hand the local server to the tests of a generated module: the
+// superuser URL in STEGO_TEST_POSTGRES_DSN, and STEGO_REQUIRE_POSTGRES=1, so that such a test fails, never skips,
+// when it finds no server. It starts the server as PostgresDSN does.
+func PostgresEnv(t testing.TB) []string {
+	t.Helper()
+	return []string{PostgresVariable + "=" + PostgresDSN(t), "STEGO_REQUIRE_POSTGRES=1"}
+}
+
 // startPostgres finds the server: the variable, else a new container. It sets dsn, or failWhy.
 func startPostgres() {
 	if v := os.Getenv(PostgresVariable); v != "" {
@@ -151,12 +173,7 @@ func startPostgres() {
 		dsn = v
 		return
 	}
-	var found []string
-	for _, name := range []string{"podman", "docker"} {
-		if p, err := exec.LookPath(name); err == nil {
-			found = append(found, p)
-		}
-	}
+	found := containerTools()
 	if len(found) == 0 {
 		failWhy = "neither podman nor docker is on PATH, so the PostgreSQL container of the test cannot start; install one, or set " +
 			PostgresVariable + " to a local server"
@@ -166,29 +183,24 @@ func startPostgres() {
 	// controllers for the limits cannot, docker is tried next.
 	var errs []string
 	for _, path := range found {
-		got, err := runPostgres(path)
+		got, name, err := runPostgres(path)
 		if err == nil {
 			dsn = got
 			return
 		}
-		remove()
+		removeContainer(name)
 		errs = append(errs, err.Error())
 	}
 	failWhy = "start the PostgreSQL container: " + strings.Join(errs, "; then: ")
 }
 
 // runPostgres starts the container with the tool, waits until the server accepts TCP connections inside it, and
-// gives the superuser URL on the published port.
-func runPostgres(path string) (string, error) {
+// gives the superuser URL on the published port and the name of the container.
+func runPostgres(path string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startLimit)
 	defer cancel()
 	password := suffix() + suffix()
-	life := defaultLife
-	if f := flag.Lookup("test.timeout"); f != nil {
-		if d, err := time.ParseDuration(f.Value.String()); err == nil && d > 0 {
-			life = d + time.Minute
-		}
-	}
+	life := lifeLimit()
 	name := fmt.Sprintf("stego-localtest-pg-%d-%s", os.Getpid(), suffix())
 	// The image's user postgres (uid 70) owns its data on the tmpfs; the tmpfs folders are open to it with the
 	// sticky bit, as the image's own folders are.
@@ -205,23 +217,16 @@ func runPostgres(path string) (string, error) {
 		PostgresImage,
 		fmt.Sprintf("%ds", int(life.Seconds())), "docker-entrypoint.sh", "postgres",
 		"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=300"}
-	r, err := newReaper(path, name)
-	if err != nil {
-		return "", fmt.Errorf("start the reaper of the container: %w", err)
-	}
-	mu.Lock()
-	tool, container, stop = path, name, r
-	mu.Unlock()
-	if _, err := commandEnv(ctx, append(os.Environ(), "POSTGRES_PASSWORD="+password), path, args...); err != nil {
-		return "", err
+	if err := runContainer(ctx, path, name, life, append(os.Environ(), "POSTGRES_PASSWORD="+password), args); err != nil {
+		return "", name, err
 	}
 	out, err := command(ctx, path, "port", name, "5432/tcp")
 	if err != nil {
-		return "", err
+		return "", name, err
 	}
 	host, port, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]))
 	if err != nil {
-		return "", fmt.Errorf("read the published port from %q: %w", out, err)
+		return "", name, fmt.Errorf("read the published port from %q: %w", out, err)
 	}
 	// The image's entrypoint first runs a server for initdb that listens only on its socket; a TCP connection
 	// inside the container reaches only the final server.
@@ -232,37 +237,184 @@ func runPostgres(path string) (string, error) {
 		select {
 		case <-ctx.Done():
 			logs, _ := command(context.Background(), path, "logs", "--tail", "40", name)
-			return "", fmt.Errorf("the server is not ready after %v; its last log lines:\n%s", startLimit, logs)
+			return "", name, fmt.Errorf("the server is not ready after %v; its last log lines:\n%s", startLimit, logs)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword("postgres", password), Host: net.JoinHostPort(host, port),
 		Path: "/postgres", RawQuery: "sslmode=disable"}
-	return u.String(), nil
+	return u.String(), name, nil
 }
 
-// reaperScript removes the container $2 with the tool $1 when the test binary ends. It reads one line from its
-// standard input, a pipe whose write end only the test binary holds: the end of the binary on any path, also a kill,
-// closes the pipe and ends the read, so no PID is watched. The line done is a clean exit, after which Main removed
-// the container itself: the reaper then ends at once.
-const reaperScript = `read -r line
-[ "$line" = done ] && exit 0
-"$1" rm --force "$2" >/dev/null 2>&1
+// SpiceDB starts a container of SpiceDBImage for the test and gives its gRPC endpoint, host:port on 127.0.0.1. args
+// are the arguments of the spicedb program: serve-testing, or serve with a preshared key and the memory datastore. The
+// cleanup of the test removes the container. SpiceDB fails the test with the reason when the container cannot start,
+// also when neither podman nor docker is on PATH: a missing result is not a pass.
+func SpiceDB(t testing.TB, args ...string) string {
+	t.Helper()
+	endpoint, name, err := startSpiceDB(args)
+	if name != "" {
+		t.Cleanup(func() { removeContainer(name) })
+	}
+	if err != nil {
+		t.Fatal("localtest: " + err.Error())
+	}
+	return endpoint
+}
+
+// startSpiceDB starts the SpiceDB container with podman, else with docker, and gives its endpoint and its name. On an
+// error, no container of it runs.
+func startSpiceDB(args []string) (string, string, error) {
+	found := containerTools()
+	if len(found) == 0 {
+		return "", "", errors.New("neither podman nor docker is on PATH, so the SpiceDB container of the test cannot start; install one")
+	}
+	var errs []string
+	for _, path := range found {
+		endpoint, name, err := runSpiceDB(path, args)
+		if err == nil {
+			return endpoint, name, nil
+		}
+		removeContainer(name)
+		errs = append(errs, err.Error())
+	}
+	return "", "", errors.New("start the SpiceDB container: " + strings.Join(errs, "; then: "))
+}
+
+// spiceDBArguments gives the arguments of the run of the SpiceDB container name with the tool path, with the time
+// limit life, for the arguments args of the spicedb program.
+func spiceDBArguments(path, name string, life time.Duration, args []string) []string {
+	run := []string{"run", "--detach", "--rm", "--name", name,
+		"--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--memory", "256m", "--cpus", "1", "--pids-limit", "512", "--stop-timeout", "1",
+		"--publish", "127.0.0.1::50051"}
+	// The image has no timeout program; podman ends the container itself at the time limit. For docker, the reaper
+	// holds the time limit.
+	if filepath.Base(path) == "podman" {
+		run = append(run, "--timeout", fmt.Sprintf("%d", int(life.Seconds())))
+	}
+	return append(append(run, SpiceDBImage), args...)
+}
+
+// runSpiceDB starts the SpiceDB container with the tool, and gives the endpoint that it publishes and its name.
+func runSpiceDB(path string, args []string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startLimit)
+	defer cancel()
+	life := lifeLimit()
+	name := fmt.Sprintf("stego-localtest-spicedb-%d-%s", os.Getpid(), suffix())
+	if err := runContainer(ctx, path, name, life, nil, spiceDBArguments(path, name, life, args)); err != nil {
+		return "", name, err
+	}
+	for {
+		out, err := command(ctx, path, "port", name, "50051/tcp")
+		if line := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]); err == nil && line != "" {
+			if _, _, err := net.SplitHostPort(line); err != nil {
+				return "", name, fmt.Errorf("read the published port from %q: %w", out, err)
+			}
+			return line, name, nil
+		}
+		select {
+		case <-ctx.Done():
+			logs, _ := command(context.Background(), path, "logs", "--tail", "40", name)
+			return "", name, fmt.Errorf("the SpiceDB container publishes no port after %v; its last log lines:\n%s", startLimit, logs)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// containerTools gives the paths of podman and docker on PATH, podman first.
+func containerTools() []string {
+	var found []string
+	for _, name := range []string{"podman", "docker"} {
+		if p, err := exec.LookPath(name); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// lifeLimit is the time limit of a container: the -test.timeout of the binary and one minute, else defaultLife.
+func lifeLimit() time.Duration {
+	if f := flag.Lookup("test.timeout"); f != nil {
+		if d, err := time.ParseDuration(f.Value.String()); err == nil && d > 0 {
+			return d + time.Minute
+		}
+	}
+	return defaultLife
+}
+
+// started is one container that localtest started: its tool, its reaper, and a channel that is closed when the run
+// of the tool that creates it has ended.
+type started struct {
+	tool   string
+	reaper *reaper
+	ran    chan struct{}
+}
+
+// runContainer starts the reaper of the container name, with the time limit life, records the container, and runs
+// the tool with args and the environment env (the environment of the test when env is nil).
+func runContainer(ctx context.Context, path, name string, life time.Duration, env, args []string) error {
+	r, err := newReaper(path, name, life)
+	if err != nil {
+		return fmt.Errorf("start the reaper of the container: %w", err)
+	}
+	c := &started{tool: path, reaper: r, ran: make(chan struct{})}
+	mu.Lock()
+	running[name] = c
+	mu.Unlock()
+	_, err = commandEnv(ctx, env, path, args...)
+	close(c.ran)
+	return err
+}
+
+// reaperScript removes the container $2 with the tool $1 when the test binary ends, or when the time limit of $3
+// seconds ends. It reads one line from its standard input, a pipe whose write end only the test binary holds: the end
+// of the binary on any path, also a kill, closes the pipe and ends the read, so no PID is watched. The line done is a
+// clean exit, after which localtest removed the container itself. After any other end, it removes the container, and
+// again every $4 seconds, $5 more times: a run of the tool that the binary started and that did not end before the
+// binary ended can create the container after the first removal. A timer in the background removes the container at
+// the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the timer,
+// so it leaves no process.
+const reaperScript = `( sleep "$3"; "$1" rm --force "$2" >/dev/null 2>&1 ) &
+read -r line
+if [ "$line" != done ]; then
+	n=0
+	while :; do
+		"$1" rm --force "$2" >/dev/null 2>&1
+		[ "$n" -ge "$5" ] && break
+		n=$((n + 1))
+		sleep "$4"
+	done
+fi
+trap '' TERM
+kill -TERM 0 2>/dev/null
+exit 0
 `
 
-// reaper is one reaper process: the write end of the pipe that it reads.
+// reaperEvery and reaperTimes are the removals of the reaper after an end that is not clean: every five seconds for
+// the start limit of a container.
+var (
+	reaperEvery = 5 * time.Second
+	reaperTimes = int(startLimit / (5 * time.Second))
+)
+
+// reaper is one reaper process: the write end of the pipe that it reads, and its process ID, which is also the ID of
+// its process group.
 type reaper struct {
 	stop *os.File
+	pid  int
 }
 
-// newReaper starts the reaper of the container name of the tool path, in a process group of its own, so that a kill
-// of the group of the test binary, as an interrupt of the terminal sends, does not take it too.
-func newReaper(path, name string) (*reaper, error) {
+// newReaper starts the reaper of the container name of the tool path, with the time limit life, in a process group
+// of its own, so that a kill of the group of the test binary, as an interrupt of the terminal sends, does not take it
+// too.
+func newReaper(path, name string, life time.Duration) (*reaper, error) {
 	read, write, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name)
+	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)),
+		fmt.Sprintf("%d", max(int(reaperEvery.Seconds()), 1)), fmt.Sprintf("%d", reaperTimes))
 	cmd.Stdin = read
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -272,30 +424,57 @@ func newReaper(path, name string) (*reaper, error) {
 	}
 	_ = read.Close()
 	go func() { _ = cmd.Wait() }()
-	return &reaper{stop: write}, nil
+	return &reaper{stop: write, pid: cmd.Process.Pid}, nil
 }
 
-// remove removes the container, if one started, and stops its reaper. A removal that fails leaves the reaper, which
-// removes the container when the binary ends. It is safe to call more than once.
+// remove removes each container that localtest started and did not remove yet. It is safe to call more than once.
 func remove() {
 	mu.Lock()
-	path, name, r := tool, container, stop
-	container, stop = "", nil
+	var names []string
+	for name := range running {
+		names = append(names, name)
+	}
 	mu.Unlock()
-	if name == "" {
+	for _, name := range names {
+		removeContainer(name)
+	}
+}
+
+// removeContainer removes the container name, if localtest started it, and stops its reaper. It first waits, up to
+// removeWait, for the end of the run of the tool that creates the container: the SIGINT path of Main can come while a
+// test starts it, and a run that ends after the removal creates the container. A removal that fails, or that did not
+// wait for the end of the run, leaves the reaper, which removes the container again when the binary ends (security
+// review of PR #7, N4). It is safe to call more than once, and with an empty name.
+func removeContainer(name string) {
+	mu.Lock()
+	c := running[name]
+	delete(running, name)
+	mu.Unlock()
+	if c == nil {
 		return
+	}
+	ended := true
+	select {
+	case <-c.ran:
+	case <-time.After(removeWait):
+		ended = false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if _, err := command(ctx, path, "rm", "--force", name); err != nil {
-		fmt.Fprintf(os.Stderr, "localtest: remove the PostgreSQL container %s: %v\n", name, err)
+	if _, err := command(ctx, c.tool, "rm", "--force", name); err != nil {
+		fmt.Fprintf(os.Stderr, "localtest: remove the container %s: %v\n", name, err)
 		return
 	}
-	if r != nil {
-		_, _ = r.stop.WriteString("done\n")
-		_ = r.stop.Close()
+	if !ended {
+		fmt.Fprintf(os.Stderr, "localtest: the run of the container %s did not end; its reaper removes it again when the tests end\n", name)
+		return
 	}
+	_, _ = c.reaper.stop.WriteString("done\n")
+	_ = c.reaper.stop.Close()
 }
+
+// removeWait is the time that removeContainer waits for the end of the run of a container: its start limit.
+var removeWait = startLimit
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
 // environment of the test with no work file, no toolchain switch, GOFLAGS cleared and the go env file not read
@@ -477,6 +656,8 @@ func downloadModules() {
 	// these folders never reaches, because the go command prunes the module graph. So the cache takes, for each module
 	// of the build list of a folder (go list -m all), each version of it in the module graph, and each version of it
 	// that the go.mod of such a version requires.
+	// dirs are the module folders that the fill extracted, each with the hash that the go command checked for it.
+	var dirs []fillDir
 	fail := func(folder string, err error, output []byte) {
 		modulesWhy = fmt.Sprintf("download the modules of %s: %v\n%s", folder, err, output)
 		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
@@ -490,11 +671,23 @@ func downloadModules() {
 		fail(root, err, out)
 		return
 	} else if versions := strings.Fields(string(out)); len(versions) > 0 {
-		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download"}, versions...)...)
+		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download", "-json"}, versions...)...)
 		download.Dir, download.Env = root, list.Env
-		if output, err := download.CombinedOutput(); err != nil {
-			fail(root, err, output)
+		var stderr bytes.Buffer
+		download.Stderr = &stderr
+		output, err := download.Output()
+		if err != nil {
+			fail(root, err, append(output, stderr.Bytes()...))
 			return
+		}
+		decoder := json.NewDecoder(bytes.NewReader(output))
+		for decoder.More() {
+			var module fillDir
+			if err := decoder.Decode(&module); err != nil {
+				fail(root, err, output)
+				return
+			}
+			dirs = append(dirs, module)
 		}
 	}
 	var checked []string
@@ -608,11 +801,12 @@ func downloadModules() {
 			}
 			decoder := json.NewDecoder(bytes.NewReader(found))
 			for decoder.More() {
-				var module struct{ Path, Version, Sum, GoModSum, GoMod string }
+				var module struct{ Path, Version, Sum, GoModSum, GoMod, Dir string }
 				if err := decoder.Decode(&module); err != nil {
 					fail(folder, err, found)
 					return
 				}
+				dirs = append(dirs, fillDir{Path: module.Path, Version: module.Version, Sum: module.Sum, Dir: module.Dir})
 				// The go command gives the hashes that it checked against go.sum or sum.golang.org before it wrote the
 				// module; they are the checked lines of a version that no go.sum of the repository names.
 				if module.Sum != "" {
@@ -637,6 +831,120 @@ func downloadModules() {
 			}
 		}
 	}
+	// The go command does not hash an extracted folder again when it finds it in the cache, so a file that a tool
+	// or a writable cache (-modcacherw) put into the folder of a checked module would build with no error. Each folder
+	// is hashed again, on each fill and on each reuse of the cache, as go mod verify does (security review of PR #7).
+	if err := verifyDirs(dirs, filepath.Join(moduleCache, verifiedFile)); err != nil {
+		fail(moduleCache, err, nil)
+	}
+}
+
+// fillDir is a module that the fill downloaded: its path, its version, the hash of its zip that the go command
+// checked against go.sum or sum.golang.org, and its extracted folder in the module cache.
+type fillDir struct{ Path, Version, Sum, Dir string }
+
+// verifiedDirs is the number of module folders that the last fill checked, and hashedDirs the number of them that it
+// hashed again, as their stamp changed.
+var verifiedDirs, hashedDirs int
+
+// verifiedFile is the file in the module cache of localtest that holds, for each module folder that a fill hashed with
+// the checked hash, a stamp of its files: their names, sizes, modes and modification times.
+const verifiedFile = "verified-dirs.json"
+
+// dirStamp gives the stamp of the files of the folder dir: a hash of the name, size, mode and modification time of
+// each entry. A file that is added, removed or written changes it.
+func dirStamp(dir string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, name)
+		fmt.Fprintf(h, "%q %d %o %d\n", rel, info.Size(), info.Mode(), info.ModTime().UnixNano())
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil)), err
+}
+
+// verifyDirs hashes each extracted module folder of dirs, as go mod verify does, and fails with each module whose
+// folder does not have the checked hash of its zip: "dir has been modified". A module with no folder or no hash, such
+// as a version of which only the go.mod was read, is not hashed. A folder whose stamp (dirStamp) and checked hash are
+// those that verifiedFile holds from an earlier hash is not hashed again: its files did not change since then. Only
+// a deliberate edit that also sets the size and the modification time of each file back gets past the stamp.
+//
+// stampsFile is the file of the stamps, verifiedFile in the module cache of localtest.
+func verifyDirs(dirs []fillDir, stampsFile string) error {
+	seen := map[string]bool{}
+	var todo []fillDir
+	for _, d := range dirs {
+		if d.Dir == "" || d.Sum == "" || seen[d.Dir] {
+			continue
+		}
+		seen[d.Dir] = true
+		todo = append(todo, d)
+	}
+	type record struct{ Sum, Stamp string }
+	known := map[string]record{}
+	if data, err := os.ReadFile(stampsFile); err == nil {
+		_ = json.Unmarshal(data, &known)
+	}
+	var (
+		wg       sync.WaitGroup
+		failedMu sync.Mutex
+		failed   []string
+		hashed   int
+		passed   = map[string]record{}
+	)
+	work := make(chan fillDir)
+	for range max(runtime.NumCPU(), 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range work {
+				stamp, err := dirStamp(d.Dir)
+				why := ""
+				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
+					failedMu.Lock()
+					passed[d.Dir] = record{d.Sum, stamp}
+					failedMu.Unlock()
+					continue
+				}
+				got, err := dirhash.HashDir(d.Dir, d.Path+"@"+d.Version, dirhash.Hash1)
+				switch {
+				case err != nil:
+					why = fmt.Sprintf("%s %s: hash its folder %s: %v", d.Path, d.Version, d.Dir, err)
+				case got != d.Sum:
+					why = fmt.Sprintf("%s %s: dir has been modified (%s): its hash is %s, not the checked %s", d.Path, d.Version, d.Dir, got, d.Sum)
+				}
+				failedMu.Lock()
+				hashed++
+				if why != "" {
+					failed = append(failed, why)
+				} else if stamp != "" {
+					passed[d.Dir] = record{d.Sum, stamp}
+				}
+				failedMu.Unlock()
+			}
+		}()
+	}
+	for _, d := range todo {
+		work <- d
+	}
+	close(work)
+	wg.Wait()
+	verifiedDirs, hashedDirs = len(todo), hashed
+	if data, err := json.Marshal(passed); err == nil {
+		_ = writeAtomic(stampsFile, data)
+	}
+	if len(failed) > 0 {
+		slices.Sort(failed)
+		return errors.New("the module cache of localtest holds changed module folders:\n" + strings.Join(failed, "\n"))
+	}
+	return nil
 }
 
 // fillEnvironment is the environment of the fill of the module cache of localtest. It reads modules through the

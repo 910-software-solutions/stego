@@ -11,8 +11,12 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // noteEntities gives the entity Note of serviceDocument with the field name as given.
 func noteEntities(name types.Field) []types.Entity {
@@ -154,11 +158,12 @@ func TestFactoryFromDocument(t *testing.T) {
 		}
 		for _, args := range [][]string{{"mod", "tidy"}, {"test", "-count=1", "-mod=readonly", "./out/cli/app"}} {
 			cmd := exec.Command("go", args...)
-			cmd.Dir, cmd.Env = project, append(os.Environ(), "GOWORK=off")
+			cmd.Dir, cmd.Env = project, localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, output)
 			}
 		}
+		localtest.CheckSums(t, project)
 		ctx.ServiceOpenAPI = nil
 		if err := new(cliapplication.Generator).ValidateContext(ctx); err == nil || !strings.Contains(err.Error(), "the setting factory_package, or the rest-api component") {
 			t.Errorf("with no factory and no service document the CLI gives %v, want a refusal that names the setting", err)

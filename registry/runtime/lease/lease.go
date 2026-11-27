@@ -486,8 +486,10 @@ func (c *Client) hold(ctx context.Context, h *Held, work func(ctx context.Contex
 				// is the case where the renew timer wins the select against ctx.Done(), or a renew is in flight at
 				// the time limit of the caller. Hold then releases the lease and returns as it does when ctx ends
 				// first, so the next holder does not wait for the lease to expire (review of PR #387, L2). The
-				// release changes the row only while it names this holder with its own token, so a lease that
-				// another holder took stays as it is.
+				// release uses the token of the holder. When the renew failed with no answer, its UPDATE can have
+				// committed on the server, and the release then also tries the next token (Release, review of PR
+				// #389, L1). Each release statement changes the row only while it names this holder with that
+				// token, so a lease that another holder took stays as it is.
 				//
 				// The renew error is joined too, unless it is only the end of ctx: a renew that found the lease
 				// taken or expired (ErrLost) at the same time as the end of ctx stays ErrLost for the caller

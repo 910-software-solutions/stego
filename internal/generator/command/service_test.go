@@ -10,12 +10,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/command_test.go
 var serviceChecks []byte
@@ -82,41 +86,18 @@ func ReserveAndCharge(ctx context.Context, request *commands.ReserveAndChargeReq
 }
 `)
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin it.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and gives
-// its endpoint and preshared key. It removes the container when the test ends.
+// startSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and
+// gives its endpoint and preshared key. localtest runs it without privilege and with limits, and removes it when the
+// test ends. STEGO_TEST_SPICEDB names a running server in its place.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
 	if endpoint := os.Getenv("STEGO_TEST_SPICEDB"); endpoint != "" {
 		return endpoint, os.Getenv("STEGO_TEST_SPICEDB_KEY")
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-command-spicedb-"+hex.EncodeToString(suffix), "command-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", spiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	var port string
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			port = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-			break
-		}
-	}
-	if port == "" {
-		t.Fatal("the SpiceDB container publishes no port")
-	}
-	return port, key
+	key := "command-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
 
 // tablesMigration is the migration 001_initial that the PostgreSQL adapter creates for the declaration on the
@@ -163,13 +144,11 @@ type checkRun struct {
 // fails the test: a missing result is not a pass.
 func runCheck(t *testing.T, p *project, run *checkRun, endpoint, key, id string) {
 	t.Helper()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	run.once.Do(func() {
 		cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^(TestCommand|TestCommandLists)$", "./check")
 		cmd.Dir = p.dir
-		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
+		cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod", postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
 		output, err := cmd.CombinedOutput()
 		run.output, run.err = string(output), err
 	})
@@ -328,19 +307,16 @@ func counterService(t *testing.T) *project {
 	})
 }
 
-// TestCounterService generates the service with the counted PIN and runs its check of the counter against a local
-// PostgreSQL server and a local SpiceDB container. CI runs it; a host with neither fails it, as a missing result is
-// not a pass.
+// TestCounterService generates the service with the counted PIN and runs its check of the counter against the local
+// PostgreSQL server and the SpiceDB container of localtest (ST-STD-LOCAL-R04), as TestCommandService does.
 func TestCounterService(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC24-T03 A generated service answers 500 and charges nothing for a check of a counted PIN that a command resets on a row on which the command did not decide its permission, and checks it on a row that it locked", func(t *testing.T) {
-		if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-			t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-		}
+		postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 		p := counterService(t)
 		endpoint, key := startSpiceDB(t)
 		cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCounterReset$", "./check")
 		cmd.Dir = p.dir
-		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
+		cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod", postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
 		output, err := cmd.CombinedOutput()
 		if !ownPass(string(output), "TestCounterReset", "ST-SUP-RC32-OC24-T03") {
 			t.Fatalf("the check of the counter of the generated service did not run and pass (go test: %v):\n%s", err, output)

@@ -9,8 +9,13 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/emitted_test.go
 var emittedTests []byte
@@ -55,16 +60,17 @@ func emittedProject(t *testing.T) string {
 	write("go.mod", []byte("module example.com/idempotency-test\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.1.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
 	for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}} {
-		goCommand(t, project, args...)
+		goCommand(t, project, nil, args...)
 	}
+	localtest.CheckSums(t, project)
 	return project
 }
 
-func goCommand(t *testing.T, project string, args ...string) string {
+func goCommand(t *testing.T, project string, env []string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(pinnedGo(), args...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, env...)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go %v: %v\n%s", args, err, output)
@@ -74,16 +80,14 @@ func goCommand(t *testing.T, project string, args ...string) string {
 }
 
 // runEmitted runs one subtest of testdata/emitted_test.go in the emitted module. A test that needs PostgreSQL
-// skips without STEGO_TEST_POSTGRES_DSN, and fails without it when STEGO_REQUIRE_POSTGRES=1.
+// takes the local PostgreSQL server of localtest, and fails when it cannot start: a missing result is not a pass.
 func runEmitted(t *testing.T, project, id string, postgres bool) {
 	t.Helper()
-	if postgres && os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("PostgreSQL integration tests require STEGO_TEST_POSTGRES_DSN")
-		}
-		t.Skip("STEGO_TEST_POSTGRES_DSN is not set")
+	var env []string
+	if postgres {
+		env = localtest.PostgresEnv(t)
 	}
-	output := goCommand(t, project, "test", "-count=1", "-timeout=60s", "-v", "-run", "^TestEmitted$/^"+id+"_", "./internal/idempotency")
+	output := goCommand(t, project, env, "test", "-count=1", "-timeout=60s", "-v", "-run", "^TestEmitted$/^"+id+"_", "./internal/idempotency")
 	if !ownPass(output, "TestEmitted", id) {
 		t.Fatalf("the emitted test %s did not run and pass:\n%s", id, output)
 	}

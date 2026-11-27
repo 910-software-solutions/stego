@@ -12,7 +12,11 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func TestGeneratedSSOTrustPolicy(t *testing.T) {
 	for _, telemetry := range []bool{false, true} {
@@ -72,14 +76,17 @@ func testGeneratedSSOTrustPolicy(t *testing.T, telemetry bool) {
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(module), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The module cache is filled once, before the time limit of the command starts.
+	localtest.RequireModules(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-p=1", "-race", "-count=1", "-mod=readonly", "-timeout=45s", "./..."}} {
 		command := exec.CommandContext(ctx, "go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=1", "GOMEMLIMIT=384MiB")
+		command.Env = localtest.GoEnv("GOMAXPROCS=1", "GOMEMLIMIT=384MiB")
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("SSO runtime: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }

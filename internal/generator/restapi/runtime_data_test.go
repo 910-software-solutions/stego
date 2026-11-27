@@ -26,9 +26,25 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/slot"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+//
+// The child process of ST-SUP-RC20-OC33-T02 (legacyMuxMarker) does not fill the cache: it runs only that test, which
+// runs no go command. The fill takes about ten seconds, which is the time limit of the child, so with the fill the
+// child was killed (signal: killed) before it could exit. A go command of the child still gets the cache through
+// localtest.GoEnv, which fills it on its first call. The child is known by the marker and by its -test.run argument
+// (legacyMuxRun) together.
+func TestMain(m *testing.M) {
+	if os.Getenv(legacyMuxMarker) == "1" && slices.Contains(os.Args[1:], legacyMuxRun) {
+		os.Exit(localtest.Main(m))
+	}
+	os.Exit(localtest.MainModules(m))
+}
 
 //go:embed testdata/crud_test.go
 var crudChecks []byte
@@ -336,7 +352,7 @@ func (p *crudProject) goCommand(env []string, args ...string) (string, error) {
 	p.t.Helper()
 	cmd := exec.Command(crudPinnedGo(), args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local"), env...)
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, env...)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -372,8 +388,9 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.204.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.206.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
@@ -392,11 +409,9 @@ type crudRun struct {
 // fails the test: a missing result is not a pass.
 func (run *crudRun) passed(t *testing.T, p *crudProject, endpoint, key, id string) {
 	t.Helper()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	run.once.Do(func() {
-		run.output, run.err = p.goCommand([]string{"STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key, "STEGO_TEST_CLI=" + run.cli},
+		run.output, run.err = p.goCommand([]string{postgres, "STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key, "STEGO_TEST_CLI=" + run.cli},
 			"test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCrud$", "./check")
 	})
 	if !ownPass(run.output, "TestCrud", id) {
@@ -620,6 +635,7 @@ func (p *crudProject) addCLI() string {
 	p.write("cliapp/openapi.json", document)
 	p.write("cliapp/app.go", []byte(crudCLIFactory))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(p.t, p.dir)
 	program := filepath.Join(p.dir, "bin", "crud-cli")
 	p.mustGo("build", "-o", program, "./out/cli/cmd")
 	return program

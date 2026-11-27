@@ -24,8 +24,13 @@ import (
 	"github.com/910-software-solutions/stego/internal/generator/kubernetesservice"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/coder/websocket"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func fixture() gen.Context {
 	return gen.Context{ModuleName: "example.com/browser-test", OutDirName: "out", OutputNamespace: "browser", PeerNamespaces: map[string]string{"postgres-adapter": "store", "otel-tracing": "tracing", "health-check": "health"}, ComponentConfig: map[string]any{"api_prefix": "/api/records/v1", "routes": []any{"/", "/records/{id}"}, "assets": []any{map[string]any{"source": "ui/index.html", "path": "/index.html"}, map[string]any{"source": "ui/main.js", "path": "/assets/main.js"}, map[string]any{"source": "ui/symbols.ttf", "path": "/assets/symbols.ttf"}}}, Inputs: map[string][]byte{"ui/index.html": []byte(`<!doctype html><html><head></head><body><script src="/assets/main.js"></script><script>window.ready=true;</script></body></html>`), "ui/main.js": []byte(`"use strict";`), "ui/symbols.ttf": {0, 1, 0, 0, 255, 128}}}
@@ -421,15 +426,29 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 	if local && os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
 		checks = append(checks, []string{"run", "golang.org/x/vuln/cmd/govulncheck@v1.4.0", "./..."})
 	}
+	// The tests of the generated module run against the local PostgreSQL server of localtest. govulncheck reads the
+	// vulnerability database of vuln.go.dev, a hosted service, so it runs only where STEGO_REQUIRE_POSTGRES=1 is set,
+	// as in CI. Its go run takes the environment of the fill of localtest (FillEnv): the checked module cache, the sum
+	// database sum.golang.org on, no private or unchecked module and no GOFLAGS (GOENV=off), so it builds govulncheck only
+	// from modules that go.sum or the sum database checked, never from the shared cache (security review of PR #7, L2).
+	postgres := localtest.PostgresEnv(t)
 	for _, args := range checks {
+		// The module cache is filled once, before the time limit of the command starts.
+		localtest.RequireModules(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		cmd := exec.CommandContext(ctx, "go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(postgres...)
+		if args[0] == "run" {
+			cmd.Env = localtest.FillEnv(t)
+		}
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
 			t.Fatalf("generated runtime %v: %v\n%s", args, err, out)
+		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
 		}
 		t.Logf("%s", out)
 	}

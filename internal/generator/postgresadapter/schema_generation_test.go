@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
 
@@ -183,7 +184,7 @@ go 1.26.11
 require (
  github.com/google/uuid v1.6.0
  github.com/jackc/pgx/v5 v5.11.0
- github.com/910-software-solutions/stego/registry/runtime v0.204.0
+ github.com/910-software-solutions/stego/registry/runtime v0.206.0
 )
 
 replace github.com/910-software-solutions/stego/registry/runtime => ` + runtimeDir + "\n"
@@ -199,13 +200,14 @@ replace github.com/910-software-solutions/stego/registry/runtime => ` + runtimeD
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "-count=1", "-timeout=90s", "-v", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv(localtest.PostgresEnv(t)...)
 		result, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated schema test: %v\n%s", err, result)
 		}
 		t.Log(string(result))
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestFunctionMigrationDigestCoversBody(t *testing.T) {

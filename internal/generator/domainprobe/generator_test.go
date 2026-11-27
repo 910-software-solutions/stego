@@ -18,8 +18,12 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // reservationContext is the declaration of the RC34 test records, as the compiler gives it to the generator: the
 // entity Reservation, the command reserve-and-charge, the query open-reservations, the slot binding
@@ -104,7 +108,7 @@ func (s *service) goTool(args ...string) ([]byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	return cmd.CombinedOutput()
 }
 
@@ -117,7 +121,7 @@ func (s *service) goOutput(args ...string) ([]byte, []byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

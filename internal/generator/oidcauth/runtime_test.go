@@ -13,8 +13,13 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // The end-to-end proof of oidc-auth and of rh-sso-auth as its configuration: the stego binary of this commit
 // generates the service of internal/compiler/testdata/runtime_wiring/project on the runtime data path with each auth
@@ -43,8 +48,7 @@ func pinnedGo() string {
 // goEnv is the environment of a go command and of the stego binary: no workspace, the pinned Go first on the path,
 // and no toolchain switch.
 func goEnv(extra ...string) []string {
-	return append(append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local",
-		"PATH="+filepath.Dir(pinnedGo())+string(os.PathListSeparator)+os.Getenv("PATH")), extra...)
+	return localtest.GoEnv(append([]string{"PATH=" + filepath.Dir(pinnedGo()) + string(os.PathListSeparator) + os.Getenv("PATH")}, extra...)...)
 }
 
 // command runs a command in dir with env and fails the test when it fails.
@@ -154,7 +158,7 @@ func (p *project) run(args ...string) (string, error) {
 func (p *project) exec(extra []string, args ...string) (string, error) {
 	cmd := exec.Command(p.stego, args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(goEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+shopModule), extra...)
+	cmd.Env = goEnv(append([]string{"STEGO_REGISTRY=" + filepath.Join(p.dir, "registry"), "STEGO_MODULE=" + shopModule}, extra...)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -200,7 +204,7 @@ func (p *project) qualifyFills() {
 			p.write(filepath.Join(folder, "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
 		}
 	}
-	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK="}
 	_, _ = p.exec(signing, "test")
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -255,6 +259,7 @@ func (p *project) build() string {
 	p.write(filepath.Join(p.dir, "out", "oidccheck", "oidc_test.go"), string(check))
 	env := goEnv("GOFLAGS=-mod=mod")
 	command(t, p.dir, env, pinnedGo(), "mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	binary := filepath.Join(p.dir, "bin", "service")
 	command(t, p.dir, env, pinnedGo(), "build", "-o", binary, "./out")
 	return binary
@@ -270,35 +275,19 @@ func freePort(t *testing.T) string {
 	return fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
 }
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin it.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and gives
-// its endpoint and preshared key. It removes the container when the test ends.
+// startSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and
+// gives its endpoint and preshared key. localtest runs it without privilege and with limits, and removes it when the
+// test ends.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-oidc-spicedb-"+hex.EncodeToString(suffix), "oidc-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", spiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(strings.Split(string(out), "\n")[0]), key
-		}
-	}
-	t.Fatal("the SpiceDB container publishes no port")
-	return "", ""
+	key := "oidc-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
+
+// postgresDSN is the superuser URL of the local PostgreSQL server of localtest, which TestOIDCService takes.
+var postgresDSN string
 
 // checkRuns runs the check of the service's module for the provider, and fails each check ID that did not run and
 // pass.
@@ -306,7 +295,7 @@ func (p *project) checkRuns(binary, provider, issuerPath, endpoint, key string, 
 	t := p.t
 	cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestOIDC$", "./out/oidccheck")
 	cmd.Dir = p.dir
-	cmd.Env = goEnv("GOFLAGS=-mod=mod", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_OIDC_BINARY="+binary,
+	cmd.Env = goEnv("GOFLAGS=-mod=mod", "STEGO_TEST_POSTGRES_DSN="+postgresDSN, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_OIDC_BINARY="+binary,
 		"STEGO_OIDC_ADDRESS="+p.address, "STEGO_OIDC_ISSUER_PATH="+issuerPath, "STEGO_OIDC_FORM="+provider)
 	output, runErr := cmd.CombinedOutput()
 	for _, id := range ids {
@@ -325,9 +314,8 @@ func TestOIDCService(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs generated services")
 	}
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	// The checks of the generated module read the local PostgreSQL server of localtest from STEGO_TEST_POSTGRES_DSN.
+	postgresDSN = localtest.PostgresDSN(t)
 	stego := filepath.Join(t.TempDir(), "stego")
 	command(t, filepath.Join("..", "..", ".."), goEnv(), pinnedGo(), "build", "-o", stego, "./cmd/stego")
 	endpoint, key := startSpiceDB(t)

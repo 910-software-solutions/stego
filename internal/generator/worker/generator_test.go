@@ -19,6 +19,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -167,7 +168,7 @@ func (p *project) mustGo(args ...string) string {
 	p.t.Helper()
 	cmd := exec.Command("go", args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		p.t.Fatalf("go %v: %v\n%s", args, err, output)
@@ -216,6 +217,7 @@ func newProject(t *testing.T, ctx gen.Context, extra ...map[string][]byte) *proj
 	p.write("go.mod", []byte("module "+testModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
