@@ -15,6 +15,8 @@ change the active context. Keep cluster test resources in a dedicated namespace
 with CPU, memory, and time limits. Do not use privileged containers.
 
 Keep ordinary local checks small. Run heavy test suites in CI or the cluster.
+The tests keep a checked module cache of about 3 GB in the user cache folder;
+set `STEGO_TEST_RUNS` to a persistent folder of the agent to keep it there.
 If a test is interrupted, inspect its process or job before starting another run.
 A missing result is not a pass. Preserve unrelated files and workloads.
 
