@@ -49,18 +49,33 @@ type errorCodeKey struct{}
 // errorCode keeps the first fixed error code that the handler of one call gives.
 type errorCode struct{ code atomic.Pointer[string] }
 
-// SetErrorCode gives the fixed error code of a denied or failed call, such as denied or internal, to the completion
-// log of the call of ctx (ST-SUP-RP03-LC12). The first valid code counts: lower-case letters, digits, '.', '_' and
-// '-', at most MaxErrorCode bytes, so no error text and no value of a request reaches the log. A code of another
+// SetErrorCode gives the fixed error code of a denied or failed call, such as denied, internal or AUT-001, to the
+// completion log of the call of ctx (ST-SUP-RP03-LC12). The first valid code counts: letters, digits, '.', '_' and
+// '-', at most MaxErrorCode bytes, so no error text and no value of a request reaches the log. Upper-case letters are
+// for the fixed codes of the problem documents, such as AUT-001 of the authentication (from runtime v0.208.0). A code of another
 // form, and a ctx of no call that Handler or TraceRPC started, are ignored. The log of a call that passes holds no
 // code.
+//
+// The generated telemetry runtime of a service (otel-tracing) imports no package of the runtime library, so it gives a
+// request the place of its code under the key SharedErrorCodeKey, which SetErrorCode fills too (from runtime
+// v0.208.0).
 func SetErrorCode(ctx context.Context, code string) {
-	holder, ok := ctx.Value(errorCodeKey{}).(*errorCode)
-	if !ok || code == "" || len(code) > MaxErrorCode || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz0123456789._-") != "" {
+	if code == "" || len(code) > MaxErrorCode || strings.Trim(code, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != "" {
 		return
 	}
-	holder.code.CompareAndSwap(nil, &code)
+	if holder, ok := ctx.Value(errorCodeKey{}).(*errorCode); ok {
+		holder.code.CompareAndSwap(nil, &code)
+	}
+	if shared, ok := ctx.Value(SharedErrorCodeKey{}).(*atomic.Pointer[string]); ok && shared != nil {
+		shared.CompareAndSwap(nil, &code)
+	}
 }
+
+// SharedErrorCodeKey is the context key under which code that does not import this package, such as the telemetry
+// runtime that otel-tracing generates, gives a request a *atomic.Pointer[string] as the place of its fixed error code,
+// which SetErrorCode fills. It is an alias of an unnamed struct type with an exported field, so a package that
+// declares the same type literal names the same key with no import.
+type SharedErrorCodeKey = struct{ StegoErrorCode struct{} }
 
 // withErrorCode gives ctx with a place for the fixed error code of its call.
 func withErrorCode(ctx context.Context) context.Context {
@@ -75,6 +90,11 @@ func WithErrorCode(ctx context.Context) context.Context { return withErrorCode(c
 func ErrorCode(ctx context.Context) (string, bool) {
 	if holder, ok := ctx.Value(errorCodeKey{}).(*errorCode); ok {
 		if code := holder.code.Load(); code != nil {
+			return *code, true
+		}
+	}
+	if shared, ok := ctx.Value(SharedErrorCodeKey{}).(*atomic.Pointer[string]); ok && shared != nil {
+		if code := shared.Load(); code != nil {
 			return *code, true
 		}
 	}
