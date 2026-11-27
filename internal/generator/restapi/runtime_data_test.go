@@ -37,9 +37,10 @@ import (
 // The child process of ST-SUP-RC20-OC33-T02 (legacyMuxMarker) does not fill the cache: it runs only that test, which
 // runs no go command. The fill takes about ten seconds, which is the time limit of the child, so with the fill the
 // child was killed (signal: killed) before it could exit. A go command of the child still gets the cache through
-// localtest.GoEnv, which fills it on its first call.
+// localtest.GoEnv, which fills it on its first call. The child is known by the marker and by its -test.run argument
+// (legacyMuxRun) together.
 func TestMain(m *testing.M) {
-	if os.Getenv(legacyMuxMarker) == "1" {
+	if os.Getenv(legacyMuxMarker) == "1" && slices.Contains(os.Args[1:], legacyMuxRun) {
 		os.Exit(localtest.Main(m))
 	}
 	os.Exit(localtest.MainModules(m))

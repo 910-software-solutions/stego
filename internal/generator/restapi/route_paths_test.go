@@ -137,6 +137,10 @@ func TestScopedCollectionRoutesKeepParameterNames(t *testing.T) {
 // GODEBUG=httpmuxgo121=1. TestMain does not fill the module cache of localtest for that child.
 const legacyMuxMarker = "STEGO_TEST_LEGACY_MUX"
 
+// legacyMuxRun is the -test.run argument of that child process. TestMain skips the fill only when the binary also has
+// this argument, so a marker that is set for a whole run still fills the cache.
+const legacyMuxRun = "-test.run=^TestRouteValidationRejectsLegacyMuxMode$"
+
 func TestRouteValidationRejectsLegacyMuxMode(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC33-T02 Route validation requires the current HTTP pattern rules", func(t *testing.T) {
 		const marker = legacyMuxMarker
@@ -149,7 +153,7 @@ func TestRouteValidationRejectsLegacyMuxMode(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRouteValidationRejectsLegacyMuxMode$", "-test.count=1")
+		command := exec.CommandContext(ctx, os.Args[0], legacyMuxRun, "-test.count=1")
 		for _, entry := range os.Environ() {
 			if !strings.HasPrefix(entry, "GODEBUG=") && !strings.HasPrefix(entry, marker+"=") {
 				command.Env = append(command.Env, entry)
