@@ -95,7 +95,9 @@ name: rest-api
 # Version 4.43.0 compares a kept jsonb field with each number as its exact decimal value, and not as a float64, so a
 # value that differs from the stored one only above 2^53 is refused with 400 (ST-SUP-RC20-OC44; security review of
 # PR #519, B-I2).
-version: 4.43.0
+# Version 4.44.0 gives the minimum and the maximum of an integer schema in its validation entry as an integer, such
+# as number must be at most 2147483647, and not as 2.147483647e+09 (walkthrough 28, MSG-MAX).
+version: 4.44.0
 stage: ga
 output_namespace: internal/api
 
