@@ -213,6 +213,7 @@ func addSchemaErrors(result *[]ValidationError, more *int, err error) {
 		if msg == "" {
 			msg = "the value does not match the schema"
 		}
+		msg = integerBound(schemaErr, msg)
 		*result = append(*result, ValidationError{
 			Field:   field,
 			Message: msg,
@@ -244,4 +245,26 @@ func unsupportedMember(err *openapi3.SchemaError) (string, bool) {
 		member = member[:cut]
 	}
 	return member, unquoteErr == nil
+}
+
+// integerBound gives the reason of a minimum or a maximum of an integer schema with the bound as an integer, such
+// as number must be at most 2147483647, where the check gives it as 2.147483647e+09. It gives any other reason as
+// it is.
+func integerBound(err *openapi3.SchemaError, msg string) string {
+	s := err.Schema
+	if s == nil || s.Type == nil || !s.Type.Is(openapi3.TypeInteger) {
+		return msg
+	}
+	bound, word := s.Max, "at most"
+	switch err.SchemaField {
+	case "maximum":
+	case "minimum":
+		bound, word = s.Min, "at least"
+	default:
+		return msg
+	}
+	if bound == nil || *bound != float64(int64(*bound)) {
+		return msg
+	}
+	return "number must be " + word + " " + strconv.FormatInt(int64(*bound), 10)
 }
