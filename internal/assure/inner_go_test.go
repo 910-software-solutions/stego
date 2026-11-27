@@ -87,6 +87,11 @@ type goScope struct {
 	results  []ast.Expr
 	file     *ast.File
 	bound    *goSite
+	// literal is true for the scope of a function literal of a package variable, such as var build = func() {...},
+	// which no exemption of innerGoExempt covers (security review of PR #13, confirmation, N2).
+	literal bool
+	// addressed are the names whose address the body takes, such as p := &name, outside its function literals.
+	addressed map[string]bool
 }
 
 // goSite is one call of a function, in the scope that makes it.
@@ -155,7 +160,7 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 
 // newScope reads one function body into a scope, and each function literal in it into a scope of its own.
 func (g *goScan) newScope(file *ast.File, kind *ast.FuncType, body *ast.BlockStmt, name string, method bool, parent *goScope) *goScope {
-	sc := &goScope{params: map[string]int{}, variadic: -1, name: name, method: method, parent: parent, file: file}
+	sc := &goScope{params: map[string]int{}, variadic: -1, name: name, method: method, parent: parent, file: file, addressed: map[string]bool{}}
 	index := 0
 	if kind.Params != nil {
 		for _, field := range kind.Params.List {
@@ -201,6 +206,10 @@ func (g *goScan) newScope(file *ast.File, kind *ast.FuncType, body *ast.BlockStm
 				lhs[i] = id
 			}
 			sc.defs = append(sc.defs, goDef{lhs: lhs, rhs: n.Values, pos: n.Pos()})
+		case *ast.UnaryExpr:
+			if id, ok := n.X.(*ast.Ident); ok && n.Op == token.AND {
+				sc.addressed[id.Name] = true
+			}
 		case *ast.CallExpr:
 			sc.calls = append(sc.calls, n)
 		case *ast.ReturnStmt:
@@ -557,7 +566,9 @@ func (g *goScan) sliceFault(expr ast.Expr, sc *goScope, depth int) string {
 
 // nameTexts gives the text values of the name in the scope: each value of a local name or parameter, which must
 // each be a string literal, or the value of a package constant. It is false for a package variable, for a value that
-// is not a string literal and for a name that the scan does not find.
+// is not a string literal, for a name that the scan does not find, and for a local that the scan cannot follow: one
+// whose address the function takes or that a function literal in it assigns, as values reads only the assignments
+// of its own scope (security review of PR #13, confirmation, N1).
 func (g *goScan) nameTexts(name string, sc *goScope) ([]string, bool) {
 	values, found, _ := g.values(name, sc)
 	if !found || len(values) == 0 {
@@ -568,6 +579,9 @@ func (g *goScan) nameTexts(name string, sc *goScope) ([]string, bool) {
 		if value.scope == nil && g.constants[name] == nil {
 			return nil, false
 		}
+		if value.scope != nil && g.escapes(name, value.scope) {
+			return nil, false
+		}
 		text, ok := stringLiteral(value.expr)
 		if !ok {
 			return nil, false
@@ -575,6 +589,30 @@ func (g *goScan) nameTexts(name string, sc *goScope) ([]string, bool) {
 		texts = append(texts, text)
 	}
 	return texts, true
+}
+
+// escapes tells whether the local name of the scope sc can change in a way that values does not read: sc or a scope
+// of a function literal in it takes its address, or a scope of a function literal in it assigns it.
+func (g *goScan) escapes(name string, sc *goScope) bool {
+	for _, other := range g.scopes {
+		if !within(other, sc) {
+			continue
+		}
+		if other.addressed[name] {
+			return true
+		}
+		if other == sc {
+			continue
+		}
+		for _, def := range other.defs {
+			for _, left := range def.lhs {
+				if id, ok := left.(*ast.Ident); ok && id.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // entryFault gives the reason why the entry expr cannot be read or sets a go setting, or "".
@@ -704,7 +742,7 @@ func (g *goScan) commandFault(call *ast.CallExpr, sc *goScope, args []ast.Expr) 
 	// A command of a function that innerGoExempt names runs a program that the scan cannot read and that is not go. Only
 	// the top-level function of that name is exempt: not a method and not a function literal, also of the same name
 	// (security review of PR #13, L1).
-	if kind == programUnknown && sc.file != nil && !sc.method && sc.parent == nil && innerGoExempt[g.fset.Position(sc.file.Pos()).Filename+" "+sc.name] != "" {
+	if kind == programUnknown && sc.file != nil && !sc.method && !sc.literal && sc.parent == nil && innerGoExempt[g.fset.Position(sc.file.Pos()).Filename+" "+sc.name] != "" {
 		return
 	}
 	g.commands++
@@ -798,6 +836,21 @@ func innerGoFaults(files map[string][]byte) []string {
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
 					if value, ok := spec.(*ast.ValueSpec); ok {
+						// A function literal of a package variable, such as var build = func() {...}, is a scope of
+						// its own, which no exemption covers (security review of PR #13, confirmation, N2).
+						for i, v := range value.Values {
+							name := ""
+							if i < len(value.Names) {
+								name = value.Names[i].Name
+							}
+							ast.Inspect(v, func(node ast.Node) bool {
+								if lit, ok := node.(*ast.FuncLit); ok {
+									g.newScope(file, lit.Type, lit.Body, name, false, nil).literal = true
+									return false
+								}
+								return true
+							})
+						}
 						for i, id := range value.Names {
 							if i < len(value.Values) {
 								g.consts[id.Name] = value.Values[i]
@@ -1058,6 +1111,32 @@ func TestX(t *testing.T) {
 	cmd.Env = localtest.GoEnv()
 	_ = cmd.Run()
 }`,
+	// Security review of PR #13, confirmation, N1 and N2: a local that a closure assigns or whose address is taken,
+	// and a function literal of a package variable.
+	"a local that a closure assigns": `
+func TestX(t *testing.T) {
+	wiringModule := "STEGO_MODULE"
+	func() { wiringModule = "GOPROXY" }()
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(wiringModule + "=direct")
+	_ = cmd.Run()
+}`,
+	"a local whose address is taken": `
+func TestX(t *testing.T) {
+	wiringModule := "STEGO_MODULE"
+	p := &wiringModule
+	*p = "GOPROXY"
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(wiringModule + "=direct")
+	_ = cmd.Run()
+}`,
+	"a function literal of a package variable": `
+var build = func() {
+	cmd := exec.Command("go", "build")
+	cmd.Env = os.Environ()
+	_ = cmd.Run()
+}
+func TestX(t *testing.T) { build() }`,
 	"closure with the program as its first argument": `
 func TestX(t *testing.T) {
 	run := func(args ...string) {
@@ -1095,6 +1174,12 @@ func otherTool(t *testing.T) {
 	"a method named startBrowser": `
 type cdpBrowser struct{}
 func (b *cdpBrowser) startBrowser() {
+	cmd := exec.Command(os.Getenv("X_TOOL"), "build")
+	cmd.Env = os.Environ()
+	_ = cmd.Run()
+}`,
+	"a function literal of a package variable startBrowser": `
+var startBrowser = func(t *testing.T) {
 	cmd := exec.Command(os.Getenv("X_TOOL"), "build")
 	cmd.Env = os.Environ()
 	_ = cmd.Run()
