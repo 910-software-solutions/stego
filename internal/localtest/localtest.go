@@ -73,7 +73,7 @@ const PostgresImage = "docker.io/library/postgres@sha256:d3e1620b530c944afa6e887
 
 // SpiceDBImage is the pinned SpiceDB image of the local stand-in: version 1.57.0 at its digest, the image of the
 // runtime's own SpiceDB tests.
-const SpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
+const SpiceDBImage = "authzed/spicedb:v1.57.1@sha256:9ea6df2d3cca23ed63aa7205639cf6babaaf1dc9a264ffb1f50c6455658fd6ba"
 
 const (
 	// PostgresVariable names an existing server, a superuser URL; when it is set, no container starts.

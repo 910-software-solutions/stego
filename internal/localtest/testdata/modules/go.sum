@@ -17,8 +17,8 @@ github.com/authzed/authzed-go v1.11.0 h1:D2WVK5T51cXknawOIqcDDYPkmbT7rObupRvelGb
 github.com/authzed/authzed-go v1.11.0/go.mod h1:gZsVWPwYoHCRA917aOI022U26ftvp9q2FP1gPlAsPeQ=
 github.com/authzed/cel-go v0.32.0 h1:1IQD9qFvem2DWdy3PyMNqbVJiyNCBUHbh7SjR9JfbPY=
 github.com/authzed/cel-go v0.32.0/go.mod h1:Jp4Wbt+Tbe8kiX6xz5xfIXy56qoqS0uB2R+mYn+MQnU=
-github.com/authzed/spicedb v1.57.0 h1:QQ7Uorm+nvlIwPiDDqXGrhz89meDwfJoEDzubOc+4KE=
-github.com/authzed/spicedb v1.57.0/go.mod h1:2JueUlWhJx93GrUH97SaFf4rP8anMwEg1/wYDIzKKnk=
+github.com/authzed/spicedb v1.57.1 h1:cWY7avFOawXz5KbFibzmg7dzfFD/oSbijyhnmTY+QYE=
+github.com/authzed/spicedb v1.57.1/go.mod h1:2JueUlWhJx93GrUH97SaFf4rP8anMwEg1/wYDIzKKnk=
 github.com/bmatcuk/doublestar v1.1.1/go.mod h1:UD6OnuiIn0yFxxA2le/rnRU1G4RaI4UvFv1sNto9p6w=
 github.com/brianvoe/gofakeit/v6 v6.28.0 h1:Xib46XXuQfmlLS2EXRuJpqcw8St6qSZz75OUo0tgAW4=
 github.com/brianvoe/gofakeit/v6 v6.28.0/go.mod h1:Xj58BMSnFqcn/fAQeSK+/PLtC5kSb7FJIq4JyGa8vEs=

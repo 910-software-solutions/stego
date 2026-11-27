@@ -33,7 +33,7 @@ require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/authzed/authzed-go v1.11.0 // indirect
 	github.com/authzed/cel-go v0.32.0 // indirect
-	github.com/authzed/spicedb v1.57.0 // indirect
+	github.com/authzed/spicedb v1.57.1 // indirect
 	github.com/ccoveille/go-safecast/v2 v2.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
