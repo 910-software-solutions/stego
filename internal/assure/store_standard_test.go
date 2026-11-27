@@ -83,15 +83,39 @@ type sqlWord struct {
 
 // sqlWords gives the words of text: names and keywords, and each bracket, comma, dot and semicolon. It drops block
 // comments, a -- comment that follows a space up to the end of its line, and each other character, such as quotes, backslashes and the + of a Go join, so OF "m" reads
-// as OF m. A backtick or a double quote that a ), a comma, a semicolon, a // comment or the end of its line follows
-// ends a Go string literal: it gives the word END, so the words of Go code after the SQL text, such as a comment
-// // SKIP LOCKED or the argument limit, are not read as SQL (security review of PR #14, L3).
-func sqlWords(text string) []sqlWord {
+// as OF m. In Go text (goText), the quote that closes a Go string literal, when a ), a comma, a semicolon, a //
+// comment or the end of its line follows it, gives the word END, so the words of Go code after the SQL text, such as
+// a comment // SKIP LOCKED or the argument limit, are not read as SQL (security review of PR #14, L3). Only the quote
+// character that opened the literal closes it: a double quote in a raw string literal, such as OF "m" at the end of
+// a line, is a quoted name of the SQL text and gives no END (security review sec-21-14c, L-14b). Outside a literal,
+// the scan drops a // comment and a rune literal, so that a quote in them does not open a literal. SQL text (not goText), such as a .sql file, has no Go literal,
+// so a quote in it gives no END.
+func sqlWords(text string, goText bool) []sqlWord {
 	var words []sqlWord
+	var open byte // the quote character of the Go string literal that is open, or 0
 	for i := 0; i < len(text); {
 		c := text[i]
 		switch {
-		case c == '`' || c == '"':
+		case goText && open == '"' && c == '\\':
+			// An escape in a double quote literal, such as \" of a quoted name.
+			i += 2
+		case goText && open == 0 && c == '/' && i+1 < len(text) && text[i+1] == '/':
+			end := strings.IndexByte(text[i:], '\n')
+			if end < 0 {
+				return words
+			}
+			i += end
+		case goText && open == 0 && c == '\'' && i+2 < len(text) && text[i+2] == '\'':
+			i += 3
+		case goText && open == 0 && c == '\'' && i+3 < len(text) && text[i+1] == '\\' && text[i+3] == '\'':
+			i += 4
+		case goText && (c == '`' || c == '"') && (open == 0 || open == c):
+			if open == 0 {
+				open = c
+				i++
+				continue
+			}
+			open = 0
 			j := i + 1
 			for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r') {
 				j++
@@ -167,7 +191,9 @@ func limitBefore(words []sqlWord) bool {
 // lockTail reads the words after a row lock: the list of names of OF, NOWAIT, SKIP LOCKED and more locking clauses,
 // then a LIMIT or a FETCH of the same SELECT, which PostgreSQL also takes after the lock. It gives whether the tail
 // holds SKIP LOCKED and whether a limit follows, in any case. The read stops at the end of the Go string literal (END),
-// so the Go name limit in the arguments of a call after the SQL text does not count, and at any other word.
+// so the Go name limit in the arguments of a call after the SQL text does not count, and at any other word. At a
+// close bracket, the lock is in a subquery or a WITH query, and a LIMIT of a SELECT that holds it (outerLimit) bounds
+// the rows that it locks: that is a claim too (decision on the security review sec-21-14c, L-14c).
 func lockTail(words []sqlWord) (skipLocked, limit bool) {
 	names := false
 	for i := 0; i < len(words); i++ {
@@ -191,6 +217,8 @@ func lockTail(words []sqlWord) (skipLocked, limit bool) {
 			if !names {
 				return skipLocked, false
 			}
+		case ")":
+			return skipLocked, outerLimit(words[i+1:])
 		default:
 			if !names || slices.Contains([]string{"END", "BLOCK", "(", ")", ";"}, words[i].key) {
 				return skipLocked, false
@@ -198,6 +226,31 @@ func lockTail(words []sqlWord) (skipLocked, limit bool) {
 		}
 	}
 	return skipLocked, false
+}
+
+// outerLimit tells whether the words after the close bracket of a subquery or a WITH query that holds a row lock
+// hold a LIMIT or a FETCH of a SELECT that holds the bracket, such as WITH c AS (... FOR UPDATE) SELECT id FROM c
+// LIMIT 10. PostgreSQL reads such a query only as far as the outer SELECT needs rows, so the outer LIMIT bounds the
+// rows that the lock takes. A LIMIT in another bracket, such as of another WITH query or a subquery of a join, does
+// not count. The read stops at a semicolon, at a block of Go code (BLOCK) and at the end of the Go string literal (END).
+func outerLimit(words []sqlWord) bool {
+	depth := 0
+	for _, word := range words {
+		switch word.key {
+		case "(":
+			depth++
+		case ")":
+			// At depth 0, the close bracket of a further SELECT that holds the lock.
+			depth = max(0, depth-1)
+		case ";", "BLOCK", "END":
+			return false
+		case "LIMIT", "FETCH":
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // lockAt gives the index of the word after the row lock (FOR UPDATE, FOR NO KEY UPDATE, FOR SHARE or FOR KEY SHARE)
@@ -232,7 +285,7 @@ var pagedRowLocks = []string{"internal/generator/postgresadapter/schema_seal.go"
 func claimFaults(file storeText) ([]string, int) {
 	var faults []string
 	claims := 0
-	words := sqlWords(file.text)
+	words := sqlWords(file.text, !strings.HasSuffix(file.name, ".sql") && !strings.HasSuffix(file.name, ".sql.tmpl"))
 	for i, word := range words {
 		end := lockAt(words, i)
 		if end < 0 {
@@ -369,7 +422,20 @@ var (
 	auditEventsName = regexp.MustCompile(`(?i)\{events\}|\baudit_event\b|EventsTable|\bstego_audit_sink\b`)
 	// A grant on each table of a schema, which holds the audit table when the schema is an audit schema.
 	allTablesIn = regexp.MustCompile(`(?i)\bALL\s+TABLES\s+IN\s+SCHEMA\b`)
+	// The comments and the joins of two Go string literals that grantText removes (security review sec-21-14c, L-14c).
+	grantBlockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	grantLineComment  = regexp.MustCompile(`(?m)(^|[ \t])--[^\n]*`)
+	grantJoin         = regexp.MustCompile("[`\"][ \t]*\\+[ \t\r\n]*[`\"]")
 )
+
+// grantText gives the text of a file of store code for the scan of audit grants: with block comments, -- comments
+// that follow a space, and each join of two Go string literals, such as "GRANT INSERT, " + "UPDATE ON", replaced by a
+// space, so that a grant across a comment or a join reads as one statement (security review sec-21-14c, L-14c).
+func grantText(text string) string {
+	text = grantBlockComment.ReplaceAllString(text, " ")
+	text = grantLineComment.ReplaceAllString(text, "$1 ")
+	return grantJoin.ReplaceAllString(text, " ")
+}
 
 // auditTableFiles are the files of the runtime library whose grants on a table are all on an audit table: the
 // table of the default sink, stego_audit_sink.entries, which the file names through Go joins (security review of PR
@@ -381,8 +447,9 @@ var auditTableFiles = []string{runtimeModule + "/audit/auditsink/table.go"}
 func auditGrantFaults(file storeText) ([]string, int) {
 	var faults []string
 	grants := 0
-	for _, match := range auditGrant.FindAllStringSubmatchIndex(file.text, -1) {
-		target := file.text[match[4]:match[5]]
+	text := grantText(file.text)
+	for _, match := range auditGrant.FindAllStringSubmatchIndex(text, -1) {
+		target := text[match[4]:match[5]]
 		onAudit := auditEventsName.MatchString(target) || slices.Contains(auditTableFiles, file.name) && !regexp.MustCompile(`(?i)^(SCHEMA|FUNCTION|SEQUENCE)\b`).MatchString(target)
 		if allTablesIn.MatchString(target) {
 			onAudit = onAudit || strings.HasPrefix(file.name, runtimeModule+"/audit/") || regexp.MustCompile(`(?i)audit|RecordSchema|\{s\}`).MatchString(target)
@@ -391,9 +458,9 @@ func auditGrantFaults(file storeText) ([]string, int) {
 			continue
 		}
 		grants++
-		privileges := strings.ToUpper(file.text[match[2]:match[3]])
+		privileges := strings.ToUpper(text[match[2]:match[3]])
 		if regexp.MustCompile(`\b(UPDATE|DELETE|TRUNCATE|ALL)\b`).MatchString(privileges) {
-			faults = append(faults, fmt.Sprintf("%s grants %s on the audit table: %s", file.name, strings.TrimSpace(privileges), lineOf(file.text, match[0])))
+			faults = append(faults, fmt.Sprintf("%s grants %s on the audit table: %s", file.name, strings.TrimSpace(privileges), lineOf(text, match[0])))
 		}
 	}
 	return faults, grants
@@ -503,10 +570,36 @@ func TestStoreScans(t *testing.T) {
 			"SELECT a FROM b LIMIT 1 UNION SELECT id FROM q WHERE id = $1 FOR UPDATE":                                       0,
 			"SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE /* SKIP LOCKED */":                                            1,
 			"SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED; SELECT id FROM r ORDER BY id LIMIT 5 FOR UPDATE": 1,
+			// Security review sec-21-14c, L-14b: a quoted name of the SQL text at the end of a line, or before a comma
+			// or a bracket, does not end a raw string literal; an escaped quoted name does not end a double quote
+			// literal; and a quote in a // comment or a rune literal opens no literal.
+			"`SELECT id FROM q m ORDER BY id FOR UPDATE OF \"m\"\n\tLIMIT 10`":                                           1,
+			"`WITH c AS (SELECT id FROM q ORDER BY id LIMIT 10)\n\tSELECT * FROM \"q\"\n\tJOIN c USING (id) FOR UPDATE`": 1,
+			"`SELECT * FROM q WHERE id IN (SELECT id FROM q ORDER BY id LIMIT 10) AND (\"k\") = 1 FOR UPDATE`":           1,
+			"\"SELECT id FROM q m ORDER BY id FOR UPDATE OF \\\"m\\\"\" +\n\t\" LIMIT 10\"":                              1,
+			"tx.QueryContext(ctx, \"SELECT id FROM q WHERE id = $1 FOR UPDATE\", id, limit)":                             0,
+			"a := 1 // see `x\nb := `SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE` // SKIP LOCKED\n":                 1,
+			"q := '`'\nb := `SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE` // SKIP LOCKED\n":                         1,
+			"q := '\\\"'\nb := `SELECT id FROM q ORDER BY id LIMIT 10 FOR UPDATE` // SKIP LOCKED\n":                      1,
+			"b := `SELECT id FROM q WHERE note = '5\" disk' ORDER BY id LIMIT 10 FOR UPDATE` // SKIP LOCKED\n":           1,
+			"b := \"SELECT id FROM q WHERE note = '5\\\" disk' ORDER BY id LIMIT 10 FOR UPDATE\" // SKIP LOCKED\n":       1,
+			// Security review sec-21-14c, L-14c: a lock in a WITH query or a subquery with the LIMIT of the outer SELECT
+			// is a claim (decision on the review). A LIMIT of another bracket does not count.
+			"WITH c AS (SELECT id FROM q ORDER BY id FOR UPDATE) SELECT id FROM c LIMIT 10":                                             1,
+			"SELECT id FROM (SELECT id FROM q ORDER BY id FOR UPDATE) s LIMIT 10":                                                       1,
+			"SELECT id FROM (SELECT id FROM (SELECT id FROM q ORDER BY id FOR UPDATE) s) t FETCH FIRST 10 ROWS ONLY":                    1,
+			"WITH c AS (SELECT id FROM q ORDER BY id FOR UPDATE SKIP LOCKED) SELECT id FROM c LIMIT 10":                                 0,
+			"WITH c AS (SELECT id FROM q WHERE id = $1 FOR UPDATE), d AS (SELECT id FROM r LIMIT 1) SELECT id FROM c JOIN d USING (id)": 0,
+			"SELECT id FROM (SELECT id FROM q WHERE id = $1 FOR UPDATE) s":                                                              0,
+			"x := `WITH c AS (SELECT id FROM q WHERE id = $1 FOR UPDATE) SELECT id FROM c`\nlimit := 10":                                0,
 		} {
 			if faults, _ := claimFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
 			}
+		}
+		// A SQL file has no Go string literal, so a quoted name at the end of a line ends nothing there.
+		if faults, _ := claimFaults(storeText{name: "claim.sql", text: "SELECT id FROM q m ORDER BY id FOR UPDATE OF \"m\"\n\tLIMIT 10;"}); len(faults) != 1 {
+			t.Errorf("the claim with a quoted name at the end of a line in a SQL file gives %d faults, want 1: %v", len(faults), faults)
 		}
 	})
 	t.Run("ST-STD-TXN-R06-T02 The scan of audit grants finds a write grant on the audit table in any form of its name", func(t *testing.T) {
@@ -529,6 +622,13 @@ func TestStoreScans(t *testing.T) {
 			"GRANT\tUPDATE,\tDELETE ON stego_audit.audit_event TO app;":              1,
 			"GRANT SELECT,\n  INSERT (id,\n\tat) ON stego_audit.audit_event TO app;": 0,
 			"GRANT UPDATE (\"a b\") ON stego_audit.audit_event TO app;":              1,
+			// Security review sec-21-14c, L-14c: a grant across a comment or a join of two Go string literals.
+			"GRANT /* x */ UPDATE ON stego_audit.audit_event TO app;":               1,
+			"GRANT UPDATE -- x\n ON stego_audit.audit_event TO app;":                1,
+			"`GRANT INSERT, ` + `UPDATE ON stego_audit.audit_event TO app;`":        1,
+			"\"GRANT INSERT, \" +\n\t\"DELETE ON stego_audit.audit_event TO app;\"": 1,
+			"\"GRANT SELECT, \" +\n\t\"INSERT ON stego_audit.audit_event TO app;\"": 0,
+			"GRANT SELECT /* , UPDATE */ ON stego_audit.audit_event TO app;":        0,
 		} {
 			if faults, _ := auditGrantFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
