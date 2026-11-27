@@ -310,20 +310,26 @@ type tableOutput struct {
 
 // of gives the output of the generated subtest name and of each of its own subtests, each with the action that ended
 // it. When the module ran no such subtest, it gives the output of the module that no test holds, which tells why.
+// When one of them started and did not end, it gives that output of the module too, where a panic or a timeout of the
+// run appears (security review of PR #521, info).
 func (o tableOutput) of(name string) string {
 	var text strings.Builder
+	stopped := false
 	for _, test := range o.order {
 		if test != name && !strings.HasPrefix(test, name+"/") {
 			continue
 		}
 		action := o.actions[test]
 		if action == "" {
-			action = "no end: the run stopped in it"
+			action, stopped = "no end: the run stopped in it", true
 		}
 		fmt.Fprintf(&text, "--- %s (%s)\n%s", test, action, o.tests[test].String())
 	}
-	if text.Len() == 0 {
+	switch {
+	case text.Len() == 0:
 		fmt.Fprintf(&text, "the generated module ran no subtest %s; the output of the module:\n%s", name, o.module)
+	case stopped:
+		fmt.Fprintf(&text, "the run stopped in a subtest of %s; the output of the module:\n%s", name, o.module)
 	}
 	return text.String()
 }
