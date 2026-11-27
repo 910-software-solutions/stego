@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 // openReservationsProbe is the typed probe that the generator emits for the query open-reservations: one method per

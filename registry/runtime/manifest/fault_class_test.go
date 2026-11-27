@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 func TestFaultClass(t *testing.T) {

@@ -1,5 +1,5 @@
 // Package worker generates the per-service code of the worker component (ST-SUP-RC35) on the command runtime
-// github.com/jsell-rh/stego/registry/runtime/command (ST-SUP-RP10). For each declared worker it emits the worker slot
+// github.com/910-software-solutions/stego/registry/runtime/command (ST-SUP-RP10). For each declared worker it emits the worker slot
 // contract (the fill type, which gets its input and one command handle only, and the handle), the repository
 // declarations of the entities that the workers write, and one runner bound to the worker's one fill: a ticker of
 // the command runtime for a worker with an every trigger, under the lease stego.worker.<name> for a single worker,
@@ -22,10 +22,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/command"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/command"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Generator is the generator of the worker component.
@@ -55,11 +55,11 @@ func ContractRuntimeImports(entities []types.Entity, workers []types.Worker) []s
 	var out []string
 	// The view of an entity that a worker reads holds its pii fields and no secret field (ST-SUP-RC35-OC19).
 	if command.WritesSensitive(entities, writes) || command.ReadsPII(entities, reads) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/audit")
 	}
-	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	out = append(out, "github.com/910-software-solutions/stego/registry/runtime/command")
 	if command.WritesSecret(entities, writes) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/sealed")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/sealed")
 	}
 	return out
 }
@@ -566,7 +566,7 @@ func renderContract(m *model) []byte {
 	if m.has(true) || m.timeParams() {
 		w.f("\t\"time\"\n")
 	}
-	w.f("\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if m.probeImport != "" {
 		w.f("\n\tprobes %q\n", m.probeImport)
 	}
@@ -610,15 +610,15 @@ func renderRunners(m *model) []byte {
 	if m.has(true) {
 		w.f("\t\"time\"\n")
 	}
-	w.f("\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if m.has(true) {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/lease\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/lease\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/outbox\"\n")
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/outbox\"\n")
 	if m.probeImport == "" {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/probe\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/probe\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/service\"\n\n\t%s %q\n", m.pkg, m.contractImport)
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/service\"\n\n\t%s %q\n", m.pkg, m.contractImport)
 	if m.probeImport != "" {
 		w.f("\tprobes %q\n", m.probeImport)
 	}

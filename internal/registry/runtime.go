@@ -19,7 +19,7 @@ import (
 
 // RuntimeModule is the module path of the runtime library, the Go module in the folder runtime of the common
 // registry (ST-SUP-TOOL11).
-const RuntimeModule = "github.com/jsell-rh/stego/registry/runtime"
+const RuntimeModule = "github.com/910-software-solutions/stego/registry/runtime"
 
 // RuntimePin is one version of the runtime library (ST-VO58): its module path, a tagged version and the go.sum
 // hash of that version's contents. An archetype pins exactly one (ST-SUP-INV10).
@@ -85,10 +85,10 @@ func checkRuntimePin(a *Archetype) error {
 }
 
 // IsStegoModule says whether a module path is under one of STEGO's own module path, the
-// compiler's repository github.com/jsell-rh/stego, which holds the runtime library too. A generated service may require only the runtime pin of these
+// compiler's repository github.com/910-software-solutions/stego, which holds the runtime library too. A generated service may require only the runtime pin of these
 // (ST-SUP-INV10, ST-GEN-INV13).
 func IsStegoModule(path string) bool {
-	const root = "github.com/jsell-rh/stego"
+	const root = "github.com/910-software-solutions/stego"
 	return path == root || strings.HasPrefix(path, root+"/")
 }
 

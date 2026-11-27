@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // stageFunction is a call of a stage function of a constructor's package on

@@ -22,17 +22,17 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/query"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/authzclock"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // deliveredPort is a relationships port of the relay that records the resources of the tuples it wrote, and a

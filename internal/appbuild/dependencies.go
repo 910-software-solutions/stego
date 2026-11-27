@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // ResolveDependencies resolves the current service with Go's module tools.

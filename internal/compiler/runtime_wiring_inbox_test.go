@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func TestRuntimeWiringInbox(t *testing.T) {

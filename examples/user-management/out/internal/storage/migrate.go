@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	runtimetenant "github.com/910-software-solutions/stego/registry/runtime/tenant"
 	stegotenancy "github.com/example/service/out/internal/tenancy"
-	runtimetenant "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // MigrationFunc is a function that performs a database migration. It runs in the

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // onRuntime gives ctx with what the runtime data path, the one data path (ST-SUP-RC20-OC39), needs and ctx does not
@@ -4785,7 +4785,7 @@ func TestRuntimeWrites(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")
 		// The command runtime sets updated_time at each update of a row, a patch too.
-		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $13, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
+		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $14, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
 			t.Error("the update of a todo does not set updated_time to the time of the change")
 		}
 		if !strings.Contains(string(files["api/runtime.go"]), "identity.Email()") {

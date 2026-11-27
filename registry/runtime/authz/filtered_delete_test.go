@@ -13,7 +13,7 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/google/uuid"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // relationships reads every relationship of the resource type from the server, each as type:id#relation@type:id,

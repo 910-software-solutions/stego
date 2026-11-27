@@ -17,14 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/910-software-solutions/stego/internal/browserassets"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/healthcheck"
+	"github.com/910-software-solutions/stego/internal/generator/kubernetesservice"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
 	"github.com/coder/websocket"
-	"github.com/jsell-rh/stego/internal/browserassets"
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/healthcheck"
-	"github.com/jsell-rh/stego/internal/generator/kubernetesservice"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 )
 
 func fixture() gen.Context {

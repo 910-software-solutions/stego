@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 //go:embed testdata/emitted_test.go
@@ -53,7 +53,7 @@ func emittedProject(t *testing.T) string {
 	}
 	write("go.sum", sums)
 	write("go.mod", []byte("module example.com/idempotency-test\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.1.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeFolder+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.1.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
 	for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}} {
 		goCommand(t, project, args...)
 	}

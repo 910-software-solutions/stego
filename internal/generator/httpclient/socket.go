@@ -3,7 +3,7 @@ package httpclient
 import (
 	"bytes"
 	_ "embed"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 	"go/format"
 	"path"
 	"text/template"

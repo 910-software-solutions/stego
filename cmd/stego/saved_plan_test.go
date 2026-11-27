@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // These tests start from ST-GEN-TD03, save a plan with stego plan and carry it

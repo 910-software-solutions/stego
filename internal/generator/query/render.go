@@ -10,22 +10,22 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/capability"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/capability"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The import paths of the runtime library that the generated code uses.
 const (
-	queryImport  = "github.com/jsell-rh/stego/registry/runtime/query"
-	auditImport  = "github.com/jsell-rh/stego/registry/runtime/audit"
-	authnImport  = "github.com/jsell-rh/stego/registry/runtime/authn"
-	authzImport  = "github.com/jsell-rh/stego/registry/runtime/authz"
-	otelImport   = "github.com/jsell-rh/stego/registry/runtime/otel"
-	tenantImport = "github.com/jsell-rh/stego/registry/runtime/tenant"
+	queryImport  = "github.com/910-software-solutions/stego/registry/runtime/query"
+	auditImport  = "github.com/910-software-solutions/stego/registry/runtime/audit"
+	authnImport  = "github.com/910-software-solutions/stego/registry/runtime/authn"
+	authzImport  = "github.com/910-software-solutions/stego/registry/runtime/authz"
+	otelImport   = "github.com/910-software-solutions/stego/registry/runtime/otel"
+	tenantImport = "github.com/910-software-solutions/stego/registry/runtime/tenant"
 	// commandImport gives ValidUUID, the check of the key form of every entity (ST-SUP-RP10-LC33).
-	commandImport = "github.com/jsell-rh/stego/registry/runtime/command"
+	commandImport = "github.com/910-software-solutions/stego/registry/runtime/command"
 	protoImport   = "google.golang.org/protobuf/proto"
 )
 

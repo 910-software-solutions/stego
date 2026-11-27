@@ -31,16 +31,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkainbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // steps records the step names of Migrate and the backend of the connection that each runs on.

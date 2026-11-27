@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // runRegistryCompose implements `stego registry compose` (ST-SUP-CLI09). It

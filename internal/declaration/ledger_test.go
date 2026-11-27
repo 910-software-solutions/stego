@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // td04 is the ledger declaration of ST-DECL-TD04: ST-DECL-TD02 and the entity Wallet of kind ledger in EUR, with

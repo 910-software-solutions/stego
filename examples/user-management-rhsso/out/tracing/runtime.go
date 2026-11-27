@@ -479,6 +479,8 @@ func (r *Runtime) rpcLine(ctx context.Context, start, end time.Time, method, val
 type httpObservationKey struct{}
 type httpObservation struct{ route atomic.Pointer[string] }
 
+// safeRoute gives the route template of a registered pattern, or empty. A colon is allowed, so a declared command
+// route, a custom method such as /jobs/{job_id}/status:convert, has its template too (walkthrough 26, L-ROUTE).
 func safeRoute(pattern string) string {
 	if pattern == "" || pattern == "/" || len(pattern) > 256 {
 		return ""
@@ -487,7 +489,7 @@ func safeRoute(pattern string) string {
 	if !hasMethod {
 		route = pattern
 	}
-	if strings.HasPrefix(route, "/") && strings.Trim(route, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-{}$") == "" {
+	if strings.HasPrefix(route, "/") && strings.Trim(route, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-{}$:") == "" {
 		return route
 	}
 	return ""

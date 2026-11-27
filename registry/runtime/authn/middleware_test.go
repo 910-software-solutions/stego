@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -297,7 +297,9 @@ func TestProblemType(t *testing.T) {
 			{base, http.StatusForbidden, "tenant.not_provisioned", base + "tenant-not-provisioned"},
 			{base, http.StatusNotFound, "denied", base + "denied"},
 			{base, http.StatusInternalServerError, "internal", base + "internal"},
-			{base, http.StatusServiceUnavailable, "unavailable", base + "unavailable"},
+			{base, http.StatusServiceUnavailable, "unavailable", base + "service-unavailable"},
+			{base, http.StatusServiceUnavailable, "undecided", base + "service-unavailable"},
+			{base, http.StatusServiceUnavailable, "", base + "service-unavailable"},
 			{base, http.StatusConflict, "Appointment.Not_Booked", base + "appointment-not-booked"},
 			{base, http.StatusBadRequest, "", base + "bad-request"},
 			{base, http.StatusUnauthorized, "", base + "unauthorized"},

@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 // emit is the one method of the test probe that the fills call, as a generated probe method does.

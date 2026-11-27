@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // The header names and the problem types of the Idempotency-Key header draft. The problem types are slugs: the
@@ -384,7 +384,7 @@ func withSchema(text, schema string) string {
 // the tenant, the principal and the key, each prefixed by its length. lockSQL mixes in the OID of the key table of
 // the schema, so two schemas or services in one database never share a lock.
 func (req Request) lockID() int64 {
-	sum, err := sumParts([]byte("github.com/jsell-rh/stego/registry/runtime/idempotency"), []byte(req.Tenant), []byte(req.Principal),
+	sum, err := sumParts([]byte("github.com/910-software-solutions/stego/registry/runtime/idempotency"), []byte(req.Tenant), []byte(req.Principal),
 		[]byte(req.Key))
 	if err != nil {
 		panic(err) // check keeps every part short.

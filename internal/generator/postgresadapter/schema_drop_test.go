@@ -1,12 +1,15 @@
 package postgresadapter_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // dropEntities are the entities of the release before the drops (ST-SUP-RC01-OC34, ST-SUP-RC01-OC47): the owned
@@ -116,17 +119,29 @@ func TestDropSteps(t *testing.T) {
 				t.Errorf("the manifest of the release of the drops names %s:\n%s", gone, manifest)
 			}
 		}
-		for file, want := range map[string]string{
-			"step_0004_board-legacy-drop_contract.sql": "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"legacy\";\n",
-			"step_0005_board-rank-drop_contract.sql":   "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"rank\";\n",
-			"step_0006_pin-drop_contract.sql": "ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_board_id_fkey\";\n" +
-				"ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_tenant_id_fkey\";\nDROP TABLE IF EXISTS public.\"pins\";\n",
-		} {
-			if got := generated(t, contractFiles, "dropc/migrations/"+file); got != want {
-				t.Errorf("%s is\n%s\nwant\n%s", file, got, want)
-			}
+		// The last statement of each contract deletes the counts of wrong attempts of the dropped field or entity
+		// (decision ST-SUP-Q216 (a)); the body before it is the body of an adapter before that delete, whose digest
+		// the ledger accepts as an earlier digest of the step.
+		purge := func(where string) string {
+			return "DO $purge$ DECLARE t text; BEGIN IF pg_catalog.to_regclass('public.attempt_counts') IS NULL OR pg_catalog.to_regclass('public.stego_tenants') IS NULL THEN RETURN; END IF; " +
+				"FOR t IN SELECT s.tenant_id FROM public.stego_tenants s ORDER BY s.tenant_id COLLATE \"C\" LOOP PERFORM pg_catalog.set_config('app.tenant', t, true); " +
+				"DELETE FROM public.attempt_counts WHERE tenant_id = t AND " + where + "; END LOOP; PERFORM pg_catalog.set_config('app.tenant', '', true); END $purge$;\n"
 		}
 		migrate := generated(t, contractFiles, "dropc/migrate.go")
+		for file, before := range map[string][2]string{
+			"step_0004_board-legacy-drop_contract": {"ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"legacy\";\n", "counter = 'Board.legacy'"},
+			"step_0005_board-rank-drop_contract":   {"ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"rank\";\n", "counter = 'Board.rank'"},
+			"step_0006_pin-drop_contract": {"ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_board_id_fkey\";\n" +
+				"ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_tenant_id_fkey\";\nDROP TABLE IF EXISTS public.\"pins\";\n", "pg_catalog.split_part(counter, '.', 1) = 'Pin'"},
+		} {
+			if got, want := generated(t, contractFiles, "dropc/migrations/"+file+".sql"), before[0]+purge(before[1]); got != want {
+				t.Errorf("%s.sql is\n%s\nwant\n%s", file, got, want)
+			}
+			sum := sha256.Sum256([]byte(before[0]))
+			if want := fmt.Sprintf("RegisterEarlierDigests(%q, %q)", file, hex.EncodeToString(sum[:])); !strings.Contains(migrate, want) {
+				t.Errorf("migrate.go of the contract does not register the digest of the body before the delete of the counts: %s", want)
+			}
+		}
 		for _, want := range []string{
 			`{SQL: "DROP TABLE IF EXISTS public.\"pins\"", When: "", Long: false, Guard: true},`,
 			`{SQL: "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"legacy\"", When: "", Long: false, Guard: true},`,

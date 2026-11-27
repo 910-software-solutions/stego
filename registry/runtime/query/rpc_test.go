@@ -19,14 +19,14 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
-	"github.com/jsell-rh/stego/registry/runtime/internal/staging"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/seal"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/staging"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // metadataBind is the Bind of the RPC tests: the tenant and the subject come from two request metadata values, as the

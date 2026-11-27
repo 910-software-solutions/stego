@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // EventFieldsRule is the rule that a fault of the base check names when the head breaks the event fields that the

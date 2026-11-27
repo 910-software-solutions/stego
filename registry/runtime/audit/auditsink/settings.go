@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 // The settings of the audit sink, which the worker mode reads from the process environment by these fixed names.

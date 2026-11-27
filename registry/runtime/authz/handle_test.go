@@ -21,11 +21,11 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
-	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/authzclock"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/seal"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The unit tests bind a handle to a real *sql.Tx of a database/sql driver of the test. The driver answers only the

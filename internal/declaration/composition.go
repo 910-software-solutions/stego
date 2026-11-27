@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // knownModes are the modes that the one binary runs (ST-DECL-EN01), in the order of the format.

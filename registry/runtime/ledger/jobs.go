@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/modes"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/modes"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The names of the three jobs, as the controller mode registers them and as the health reason names them.

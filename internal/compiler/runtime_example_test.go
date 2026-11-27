@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"time"
 )
 

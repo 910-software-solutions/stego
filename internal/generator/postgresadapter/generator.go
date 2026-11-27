@@ -22,8 +22,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // validFieldNamePattern defines the safe character set for field names across

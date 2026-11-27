@@ -5,7 +5,7 @@ import (
 	"go/token"
 	"regexp"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // GoModelProvider declares generated source types for checked field mappings.

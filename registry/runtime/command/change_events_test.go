@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
 )
 
 // changeEventsOf gives the change events of each named entity as the generator names them for the service orders,

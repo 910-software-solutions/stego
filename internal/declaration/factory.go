@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // grpcApplication is the server-side gRPC component, which serves the declared commands and queries and gives no

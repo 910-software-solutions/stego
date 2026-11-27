@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/cliapplication"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
-	"github.com/jsell-rh/stego/internal/generator/httpapplication"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
 )
 
 func TestApplicationFactoryChecksGateValidation(t *testing.T) {

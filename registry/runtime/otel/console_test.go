@@ -15,7 +15,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/logline"
 )
 
 // consoleClock is a clock that only the test moves.
@@ -111,7 +111,7 @@ func TestConsole(t *testing.T) {
 		out := &lockedBuffer{}
 		clock := &consoleClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}
 		r := consoleRuntime(t, out, clock)
-		logger := r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/command")
+		logger := r.LoggerProvider().Logger("github.com/910-software-solutions/stego/registry/runtime/command")
 		consumer := []attribute.KeyValue{attribute.String("worker", "ship-order"), attribute.String("destination", "orders"),
 			attribute.String("event_id", "0190a1b2-0000-7000-8000-000000000001"), attribute.Int64("attempt", 3),
 			attribute.String("outcome", "failed"), attribute.String("cause", "fill_error")}
@@ -175,7 +175,7 @@ func TestConsole(t *testing.T) {
 		out := &lockedBuffer{}
 		clock := &consoleClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}
 		r := consoleRuntime(t, out, clock)
-		logger := r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/service")
+		logger := r.LoggerProvider().Logger("github.com/910-software-solutions/stego/registry/runtime/service")
 		// A burst of 4xx completions at WARN over the limit, then 5xx completions of the same event name at ERROR and
 		// FATAL (security review of PR #421, I1).
 		const warnings = ConsoleLimit + 5
@@ -298,7 +298,7 @@ func TestLineForm(t *testing.T) {
 		out := &lockedBuffer{}
 		clock := &consoleClock{now: time.Date(2026, 11, 22, 7, 29, 43, 822602285, time.FixedZone("EST", -5*3600))}
 		r := consoleRuntime(t, out, clock)
-		logger := r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/command")
+		logger := r.LoggerProvider().Logger("github.com/910-software-solutions/stego/registry/runtime/command")
 		// A record with attributes of the runtime and of the semantic conventions, one with no attribute, and a burst
 		// over the limit, which gives the count line at the end of the window.
 		emitRecord(logger, otellog.SeverityWarn, "command.consumer.run_failed", "a consuming worker's run did not commit",

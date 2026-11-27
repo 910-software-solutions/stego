@@ -16,8 +16,8 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The limits of wrong attempts (ST-SUP-RP10-LC54, decision ST-SUP-Q185 (a), security review of PR #451, H1): a
@@ -191,8 +191,53 @@ func NewCounter(spec CounterSpec) (*Counter, error) {
 	if u := spec.UnlockAfter; u != 0 && (u < MinUnlockAfter || u > MaxUnlockAfter || u%time.Second != 0) {
 		return nil, fmt.Errorf("command: the counter of %s.%s unlocks after %s; give none, or whole seconds from %s to %s", spec.Entity, spec.Field, u, MinUnlockAfter, MaxUnlockAfter)
 	}
-	return &Counter{spec: spec}, nil
+	c := &Counter{spec: spec}
+	declaredCounters.Store(c, c)
+	return c, nil
 }
+
+// declaredCounters holds each counter that NewCounter took. The generated
+// counters are package variables, so each is known before the first call; a delete of a row of the entity deletes
+// the counts of each (decision ST-SUP-Q216 (a)).
+var declaredCounters sync.Map
+
+// countersOf gives the counters of the entity, as <entity>.<field>, in byte order.
+func countersOf(entity string) []string {
+	seen := map[string]bool{}
+	var out []string
+	declaredCounters.Range(func(_, c any) bool {
+		if counter := c.(*Counter); counter.spec.Entity == entity && !seen[counter.name()] {
+			seen[counter.name()] = true
+			out = append(out, counter.name())
+		}
+		return true
+	})
+	sort.Strings(out)
+	return out
+}
+
+// markPurged records that the delete of the row id of entity deleted the count of each counter of the entity. The
+// caller holds the lock of the state.
+func (s *state) markPurged(entity, id string) {
+	if s.purged == nil {
+		s.purged = map[attemptKey]bool{}
+	}
+	row := strings.ToLower(id)
+	declaredCounters.Range(func(_, c any) bool {
+		if counter := c.(*Counter); counter.spec.Entity == entity {
+			s.purged[attemptKey{counter: counter, row: row}] = true
+		}
+		return true
+	})
+}
+
+// purgeRowStatement deletes the counts of one row of the counters $2 in the tenant $1: a delete of the row runs it in
+// its own transaction, so the counts go only with the row (decision ST-SUP-Q216 (a)).
+const purgeRowStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1 AND counter = ANY($2::text[]) AND row_id = $3`
+
+// PurgeTenantStatement deletes every count of the tenant $1: the Retire of the tenant runs it in its transaction, so
+// the counts go only with the retire (decision ST-SUP-Q216 (a)).
+const PurgeTenantStatement = `DELETE FROM public.attempt_counts WHERE tenant_id = $1`
 
 // UnlockAfter is the window of the decay of the counter: a row at its limit opens again this long after its last
 // charge, while its failures are below FailureCap. Zero is no decay.
@@ -663,6 +708,13 @@ func (s *state) bindCounted(t *countedTarget) {
 		k.stored = sha256.Sum256([]byte(stored))
 	}
 	*t.into = sealed.CountedByKey(*t.into, k, storeKey)
+}
+
+// purgedBinding tells whether the stored counted value c is bound, by a read of this handle, to a count that a delete
+// of this transaction deleted.
+func (s *state) purgedBinding(c sealed.Compared) bool {
+	k, ok := c.CounterBy(storeKey).(*rowCounter)
+	return ok && k.s == s && s.purged[k.key]
 }
 
 // boundTo tells whether the stored counted value c was bound, by a read of this handle, to the count of key.

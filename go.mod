@@ -1,4 +1,4 @@
-module github.com/jsell-rh/stego
+module github.com/910-software-solutions/stego
 
 go 1.26.11
 

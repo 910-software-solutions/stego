@@ -10,8 +10,8 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // MinCursorKey is the fewest bytes of the key of the cursor MAC (ST-SUP-RP11-LC15).
@@ -43,7 +43,7 @@ const (
 )
 
 // cursorDomain separates the key and the associated data of a cursor from every other use of the cursor key.
-const cursorDomain = "github.com/jsell-rh/stego/registry/runtime/query cursor v2"
+const cursorDomain = "github.com/910-software-solutions/stego/registry/runtime/query cursor v2"
 
 // CursorText gives the text form of c for the next HTTP request of the query q, which the tenant t and the
 // principal p run (ST-SUP-RP11-LC15). The position is sealed with AES-256-GCM under a key that HKDF-SHA256 derives

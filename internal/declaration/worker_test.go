@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // orders is ST-DECL-TD02 with the modes given (none when empty) and the owned entity Order with the fields status

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
 )
 
 // FillEvidence is the record, in the fill manifest, that the fill's tests

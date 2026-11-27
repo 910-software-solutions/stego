@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild"
 )
 
 // These tests run stego image publish (ST-BLD-CLI06) and stego image export

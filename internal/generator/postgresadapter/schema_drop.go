@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The drop step of the runtime data path (ST-SUP-RC01-OC34, ST-SUP-RC01-OC47; ST-GEN-Q47). A drop removes a field or
@@ -231,7 +231,8 @@ func dropContractSQL(ctx gen.Context, before, after []tableModel, change types.S
 			return nil, fmt.Errorf("the table %s keeps the column %s after the contract of its drop", name, change.Field)
 		}
 		out.from = change.Field
-		out.statements = []contractStatement{{sql: fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(change.Field)), guard: true}}
+		out.statements = []contractStatement{{sql: fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(change.Field)), guard: true},
+			{sql: purgeCountsSQL("counter = " + sqlString(change.Entity+"."+change.Field))}}
 		return out, nil
 	}
 	if _, kept := findTable(after, name); kept {
@@ -250,8 +251,39 @@ func dropContractSQL(ctx gen.Context, before, after []tableModel, change types.S
 	if old.owned {
 		out.statements = append(out.statements, contractStatement{sql: fmt.Sprintf("ALTER TABLE IF EXISTS %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(TenantKeyName(name, tenantColumn(ctx)))), guard: true})
 	}
-	out.statements = append(out.statements, contractStatement{sql: "DROP TABLE IF EXISTS " + table, guard: true})
+	out.statements = append(out.statements, contractStatement{sql: "DROP TABLE IF EXISTS " + table, guard: true},
+		contractStatement{sql: purgeCountsSQL("pg_catalog.split_part(counter, '.', 1) = " + sqlString(change.Entity))})
 	return out, nil
+}
+
+// purgeCountsSQL gives the last statement of the contract step of a drop: it deletes the counts of wrong attempts
+// (attempt_counts, ST-SUP-RP10-LC54) of the dropped field, or of each field of the dropped entity, whose counter is
+// <entity>.<field>, so no count stays of a field that is gone (decision ST-SUP-Q216 (a)). The table forces its
+// tenant policy also for the owner role, so the statement deletes the counts of each tenant of the tenant list under
+// the tenant setting of that tenant, as rowsLeft reads the rows; a database with no table of the counts or no tenant
+// list has no count. It runs again with no error after a run that deleted the counts.
+func purgeCountsSQL(where string) string {
+	return "DO $purge$ DECLARE t text; BEGIN IF pg_catalog.to_regclass('public.attempt_counts') IS NULL OR " +
+		"pg_catalog.to_regclass('public.stego_tenants') IS NULL THEN RETURN; END IF; " +
+		"FOR t IN SELECT s.tenant_id FROM public.stego_tenants s ORDER BY s.tenant_id COLLATE \"C\" LOOP " +
+		"PERFORM pg_catalog.set_config('app.tenant', t, true); DELETE FROM public.attempt_counts WHERE tenant_id = t AND " + where + "; " +
+		"END LOOP; PERFORM pg_catalog.set_config('app.tenant', '', true); END $purge$"
+}
+
+// dropBodyBefore gives the body of the contract step of a drop as versions of the adapter before the delete of the
+// counts wrote it (decision ST-SUP-Q216 (a)): a database that ran the step then holds the digest of that body, which
+// the ledger accepts as an earlier digest of the step.
+func dropBodyBefore(c *contractStep) string {
+	var body strings.Builder
+	for _, statement := range c.statements {
+		if strings.HasPrefix(statement.sql, "DO $purge$") {
+			continue
+		}
+		for _, text := range append([]string{statement.sql}, statement.also...) {
+			body.WriteString(text + ";\n")
+		}
+	}
+	return body.String()
 }
 
 // normalized gives a copy of the table with its columns, checks, foreign keys and indexes in the order of their

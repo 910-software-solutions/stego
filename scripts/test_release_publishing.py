@@ -27,7 +27,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
-REPOSITORY = "jsell-rh/stego"
+REPOSITORY = "910-software-solutions/stego"
 DECISION_PREDICATE = "https://github.com/jsell-rh/stego/assure/release-decision/v1"
 COMPILER_PREDICATE = "https://slsa.dev/provenance/v1"
 ARTIFACT_RUN = 202
@@ -92,9 +92,9 @@ if args[:2] == ["attestation", "verify"]:
     if workflow is None:
         fail("no attestation of predicate type " + str(predicate))
     commit = state["commit"]
-    wanted = {"--hostname": "github.com", "--repo": "jsell-rh/stego", "--signer-digest": commit,
+    wanted = {"--hostname": "github.com", "--repo": "910-software-solutions/stego", "--signer-digest": commit,
               "--source-digest": commit, "--source-ref": "refs/heads/main",
-              "--cert-identity": "https://github.com/jsell-rh/stego/" + workflow + "@refs/heads/main",
+              "--cert-identity": "https://github.com/910-software-solutions/stego/" + workflow + "@refs/heads/main",
               "--cert-oidc-issuer": "https://token.actions.githubusercontent.com",
               "--digest-alg": "sha256", "--format": "json"}
     for name, expected in wanted.items():
@@ -150,17 +150,17 @@ elif args[:2] == ["release", "create"]:
         if state["upload_changes"] and number == 301:
             data += b"changed in upload"
         (here / ("asset-" + str(number))).write_bytes(data)
-        state["api"]["repos/jsell-rh/stego/releases/assets/" + str(number)] = {"file": "asset-" + str(number)}
+        state["api"]["repos/910-software-solutions/stego/releases/assets/" + str(number)] = {"file": "asset-" + str(number)}
         assets.append({"id": number, "name": Path(name).name, "size": len(data),
                        "digest": "sha256:" + sha256(data), "state": "uploaded"})
-    url = "https://github.com/jsell-rh/stego/releases/tag/" + tag
+    url = "https://github.com/910-software-solutions/stego/releases/tag/" + tag
     record = {"id": 900, "tag_name": tag, "target_commitish": target, "draft": False,
               "prerelease": False, "immutable": state["immutable"], "html_url": url,
               "name": found["--title"][0], "assets": assets,
               "body": Path(found["--notes-file"][0]).read_text()}
-    state["api"]["repos/jsell-rh/stego/releases/tags/" + tag] = record
-    state["api"]["repos/jsell-rh/stego/releases?per_page=100"].append(record)
-    state["api"]["repos/jsell-rh/stego/git/matching-refs/tags/" + tag] = [
+    state["api"]["repos/910-software-solutions/stego/releases/tags/" + tag] = record
+    state["api"]["repos/910-software-solutions/stego/releases?per_page=100"].append(record)
+    state["api"]["repos/910-software-solutions/stego/git/matching-refs/tags/" + tag] = [
         {"ref": "refs/tags/" + tag, "object": {"type": "commit", "sha": target}}]
     state["latest"][tag] = "--latest=false" not in found or state["latest_anyway"]
     save()
@@ -393,7 +393,7 @@ class ReleasePublishing(unittest.TestCase):
     def assert_published(self, run):
         self.assertEqual(run.status, 0, run.log)
         self.assertEqual(run.outputs, {"release": self.world.tag})
-        self.assertIn("Compiler release published: https://github.com/jsell-rh/stego/releases/tag/"
+        self.assertIn("Compiler release published: https://github.com/910-software-solutions/stego/releases/tag/"
                       + self.world.tag + "\n", run.log)
 
     def test_publish_and_qualify_flow(self):
@@ -404,7 +404,7 @@ class ReleasePublishing(unittest.TestCase):
             calls = self.world.calls()
             self.assertEqual(calls[0][:2], ["attestation", "verify"])
             self.assertIn(DECISION_PREDICATE, calls[0])
-            release = self.world.load()["api"]["repos/jsell-rh/stego/releases/tags/" + self.world.tag]
+            release = self.world.load()["api"]["repos/910-software-solutions/stego/releases/tags/" + self.world.tag]
             self.assertEqual(sorted(asset["name"] for asset in release["assets"]), sorted(ASSETS))
             self.assertFalse(self.world.state["latest"][self.world.tag])
             # The qualify-release job hears the job output and qualifies the published release.
@@ -425,7 +425,7 @@ class ReleasePublishing(unittest.TestCase):
 
         with self.subTest("ST-DIS-UC11-FL-T An existing tag stops publishing and names the tag"):
             self.world = self.new_world("tagged")
-            self.world.state["api"]["repos/jsell-rh/stego/git/matching-refs/tags/" + self.world.tag] = [
+            self.world.state["api"]["repos/910-software-solutions/stego/git/matching-refs/tags/" + self.world.tag] = [
                 {"ref": "refs/tags/" + self.world.tag, "object": {"type": "commit", "sha": self.world.commit}}]
             self.assert_nothing_published(self.publish(), "The tag " + self.world.tag + " exists.")
 
@@ -477,9 +477,9 @@ class ReleasePublishing(unittest.TestCase):
             self.assertEqual(create[create.index("--target") + 1], self.world.commit)
             self.assertEqual([Path(item).name for item in create[-4:]], ASSETS)
             downloads = [call[-1] for call in self.world.calls() if call[0] == "api" and call[-1].endswith("/zip")]
-            self.assertEqual(downloads, ["repos/jsell-rh/stego/actions/artifacts/9001/zip",
-                                         "repos/jsell-rh/stego/actions/artifacts/9002/zip"])
-            release = self.world.load()["api"]["repos/jsell-rh/stego/releases/tags/" + self.world.tag]
+            self.assertEqual(downloads, ["repos/910-software-solutions/stego/actions/artifacts/9001/zip",
+                                         "repos/910-software-solutions/stego/actions/artifacts/9002/zip"])
+            release = self.world.load()["api"]["repos/910-software-solutions/stego/releases/tags/" + self.world.tag]
             published = {asset["name"]: asset["digest"] for asset in release["assets"]}
             self.assertEqual(published, {
                 "stego-linux-amd64": "sha256:" + sha256(self.world.binary),
@@ -543,7 +543,7 @@ class ReleasePublishing(unittest.TestCase):
         return {"build.json": world.build, "SHA256SUMS": world.sums}
 
     def artifact_runs(self, *runs):
-        self.world.state["api"]["repos/jsell-rh/stego/actions/runs?head_sha=" + self.world.commit
+        self.world.state["api"]["repos/910-software-solutions/stego/actions/runs?head_sha=" + self.world.commit
                                 + "&per_page=100"] = self.world.runs(*runs)
 
     def test_the_signed_artifact_run_is_found_and_awaited(self):
@@ -564,15 +564,15 @@ class ReleasePublishing(unittest.TestCase):
             published = self.publish()
             self.assert_published(published)
             self.assertIn("The signed artifact run is 202, attempt 1.", published.log)
-            self.assertIn("https://github.com/jsell-rh/stego/actions/runs/202/attempts/1",
-                          self.world.load()["api"]["repos/jsell-rh/stego/releases/tags/" + self.world.tag]["body"])
+            self.assertIn("https://github.com/910-software-solutions/stego/actions/runs/202/attempts/1",
+                          self.world.load()["api"]["repos/910-software-solutions/stego/releases/tags/" + self.world.tag]["body"])
             # A dispatch of main counts as a push does.
             self.world = world("dispatch")
             self.artifact_runs(self.world.run(ARTIFACT_RUN, artifact, event="workflow_dispatch"))
             self.assert_published(self.publish())
             # The run is in progress at the first look and succeeds at the second: the job waits for it.
             self.world = world("waits")
-            runs = "repos/jsell-rh/stego/actions/runs?head_sha=" + self.world.commit + "&per_page=100"
+            runs = "repos/910-software-solutions/stego/actions/runs?head_sha=" + self.world.commit + "&per_page=100"
             self.world.state["api"][runs] = {"sequence": [
                 self.world.runs(self.world.run(ARTIFACT_RUN, artifact, status="in_progress", conclusion=None)),
                 self.world.runs(self.world.run(ARTIFACT_RUN, artifact))]}
@@ -611,11 +611,11 @@ class ReleasePublishing(unittest.TestCase):
             tag = self.world.tag
             refused = [
                 ("an existing tag", lambda world: world.state["api"].update({
-                    "repos/jsell-rh/stego/git/matching-refs/tags/" + tag: [
+                    "repos/910-software-solutions/stego/git/matching-refs/tags/" + tag: [
                         {"ref": "refs/tags/" + tag, "object": {"type": "commit", "sha": "b" * 40}}]}),
                  "The tag " + tag + " exists.", False),
                 ("an existing release", lambda world: world.state["api"].update({
-                    "repos/jsell-rh/stego/releases?per_page=100": [{"tag_name": tag, "draft": True}]}),
+                    "repos/910-software-solutions/stego/releases?per_page=100": [{"tag_name": tag, "draft": True}]}),
                  "A release " + tag + " exists.", False),
                 ("a release that is not immutable", lambda world: world.state.update(immutable=False),
                  "The release " + tag + " is not immutable. The owner must enable release immutability in the repository"
@@ -694,7 +694,7 @@ class ReleasePublishing(unittest.TestCase):
             self.assertEqual(set(job), {"name", "needs", "if", "runs-on", "timeout-minutes", "permissions", "env",
                                         "outputs", "steps"})
             self.assertEqual(job["permissions"], {"contents": "write", "actions": "read"})
-            self.assertEqual(job["env"], {"GH_TOKEN": "${{ github.token }}", "REPOSITORY": "jsell-rh/stego"})
+            self.assertEqual(job["env"], {"GH_TOKEN": "${{ github.token }}", "REPOSITORY": "910-software-solutions/stego"})
             writers = [name for name, other in jobs.items()
                        if (other.get("permissions") or {}).get("contents") == "write"]
             self.assertEqual(writers, ["publish-release"])
@@ -776,7 +776,7 @@ class ReleasePublishing(unittest.TestCase):
             # No checks run at the commit: the job says so at once and qualifies nothing.
             checks = ".github/workflows/checks.yml"
             artifact = ".github/workflows/compiler-artifact.yml"
-            runs = "repos/jsell-rh/stego/actions/runs?head_sha={}&per_page=100"
+            runs = "repos/910-software-solutions/stego/actions/runs?head_sha={}&per_page=100"
             self.world = self.new_world("no-checks")
             published = self.publish()
             self.world.load()
@@ -831,7 +831,7 @@ class QualificationReadsTheReleaseDecision(unittest.TestCase):
             record = json.loads((output / "qualification.json").read_text())
             self.assertEqual(record["release_decision"], {
                 "predicate_type": DECISION_PREDICATE,
-                "signer": "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main",
+                "signer": "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main",
                 "commit": world.commit, "kind": "release", "passed": True})
             decision = [call for call in world.calls() if DECISION_PREDICATE in call]
             self.assertEqual(len(decision), 1)

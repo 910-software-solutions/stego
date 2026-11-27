@@ -21,15 +21,15 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The timings of ST-SUP-RP10-LC25 and ST-SUP-RP10-LC28.
@@ -268,10 +268,10 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		rt.slots.entities[e] = true
 	}
 	if cfg.Logger != nil {
-		rt.logger = cfg.Logger.Logger("github.com/jsell-rh/stego/registry/runtime/command")
+		rt.logger = cfg.Logger.Logger("github.com/910-software-solutions/stego/registry/runtime/command")
 	}
 	if cfg.Meter != nil {
-		if rt.attemptsFailed, err = cfg.Meter.Meter("github.com/jsell-rh/stego/registry/runtime/command").Int64Counter(AttemptsFailedEvent,
+		if rt.attemptsFailed, err = cfg.Meter.Meter("github.com/910-software-solutions/stego/registry/runtime/command").Int64Counter(AttemptsFailedEvent,
 			metric.WithUnit("{charge}"), metric.WithDescription(attemptsFailedDescription)); err != nil {
 			return nil, fmt.Errorf("command: the counter %s: %w", AttemptsFailedEvent, err)
 		}
@@ -659,7 +659,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 			return Result{}, &conflictError{text: "the transaction did not begin before the deadline"}, true
 		}
 		if tenant.Unavailable(err) {
-			logUnavailable(ctx, cmd.spec.Name, "begin")
+			logUnavailable(ctx, cmd.spec.Name, "begin", err)
 			return Result{}, unavailablef("the transaction did not begin"), false
 		}
 		return Result{}, internalf("the transaction did not begin"), false
@@ -670,7 +670,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 			return Result{}, &conflictError{text: "the transaction did not begin before the deadline"}, true
 		}
 		if tenant.Unavailable(err) {
-			logUnavailable(ctx, cmd.spec.Name, "begin")
+			logUnavailable(ctx, cmd.spec.Name, "begin", err)
 			return Result{}, unavailablef("the transaction did not begin"), false
 		}
 		return Result{}, internalf("the transaction did not begin"), false
@@ -710,7 +710,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 			return Result{}, s.fail(ctx, "lock timeout", err), true
 		}
 		if tenant.Unavailable(err) {
-			logUnavailable(ctx, cmd.spec.Name, "lock timeout")
+			logUnavailable(ctx, cmd.spec.Name, "lock timeout", err)
 			return Result{}, unavailablef("the lock timeout was not set"), false
 		}
 		return Result{}, internalf("the lock timeout was not set"), false
@@ -775,7 +775,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	case errors.As(err, &failure):
 		return Result{}, failure.err, failure.conflict
 	case err != nil && tenant.Unavailable(err):
-		logUnavailable(ctx, cmd.spec.Name, "idempotency")
+		logUnavailable(ctx, cmd.spec.Name, "idempotency", err)
 		return Result{}, unavailablef("the idempotency wrapper failed"), false
 	case err != nil:
 		// A statement of the wrapper itself failed: an internal error, never a conflict (ST-SUP-RP10-LC25).
@@ -805,12 +805,28 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 var unavailableLog = authz.NewCauseLog(nil)
 
 // logUnavailable logs that the database could not serve the step of the command action now, with no error text, so
-// a 503 of an outage is never an answer that no log explains (walkthrough 10, B7).
-func logUnavailable(ctx context.Context, action, step string) {
+// a 503 of an outage is never an answer that no log explains (walkthrough 10, B7). The line names the SQLSTATE class
+// of err, such as 53 for a full disk (53100) or no memory (53200), 57 for a server that shuts down and 08 for a lost
+// connection, or none for an error with no SQLSTATE, such as a refused connection; it never names the code in full or
+// the message, so an alert can tell the class of resources from an outage (security review of PR #499, L1).
+func logUnavailable(ctx context.Context, action, step string, err error) {
 	if ok, held := unavailableLog.Allow(action + "/" + step); ok {
 		slog.WarnContext(ctx, "command: the database cannot serve now", otel.SlogEventKey, "command.database.unavailable", "action", action, "step", step,
-			"cause", "unavailable", "held_back", held)
+			"cause", "unavailable", "sqlstate_class", sqlStateClass(err), "held_back", held)
 	}
+}
+
+// sqlStateClass gives the class of the SQLSTATE of err, its first two characters, or none when err has no SQLSTATE, and
+// xx for a code that is not a SQLSTATE: two digits or upper-case letters. It gives no other part of the code.
+func sqlStateClass(err error) string {
+	code := sqlState(err)
+	if len(code) < 2 {
+		return "none"
+	}
+	if class := code[:2]; strings.Trim(class, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" {
+		return class
+	}
+	return "xx"
 }
 
 // answerRevocation sets the revocation headers of a response that commits (ST-SUP-RP10-LC35, ST-SUP-RC29-OC16):

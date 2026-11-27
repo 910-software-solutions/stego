@@ -16,7 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
 )
 
 const formLabel = `ALTER TABLE public.books ADD COLUMN "label" text;` + "\n"

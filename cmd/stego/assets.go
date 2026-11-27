@@ -4,8 +4,8 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/browserassets"
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/browserassets"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 func runAssets(args []string) error {

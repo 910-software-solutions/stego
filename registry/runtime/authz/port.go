@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/authzclock"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // Resource is the resource of an evaluation, in the shape of OpenID AuthZEN 1.0: a type and an ID.

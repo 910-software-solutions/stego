@@ -14,8 +14,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The tables of the runtime data path (ST-SUP-RC01-OC41), the only data path (ST-SUP-RC20-OC39): the generated

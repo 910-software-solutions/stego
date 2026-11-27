@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // Resolution maps each component name to its resolved port bindings.

@@ -3,8 +3,8 @@
 package storage
 
 import (
-	"github.com/jsell-rh/stego/registry/runtime/lease"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/lease"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
 )
 
 // SchemaManifest is what the commands and queries of the service need of the tables of the declaration: the columns with

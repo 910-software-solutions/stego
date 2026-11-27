@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The fixtures that the tests of this package share read-only: the stego binary of this commit and the generated

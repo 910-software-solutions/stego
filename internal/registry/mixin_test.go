@@ -43,7 +43,7 @@ func inv04Files() map[string]string {
 		"components/twin/slots/before_create.proto":  proto("Other"),
 		"components/twin-b/component.yaml":           component("twin-b", "internal/twin-b", "", "", slot("after_twin")),
 		"components/twin-b/slots/after_twin.proto":   proto("OtherTwin"),
-		"archetypes/svc-arch/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
+		"archetypes/svc-arch/archetype.yaml": "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
 			"name: svc-arch\nlanguage: go\nversion: 1.0.0\ncomponents: [api-a, store-a, auth-a]\nconventions:\n  layout: flat\n" +
 			"compatible_mixins: [extra-mixin]\nbindings:\n  store-port: store-a\n  auth-port: auth-a\n",
 		"mixins/extra-mixin/mixin.yaml": "kind: mixin\nname: extra-mixin\nversion: 1.0.0\nadds_components: [extra-a]\nadds_slots:" + slot("after_extra") +

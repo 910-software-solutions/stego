@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/capability"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication/grpcgen"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/capability"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication/grpcgen"
 	gengo "google.golang.org/protobuf/cmd/protoc-gen-go/internal_gengo"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
@@ -445,7 +445,7 @@ func renderServer(ctx gen.Context, p *rpcPlan) ([]byte, error) {
 	f("// query with the same verification, transaction, permission, audit and idempotency as its HTTP handler. A method\n")
 	f("// that no declaration names answers Unimplemented. It imports no package of the service's author.\n")
 	f("package %s\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"time\"\n\n\t\"google.golang.org/grpc\"\n\n", pkg)
-	f("\t\"github.com/jsell-rh/stego/registry/runtime/authn\"\n\t\"github.com/jsell-rh/stego/registry/runtime/service\"\n\n")
+	f("\t\"github.com/910-software-solutions/stego/registry/runtime/authn\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/service\"\n\n")
 	f("\ttransport %q\n", path.Join(ctx.ModuleName, ctx.OutDirName, ctx.OutputNamespace, "transport"))
 	if hasCommand {
 		f("\tcommands %q\n\tcommandhandlers %q\n", p.commandContract, p.commandHandlers)

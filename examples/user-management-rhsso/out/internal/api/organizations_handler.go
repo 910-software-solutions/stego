@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
 	slots "github.com/example/service/out/slots"

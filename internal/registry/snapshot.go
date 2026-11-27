@@ -15,8 +15,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 const maxRegistryBytes = 64 << 20

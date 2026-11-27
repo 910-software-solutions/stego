@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/gosdk"
-	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/gosdk"
+	"github.com/910-software-solutions/stego/internal/generator/typescriptsdk"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // markedDocument has a patch member marked x-kept and a command answer marked x-stego-opaque, as the rest-api

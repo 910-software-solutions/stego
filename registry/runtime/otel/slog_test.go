@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/logline"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/logline"
 )
 
 func TestSlogHandler(t *testing.T) {
@@ -231,7 +231,7 @@ func TestGeneratedEventSource(t *testing.T) {
 		// The console of the log provider writes a key once too.
 		console := &lockedBuffer{}
 		r := consoleRuntime(t, console, &consoleClock{now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)})
-		emitRecord(r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/command"), otellog.SeverityWarn,
+		emitRecord(r.LoggerProvider().Logger("github.com/910-software-solutions/stego/registry/runtime/command"), otellog.SeverityWarn,
 			"command.consumer.run_failed", "a run did not commit", attribute.String("worker", "a"), attribute.String("stego.worker", "b"))
 		if err := r.console.ForceFlush(context.Background()); err != nil {
 			t.Fatal(err)

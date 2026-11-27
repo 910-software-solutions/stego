@@ -19,10 +19,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/domainprobe"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -453,11 +453,11 @@ func TestContract(t *testing.T) {
 		}
 		handle, ok := params.At(2).Type().(*gotypes.Pointer)
 		named, _ := gotypes.Unalias(handle.Elem()).(*gotypes.Named)
-		if !ok || named == nil || named.Obj().Pkg().Path() != "github.com/jsell-rh/stego/registry/runtime/command" || named.Obj().Name() != "Handle" {
+		if !ok || named == nil || named.Obj().Pkg().Path() != "github.com/910-software-solutions/stego/registry/runtime/command" || named.Obj().Name() != "Handle" {
 			t.Errorf("the third parameter is %s, want *command.Handle", params.At(2).Type())
 		}
 		for i := 0; i < params.Len(); i++ {
-			for _, refused := range []string{"database/sql", "net", "net/http", "github.com/jsell-rh/stego/registry/runtime/authz.Runtime", "github.com/authzed", "github.com/jackc"} {
+			for _, refused := range []string{"database/sql", "net", "net/http", "github.com/910-software-solutions/stego/registry/runtime/authz.Runtime", "github.com/authzed", "github.com/jackc"} {
 				if strings.Contains(params.At(i).Type().String(), refused) {
 					t.Errorf("the parameter %s has a type of %s", params.At(i).Type(), refused)
 				}
@@ -736,7 +736,7 @@ func newProject(t *testing.T, ctx gen.Context, extra map[string][]byte) *project
 	}
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -750,7 +750,7 @@ func TestRelationHelpers(t *testing.T) {
 			`authz.NewResource(h.Tenant(), "order", on.ID())`,
 			`h.Authz().Relate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
 			`h.Authz().Unrelate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
-			"\"github.com/jsell-rh/stego/registry/runtime/authz\"",
+			"\"github.com/910-software-solutions/stego/registry/runtime/authz\"",
 		} {
 			if !strings.Contains(contract, want) {
 				t.Fatalf("the command contract does not hold %q", want)
@@ -792,7 +792,7 @@ func contractRuntime(t *testing.T, files map[string][]byte, namespace string) ma
 			t.Fatal(err)
 		}
 		for _, spec := range file.Imports {
-			if path := strings.Trim(spec.Path.Value, `"`); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+			if path := strings.Trim(spec.Path.Value, `"`); strings.HasPrefix(path, "github.com/910-software-solutions/stego/registry/runtime/") {
 				found[path] = true
 			}
 		}
@@ -970,6 +970,38 @@ func TestFieldCheckEmission(t *testing.T) {
 	})
 }
 
+func TestHeldBoundsCheck(t *testing.T) {
+	t.Run("ST-GEN-UC12-R03-T07 The generated check of an int64 that an open retype from int32 widens refuses a value above the int32 range until the contract", func(t *testing.T) {
+		// Security review of PR #499, I2: only PATCH had a test of the 400 above int32; the check of the command is
+		// what refuses a value of a command or a CRUD write before any statement (gen.HeldBounds, ST-DECL-Q48).
+		zero := 0.0
+		meeting := types.Entity{Name: "Meeting", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
+			{Name: "seats", Type: types.FieldTypeInt64, Min: &zero}}}
+		changes := []types.SchemaChange{{ID: "meeting-seats-retype", Kind: "retype", Entity: "Meeting", Field: "seats", From: "int32",
+			Definition: "int32, min 0", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}}
+		for _, contracted := range []bool{false, true} {
+			history := []types.SchemaStep{{Change: "meeting-seats-retype", Phase: "expand"}}
+			if contracted {
+				history = append(history, types.SchemaStep{Change: "meeting-seats-retype", Phase: "contract"})
+			}
+			held := gen.HeldBounds([]types.Entity{meeting}, changes, history)[0]
+			p, err := planEntity(held, map[string]types.Entity{"Meeting": held}, "tenant_id", Relations{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &writer{}
+			renderEntity(w, p, "tenant_id")
+			text := w.String()
+			if !strings.Contains(text, "if float64(v.Seats) < 0 {") {
+				t.Fatalf("contract %t: the check does not hold the declared min 0:\n%s", contracted, text)
+			}
+			if got := strings.Contains(text, "if float64(v.Seats) > 2.147483647e+09 {\n\t\t\treturn \"seats\", \"more than max 2.147483647e+09\", false"); got == contracted {
+				t.Fatalf("contract %t: the check refuses a value above 2147483647: %t, want it only until the contract:\n%s", contracted, got, text)
+			}
+		}
+	})
+}
+
 func TestRPCRevocation(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC17-T01 The gRPC handler of each command serves it through the runtime's ServeRPC, which answers the revocation metadata", func(t *testing.T) {
 		handlers := string(generated(t, commandContext(t, declaration(t), commandSlot))["commands/handlers/handlers.go"])
@@ -1098,7 +1130,7 @@ func buildEntityFile(t *testing.T, source []byte) {
 	}
 	p.write("go.sum", sums)
 	p.write("go.mod", []byte("module example.com/wallets\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.write("data/entities.go", source)
 	p.mustGo("mod", "tidy")
 	p.mustGo("vet", "./...")

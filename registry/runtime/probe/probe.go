@@ -9,7 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // HoldLimit is the most emissions that one call holds until its outcome (ST-SUP-RP12-LC20).

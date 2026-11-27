@@ -4,9 +4,9 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/httpclient"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/httpclient"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +93,10 @@ func TestGeneratedPostgresOperationTelemetry(t *testing.T) {
 
 func TestGeneratedDatabasePoolTelemetry(t *testing.T) {
 	testGeneratedTracing(t, "^TestDatabasePoolMetrics")
+}
+
+func TestGeneratedCommandRoute(t *testing.T) {
+	testGeneratedTracing(t, "^TestLocalCommandRoute")
 }
 
 func TestGeneratedOutboxTelemetry(t *testing.T) {

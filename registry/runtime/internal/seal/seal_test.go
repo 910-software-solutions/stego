@@ -3,8 +3,8 @@ package seal_test
 import (
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/seal"
 )
 
 // embedsPointer is an outer type that embeds a nil *authz.Principal: the promoted method of the mark panics on it.

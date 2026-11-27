@@ -8,7 +8,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
+	"github.com/910-software-solutions/stego/internal/generator/spicedbauthz"
 )
 
 // revocationOperation is what the test reads of one operation of the OpenAPI document.

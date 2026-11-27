@@ -3,7 +3,7 @@ package controller
 import (
 	_ "embed"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 //go:embed testdata/runtime_test.go

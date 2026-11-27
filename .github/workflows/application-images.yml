@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          repository: jsell-rh/stego
+          repository: 910-software-solutions/stego
           ref: ff0f902e258e6e85ed253daefc6767bf33c2f54d
           persist-credentials: false
           path: compiler

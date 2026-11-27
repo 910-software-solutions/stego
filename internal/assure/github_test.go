@@ -27,17 +27,17 @@ func TestGitHubAttestations(t *testing.T) {
 				return
 			}
 			switch r.URL.Path {
-			case "/repos/jsell-rh/stego/attestations/" + SubjectDigest(paged):
+			case "/repos/910-software-solutions/stego/attestations/" + SubjectDigest(paged):
 				if r.URL.Query().Get("after") == "" {
-					w.Header().Set("Link", `<`+server.URL+`/repos/jsell-rh/stego/attestations/`+SubjectDigest(paged)+`?per_page=100&predicate_type=`+
+					w.Header().Set("Link", `<`+server.URL+`/repos/910-software-solutions/stego/attestations/`+SubjectDigest(paged)+`?per_page=100&predicate_type=`+
 						strings.ReplaceAll(ProofRunPredicateType, "/", "%2F")+`&after=x>; rel="next"`)
 					w.Write([]byte(`{"attestations": [{"bundle": {"first": 1}, "repository_id": 1}, {"bundle": null, "bundle_url": "https://example.com/b.json.sn"}]}`))
 					return
 				}
 				w.Write([]byte(`{"attestations": [{"bundle": {"second": 2}}]}`))
-			case "/repos/jsell-rh/stego/attestations/" + SubjectDigest(none):
+			case "/repos/910-software-solutions/stego/attestations/" + SubjectDigest(none):
 				http.Error(w, `{"message": "Not Found"}`, http.StatusNotFound)
-			case "/repos/jsell-rh/stego/attestations/" + SubjectDigest(elsewhere):
+			case "/repos/910-software-solutions/stego/attestations/" + SubjectDigest(elsewhere):
 				w.Header().Set("Link", `<https://example.com/next>; rel="next"`)
 				w.Write([]byte(`{"attestations": []}`))
 			default:
@@ -45,7 +45,7 @@ func TestGitHubAttestations(t *testing.T) {
 			}
 		}))
 		defer server.Close()
-		store := GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego", Token: "job-token", Client: server.Client()}
+		store := GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego", Token: "job-token", Client: server.Client()}
 
 		bundles, err := store.Fetch(paged)
 		if err != nil {
@@ -55,7 +55,7 @@ func TestGitHubAttestations(t *testing.T) {
 		if !reflect.DeepEqual(bundles, want) {
 			t.Fatalf("got the bundles %q, want %q", bundles, want)
 		}
-		if len(asked) != 2 || !strings.HasPrefix(asked[0], "/repos/jsell-rh/stego/attestations/"+SubjectDigest(paged)+"?") {
+		if len(asked) != 2 || !strings.HasPrefix(asked[0], "/repos/910-software-solutions/stego/attestations/"+SubjectDigest(paged)+"?") {
 			t.Fatalf("GitHub was asked %v, want two pages by the subject digest", asked)
 		}
 		if bundles, err := store.Fetch(none); err != nil || len(bundles) != 0 {
@@ -68,9 +68,9 @@ func TestGitHubAttestations(t *testing.T) {
 			"an answer that is not 200 or 404":    {store, failing},
 			"a next page on another host":         {store, elsewhere},
 			"a short commit ID":                   {store, paged[:7]},
-			"an API that is not https":            {GitHubAttestations{API: "http://api.github.com", Slug: "jsell-rh/stego"}, paged},
-			"a repository that is not owner/name": {GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego/../x", Client: server.Client()}, paged},
-			"a token GitHub does not take":        {GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego", Token: "other", Client: server.Client()}, paged},
+			"an API that is not https":            {GitHubAttestations{API: "http://api.github.com", Slug: "910-software-solutions/stego"}, paged},
+			"a repository that is not owner/name": {GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego/../x", Client: server.Client()}, paged},
+			"a token GitHub does not take":        {GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego", Token: "other", Client: server.Client()}, paged},
 		} {
 			if bundles, err := check.store.Fetch(check.commit); err == nil {
 				t.Fatalf("%s gives %q and no error", name, bundles)
@@ -93,26 +93,26 @@ func TestGitHubAttestations(t *testing.T) {
 				return
 			}
 			switch r.URL.Path {
-			case "/repos/jsell-rh/stego/git/commits/" + merge:
+			case "/repos/910-software-solutions/stego/git/commits/" + merge:
 				w.Write([]byte(`{"sha":"` + merge + `","message":"Merge ` + head + ` into ` + base + `","parents":[{"sha":"` + base + `"},{"sha":"` + head + `"}]}`))
-			case "/repos/jsell-rh/stego/git/commits/" + missing:
+			case "/repos/910-software-solutions/stego/git/commits/" + missing:
 				http.Error(w, `{"message": "Not Found"}`, http.StatusNotFound)
-			case "/repos/jsell-rh/stego/git/commits/" + liar:
+			case "/repos/910-software-solutions/stego/git/commits/" + liar:
 				w.Write([]byte(`{"sha":"` + merge + `","parents":[{"sha":"` + base + `"},{"sha":"` + liar + `"}]}`))
-			case "/repos/jsell-rh/stego/git/commits/" + short:
+			case "/repos/910-software-solutions/stego/git/commits/" + short:
 				w.Write([]byte(`{"sha":"` + short + `","parents":[{"sha":"` + base[:7] + `"}]}`))
 			default:
 				http.Error(w, "broken", http.StatusBadGateway)
 			}
 		}))
 		defer server.Close()
-		store := GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego", Token: "job-token", Client: server.Client()}
+		store := GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego", Token: "job-token", Client: server.Client()}
 
 		parents, err := store.Parents(merge)
 		if err != nil || !reflect.DeepEqual(parents, []string{base, head}) {
 			t.Fatalf("the merge commit's parents are %q, %v; want the base and the head, in order", parents, err)
 		}
-		if !reflect.DeepEqual(asked, []string{"/repos/jsell-rh/stego/git/commits/" + merge}) {
+		if !reflect.DeepEqual(asked, []string{"/repos/910-software-solutions/stego/git/commits/" + merge}) {
 			t.Fatalf("GitHub was asked %v, want the commit once", asked)
 		}
 		if parents, err := store.Parents(missing); err != nil || len(parents) != 0 {
@@ -126,9 +126,9 @@ func TestGitHubAttestations(t *testing.T) {
 			"an answer about another commit":        {store, liar},
 			"a parent that is not a full commit ID": {store, short},
 			"a short commit ID":                     {store, merge[:7]},
-			"an API that is not https":              {GitHubAttestations{API: "http://api.github.com", Slug: "jsell-rh/stego"}, merge},
-			"a repository that is not owner/name":   {GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego/../x", Client: server.Client()}, merge},
-			"a token GitHub does not take":          {GitHubAttestations{API: server.URL, Slug: "jsell-rh/stego", Token: "other", Client: server.Client()}, merge},
+			"an API that is not https":              {GitHubAttestations{API: "http://api.github.com", Slug: "910-software-solutions/stego"}, merge},
+			"a repository that is not owner/name":   {GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego/../x", Client: server.Client()}, merge},
+			"a token GitHub does not take":          {GitHubAttestations{API: server.URL, Slug: "910-software-solutions/stego", Token: "other", Client: server.Client()}, merge},
 		} {
 			if parents, err := check.store.Parents(check.commit); err == nil {
 				t.Fatalf("%s gives %q and no error", name, parents)

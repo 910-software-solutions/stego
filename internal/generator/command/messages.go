@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/bufbuild/protocompile"
-	"github.com/jsell-rh/stego/internal/gen"
 	gengo "google.golang.org/protobuf/cmd/protoc-gen-go/internal_gengo"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"

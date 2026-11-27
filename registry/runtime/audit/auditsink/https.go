@@ -20,7 +20,7 @@ import (
 	logs "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 // The attributes of each log record that the HTTPS sink sends.

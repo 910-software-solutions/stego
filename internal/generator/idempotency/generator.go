@@ -1,5 +1,5 @@
 // Package idempotency generates the per-service idempotency wiring of a service (ST-SUP-RC30) on top of the runtime
-// library github.com/jsell-rh/stego/registry/runtime/idempotency (ST-SUP-RP07): the key table migration as the runtime's Migration, the
+// library github.com/910-software-solutions/stego/registry/runtime/idempotency (ST-SUP-RP07): the key table migration as the runtime's Migration, the
 // settings that the declaration's idempotency setting gives (ST-DECL-EN13), one fingerprint function for each
 // create and patch operation over the fields that operation declares, and the purge job that the service runs. The
 // transaction wrapper, the canonical JSON fingerprint and Purge live in the runtime library; the generated code
@@ -19,15 +19,15 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // RuntimePackage is the import path of the runtime package that the generated code calls.
-const RuntimePackage = "github.com/jsell-rh/stego/registry/runtime/idempotency"
+const RuntimePackage = "github.com/910-software-solutions/stego/registry/runtime/idempotency"
 
 // ProblemSlugs are the problem type slugs of the runtime package (ProblemMissing, ProblemInProgress, ProblemReused
-// and ProblemInvalid of github.com/jsell-rh/stego/registry/runtime/idempotency), in that order. The service joins each to its problem base.
+// and ProblemInvalid of github.com/910-software-solutions/stego/registry/runtime/idempotency), in that order. The service joins each to its problem base.
 var ProblemSlugs = []string{"idempotency-key-missing", "idempotency-key-in-progress", "idempotency-key-reused", "idempotency-key-invalid"}
 
 // The defaults of the declaration's idempotency setting (ST-DECL-UC07-R03, ST-DECL-UC07-R04).

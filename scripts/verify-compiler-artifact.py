@@ -18,7 +18,7 @@ spec = importlib.util.spec_from_file_location("build_control", Path(__file__).wi
 control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
 CheckError = control.CheckError
-REPOSITORY = "jsell-rh/stego"
+REPOSITORY = "910-software-solutions/stego"
 WORKFLOW = REPOSITORY + "/.github/workflows/compiler-artifact.yml"
 REFERENCE = "refs/heads/main"
 PREDICATE = "https://slsa.dev/provenance/v1"

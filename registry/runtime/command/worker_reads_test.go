@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
 )
 
 // readWallet is a test entity with a readable secret api_key, as a worker that writes it gets it, and

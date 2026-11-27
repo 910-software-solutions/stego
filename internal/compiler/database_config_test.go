@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 //go:embed testdata/database_config_test.go
