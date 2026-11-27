@@ -212,6 +212,7 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 		{sealBase("sealbase", "sealbasetenancy"), "sealbase_access.json"}, {sealSteps("seal", "sealtenancy", false), "seal_access.json"},
 		{sealSteps("sealc", "sealctenancy", true), "sealc_access.json"},
 		{notesBefore("notesbase", "notesbasetenancy"), "notesbase_access.json"}, {notesUpgrade("notesup", "notesuptenancy"), "notesup_access.json"},
+		{notesContract("notesupc", "notesupctenancy"), "notesupc_access.json"},
 		{notesFresh("notesfresh", "notesfreshtenancy"), "notesfresh_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}

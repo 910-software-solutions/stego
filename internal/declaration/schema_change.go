@@ -509,12 +509,14 @@ func schemaPhases(steps []types.SchemaStep) map[string][]string {
 
 // openSchemaChanges gives the schema changes whose last step is expand, in the order of the declaration. A relax
 // finishes at its expand step, in place, so it is never open, and neither is a within or a unique of a field (decision on finding F12, owner, 2026-11-13).
+// A relax with the item searchable is open after its expand step, as its contract step drops the search index of the
+// field (ST-SUP-RC01-OC53; security review of PR #22, M2).
 func openSchemaChanges(service *types.ServiceDeclaration) []types.SchemaChange {
 	phases := schemaPhases(service.SchemaHistory)
 	var open []types.SchemaChange
 	for _, change := range service.SchemaChanges {
 		// A unique of a field finishes at its expand step too, which builds its unique index (ST-GEN-Q48).
-		if change.Kind == "relax" || change.Kind == "within" || change.Kind == "relate" || change.UniqueOfField(service.Entities) {
+		if (change.Kind == "relax" && !change.RelaxesSearch()) || change.Kind == "within" || change.Kind == "relate" || change.UniqueOfField(service.Entities) {
 			continue
 		}
 		if steps := phases[change.ID]; len(steps) > 0 && steps[len(steps)-1] == "expand" {
@@ -557,8 +559,8 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 			fault("it has exactly one expand step and at most one contract step after it")
 		case len(steps) == 2 && change.Kind == "add":
 			fault("a change of kind add has an expand step only")
-		case len(steps) == 2 && change.Kind == "relax":
-			fault("a change of kind relax has an expand step only, which finishes it in place")
+		case len(steps) == 2 && change.Kind == "relax" && !change.RelaxesSearch():
+			fault("a change of kind relax has an expand step only, which finishes it in place; only a relax with the item searchable has a contract step, which drops the search index of the field")
 		case len(steps) == 2 && change.Kind == "within":
 			fault("a change of kind within has an expand step only, which adds and validates the key")
 		case len(steps) == 2 && change.Kind == "relate":

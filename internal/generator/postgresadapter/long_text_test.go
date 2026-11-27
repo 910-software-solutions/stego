@@ -1,6 +1,7 @@
 package postgresadapter_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,7 +54,7 @@ func notesFresh(ns, tenancyNS string) gen.Context {
 }
 
 // notesUpgrade is notesFresh as the release after notesBefore: a relax with the item searchable for each of body,
-// summary and tag, whose steps drop their search indexes (decision ST-DECL-Q50).
+// summary and tag at expand, whose steps keep their search indexes (decision ST-DECL-Q50).
 func notesUpgrade(ns, tenancyNS string) gen.Context {
 	ctx := notesFresh(ns, tenancyNS)
 	for _, field := range []string{"body", "summary", "tag"} {
@@ -62,6 +63,30 @@ func notesUpgrade(ns, tenancyNS string) gen.Context {
 		ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: id, Phase: "expand"})
 	}
 	return ctx
+}
+
+// notesContract is notesUpgrade as the release after it: the contract step of each relax, which drops its search
+// index (security review of PR #22, M2).
+func notesContract(ns, tenancyNS string) gen.Context {
+	ctx := notesUpgrade(ns, tenancyNS)
+	for _, field := range []string{"body", "summary", "tag"} {
+		ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "note-" + field + "-relax", Phase: "contract"})
+	}
+	return ctx
+}
+
+// generatedFiles generates ctx and gives the content of each file by its path.
+func generatedFiles(t *testing.T, ctx gen.Context) map[string]string {
+	t.Helper()
+	files, _, err := new(postgresadapter.Generator).Generate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, f := range files {
+		out[f.Path] = string(f.Content)
+	}
+	return out
 }
 
 // migrationBodies generates ctx and gives the SQL body of each migration of its namespace by its name.
@@ -128,6 +153,8 @@ func TestLongText(t *testing.T) {
 		if strings.ReplaceAll(bodies["001_initial"], "notesup", "notesbase") != string(golden) {
 			t.Errorf("the upgrade changes 001_initial of the release before:\n%s", bodies["001_initial"])
 		}
+		// The expand step of each relax keeps the search index, so the release before can restart and a rollback to
+		// it is possible; its migration makes the table of the release reports for the contract step.
 		var steps []string
 		for name := range bodies {
 			if strings.HasPrefix(name, "step_") {
@@ -135,21 +162,31 @@ func TestLongText(t *testing.T) {
 			}
 		}
 		slices.Sort(steps)
-		want := map[string]string{
-			"step_0001_note-body-relax_expand":    "DROP INDEX public.\"notes_body_search\";\n",
-			"step_0002_note-summary-relax_expand": "DROP INDEX public.\"notes_summary_search\";\n",
-			"step_0003_note-tag-relax_expand":     "DROP INDEX public.\"notes_tag_search\";\n",
+		expands := []string{"step_0001_note-body-relax_expand", "step_0002_note-summary-relax_expand", "step_0003_note-tag-relax_expand"}
+		if !slices.Equal(steps, expands) {
+			t.Errorf("the upgrade has the steps %v, want %v", steps, expands)
 		}
-		if len(steps) != len(want) {
-			t.Errorf("the upgrade has the steps %v, want %d", steps, len(want))
-		}
-		for name, body := range want {
-			if bodies[name] != body {
-				t.Errorf("%s is %q, want %q", name, bodies[name], body)
+		for _, name := range expands {
+			if strings.Contains(bodies[name], "DROP INDEX") || !strings.HasPrefix(bodies[name], "CREATE TABLE IF NOT EXISTS stego_schema.releases (") {
+				t.Errorf("%s is %q, want the table of the release reports and no DROP INDEX", name, bodies[name])
 			}
 		}
-		// A relax with the item searchable and a longer max_length drops the index first and changes the column in
-		// the same migration; a relax with the item on a field in the search is refused.
+		// The release after it drops each index at the contract step of its relax, while the index is there, after
+		// the check of the running releases.
+		contract := generatedFiles(t, notesContract("notesupc", "notesupctenancy"))
+		migrations := filepath.Join("notesupc", "migrations")
+		for i, field := range []string{"body", "summary", "tag"} {
+			name := fmt.Sprintf("step_%04d_note-%s-relax_contract", i+4, field)
+			body, want := contract[filepath.Join(migrations, name+".sql")], "DROP INDEX IF EXISTS public.\"notes_"+field+"_search\";\n"
+			if body != want {
+				t.Errorf("%s is %q, want %q", name, body, want)
+			}
+			index := fmt.Sprintf(`"DROP INDEX IF EXISTS public.\"notes_%s_search\"", When: "SELECT pg_catalog.to_regclass('public.\"notes_%s_search\"') IS NOT NULL", Long: false, Guard: true},`, field, field)
+			if register := contract[filepath.Join("notesupc", "migrate.go")]; !strings.Contains(register, index) || !strings.Contains(register, `}, Drop: true, Index: "notes_`+field+`_search"})`) {
+				t.Errorf("migrate.go does not register %s as a contract step of a drop of the index notes_%s_search with the check of the running releases", name, field)
+			}
+		}
+		// A relax with the item searchable and a longer max_length changes the column at expand and keeps the index.
 		n := func(v int) *int { return &v }
 		ctx := runtimeService("notesln", "noteslntenancy", noteEntities(), noteCollections())
 		ctx.Entities[0].Fields[3].MaxLength = n(4000)
@@ -157,11 +194,20 @@ func TestLongText(t *testing.T) {
 		ctx.SchemaHistory = []types.SchemaStep{{Change: "note-tag-relax", Phase: "expand"}}
 		bodies = migrationBodies(t, ctx)
 		step := bodies["step_0001_note-tag-relax_expand"]
-		if !strings.HasPrefix(step, "DROP INDEX public.\"notes_tag_search\";\nALTER TABLE public.\"notes\" ALTER COLUMN \"tag\" TYPE character varying(4000);\n") {
-			t.Errorf("the relax of the tag to 4000 characters is %q, want the drop of its index and then its ALTER TABLE", step)
+		if !strings.HasPrefix(step, "ALTER TABLE public.\"notes\" ALTER COLUMN \"tag\" TYPE character varying(4000);\n") || strings.Contains(step, "DROP INDEX") ||
+			!strings.Contains(step, "CREATE TABLE IF NOT EXISTS stego_schema.releases (") {
+			t.Errorf("the relax of the tag to 4000 characters is %q, want its ALTER TABLE and the table of the release reports, and no DROP INDEX", step)
 		}
 		if !strings.Contains(bodies["001_initial"], `"notes_tag_search"`) {
 			t.Errorf("001_initial of the relax to 4000 characters gives tag no search index:\n%s", bodies["001_initial"])
+		}
+		// A contract step of a relax with no item searchable is refused.
+		ctx = runtimeService("notesrc", "notesrctenancy", noteEntities(), noteCollections())
+		ctx.Entities[0].Fields[0].MaxLength = n(300)
+		ctx.SchemaChanges = []types.SchemaChange{{ID: "note-title-relax", Kind: "relax", Entity: "Note", Field: "title", Definition: "max_length 200"}}
+		ctx.SchemaHistory = []types.SchemaStep{{Change: "note-title-relax", Phase: "expand"}, {Change: "note-title-relax", Phase: "contract"}}
+		if _, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "is not built") {
+			t.Errorf("a contract step of a relax with no item searchable gives %v, want the refusal that it is not built", err)
 		}
 		ctx = runtimeService("notesin", "notesintenancy", noteEntities(), noteCollections())
 		ctx.SchemaChanges = []types.SchemaChange{{ID: "note-title-relax", Kind: "relax", Entity: "Note", Field: "title", Definition: "searchable"}}

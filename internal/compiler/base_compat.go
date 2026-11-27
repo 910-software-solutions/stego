@@ -1594,10 +1594,10 @@ func relaxFaults(base, head *types.ServiceDeclaration) []BaseFault {
 			var before types.Field
 			before, reason = change.RelaxedFrom(after)
 			// A relax that takes a public field of a listed entity out of the search, as a longer max_length past 500
-			// characters does, names the item searchable, so its step drops the search index (ST-GEN-INV40). The
+			// characters does, names the item searchable, so its contract step drops the search index (ST-GEN-INV40). The
 			// step of a relax without it keeps the index, and long values fail its write.
 			if reason == "" && !change.RelaxesSearch() && after.Public() && !before.Unsearched() && after.Unsearched() && listed(head, change.Entity) {
-				reason = fmt.Sprintf("it takes the field out of the search (a max_length over 500 after it, or searchable: false), and the field has a search index before it; add the item searchable to its definition, so its step drops the index: %s, searchable", change.Definition)
+				reason = fmt.Sprintf("it takes the field out of the search (a max_length over 500 after it, or searchable: false), and the field has a search index before it; add the item searchable to its definition, so its contract step drops the index: %s, searchable", change.Definition)
 			}
 		}
 		if reason != "" {

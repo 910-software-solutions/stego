@@ -44,7 +44,7 @@ func TestRelaxRefusals(t *testing.T) {
 			{"another column added", models(title), models(with(func(f *types.Field) { f.MaxLength = n(80) }), other)},
 			{"nothing changed", models(title), models(title)},
 		} {
-			if _, err := relaxSteps(1, c.before, c.after, change); err == nil {
+			if _, err := relaxSteps(gen.Context{}, 1, c.before, c.after, change); err == nil {
 				t.Errorf("%s: relaxSteps gives no error", c.name)
 			}
 		}
@@ -58,7 +58,7 @@ func TestRelaxRefusals(t *testing.T) {
 			{"an enum made a string", models(types.Field{Name: "title", Type: types.FieldTypeEnum, Values: []string{"a"}}), models(types.Field{Name: "title", Type: types.FieldTypeString})},
 			{"a field made optional with a default", models(title), models(with(func(f *types.Field) { f.Optional, f.Default = true, "x" }))},
 		} {
-			if _, err := relaxSteps(1, c.before, c.after, change); err != nil {
+			if _, err := relaxSteps(gen.Context{}, 1, c.before, c.after, change); err != nil {
 				t.Errorf("%s: %v", c.name, err)
 			}
 		}

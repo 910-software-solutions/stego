@@ -172,10 +172,21 @@ version to deploy first.
 The item `searchable` says that the field had its search index before the
 step, and is out of the search after it: it sets `searchable: false`, or its
 `max_length` is over 500 characters (see
-[searchable](fills.md#searchable)). The step's migration drops the search
-index `<table>_<column>_search` first, under the lock timeout of a step,
-then runs the `ALTER TABLE` of the other items. A relax with only the item
-`searchable` is the `DROP INDEX` alone. It reads no row and keeps each row.
+[searchable](fills.md#searchable)). Such a relax has two steps:
+
+- Its expand step runs the `ALTER TABLE` of the other items and keeps the
+  search index, so the pods of the release before can restart, and a
+  rollback to it is possible. A relax with only the item `searchable`
+  changes no column at expand.
+- Its contract step, in a later release, drops the search index
+  `<table>_<column>_search` with `DROP INDEX IF EXISTS`, under the lock
+  timeout of a step. As the contract of a drop, it refuses while a pod of a
+  release before the expand step reports itself, as the schema check of a
+  release before postgres-adapter 6.34.0 refuses the table with no such
+  index. It reads no row and keeps each row.
+
+Until the contract step, the index stays, and a value of more than about
+2,700 bytes still fails its write.
 
 ```yaml
 schema_changes:
@@ -184,6 +195,9 @@ schema_changes:
 schema_history:
   - {change: note-body-relax, phase: expand}
   - {change: note-summary-relax, phase: expand}
+  # in a later release, when no pod of a release before the expand steps runs:
+  - {change: note-body-relax, phase: contract}
+  - {change: note-summary-relax, phase: contract}
 ```
 
 `stego compat` names the relax to declare:
@@ -193,7 +207,7 @@ schema_history:
   index, and the head needs a relax with the item `searchable` for it.
 - A new `searchable: false` on a searched field needs the relax too.
 - A relax that makes a `max_length` longer than 500 must also name the item
-  `searchable`. Without it, the step keeps the index, and a long value fails
+  `searchable`. Without it, no step drops the index, and a long value fails
   its write.
 
 No schema change builds a search index. Thus `stego compat` refuses a head

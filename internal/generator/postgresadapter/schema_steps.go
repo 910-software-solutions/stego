@@ -72,6 +72,9 @@ type contractStep struct {
 	// seal tells that the step is the contract of a seal, whose check is its seal checkpoint, the rows left and the
 	// running releases while the clear column from is there (ST-SUP-RC01-OC50).
 	seal bool
+	// index, with drop, is the search index that the contract of a relax with the item searchable drops: its check is
+	// the running releases alone while the index is there (ST-SUP-RC01-OC53).
+	index string
 }
 
 // contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
@@ -272,9 +275,11 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		// A unique of a field adds the unique index of the field at its expand step, as addedSQL builds each new unique
 		// key of a table with rows, and finishes the change (ST-SUP-RC01-OC38, ST-GEN-Q48).
 		fieldUnique := change.UniqueOfField(ctx.Entities)
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || change.Kind == "seal" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within" || change.Kind == "relate" || fieldUnique) && step.Phase == "expand")
+		// A relax has a contract step only with the item searchable: the step drops the search index of the field
+		// (ST-SUP-RC01-OC53, security review of PR #22, M2).
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || change.Kind == "seal" || (change.Kind == "relax" && change.RelaxesSearch()) || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within" || change.Kind == "relate" || fieldUnique) && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax, a within, a relate and a unique of a field and the expand and contract steps of a rename, a retype, a require, a drop and a seal", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax, a within, a relate and a unique of a field, the expand and contract steps of a relax with the item searchable, and the expand and contract steps of a rename, a retype, a require, a drop and a seal", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
@@ -315,8 +320,8 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			before = after
 			continue
 		}
-		if change.Kind == "relax" {
-			relaxed, err := relaxSteps(i+1, before, after, change)
+		if change.Kind == "relax" && step.Phase == "expand" {
+			relaxed, err := relaxSteps(ctx, i+1, before, after, change)
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
@@ -342,6 +347,8 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 				contract, err = dropContractSQL(ctx, before, after, change)
 			case "seal":
 				contract, err = sealContractSQL(ctx, before, after, change)
+			case "relax":
+				contract, err = relaxContractSQL(before, after, change)
 			default:
 				contract, err = contractSQL(ctx, before, after, change, expand)
 			}

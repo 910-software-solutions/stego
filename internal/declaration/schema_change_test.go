@@ -246,6 +246,12 @@ func TestSchemaRelax(t *testing.T) {
 	})
 	t.Run("ST-DECL-INV59-T A relax with a contract step is refused", func(t *testing.T) {
 		wantFault(t, schemaFaults(t, todoFields(longer, "", []string{relax}, "todo-title-relax expand", "todo-title-relax contract"), "schema-step"), "relax has an expand step only")
+		// A relax with the item searchable has a contract step, which drops the search index of the field (security
+		// review of PR #22, M2), and it has at most one.
+		long := []string{"{name: title, type: string, min_length: 1, max_length: 4000}", "{name: done, type: bool, default: false}"}
+		search := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: \"max_length 255, searchable\"}"
+		wantNoFault(t, schemaFaults(t, todoFields(long, "", []string{search}, "todo-title-relax expand", "todo-title-relax contract"), "schema-step"))
+		wantFault(t, schemaFaults(t, todoFields(long, "", []string{search}, "todo-title-relax expand", "todo-title-relax contract", "todo-title-relax contract"), "schema-step"), "at most one contract step")
 	})
 	t.Run("ST-DECL-INV60-T Two relaxes of one field are accepted, and a relax after the expand step of an open change on the field is refused", func(t *testing.T) {
 		longest := []string{"{name: title, type: string, min_length: 1, max_length: 900}", "{name: done, type: bool, default: false}"}

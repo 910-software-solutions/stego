@@ -1,14 +1,16 @@
 package check_test
 
 // The long text fields of notesfresh, a new service, and the upgrade of notesbase, as postgres-adapter 6.32.0 built
-// it, to notesup, whose relax steps drop the search indexes of the fields out of the search (erp-demo G10, decision
-// ST-DECL-Q50, ST-SUP-RC01-OC53). The host test TestTables of internal/generator/postgresadapter/tables_test.go runs
+// it, to notesup, whose relax steps keep the search indexes of the fields out of the search at expand, and to notesupc,
+// whose contract steps drop them (erp-demo G10, decision ST-DECL-Q50, ST-SUP-RC01-OC53; security review of PR #22,
+// M2). The host test TestTables of internal/generator/postgresadapter/tables_test.go runs
 // it in the generated module.
 
 import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -16,7 +18,11 @@ import (
 	"example.com/tables-check/notesbase"
 	"example.com/tables-check/notesfresh"
 	"example.com/tables-check/notesup"
+	"example.com/tables-check/notesupc"
+	"example.com/tables-check/tenancy"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // longText gives n random characters: letters and digits, or, when wide, characters of four bytes each in UTF-8
@@ -101,25 +107,83 @@ func TestLongTextSteps(t *testing.T) {
 			t.Errorf("the release before gives %q for a body of 4000 letters, want 54000 (index row size exceeds the b-tree maximum)", code)
 		}
 
-		// The migration job of the release after: its steps drop the three indexes, the job and the schema check
-		// accept the database, the rows stay, and the long note is stored.
+		// The migration job of the release of the expand steps: the three indexes stay, so the release before
+		// restarts on the database, and a rollback to it is possible; a long body still fails its index entry.
+		indexes := []string{"notes_body_search", "notes_summary_search", "notes_tag_search", "notes_title_search"}
 		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return notesup.Migrate(ctx, conn) }, "notesup_access.json")
 		if err := notesup.VerifySchema(ctx, db); err != nil {
-			t.Errorf("the release after refuses the database after its job: %v", err)
+			t.Errorf("the release of the expand steps refuses the database after its job: %v", err)
+		}
+		if err := notesbase.VerifySchema(ctx, db); err != nil {
+			t.Errorf("the release before refuses the database after the expand steps, so it cannot restart: %v", err)
+		}
+		if got := noteIndexes(t, db); !slices.Equal(got, indexes) {
+			t.Errorf("after the expand steps the search indexes are %v, want %v", got, indexes)
+		}
+		if code := writeLong(t, db); code != "54000" {
+			t.Errorf("after the expand steps a body of 4000 letters gives %q, want 54000 while the index is there", code)
+		}
+
+		// The contract steps refuse while a process of the release before reports itself, and change nothing.
+		contract := func() error {
+			job := stdlib.OpenDB(*own)
+			defer job.Close()
+			conn, err := job.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+				t.Fatal(err)
+			}
+			return notesupc.Migrate(ctx, conn)
+		}
+		holder := strings.Repeat("e", 32)
+		if _, err := db.Exec("SELECT stego_schema.release_beat($1, '001_initial', 'v', 10000)", holder); err != nil {
+			t.Fatal(err)
+		}
+		before := catalog(t, db)
+		var refused interface{ Refusal() string }
+		if err := contract(); !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "note-body-relax") || !strings.Contains(refused.Refusal(), "the search index notes_body_search") {
+			t.Fatalf("the contract while the release before reports ends with %v, want a refusal of note-body-relax that names its search index", err)
+		}
+		if after := catalog(t, db); !slices.Equal(before, after) {
+			t.Errorf("the refused contract changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+
+		// The release before stops. The contract steps drop the three indexes, both releases after it accept the
+		// database, the rows stay, and the long note is stored.
+		if _, err := db.Exec("SELECT stego_schema.release_stop($1)", holder); err != nil {
+			t.Fatal(err)
+		}
+		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return notesupc.Migrate(ctx, conn) }, "notesupc_access.json")
+		if err := notesupc.VerifySchema(ctx, db); err != nil {
+			t.Errorf("the release of the contract steps refuses the database after its job: %v", err)
+		}
+		if err := notesup.VerifySchema(ctx, db); err != nil {
+			t.Errorf("the release of the expand steps refuses the database after the contract, so a rollback to it fails: %v", err)
 		}
 		if got := noteIndexes(t, db); !slices.Equal(got, []string{"notes_title_search"}) {
-			t.Errorf("after the upgrade the search indexes are %v, want only notes_title_search", got)
+			t.Errorf("after the contract the search indexes are %v, want only notes_title_search", got)
 		}
 		var rows, bodies int
 		if err := db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE "body" = 'body ' || substr("title", 6)) FROM public."notes"`).Scan(&rows, &bodies); err != nil || rows != 500 || bodies != 500 {
 			t.Errorf("after the upgrade the table holds %d notes, %d with their body (error %v), want 500 and 500", rows, bodies, err)
 		}
 		if code := writeLong(t, db); code != "" {
-			t.Errorf("after the upgrade a body of 4000 letters and a summary of 1000 four-byte characters give SQLSTATE %s, want none", code)
+			t.Errorf("after the contract a body of 4000 letters and a summary of 1000 four-byte characters give SQLSTATE %s, want none", code)
 		}
-		// A new database of the release after has the same schema as the upgraded one (ST-GEN-INV35).
+		// The job again changes nothing, and a new database of the release of the contract steps has the same schema
+		// as the upgraded one (ST-GEN-INV35).
+		again := catalog(t, db)
+		if err := contract(); err != nil {
+			t.Errorf("the migration job again after the contract: %v", err)
+		}
+		if after := catalog(t, db); !slices.Equal(again, after) {
+			t.Errorf("the migration job again changed the catalog:\n%s", strings.Join(after, "\n"))
+		}
 		nextCfg, next := database(t, cfg, admin)
-		migrate(t, nextCfg, next, func(ctx context.Context, conn *sql.Conn) error { return notesup.Migrate(ctx, conn) }, "notesup_access.json")
+		migrate(t, nextCfg, next, func(ctx context.Context, conn *sql.Conn) error { return notesupc.Migrate(ctx, conn) }, "notesupc_access.json")
 		if a, b := strings.Join(catalog(t, next), "\n"), strings.Join(catalog(t, db), "\n"); a != b {
 			t.Errorf("the upgraded database and a new one differ:\n%s\n----\n%s", b, a)
 		}
