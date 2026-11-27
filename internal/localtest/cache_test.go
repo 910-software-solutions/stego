@@ -554,6 +554,9 @@ func TestFillChecksTheWholeCache(t *testing.T) {
 		}
 		if err := verifyFilled(cache, root, nil, lines); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
 			t.Fatalf("the check of the fill passes a changed folder that the fill did not list: %v", err)
+		}
+	})
+}
 
 func TestFirstFill(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R05-T10 The first fill of the module cache of localtest names the folder, its size and STEGO_TEST_RUNS, and is refused with less than two times its size free", func(t *testing.T) {
