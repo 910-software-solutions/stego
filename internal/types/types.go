@@ -214,9 +214,10 @@ const (
 
 // LongText tells whether the field is a string with a max_length whose values can pass SearchIndexBytes in UTF-8:
 // a max_length of more than 500 characters. A string with no max_length is not long text here: its search index
-// stays as before (decision ST-DECL-Q50).
+// stays as before (decision ST-DECL-Q50). The check divides the limit and does not multiply the max_length, so a very
+// large max_length cannot overflow to a small number (security review of PR #22, I1).
 func (f Field) LongText() bool {
-	return f.Type == FieldTypeString && f.MaxLength != nil && *f.MaxLength*UTF8Bytes > SearchIndexBytes
+	return f.Type == FieldTypeString && f.MaxLength != nil && *f.MaxLength > SearchIndexBytes/UTF8Bytes
 }
 
 // Unsearched tells whether a string field is out of the search of a list, its order and its search index, whatever

@@ -35,6 +35,9 @@ func TestValidateSearchable(t *testing.T) {
 				[]string{title, "- {name: notes, type: string, max_length: 501, searchable: true}"}},
 			{"searchable true on a max_length of 4000", "true", "notes", "2000 bytes",
 				[]string{title, "- {name: notes, type: string, optional: true, max_length: 4000, searchable: true}"}},
+			// 2^62 characters: a product with the 4 bytes of a character overflows to 0 (security review of PR #22, I1).
+			{"searchable true on a max_length of 2^62", "true", "notes", "max_length 4611686018427387904",
+				[]string{title, "- {name: notes, type: string, optional: true, max_length: 4611686018427387904, searchable: true}"}},
 			{"searchable on an int32", "false", "rank", "string field",
 				[]string{title, "- {name: rank, type: int32, searchable: false}"}},
 			{"searchable on an enum", "true", "state", "string field",
