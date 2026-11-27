@@ -111,6 +111,12 @@ func TestGeneratedRefusalCode(t *testing.T) {
 	testGeneratedTracing(t, "^TestLocalAccessLineEdges$/^ST-SUP-RC17-OC20-T06")
 }
 
+// TestGeneratedAccessLineHostileInput runs ST-SUP-RC17-OC20-T07 of the generated tracing, with the runtime library
+// of this commit (security review of PR #14, I1).
+func TestGeneratedAccessLineHostileInput(t *testing.T) {
+	testGeneratedTracing(t, "^TestAccessLineHostileInput$")
+}
+
 func TestGeneratedOutboxTelemetry(t *testing.T) {
 	testGeneratedTracing(t, "^TestOutboxMetrics")
 }

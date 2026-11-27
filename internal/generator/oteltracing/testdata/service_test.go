@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 	rtotel "github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
@@ -786,6 +788,118 @@ func TestLocalLineForm(t *testing.T) {
 		}
 		if strings.Count(output.String(), `"http.route":"/records"`) != AccessLimit+1 {
 			t.Fatalf("the output holds %d lines of the route, want %d and the count line", strings.Count(output.String(), `"http.route":"/records"`), AccessLimit)
+		}
+	})
+}
+
+func TestAccessLineHostileInput(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T07 The access line holds only a fixed code of the charset for hostile Authorization values, a forged or shadowed place, long codes and a panic, in the local and the OTLP modes", func(t *testing.T) {
+		// Security review of PR #14, I1: the red-team test of the reviewer. The generated errorCodeOf is the only
+		// defence when a package stores into the shared place directly, and no other test proved it.
+		for _, mode := range []string{"local", "otlp"} {
+			t.Run(mode, func(t *testing.T) {
+				if mode == "local" {
+					traceEnvironment(t)
+				} else {
+					collectorFixture(t, false)
+				}
+				var output bytes.Buffer
+				runtime, err := newRuntime(formOf(&output))
+				if err != nil {
+					t.Fatal(err)
+				}
+				signing := authntest.NewKey(t, "k1")
+				keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				v, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS", TenantClaim: "tenant", Keys: keys})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(v.Stop)
+				mux := http.NewServeMux()
+				mux.HandleFunc("GET /r/{id}", func(w http.ResponseWriter, r *http.Request) {
+					switch r.PathValue("id") {
+					case "forge":
+						place := r.Context().Value(struct{ StegoErrorCode struct{} }{}).(*atomic.Pointer[string])
+						bad := "EVILCODE\n\"injected\":\"x"
+						place.Store(&bad)
+						w.WriteHeader(403)
+					case "long65":
+						rtotel.SetErrorCode(r.Context(), strings.Repeat("L", 65))
+						w.WriteHeader(400)
+					case "long64":
+						rtotel.SetErrorCode(r.Context(), strings.Repeat("M", 64))
+						w.WriteHeader(400)
+					case "panic":
+						rtotel.SetErrorCode(r.Context(), "internal")
+						panic("PANICVALUE")
+					case "shadow":
+						ctx := context.WithValue(r.Context(), struct{ StegoErrorCode struct{} }{}, new(atomic.Pointer[string]))
+						rtotel.SetErrorCode(ctx, "shadowed")
+						w.WriteHeader(409)
+					case "ok":
+						rtotel.SetErrorCode(r.Context(), "denied")
+					}
+				})
+				mk := func(id string) *http.Request { return httptest.NewRequest("GET", "/r/"+id, nil) }
+				claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
+				claims["tenant"] = "acmetenant"
+				token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+				claims["tenant"] = "TEN\nANT\"x"
+				badTenant := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+				authed := runtime.Handler(v.Middleware(runtime.Route(mux)))
+				type c struct {
+					hdr  []string
+					id   string
+					code string
+					st   float64
+				}
+				huge := strings.Repeat("HUGETOKEN", 2000)
+				cases := []c{
+					{nil, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + huge}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Basic SECRETBASIC"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer AAA", "Bearer BBB"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer bad\"tok\nen"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + badTenant}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + token}, "forge", "", 403},
+					{[]string{"Bearer " + token}, "long65", "", 400},
+					{[]string{"Bearer " + token}, "long64", strings.Repeat("M", 64), 400},
+					{[]string{"Bearer " + token}, "shadow", "", 409},
+					{[]string{"Bearer " + token}, "ok", "", 200},
+					{[]string{"Bearer " + token}, "panic", "internal", 0},
+				}
+				for _, cs := range cases {
+					r := mk(cs.id)
+					for _, h := range cs.hdr {
+						r.Header.Add("Authorization", h)
+					}
+					func() {
+						defer func() { _ = recover() }()
+						authed.ServeHTTP(httptest.NewRecorder(), r)
+					}()
+				}
+				runtime.Close()
+				access := linesOf(localLines(t, &output), "http.server.request.completed")
+				if len(access) != len(cases) {
+					t.Fatalf("%d lines want %d: %s", len(access), len(cases), output.Bytes())
+				}
+				for i, cs := range cases {
+					code, _ := access[i]["stego.error_code"].(string)
+					st, _ := access[i]["http.response.status_code"].(float64)
+					if code != cs.code || st != cs.st {
+						t.Errorf("case %d (%s): code %q status %v, want %q %v: %v", i, cs.id, code, st, cs.code, cs.st, access[i])
+					}
+				}
+				for _, bad := range []string{"HUGETOKEN", "SECRETBASIC", "EVILCODE", "injected", "TEN", "PANICVALUE", "shadowed", token[:20], "AAA", "BBB", "denied", "acmetenant", badTenant[:20]} {
+					if bytes.Contains(output.Bytes(), []byte(bad)) {
+						t.Errorf("output holds %q", bad)
+					}
+				}
+				t.Logf("lines: %s", output.Bytes())
+			})
 		}
 	})
 }
