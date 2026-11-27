@@ -61,12 +61,20 @@ func lineOf(text string, offset int) string {
 	return strings.TrimSpace(text[start : offset+end])
 }
 
-// A claim of rows: a statement that takes a batch of rows to work on, LIMIT and then FOR UPDATE, also across lines
-// and across the joins of Go string pieces. A lock of one row by its key (FOR UPDATE with no LIMIT) is not a claim.
-var claimStatement = regexp.MustCompile("(?is)\\bLIMIT\\s+[a-z0-9_$]+[\\s\"`+]*FOR\\s+(?:NO\\s+KEY\\s+)?UPDATE(?:\\s+OF\\s+[a-z_.]+)?(\\s+SKIP\\s+LOCKED)?")
+// A claim of rows: a statement that takes a batch of rows to work on, a LIMIT or a FETCH FIRST and a row lock (FOR
+// UPDATE, FOR NO KEY UPDATE, FOR SHARE or FOR KEY SHARE) in either order, also across lines and across the joins of
+// Go string pieces. Group 1 is SKIP LOCKED. A lock of one row by its key (a lock with no LIMIT) is not a claim. The
+// forms of the lock before the limit, FETCH FIRST and FOR SHARE are from the security review of PR #504, L3.
+var claimStatements = []*regexp.Regexp{
+	regexp.MustCompile("(?is)\\b(?:LIMIT\\s+[a-z0-9_$]+|FETCH\\s+(?:FIRST|NEXT)\\s+[a-z0-9_$]*\\s*ROWS?\\s+ONLY)[\\s\"`+]*" + rowLock + "(\\s+SKIP\\s+LOCKED)?"),
+	regexp.MustCompile("(?is)" + rowLock + "(\\s+SKIP\\s+LOCKED)?[\\s\"`+]*(?:LIMIT\\s+[a-z0-9_$]+|FETCH\\s+(?:FIRST|NEXT)\\b)"),
+}
 
-// A session-scoped advisory lock: pg_advisory_lock or pg_try_advisory_lock with no _xact.
-var sessionLock = regexp.MustCompile(`pg_(try_)?advisory_lock\(`)
+// rowLock is a row-locking clause of a SELECT, with the tables that it names.
+const rowLock = "\\bFOR\\s+(?:NO\\s+KEY\\s+UPDATE|UPDATE|KEY\\s+SHARE|SHARE)(?:\\s+OF\\s+[a-z_.]+(?:\\s*,\\s*[a-z_.]+)*)?"
+
+// A session-scoped advisory lock: pg_advisory_lock, pg_try_advisory_lock and their _shared forms, with no _xact.
+var sessionLock = regexp.MustCompile(`(?i)pg_(try_)?advisory_lock(_shared)?\s*\(`)
 
 // sessionLockOwners are the files whose session-scoped advisory locks serialize work that claims no outbox or job
 // row, which ST-STD-TXN-R14 names: the migration job on the owner connection (service/migrate.go, the schema steps of
@@ -83,10 +91,17 @@ var pagedRowLocks = []string{"internal/generator/postgresadapter/schema_seal.go"
 func claimFaults(file storeText) ([]string, int) {
 	var faults []string
 	claims := 0
-	for _, match := range claimStatement.FindAllStringSubmatchIndex(file.text, -1) {
-		claims++
-		if match[2] < 0 && !slices.Contains(pagedRowLocks, file.name) {
-			faults = append(faults, fmt.Sprintf("%s claims a batch of rows FOR UPDATE with no SKIP LOCKED: %s", file.name, lineOf(file.text, match[0])))
+	seen := map[int]bool{}
+	for _, statement := range claimStatements {
+		for _, match := range statement.FindAllStringSubmatchIndex(file.text, -1) {
+			if seen[match[0]] {
+				continue
+			}
+			seen[match[0]] = true
+			claims++
+			if match[2] < 0 && !slices.Contains(pagedRowLocks, file.name) {
+				faults = append(faults, fmt.Sprintf("%s claims a batch of rows with a row lock and no SKIP LOCKED: %s", file.name, lineOf(file.text, match[0])))
+			}
 		}
 	}
 	if !slices.Contains(sessionLockOwners, file.name) {
@@ -99,7 +114,7 @@ func claimFaults(file storeText) ([]string, int) {
 
 // tenantSetConfigCall finds each set_config of app.tenant; setConfigLocal reads its third argument.
 var (
-	tenantSetConfigCall = regexp.MustCompile(`set_config\(\s*'app\.tenant'\s*,`)
+	tenantSetConfigCall = regexp.MustCompile(`(?i)set_config\s*\(\s*'app\.tenant'\s*,`)
 	tenantSet           = regexp.MustCompile(`(?i)\bSET\s+(SESSION\s+|LOCAL\s+)?app\.tenant\b`)
 )
 
@@ -156,7 +171,16 @@ var (
 	roleFlags   = regexp.MustCompile(`flags\s*:?=\s*"([A-Z ]+)"`)
 	formatFlags = "%S"
 	alterRole   = regexp.MustCompile(`(?i)\bALTER\s+(?:ROLE|USER)\s+\S+\s+(?:WITH\s+)?[A-Z ]*\b(SUPERUSER|BYPASSRLS)\b`)
+	// A grant of a role, GRANT <roles> TO, with no ON: the member gets the privileges of the role (security review of
+	// PR #504, L3).
+	grantRole = regexp.MustCompile(`(?is)\bGRANT\s+((?:"?[a-z_][a-z0-9_]*"?\s*,\s*)*"?[a-z_][a-z0-9_]*"?)\s+TO\b`)
 )
+
+// powerfulRoles are the roles of PostgreSQL and of hosted PostgreSQL services whose membership gives a superuser,
+// a bypass of row-level security or the files and programs of the server.
+var powerfulRoles = map[string]bool{"postgres": true, "pg_read_server_files": true, "pg_write_server_files": true,
+	"pg_execute_server_program": true, "pg_read_all_data": true, "pg_write_all_data": true, "pg_database_owner": true,
+	"rds_superuser": true, "azure_pg_admin": true, "cloudsqlsuperuser": true, "alloydbsuperuser": true}
 
 // roleFaults gives each fault of ST-STD-TXN-R03 in a file of store code, and the count of the roles it creates.
 func roleFaults(file storeText) ([]string, int) {
@@ -185,6 +209,13 @@ func roleFaults(file storeText) ([]string, int) {
 	for _, match := range alterRole.FindAllStringIndex(file.text, -1) {
 		faults = append(faults, fmt.Sprintf("%s gives a role SUPERUSER or BYPASSRLS: %s", file.name, lineOf(file.text, match[0])))
 	}
+	for _, match := range grantRole.FindAllStringSubmatchIndex(file.text, -1) {
+		for _, role := range strings.Split(file.text[match[2]:match[3]], ",") {
+			if role = strings.ToLower(strings.Trim(strings.TrimSpace(role), `"`)); powerfulRoles[role] {
+				faults = append(faults, fmt.Sprintf("%s grants the role %s: %s", file.name, role, lineOf(file.text, match[0])))
+			}
+		}
+	}
 	return faults, roles
 }
 
@@ -192,8 +223,15 @@ func roleFaults(file storeText) ([]string, int) {
 // such as {s}.{events}, stego_audit.audit_event, or the Go joins RecordSchema + "." + EventsTable.
 var (
 	auditGrant      = regexp.MustCompile(`(?is)GRANT\s+([A-Z, ]+?)\s+ON\s+(?:TABLE\s+)?([^;]{0,160}?)\s+TO\b`)
-	auditEventsName = regexp.MustCompile(`(?i)\{events\}|\baudit_event\b|EventsTable`)
+	auditEventsName = regexp.MustCompile(`(?i)\{events\}|\baudit_event\b|EventsTable|\bstego_audit_sink\b`)
+	// A grant on each table of a schema, which holds the audit table when the schema is an audit schema.
+	allTablesIn = regexp.MustCompile(`(?i)\bALL\s+TABLES\s+IN\s+SCHEMA\b`)
 )
+
+// auditTableFiles are the files of the runtime library whose grants on a table are all on an audit table: the
+// table of the default sink, stego_audit_sink.entries, which the file names through Go joins (security review of PR
+// #504, L3).
+var auditTableFiles = []string{runtimeModule + "/audit/auditsink/table.go"}
 
 // auditGrantFaults gives each grant of UPDATE, DELETE, TRUNCATE or ALL on the audit events table in a file of store
 // code (review of PR #504, M5), and the count of the grants on it.
@@ -202,7 +240,11 @@ func auditGrantFaults(file storeText) ([]string, int) {
 	grants := 0
 	for _, match := range auditGrant.FindAllStringSubmatchIndex(file.text, -1) {
 		target := file.text[match[4]:match[5]]
-		if !auditEventsName.MatchString(target) {
+		onAudit := auditEventsName.MatchString(target) || slices.Contains(auditTableFiles, file.name) && !regexp.MustCompile(`(?i)^(SCHEMA|FUNCTION|SEQUENCE)\b`).MatchString(target)
+		if allTablesIn.MatchString(target) {
+			onAudit = onAudit || strings.HasPrefix(file.name, runtimeModule+"/audit/") || regexp.MustCompile(`(?i)audit|RecordSchema|\{s\}`).MatchString(target)
+		}
+		if !onAudit {
 			continue
 		}
 		grants++
@@ -249,6 +291,10 @@ func TestStoreScans(t *testing.T) {
 			`SELECT set_config('app.tenant', 'a,b)', true)`:                             0,
 			`SET app.tenant = 'a'`:       1,
 			`SET LOCAL app.tenant = 'a'`: 1,
+			// Security review of PR #504, L3: a space before the parenthesis and upper case.
+			`SELECT set_config ('app.tenant', $1, false)`: 1,
+			`SELECT SET_CONFIG('app.tenant', $1, FALSE)`:  1,
+			`SELECT SET_CONFIG('app.tenant', $1, TRUE)`:   0,
 		} {
 			if faults, _ := tenantSetFaults("text", text); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
@@ -263,6 +309,17 @@ func TestStoreScans(t *testing.T) {
 			"`... LIMIT 32 ` + \"FOR UPDATE\"":                                    1,
 			"WHERE m.id = p_id FOR UPDATE":                                        0,
 			"SELECT pg_try_advisory_lock(1)":                                      1,
+			// Security review of PR #504, L3: the lock before the limit, FETCH FIRST, the share locks and the shared
+			// session lock.
+			"ORDER BY m.sequence FOR UPDATE OF m LIMIT 10":                               1,
+			"ORDER BY m.sequence FOR UPDATE OF m SKIP LOCKED LIMIT 10":                   0,
+			"ORDER BY m.sequence FETCH FIRST 10 ROWS ONLY FOR UPDATE":                    1,
+			"ORDER BY m.sequence FETCH FIRST 10 ROWS ONLY FOR NO KEY UPDATE SKIP LOCKED": 0,
+			"ORDER BY m.sequence LIMIT 10 FOR SHARE":                                     1,
+			"ORDER BY m.sequence LIMIT 10 FOR KEY SHARE SKIP LOCKED":                     0,
+			"SELECT pg_advisory_lock_shared(1)":                                          1,
+			"SELECT PG_ADVISORY_LOCK (1)":                                                1,
+			"SELECT pg_advisory_xact_lock(1)":                                            0,
 		} {
 			if faults, _ := claimFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
@@ -276,8 +333,23 @@ func TestStoreScans(t *testing.T) {
 			`"GRANT UPDATE, DELETE ON " + RecordSchema + "." + EventsTable + " TO "`: 1,
 			"GRANT ALL ON TABLE stego_audit.audit_event TO app;":                     1,
 			"GRANT SELECT, INSERT, UPDATE ON {s}.{heads} TO {role};":                 0,
+			// Security review of PR #504, L3: each table of the audit schema, and the table of the default sink.
+			"GRANT UPDATE ON ALL TABLES IN SCHEMA stego_audit TO app;": 1,
+			"GRANT SELECT ON ALL TABLES IN SCHEMA stego_audit TO app;": 0,
+			"GRANT DELETE ON stego_audit_sink.entries TO app;":         1,
 		} {
 			if faults, _ := auditGrantFaults(storeText{name: "text", text: text}); len(faults) != want {
+				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
+			}
+		}
+	})
+	t.Run("ST-STD-TXN-R06-T02 The scan of audit grants finds a write grant on the table of the default sink in its Go joins", func(t *testing.T) {
+		for text, want := range map[string]int{
+			`"GRANT SELECT, INSERT ON TABLE " + table + " TO " + role,`: 0,
+			`"GRANT SELECT, UPDATE ON TABLE " + table + " TO " + role,`: 1,
+			`"GRANT USAGE ON SCHEMA " + Schema + " TO " + role,`:        0,
+		} {
+			if faults, _ := auditGrantFaults(storeText{name: runtimeModule + "/audit/auditsink/table.go", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
 			}
 		}
@@ -301,6 +373,11 @@ func TestStoreScans(t *testing.T) {
 			"CREATE ROLE r NOLOGIN NOSUPERUSER BYPASSRLS;":   1,
 			"CREATE USER u SUPERUSER;":                       2,
 			"ALTER ROLE r WITH BYPASSRLS;":                   1,
+			// Security review of PR #504, L3: a grant of a role with the privileges of a superuser.
+			"GRANT postgres TO app;":                   1,
+			`GRANT app_owner, "rds_superuser" TO app;`: 1,
+			"GRANT app_owner TO app_migrator;":         0,
+			"GRANT SELECT ON TABLE postgres TO app;":   0,
 		} {
 			if faults, _ := roleFaults(storeText{name: "text", text: text}); len(faults) != want {
 				t.Errorf("%q gives %d faults, want %d: %v", text, len(faults), want, faults)
