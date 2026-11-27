@@ -60,6 +60,17 @@ func noNetwork(t *testing.T) *atomic.Int64 {
 var allowedPackages = map[string]bool{"bytes": true, "crypto/x509": true, "encoding/base64": true, "encoding/json": true, "encoding/pem": true,
 	"errors": true, "strings": true}
 
+// callbackMethods are the names of the methods that an allowed package calls on a value that it gets, through an
+// interface that it checks for: the Marshaler and Unmarshaler of encoding/json and encoding (text), the Error,
+// Unwrap, Is and As of errors, the Read, Write, ReadFrom, WriteTo and the byte and rune forms of io that bytes and
+// strings call, String, and the crypto.Signer and crypto.Decrypter of a key that crypto/x509 takes. The walk of a
+// value given to an allowed package walks these methods of each type of the package that the value can hold, and
+// each method of an interface that it holds (security review of PR #521, L1).
+var callbackMethods = map[string]bool{"MarshalJSON": true, "UnmarshalJSON": true, "MarshalText": true, "UnmarshalText": true,
+	"Error": true, "Unwrap": true, "Is": true, "As": true, "Read": true, "Write": true, "ReadFrom": true, "WriteTo": true,
+	"ReadByte": true, "ReadRune": true, "UnreadByte": true, "UnreadRune": true, "WriteByte": true, "WriteRune": true,
+	"WriteString": true, "String": true, "Public": true, "Sign": true, "Decrypt": true, "Equal": true}
+
 // pureNetwork names the objects of the network packages net and crypto/tls that only parse or hold a value and make
 // no call: the parse of an IP address and the key pair of a TLS Secret. A field or method of the types named here is
 // allowed too.
@@ -232,16 +243,101 @@ func staticNoNetwork(t *testing.T, roots ...string) {
 // allowed (allowedObject), a call of an interface method other than error.Error, a go statement, a package
 // variable whose value can hold a func, an interface, a map, a pointer, a slice or a chan and that is written outside
 // its declaration, and a use of a package variable that can hold a map, a pointer, a slice or a chan other than a
-// read through it. It gives an error for a root that the package does not declare.
+// read through it. At each call into an allowed package and each call of an interface method, it walks each method
+// that the call can run back in the package (callbacks). It gives an error for a root that the package does not
+// declare.
 func reach(c *checked, roots ...string) ([]string, error) {
 	pkg, info := c.pkg, c.info
 	var faults []string
 	seen := map[types.Object]bool{}
 	var walk func(types.Object)
 	var inspect func(string, ast.Node)
+	// callbacks walks each method that an allowed package can call on a value of the type that a body gives it: each
+	// method of each type of the package that the type holds (itself, through a pointer, as the element of a slice, an
+	// array, a map or a chan, or as a field of a struct), and each method of each type of the package that implements
+	// an interface that the type holds. Thus a method that encoding/json, errors.As, a ReadFrom of bytes.Buffer or a
+	// call of Error() runs, such as UnmarshalJSON, As, Read or Error, is walked as the helper's own code (security
+	// review of PR #521, L1).
+	called := map[types.Type]bool{}
+	var callbacks func(types.Type)
+	methods := func(typ types.Type, names map[string]bool) {
+		set := types.NewMethodSet(types.NewPointer(typ))
+		for i := 0; i < set.Len(); i++ {
+			if method, ok := set.At(i).Obj().(*types.Func); ok && method.Pkg() == pkg && (callbackMethods[method.Name()] || names[method.Name()]) {
+				walk(method.Origin())
+			}
+		}
+	}
+	callbacks = func(typ types.Type) {
+		if typ == nil || called[typ] {
+			return
+		}
+		called[typ] = true
+		switch u := typ.(type) {
+		case *types.Alias:
+			callbacks(types.Unalias(u))
+		case *types.Named:
+			// A type of another package holds a value of this package only through an interface that the body
+			// gives it, which the walk of the argument finds, so the walk does not go into its fields.
+			if u.Obj().Pkg() != pkg {
+				if _, isInterface := u.Underlying().(*types.Interface); !isInterface {
+					return
+				}
+			} else if _, isInterface := u.Underlying().(*types.Interface); !isInterface {
+				methods(u, nil)
+			}
+			callbacks(u.Underlying())
+		case *types.Pointer:
+			callbacks(u.Elem())
+		case *types.Slice:
+			callbacks(u.Elem())
+		case *types.Array:
+			callbacks(u.Elem())
+		case *types.Chan:
+			callbacks(u.Elem())
+		case *types.Map:
+			callbacks(u.Key())
+			callbacks(u.Elem())
+		case *types.Struct:
+			for field := range u.Fields() {
+				callbacks(field.Type())
+			}
+		case *types.Interface:
+			for _, name := range pkg.Scope().Names() {
+				local, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+				if !ok || local.IsAlias() {
+					continue
+				}
+				if _, isInterface := local.Type().Underlying().(*types.Interface); isInterface {
+					continue
+				}
+				if types.Implements(local.Type(), u) || types.Implements(types.NewPointer(local.Type()), u) {
+					names := map[string]bool{}
+					for method := range u.Methods() {
+						names[method.Name()] = true
+					}
+					methods(local.Type(), names)
+				}
+			}
+		}
+	}
 	inspect = func(name string, node ast.Node) {
 		ast.Inspect(node, func(node ast.Node) bool {
 			switch n := node.(type) {
+			case *ast.CallExpr:
+				// A call into an allowed package can call back a method of each value that it gets.
+				var callee types.Object
+				switch fun := ast.Unparen(n.Fun).(type) {
+				case *ast.Ident:
+					callee = info.Uses[fun]
+				case *ast.SelectorExpr:
+					callee = info.Uses[fun.Sel]
+				}
+				if callee != nil && callee.Pkg() != nil && callee.Pkg() != pkg && allowedObject(callee) {
+					for _, argument := range n.Args {
+						callbacks(info.Types[argument].Type)
+					}
+				}
 			case *ast.GoStmt:
 				faults = append(faults, name+": a go statement")
 			case *ast.SelectorExpr:
@@ -257,6 +353,8 @@ func reach(c *checked, roots ...string) ([]string, error) {
 						if !allowedInterfaceMethod(selection.Obj()) {
 							faults = append(faults, name+": calls the interface method "+selection.Obj().Name())
 						}
+						// The call runs the method of the value in the interface, such as a local Error.
+						callbacks(selection.Recv())
 					}
 				}
 			case *ast.Ident:
@@ -549,7 +647,7 @@ func TestObservationHelpersMakeNoNetworkCall(t *testing.T) {
 			t.Fatalf("the TLS Secret checks made %d network calls, also to the OCSP or CRL address", n)
 		}
 	})
-	t.Run("ST-SUP-RC14-OC24-T04 The static walk refuses a dialer that an init function or another writer stores, and each network or process package that the helpers do not use", func(t *testing.T) {
+	t.Run("ST-SUP-RC14-OC24-T04 The static walk refuses a dialer that an init function or another writer stores, each network or process package that the helpers do not use, and a method that an allowed package calls back", func(t *testing.T) {
 		// Each plant is a file of this package with the root PlantedCheck. Under the walk of PR #509 (a refused list,
 		// with no init function and no writer of a package variable walked), each one but the control passed.
 		plants := []struct{ name, source, fault string }{
@@ -574,6 +672,22 @@ func TestObservationHelpersMakeNoNetworkCall(t *testing.T) {
 			{"a map variable that a helper reads and another function fills",
 				"package kubernetes\nvar plantedTable = map[string]string{}\nfunc plantedFill(table map[string]string) { table[\"a\"] = \"b\" }\nfunc plantedShare() { plantedFill(plantedTable) }\nfunc PlantedCheck() bool { return plantedTable[\"a\"] == \"b\" }\n",
 				"is used other than by a read through it, in plantedShare"},
+			// Security review of PR #521, L1: a method that an allowed package calls back was not walked.
+			{"an UnmarshalJSON that encoding/json calls",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nfunc PlantedCheck() bool { var v plantedValue; return json.Unmarshal([]byte(\"1\"), &v) == nil }\n",
+				"UnmarshalJSON: uses net.Dial"},
+			{"a MarshalJSON of the element of a slice that encoding/json calls",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\")\ntype plantedItem struct{}\nfunc (plantedItem) MarshalJSON() ([]byte, error) { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return []byte(\"1\"), err }\nfunc PlantedCheck() bool { _, err := json.Marshal([]plantedItem{{}}); return err == nil }\n",
+				"MarshalJSON: uses net.Dial"},
+			{"an As method that errors.As calls on an error in the chain",
+				"package kubernetes\nimport (\"errors\"; \"net\")\ntype plantedError struct{}\nfunc (plantedError) Error() string { return \"planted\" }\nfunc (plantedError) As(any) bool { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err == nil }\nfunc PlantedCheck() bool { var err error = plantedError{}; var target *plantedError; return errors.As(err, &target) }\n",
+				"As: uses net.Dial"},
+			{"a Read method that bytes.Buffer.ReadFrom calls",
+				"package kubernetes\nimport (\"bytes\"; \"io\"; \"net\")\ntype plantedReader struct{}\nfunc (plantedReader) Read([]byte) (int, error) { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; if err != nil { return 0, err }; return 0, io.EOF }\nfunc PlantedCheck() bool { var b bytes.Buffer; _, err := b.ReadFrom(plantedReader{}); return err == nil }\n",
+				"Read: uses net.Dial"},
+			{"an Error method that a call of Error() on an error runs",
+				"package kubernetes\nimport \"net\"\ntype plantedFault struct{}\nfunc (plantedFault) Error() string { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; if err != nil { return err.Error() }; return \"planted\" }\nfunc PlantedCheck() bool { var err error = plantedFault{}; return err.Error() != \"\" }\n",
+				"Error: uses net.Dial"},
 			{"the control: a check that uses only an allowed package", "package kubernetes\nimport \"strings\"\nvar plantedPrefix = \"tenant-\"\nfunc PlantedCheck() bool { return strings.HasPrefix(\"tenant-1\", plantedPrefix) }\n", ""},
 		}
 		for _, plant := range plants {
