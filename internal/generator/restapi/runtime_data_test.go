@@ -1233,12 +1233,53 @@ func TestNoMarkedValue(t *testing.T) {
 }
 `
 
+// integerBoundCheck is a test of the generated validation.go: the entry of a bound of an integer schema gives the
+// bound as an integer, and the entry of a bound of a number schema stays as the check gives it.
+const integerBoundCheck = `package api
+
+import (
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+func TestIntegerBound(t *testing.T) {
+	for _, c := range []struct {
+		schema *openapi3.Schema
+		value  float64
+		want   string
+	}{
+		{openapi3.NewInt64Schema().WithMin(0).WithMax(2147483647), 2147483648, "number must be at most 2147483647"},
+		{openapi3.NewInt64Schema().WithMin(-2147483648), -2147483649, "number must be at least -2147483648"},
+		{openapi3.NewInt64Schema().WithMin(0).WithMax(10000000), 10000001, "number must be at most 10000000"},
+		{openapi3.NewFloat64Schema().WithMax(1.5), 2, "number must be at most 1.5"},
+		{openapi3.NewFloat64Schema().WithMax(2147483647), 2147483648, "number must be at most 2.147483647e+09"},
+	} {
+		err := c.schema.VisitJSON(c.value)
+		if err == nil {
+			t.Fatalf("%v passed the schema %+v", c.value, c.schema)
+		}
+		got := parseValidationErrors(err)
+		if len(got) != 1 || got[0].Message != c.want {
+			t.Errorf("%v gives the entries %+v, want the message %q", c.value, got, c.want)
+		}
+	}
+}
+`
+
 func TestValidationBounds(t *testing.T) {
 	ctx := crudContext()
 	ctx.Conventions.RequestValidation = "openapi-schema"
 	p := newCrudProject(t, ctx, crudFiles(t, ctx))
 	p.write("out/api/cap_test.go", []byte(validationCapCheck))
 	p.write("out/api/marked_test.go", []byte(markedValueCheck))
+	p.write("out/api/bound_test.go", []byte(integerBoundCheck))
+	t.Run("ST-SUP-RC20-OC05-T08 The entry of a min or a max of an integer field gives the bound as an integer", func(t *testing.T) {
+		// Walkthrough 28, MSG-MAX: the 400 above the int32 range said number must be at most 2.147483647e+09.
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestIntegerBound$", "./out/api"); err != nil {
+			t.Fatalf("the check of the integer bounds failed: %v\n%s", err, output)
+		}
+	})
 	t.Run("ST-SUP-RC20-OC05-T05 A validation problem lists at most 50 failed members and one entry that counts the rest", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestValidationCap$", "./out/api"); err != nil {
 			t.Fatalf("the check of the cap failed: %v\n%s", err, output)

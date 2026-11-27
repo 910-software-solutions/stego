@@ -601,6 +601,34 @@ client which ID is wrong, map `command.ErrNotFound` to a declared refusal, as
 [the developer reference of fills](fills.md#map-an-error-of-the-handle-to-a-refusal)
 shows.
 
+### The answers of a command over gRPC
+
+A command over gRPC gives each answer that is not a success as a gRPC
+status. The message of the status is the fixed code or the problem type
+alone (walkthrough 28, GRPC-CODES):
+
+| Answer | HTTP | gRPC status | Message |
+|---|---|---|---|
+| No verified identity | 401 | `Unauthenticated` | `unauthenticated` |
+| No idempotency key, where the command requires one | 400 | `InvalidArgument` | `idempotency-key-missing` |
+| A key that is not one structured string of 1 to 255 characters | 400 | `InvalidArgument` | `idempotency-key-invalid` |
+| The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
+| The same key while the first request runs | 409 | `Aborted` | `idempotency-key-in-progress` |
+| A message that cannot be read | 400 | `InvalidArgument` | `bad_request` |
+| A value that the checks of the command refuse | 400 | `InvalidArgument`, with a `google.rpc.BadRequest` detail that names the field | `invalid` |
+| The caller does not have the permission on the row, or the row is not there | 404 | `NotFound` | `denied` |
+| The fill returns `command.ErrNotFound` | 404 | `NotFound` | `not_found` |
+| A declared refusal of status 400 or 422 | 400, 422 | `InvalidArgument` | the code of the refusal |
+| A declared refusal of status 403 | 403 | `PermissionDenied` | the code of the refusal |
+| A declared refusal of status 404 | 404 | `NotFound` | the code of the refusal |
+| A declared refusal of status 409, or a write conflict | 409 | `Aborted` | the code of the refusal, or `conflict` |
+| A declared refusal of status 412 | 412 | `FailedPrecondition` | the code of the refusal |
+| A decision that the authorization provider cannot make now, or a database that cannot serve now | 503 | `Unavailable` | `undecided` or `unavailable` |
+| Any other error | 500 | `Internal` | `internal` |
+
+Thus a client that must tell a reused key from a declared refusal of
+status 412 reads the message, not only the status code.
+
 ### Effects
 
 An effect is a message that the fill stages in the outbox, in the transaction
@@ -1066,9 +1094,15 @@ Do these steps in the schema for each worker:
    The worker `fulfill-orders` writes `Order` and `StockItem`, so the types
    `order` and `stock_item` both have the permission `fulfill`.
 
-Validate examines the permission on `resource_type` only. If another type in
-`writes` does not give the permission through the worker relation, the
-runtime refuses each read and write of the worker on those rows.
+Validate refuses a type in `writes` or `reads` that does not have the
+permission. From rest-crud 3.274.0, validate and plan also give the warning
+`worker-relation` for each such type, and for `resource_type`, whose
+permission does not reach the worker relation (walkthrough 28, CHK-WREL).
+Without that path, the worker has the permission only on a row that gives
+it to `service_account:<worker name>` in another way, such as an owner
+relation of a row that the worker created. The runtime refuses each read
+and write of the worker on the other rows, and a consuming worker parks
+each such event after its retries.
 
 3. When the worker creates a row with no parent, give the type `tenant` the
    permission of the worker too. A row has no parent when its entity has a

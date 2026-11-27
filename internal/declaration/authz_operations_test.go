@@ -1,6 +1,7 @@
 package declaration
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -259,6 +260,46 @@ func TestWorkerAuthorization(t *testing.T) {
 	})
 	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note holds its own permission and its stager's, is accepted", func(t *testing.T) {
 		expectAccepted(t, withNote(noteService(consumer, stager), editOnly+"\tpermission view = owner\n"))
+	})
+	// Walkthrough 28, CHK-WREL: the permission of a consuming worker on a type that it writes did not reach its relation
+	// on the type tenant; each update event failed and was parked, and no check saw it.
+	t.Run("ST-DECL-INV69-T A worker whose permission on a type it decides does not reach its relation on the type tenant gets a warning that names the type", func(t *testing.T) {
+		const tenant = "definition tenant {\n\trelation worker_sync_documents: service_account\n}\n"
+		document := func(edit string) string {
+			return "definition document {\n\trelation tenant: tenant\n\trelation owner: user\n\trelation viewer: user | service_account\n" +
+				"\trelation editor: tenant#worker_sync_documents\n\tpermission view = viewer + owner\n\tpermission edit = " + edit + "\n}\n"
+		}
+		note := func(edit string) string {
+			return "definition note {\n\trelation tenant: tenant\n\trelation parent: document\n\trelation owner: user | service_account\n\tpermission edit = " + edit + "\n}\n"
+		}
+		service := readTD03(t, noteService(worker("sync-documents", "trigger: every 1m", "writes: [Todo, Note]", "fill: sync", "resource_type: document", "permission: edit"), ""))
+		for _, c := range []struct {
+			name, document, note string
+			warned               []string
+		}{
+			{"both types through tenant->worker_sync_documents", "owner + tenant->worker_sync_documents", "owner + tenant->worker_sync_documents", nil},
+			{"note through its parent document", "owner & tenant->worker_sync_documents", "parent->edit", nil},
+			{"document through the subject set editor", "owner - editor", "tenant->worker_sync_documents", nil},
+			{"note through the owner of the row only", "owner + tenant->worker_sync_documents", "owner", []string{"note#edit"}},
+			{"neither type", "owner", "owner + parent->view", []string{"document#edit", "note#edit"}},
+		} {
+			schema := compileTD03(t, "definition user {}\ndefinition service_account {}\n"+tenant+document(c.document)+note(c.note))
+			var warned []string
+			for _, warning := range WorkerRelationWarnings(service, schema) {
+				warned = append(warned, warning.Found)
+				for _, want := range []string{"worker-relation", "workers[0].permission", "sync-documents", "tenant#worker_sync_documents", "tenant->worker_sync_documents"} {
+					if !strings.Contains(warning.Rule+" "+warning.Path+" "+warning.Message, want) {
+						t.Errorf("%s: the warning %+v does not name %q", c.name, warning, want)
+					}
+				}
+			}
+			if !slices.Equal(warned, c.warned) {
+				t.Errorf("%s: the warnings name %v, want %v", c.name, warned, c.warned)
+			}
+		}
+		if warnings := WorkerRelationWarnings(service, nil); warnings != nil {
+			t.Errorf("no schema gave the warnings %+v", warnings)
+		}
 	})
 }
 
