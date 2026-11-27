@@ -6,16 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestTestModuleSources(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R03-T21 The fill checks of a test binary take their modules from the checked module cache of localtest and reach no network, and a program that is not a test binary panics", func(t *testing.T) {
 		// Decision on the sec-510c side note (2026-11-27): moduleSources put proxy.golang.org in place of each GOPROXY
 		// that is not off, so stego plan and apply in tests reached the network.
-		cache := localtest.ModuleCache(t)
-		proxy := "file://" + filepath.ToSlash(filepath.Join(cache, "cache", "download"))
+		// A file proxy of the test, as the download folder of the checked module cache of localtest is one. This
+		// package does not import localtest: Extending may not import Supplying (ST-STD-CODE-R03).
+		proxy := "file://" + filepath.ToSlash(t.TempDir())
 		for _, bad := range []string{"https://proxy.golang.org", "file://", "file://host/x", proxy + ",https://proxy.golang.org", proxy + "|direct", "direct"} {
 			if restore, err := UseTestModuleSources(bad); err == nil {
 				restore()
@@ -47,7 +46,7 @@ func TestTestModuleSources(t *testing.T) {
 		}
 		download := exec.Command("go", "mod", "download", "-json", "example.com/not-in-the-cache@v1.0.0")
 		download.Dir = module
-		download.Env = append(localtest.GoEnv(), env...)
+		download.Env = append(os.Environ(), append([]string{"GOMODCACHE=" + t.TempDir(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local"}, env...)...)
 		output, err := download.CombinedOutput()
 		if err == nil || !strings.Contains(string(output), "module lookup disabled by GOPROXY=off") && !strings.Contains(string(output), "not found") {
 			t.Errorf("a download of a module that the cache does not hold gave %v, want not found with no network:\n%s", err, output)
@@ -67,7 +66,7 @@ func TestTestModuleSources(t *testing.T) {
 		binary := filepath.Join(t.TempDir(), "notatest")
 		build := exec.Command("go", "build", "-o", binary, "./internal/fill/testdata/notatest")
 		build.Dir = root
-		build.Env = localtest.GoEnv("GOFLAGS=-mod=readonly")
+		build.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
 		if output, err := build.CombinedOutput(); err != nil {
 			t.Fatalf("go build of a program that calls UseTestModuleSources: %v\n%s", err, output)
 		}
