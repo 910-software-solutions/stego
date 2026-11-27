@@ -56,7 +56,7 @@ jobs:
   #   ASSURE_LOCAL_B_TESTS, and assure every other one, with cmd/assure and the Python suites.
   # The part that runs every other test skips exactly the patterns of the other parts of its package, so each test
   # runs in exactly one part, and a new test always runs; the suites job also refuses a top-level test that two parts
-  # ran. A pattern has no slash, so it selects only by the name of a top-level test. generators is the six generator
+  # ran, and a top-level test that go test -list gives for the package and that none of its parts ran. A pattern has no slash, so it selects only by the name of a top-level test. generators is the six generator
   # packages with the longest tests; rest is every other package of the root module, from go list at the commit, so
   # a new package always runs. Each part writes the go test -json output of its packages, and assure uses the Python
   # output, as an artifact of this run. The parts run code of the change, as the suites job did: their outcomes
@@ -171,11 +171,17 @@ jobs:
           STEGO_TEST_POSTGRES_DSN: postgres://postgres:stego_test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
         # go test ./... at the root does not reach Assuring's modules, internal/assure and cmd/assure: each has a
         # go.mod of its own. The assure part runs them, one after the other into one file, and the assure-local
-        # parts run only the package internal/assure. Each package gets
+        # parts run the packages of internal/assure (./...), the same packages that the assure part's -skip applies
+        # to, so a test of a subpackage whose name matches an assure-local pattern also runs. Each package gets
         # 20 minutes, under the step's 25, so a timeout is a test outcome and not a cancelled step.
         # The part writes the import paths of the packages it runs to packages-<part>.txt, and the rest part also
         # writes every package of the root module to packages-root.txt, so the suites job can check that each
         # package of the root module is in a part and that each package of a part has its result.
+        # The part of a split package that runs every other test (stego, compiler and assure) also writes the
+        # go test -list -json output of its packages to list-<part>.json, after its tests, when the build cache
+        # holds the test builds, so the suites job can check that each top-level test of the package ran in one
+        # of its parts. go test -list fails only when the package does not build; then no test of it ran either,
+        # and the package's own result shows the fault.
         run: |
           mkdir -p "$RUNNER_TEMP/part"
           out="$RUNNER_TEMP/part/go-test-$PART.json"
@@ -191,19 +197,21 @@ jobs:
                 $(printf -- '-e github.com/910-software-solutions/stego/%s ' $generators) \
                 "$RUNNER_TEMP/part/packages-root.txt" > "$list" ;;
             assure-local-a | assure-local-b)
-              go list -C internal/assure -mod=readonly . > "$list"
+              go list -C internal/assure -mod=readonly ./... > "$list"
               pattern="$ASSURE_LOCAL_A_TESTS"
               if [ "$PART" = assure-local-b ]; then pattern="$ASSURE_LOCAL_B_TESTS"; fi
-              go test -C internal/assure -json -race -count=1 -mod=readonly -timeout=20m -run "$pattern" . > "$out" || true
+              go test -C internal/assure -json -race -count=1 -mod=readonly -timeout=20m -run "$pattern" ./... > "$out" || true
               exit 0 ;;
             assure)
               : > "$out"
               : > "$list"
+              : > "$RUNNER_TEMP/part/list-$PART.json"
               for module in internal/assure cmd/assure; do
                 select=()
                 if [ "$module" = internal/assure ]; then select=(-skip "$ASSURE_LOCAL_A_TESTS|$ASSURE_LOCAL_B_TESTS"); fi
                 go list -C "$module" -mod=readonly ./... >> "$list"
                 go test -C "$module" -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" ./... >> "$out" || true
+                go test -C "$module" -json -race -vet=off -mod=readonly -list '.*' ./... >> "$RUNNER_TEMP/part/list-$PART.json" || true
               done
               exit 0 ;;
             *) echo "::error::Unknown part $PART"; exit 1 ;;
@@ -217,6 +225,9 @@ jobs:
             compiler) select=(-skip "$COMPILER_RUNTIME_TESTS") ;;
           esac
           go test -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" $(cat "$list") > "$out" || true
+          case "$PART" in
+            stego | compiler) go test -json -race -vet=off -mod=readonly -list '.*' $(cat "$list") > "$RUNNER_TEMP/part/list-$PART.json" || true ;;
+          esac
       - name: Run the Python suites
         if: matrix.part == 'assure'
         timeout-minutes: 5
@@ -291,23 +302,36 @@ jobs:
           pattern: tests-*
           path: ${{ runner.temp }}/parts
       # A part that is missing, cut short or not whole fails the job, so nothing is attested: the folders must be
-      # exactly those of the ten parts; each file must be there; each line of a go test output and the Python
-      # output must be JSON; each package of the root module must be in a part; each package that a part lists
-      # must have its result (pass, fail or skip) in that part's output; and no top-level test of a package may run
-      # in two parts. bash runs it with pipefail.
+      # exactly those of the ten parts; each file must be there; each line of a go test output, of a test list and
+      # the Python output must be JSON; each package of the root module must be in a part; each package that a part
+      # lists must have its result (pass, fail or skip) in that part's output; no top-level test of a package may
+      # run in two parts; and for each package that runs in parts (cmd/stego, internal/compiler, and the modules
+      # internal/assure and cmd/assure of the assure parts), the top-level tests that its parts ran must be exactly
+      # the tests, fuzz targets and examples that go test -list gives for it. A benchmark is not listed: go test
+      # runs none without -bench. No listed test is left out: go test gives a run event for each test that it
+      # selects, also for one that skips. bash runs it with pipefail.
+      # The names in a refusal come from the parts, the change's own output, so the list is printed between
+      # ::stop-commands:: and a token that the change cannot know, and no name can give a workflow command.
       - name: Join the outputs of the parts
         shell: bash
         run: |
           parts="$RUNNER_TEMP/parts"
+          refuse() {
+            token="$(openssl rand -hex 16)"
+            echo "::stop-commands::$token"
+            printf '%s\n' "$2"
+            echo "::$token::"
+            echo "::error::$1 (listed above). Nothing is attested."
+            exit 1
+          }
           all_parts="stego-build stego-scaffold stego compiler-runtime compiler generators rest assure-local-a assure-local-b assure"
           root_parts="stego-build stego-scaffold stego compiler-runtime compiler generators rest"
           expected="$(for part in $all_parts; do echo "tests-$part"; done | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
           found="$(cd "$parts" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
           if [ "$found" != "$expected " ]; then
-            echo "::error::The parts are $found, not exactly $expected. Nothing is attested."
-            exit 1
+            refuse "The parts are not exactly $expected" "$found"
           fi
-          for file in tests-rest/packages-root.txt tests-assure/python-tests.json; do
+          for file in tests-rest/packages-root.txt tests-assure/python-tests.json tests-stego/list-stego.json tests-compiler/list-compiler.json tests-assure/list-assure.json; do
             test -s "$parts/$file" || { echo "::error::The parts wrote no $file. Nothing is attested."; exit 1; }
           done
           jq -e . "$parts/tests-assure/python-tests.json" > /dev/null
@@ -323,32 +347,72 @@ jobs:
               "$parts/tests-$part/go-test-$part.json" | LC_ALL=C sort -u > "$RUNNER_TEMP/done-$part.txt"
             missing="$(LC_ALL=C sort -u "$parts/tests-$part/packages-$part.txt" | LC_ALL=C comm -23 - "$RUNNER_TEMP/done-$part.txt")"
             if [ -n "$missing" ]; then
-              echo "::error::The part $part has no result for: $missing. Nothing is attested."
-              exit 1
+              refuse "The part $part has no result for some packages" "$missing"
             fi
           done
           unplaced="$(LC_ALL=C sort -u "$parts/tests-rest/packages-root.txt" | LC_ALL=C comm -23 - <(for part in $root_parts; do cat "$parts/tests-$part/packages-$part.txt"; done | LC_ALL=C sort -u))"
           if [ -n "$unplaced" ]; then
-            echo "::error::No part ran: $unplaced. Nothing is attested."
-            exit 1
+            refuse "No part ran some packages of the root module" "$unplaced"
           fi
-          twice="$(for part in $all_parts; do
+          ran() {
             jq -r 'select(.Action == "run" and .Test != null and (.Test | contains("/") | not)) | "\(.Package) \(.Test)"' \
-              "$parts/tests-$part/go-test-$part.json" | LC_ALL=C sort -u
-          done | LC_ALL=C sort | uniq -d)"
+              "$parts/tests-$1/go-test-$1.json" | LC_ALL=C sort -u
+          }
+          twice="$(for part in $all_parts; do ran "$part"; done | LC_ALL=C sort | uniq -d)"
           if [ -n "$twice" ]; then
-            echo "::error::Two parts ran: $twice. Nothing is attested."
-            exit 1
+            refuse "Two parts ran some top-level tests" "$twice"
           fi
+          # Each entry is the part that lists the tests, then the parts that run them.
+          for split in "stego stego-build stego-scaffold stego" "compiler compiler-runtime compiler" "assure assure-local-a assure-local-b assure"; do
+            read -r lister split_parts <<< "$split"
+            list="$parts/tests-$lister/list-$lister.json"
+            if ! jq -e . "$list" > /dev/null; then
+              echo "::error::The test list of the part $lister has a line that is not JSON. Nothing is attested."
+              exit 1
+            fi
+            jq -r 'select(.Action == "output" and .Test == null and (.Output | test("^(Test|Fuzz|Example)\\S*\n$"))) | "\(.Package) \(.Output | rtrimstr("\n"))"' \
+              "$list" | LC_ALL=C sort -u > "$RUNNER_TEMP/listed-$lister.txt"
+            for part in $split_parts; do ran "$part"; done | LC_ALL=C sort -u > "$RUNNER_TEMP/ran-$lister.txt"
+            unrun="$(LC_ALL=C comm -23 "$RUNNER_TEMP/listed-$lister.txt" "$RUNNER_TEMP/ran-$lister.txt")"
+            if [ -n "$unrun" ]; then
+              refuse "No part of $split_parts ran some listed top-level tests" "$unrun"
+            fi
+            unlisted="$(LC_ALL=C comm -13 "$RUNNER_TEMP/listed-$lister.txt" "$RUNNER_TEMP/ran-$lister.txt")"
+            if [ -n "$unlisted" ]; then
+              refuse "The parts $split_parts ran top-level tests that go test -list does not give" "$unlisted"
+            fi
+          done
           for part in rest generators compiler-runtime compiler stego-build stego-scaffold stego assure-local-a assure-local-b assure; do
             cat "$parts/tests-$part/go-test-$part.json"
           done > "$RUNNER_TEMP/go-test.json"
+      - name: Record the proof run
+        run: >-
+          mkdir -p "$RUNNER_TEMP/proof-run" &&
+          "$RUNNER_TEMP/record/assure" record
+          --commit "$COMMIT"
+          --go-json "$RUNNER_TEMP/go-test.json"
+          --python-json "$RUNNER_TEMP/parts/tests-assure/python-tests.json"
+          --predicate "$RUNNER_TEMP/proof-run/proof-run.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-run
+          path: ${{ runner.temp }}/proof-run/proof-run.json
+          retention-days: 14
+          if-no-files-found: error
+      - name: Say that the proof run is recorded
+        id: recorded
+        run: echo "recorded=true" >> "$GITHUB_OUTPUT"
       # The times of the parts stay visible, so a slower test shows before it reaches the 20 minutes of a package:
       # the job summary gives each part's packages with their times and the 15 longest top-level tests of each part,
       # and the artifact test-times keeps the time of each top-level test (part, package, test, result, seconds). A
       # package of a part that takes over 12 minutes gives a warning. The step reads only the joined outputs.
+      # The times only report: the step and its artifact come after the proof run is recorded and kept, and a fault
+      # in them (as a sort that took SIGPIPE from head under pipefail once was) cannot fail the suites job, so it
+      # never stops the attestation or the gates. awk reads all of its input and prints the first 15 lines, so
+      # sort never writes to a closed pipe.
       - name: Show the times of the parts
         shell: bash
+        continue-on-error: true
         run: |
           parts="$RUNNER_TEMP/parts"
           mkdir -p "$RUNNER_TEMP/test-times"
@@ -370,7 +434,7 @@ jobs:
               echo "| Longest top-level test | Result | Seconds |"
               echo "| --- | --- | ---: |"
               jq -r 'select(.Test != null and (.Test | contains("/") | not) and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | [(.Elapsed // 0), .Test, .Action] | @tsv' "$file" |
-                LC_ALL=C sort -t "$(printf '\t')" -k1,1gr | head -n 15 | awk -F '\t' '{ printf "| %s | %s | %s |\n", $2, $3, $1 }'
+                LC_ALL=C sort -t "$(printf '\t')" -k1,1gr | awk -F '\t' 'NR <= 15 { printf "| %s | %s | %s |\n", $2, $3, $1 }'
               echo
             } >> "$summary"
             jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail") and (.Elapsed // 0) > 720) | "\(.Package) \(.Elapsed)"' "$file" |
@@ -379,28 +443,12 @@ jobs:
               done
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        continue-on-error: true
         with:
           name: test-times
           path: ${{ runner.temp }}/test-times/test-times.tsv
           retention-days: 14
           if-no-files-found: error
-      - name: Record the proof run
-        run: >-
-          mkdir -p "$RUNNER_TEMP/proof-run" &&
-          "$RUNNER_TEMP/record/assure" record
-          --commit "$COMMIT"
-          --go-json "$RUNNER_TEMP/go-test.json"
-          --python-json "$RUNNER_TEMP/parts/tests-assure/python-tests.json"
-          --predicate "$RUNNER_TEMP/proof-run/proof-run.json"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: proof-run
-          path: ${{ runner.temp }}/proof-run/proof-run.json
-          retention-days: 14
-          if-no-files-found: error
-      - name: Say that the proof run is recorded
-        id: recorded
-        run: echo "recorded=true" >> "$GITHUB_OUTPUT"
       # assure record gives outcomes only to tests whose names carry a test record ID. Every other failure fails the
       # job here, after the proof run is recorded and kept: a Go test or subtest of any name, a parent test, a
       # package (TestMain, a race outside a test, a build fault), and a Python test of any name.
