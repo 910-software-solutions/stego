@@ -39,11 +39,13 @@ func testGo() string {
 }
 
 // upstream is a module proxy in a folder and a sum database that holds the true go.sum lines of its modules. zipSum
-// and modSum are the hashes of upstreamModule; sums holds those of each module.
+// and modSum are the hashes of upstreamModule; sums holds those of each module at upstreamVersion, and versionSums
+// those of each version of each module.
 type upstream struct {
 	folder, sumDB, key string
 	zipSum, modSum     string
-	sums               map[string][2]string // module path -> zip hash ("" with no zip), go.mod hash
+	sums               map[string][2]string         // module path -> zip hash ("" with no zip), go.mod hash
+	versionSums        map[module.Version][2]string // module version -> zip hash ("" with no zip), go.mod hash
 }
 
 // newUpstream writes the module upstreamModule into a proxy folder, with its zip when zip is true, and serves a sum
@@ -56,42 +58,71 @@ func newUpstream(t *testing.T, zip bool) *upstream {
 // newUpstreamOf is newUpstream for each module path of mods at upstreamVersion, with its zip when its value is true.
 func newUpstreamOf(t *testing.T, mods map[string]bool) *upstream {
 	t.Helper()
-	u := &upstream{folder: t.TempDir(), sums: map[string][2]string{}}
-	records := map[string]string{}
+	versions := map[module.Version]bool{}
 	for path, zip := range mods {
-		at := filepath.Join(u.folder, path, "@v")
+		versions[module.Version{Path: path, Version: upstreamVersion}] = zip
+	}
+	return newUpstreamOfVersions(t, versions)
+}
+
+// newUpstreamOfVersions is newUpstream for each module version of mods, with its zip when its value is true. The
+// proxy folder holds each path and version in the case encoding of the module proxy protocol.
+func newUpstreamOfVersions(t *testing.T, mods map[module.Version]bool) *upstream {
+	t.Helper()
+	u := &upstream{folder: t.TempDir(), sums: map[string][2]string{}, versionSums: map[module.Version][2]string{}}
+	records := map[module.Version]string{}
+	lists := map[string]string{}
+	for m, zip := range mods {
+		escapedPath, err := module.EscapePath(m.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		escapedVersion, err := module.EscapeVersion(m.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := filepath.Join(u.folder, filepath.FromSlash(escapedPath), "@v")
 		if err := os.MkdirAll(at, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		mod := []byte("module " + path + "\n\ngo 1.21\n")
+		mod := []byte("module " + m.Path + "\n\ngo 1.21\n")
 		write := func(name string, data []byte) {
 			if err := os.WriteFile(filepath.Join(at, name), data, 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
-		write("list", []byte(upstreamVersion+"\n"))
-		write(upstreamVersion+".info", []byte(`{"Version":"`+upstreamVersion+`","Time":"2026-01-01T00:00:00Z"}`))
-		write(upstreamVersion+".mod", mod)
+		lists[at] += m.Version + "\n"
+		write(escapedVersion+".info", []byte(`{"Version":"`+m.Version+`","Time":"2026-01-01T00:00:00Z"}`))
+		write(escapedVersion+".mod", mod)
 		modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(mod)), nil })
 		if err != nil {
 			t.Fatal(err)
 		}
-		record := path + " " + upstreamVersion + "/go.mod " + modSum + "\n"
+		record := m.Path + " " + m.Version + "/go.mod " + modSum + "\n"
 		zipSum := ""
 		if zip {
+			// The source file names the module version, so the zip of each version has a hash of its own.
 			var buf bytes.Buffer
-			files := []modzip.File{memFile{"go.mod", mod}, memFile{"in.go", []byte("package in\n")}}
-			if err := modzip.Create(&buf, module.Version{Path: path, Version: upstreamVersion}, files); err != nil {
+			files := []modzip.File{memFile{"go.mod", mod}, memFile{"in.go", []byte("package in // " + m.String() + "\n")}}
+			if err := modzip.Create(&buf, m, files); err != nil {
 				t.Fatal(err)
 			}
-			write(upstreamVersion+".zip", buf.Bytes())
-			if zipSum, err = dirhash.HashZip(filepath.Join(at, upstreamVersion+".zip"), dirhash.Hash1); err != nil {
+			write(escapedVersion+".zip", buf.Bytes())
+			if zipSum, err = dirhash.HashZip(filepath.Join(at, escapedVersion+".zip"), dirhash.Hash1); err != nil {
 				t.Fatal(err)
 			}
-			record = path + " " + upstreamVersion + " " + zipSum + "\n" + record
+			record = m.Path + " " + m.Version + " " + zipSum + "\n" + record
 		}
-		records[path] = record
-		u.sums[path] = [2]string{zipSum, modSum}
+		records[m] = record
+		u.versionSums[m] = [2]string{zipSum, modSum}
+		if m.Version == upstreamVersion {
+			u.sums[m.Path] = [2]string{zipSum, modSum}
+		}
+	}
+	for at, list := range lists {
+		if err := os.WriteFile(filepath.Join(at, "list"), []byte(list), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	u.zipSum, u.modSum = u.sums[upstreamModule][0], u.sums[upstreamModule][1]
 	signer, verifier, err := note.GenerateKey(rand.Reader, "proxytest-upstream")
@@ -99,7 +130,7 @@ func newUpstreamOf(t *testing.T, mods map[string]bool) *upstream {
 		t.Fatal(err)
 	}
 	database := sumdb.NewTestServer(signer, func(path, version string) ([]byte, error) {
-		if record, ok := records[path]; ok && version == upstreamVersion {
+		if record, ok := records[module.Version{Path: path, Version: version}]; ok {
 			return []byte(record), nil
 		}
 		return nil, os.ErrNotExist
