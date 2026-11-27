@@ -864,6 +864,11 @@ func dirStamp(dir string) (string, error) {
 			return err
 		}
 		rel, _ := filepath.Rel(dir, name)
+		// The go command extracts only folders and regular files. A link, which Lstat sees and the hash of dirhash
+		// follows, would let a stamp stay the same while the file it names changes (security review of PR #7, I2).
+		if !entry.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("%s holds %s, which is not a regular file or a folder", dir, rel)
+		}
 		fmt.Fprintf(h, "%q %d %o %d\n", rel, info.Size(), info.Mode(), info.ModTime().UnixNano())
 		return nil
 	})
@@ -906,8 +911,15 @@ func verifyDirs(dirs []fillDir, stampsFile string) error {
 			defer wg.Done()
 			for d := range work {
 				stamp, err := dirStamp(d.Dir)
+				if err != nil {
+					// A folder that cannot be stamped, such as one that holds a link, is refused, not hashed.
+					failedMu.Lock()
+					failed = append(failed, fmt.Sprintf("%s %s: %v", d.Path, d.Version, err))
+					failedMu.Unlock()
+					continue
+				}
 				why := ""
-				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
+				if known[d.Dir] == (record{d.Sum, stamp}) {
 					failedMu.Lock()
 					passed[d.Dir] = record{d.Sum, stamp}
 					failedMu.Unlock()

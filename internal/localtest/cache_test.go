@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The proofs that the module cache of localtest takes only checked modules (ST-STD-LOCAL-R03): an inner go command of
@@ -252,6 +253,90 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 		}
 		if err := verifyDirs([]fillDir{module}, stamps); err != nil || hashedDirs != 0 {
 			t.Fatalf("the unchanged folder with its stamp fails or is hashed again (%d): %v", hashedDirs, err)
+		}
+		// A file rewritten with the same size and a new modification time changes the stamp, so the folder is hashed
+		// again and refused (security review of PR #7, I1). The folder and the file get their modes back, so only the
+		// modification time tells the change.
+		folder, err := os.Stat(module.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(module.Dir, "lib.go")
+		original, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed := []byte(strings.Replace(string(original), "package lib", "package lix", 1))
+		if len(changed) != len(original) || string(changed) == string(original) {
+			t.Fatal("the rewrite of lib.go does not keep its size")
+		}
+		if err := os.WriteFile(source, changed, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(source, before.ModTime().Add(time.Hour), before.ModTime().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(module.Dir, folder.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("a same-size rewrite with a new modification time is not refused: %v", err)
+		}
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(source, before.ModTime(), before.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err != nil {
+			t.Fatalf("the folder put back as it was is refused: %v", err)
+		}
+		// lib.go put back as a link to a copy of the same bytes outside the folder: the hash, which follows the link, is
+		// the checked one, but a later change of the copy would not change the stamp. The go command extracts no link,
+		// so the folder is refused (security review of PR #7, I2).
+		copied := filepath.Join(t.TempDir(), "lib.go")
+		if err := os.WriteFile(copied, original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(copied, source); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err == nil || !strings.Contains(err.Error(), "lib.go, which is not a regular file or a folder") {
+			t.Fatalf("a link in the folder is not refused: %v", err)
+		}
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, original, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
 		}
 		// Another tool, or a run with -modcacherw, puts a file into the folder.
 		if err := os.Chmod(module.Dir, 0o755); err != nil {
