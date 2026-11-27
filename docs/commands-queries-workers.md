@@ -601,6 +601,34 @@ client which ID is wrong, map `command.ErrNotFound` to a declared refusal, as
 [the developer reference of fills](fills.md#map-an-error-of-the-handle-to-a-refusal)
 shows.
 
+### The answers of a command over gRPC
+
+A command over gRPC gives each answer that is not a success as a gRPC
+status. The message of the status is the fixed code or the problem type
+alone (walkthrough 28, GRPC-CODES):
+
+| Answer | HTTP | gRPC status | Message |
+|---|---|---|---|
+| No verified identity | 401 | `Unauthenticated` | `unauthenticated` |
+| No idempotency key, where the command requires one | 400 | `InvalidArgument` | `idempotency-key-missing` |
+| A key that is not one structured string of 1 to 255 characters | 400 | `InvalidArgument` | `idempotency-key-invalid` |
+| The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
+| The same key while the first request runs | 409 | `Aborted` | `idempotency-key-in-progress` |
+| A message that cannot be read | 400 | `InvalidArgument` | `bad_request` |
+| A value that the checks of the command refuse | 400 | `InvalidArgument`, with a `google.rpc.BadRequest` detail that names the field | `invalid` |
+| The caller does not have the permission on the row, or the row is not there | 404 | `NotFound` | `denied` |
+| The fill returns `command.ErrNotFound` | 404 | `NotFound` | `not_found` |
+| A declared refusal of status 400 or 422 | 400, 422 | `InvalidArgument` | the code of the refusal |
+| A declared refusal of status 403 | 403 | `PermissionDenied` | the code of the refusal |
+| A declared refusal of status 404 | 404 | `NotFound` | the code of the refusal |
+| A declared refusal of status 409, or a write conflict | 409 | `Aborted` | the code of the refusal, or `conflict` |
+| A declared refusal of status 412 | 412 | `FailedPrecondition` | the code of the refusal |
+| A decision that the authorization provider cannot make now, or a database that cannot serve now | 503 | `Unavailable` | `undecided` or `unavailable` |
+| Any other error | 500 | `Internal` | `internal` |
+
+Thus a client that must tell a reused key from a declared refusal of
+status 412 reads the message, not only the status code.
+
 ### Effects
 
 An effect is a message that the fill stages in the outbox, in the transaction

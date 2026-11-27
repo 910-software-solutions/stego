@@ -229,6 +229,16 @@ runtime v0.165.0, except for the cases below.
     expand step, when the release before serves no more requests. Between the
     two, the browser pages that read the entity show an error: plan the two
     deploys close together, such as in one maintenance window.
+  - A browser service holds the copy of the TypeScript SDK of each API in
+    its UI assets, such as `ui/assets` or the bundle `ui/assets.zip`, as it
+    was at the last release of the browser service. Nothing copies it again
+    when an API has a new release, and `stego validate` of the browser
+    service does not find a copy that is older than its API. Thus, at each
+    release of an API, copy its `out/tssdk/index.js` (and its declarations)
+    into the UI assets again, build the UI and the browser service, and
+    deploy them. In walkthrough 28, the old copies failed with
+    `invalid_response` after a retype from `int32` to `int64` and after a
+    seal (TS-PORTAL).
 
   Build the CLI and the SDKs again from the OpenAPI document of each new
   release, and give the new clients to their users before you stop the
