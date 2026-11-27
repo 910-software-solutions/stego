@@ -731,7 +731,7 @@ func TestSealSteps(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC01-OC50-T09 After a pass of a runtime before v0.208.0 that passed a retired tenant, completed or cut, the seal job of this runtime seals its rows and the contract passes", func(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC50-T09 After a pass of a runtime before v0.207.0 that passed a retired tenant, completed or cut, the seal job of this runtime seals its rows and the contract passes", func(t *testing.T) {
 		for _, mode := range []string{"completed", "cut"} {
 			t.Run(mode, func(t *testing.T) {
 				own, db, reader := base(t)
@@ -739,7 +739,7 @@ func TestSealSteps(t *testing.T) {
 				if code := write(t, db, "tenant-a", `SELECT public.stego_retire_tenant('tenant-a')`); code != "" {
 					t.Fatalf("the retire of tenant-a: %s", code)
 				}
-				// The seal job of a runtime before v0.208.0 read the active tenants alone: it runs here over a copy of
+				// The seal job of a runtime before v0.207.0 read the active tenants alone: it runs here over a copy of
 				// the tenant list that holds only them.
 				for _, statement := range []string{"CREATE SCHEMA oldlist",
 					"CREATE TABLE oldlist.stego_tenants AS SELECT * FROM public.stego_tenants WHERE retired_at IS NULL",

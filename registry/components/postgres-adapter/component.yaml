@@ -51,7 +51,7 @@ name: postgres-adapter
 # entity in each tenant of the tenant list, and registers the digest of the body before it as an earlier digest of the
 # step (decision ST-SUP-Q216 (a)).
 # Version 6.33.0 says in the refusal of a seal contract with rows in clear that the release of the expand step needs
-# the runtime v0.208.0 or later, whose seal job passes over the retired tenants too (decision ST-SUP-Q219 (a); security
+# the runtime v0.207.0 or later, whose seal job passes over the retired tenants too (decision ST-SUP-Q219 (a); security
 # review of PR #20, H1). It also gives the seal and re-seal statements a first page that takes NULL (FirstNull), so a row
 # with the zero UUID is sealed and re-sealed too (confirmation review of PR #20, F2).
 version: 6.33.0

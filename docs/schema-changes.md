@@ -627,16 +627,16 @@ retries of the other contract steps, and a run again after a failure part
 way goes on. After the contract the field is in `<column>_sealed` alone.
 
 A retired tenant stays in the tenant list, and a retire deletes no row, so
-its rows keep their clear values. From runtime v0.208.0 the seal job seals
+its rows keep their clear values. From runtime v0.207.0 the seal job seals
 the rows of each tenant of the tenant list, also of a tenant that you retire
 before the expand step or while the seal is open, and the re-seal job moves
 their values to the first key of the ring (decision ST-SUP-Q219 (a)). A
 retire does not stop the contract, and no clear value of a retired tenant
-stays in the table after it. With a runtime before v0.208.0 the seal job
+stays in the table after it. With a runtime before v0.207.0 the seal job
 passed over the active tenants only, so after a retire each pass completed
 and the contract refused for ever with `rows of the listed tenants with a
 clear value and no sealed value` (walkthrough 29, SEAL-RETIRE). To end that
-wait, deploy the release of the expand step again with runtime v0.208.0 or
+wait, deploy the release of the expand step again with runtime v0.207.0 or
 later. Its seal job does not trust a pass of the earlier runtime: before it
 takes a completed pass as done, or goes on with a pass after its last
 tenant, it reads each tenant of the tenant list that the pass went over for a
@@ -649,6 +649,18 @@ contract has not run, so keep the seal open no longer than you need. Each
 read has the lock timeout (2 s) and the statement timeout (10 s) of a batch
 of the seal job; a read that does not end in them fails the run, which then
 trusts no pass, and the next run tries again.
+
+The seal job of postgres-adapter 6.33.0 and later reads each row, also a row
+whose ID is the zero UUID (`00000000-0000-0000-0000-000000000000`), such as a
+row of an import or of direct SQL. The code that an earlier adapter generated
+does not read such a row. When you move a service whose code an earlier
+adapter generated to runtime v0.207.0 or later without building it again, for
+example with `go get` or a dependency bot, a zero-UUID row in clear stays in
+clear: at each run the read finds it, logs `command.seal.clear_left` with
+`first_null` `false` and starts a new pass, which reads every row of every
+tenant, and the contract refuses. This goes on until you build the release
+with postgres-adapter 6.33.0 or later (rest-crud 3.276.0 or rpc-service and
+browser-service 1.276.0) and deploy it. The line then names that adapter.
 
 The contract does not wait for the release of the expand step to stop, as the
 contract of a drop or a rename does not wait for the release of its expand

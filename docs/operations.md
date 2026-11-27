@@ -693,10 +693,10 @@ Wait until both rollouts complete before you start the next phase.
    ring no longer holds. The run logs the first three such rows with their
    column and row, and then one count for the column and the tenant.
 3. Remove the old key only when both of these are true:
-   - each column logged `left=0` in one complete run of runtime v0.208.0 or
+   - each column logged `left=0` in one complete run of runtime v0.207.0 or
      later that started after both rollouts of phase 2 completed. A run that
      started earlier can miss values that an old pod wrote. A run of a runtime
-     before v0.208.0 passed over the active tenants alone, so its `left=0`
+     before v0.207.0 passed over the active tenants alone, so its `left=0`
      does not count the values of a retired tenant, which stay on the old key
      (decision ST-SUP-Q219 (a)). After an upgrade from such a runtime, wait for
      one complete run of the new runtime before you remove a key;

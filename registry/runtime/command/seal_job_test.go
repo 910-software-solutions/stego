@@ -434,7 +434,7 @@ func TestSealRetired(t *testing.T) {
 			}
 		}
 	})
-	t.Run("ST-SUP-RP10-LC50-T11 After a pass of a runtime before v0.208.0 that passed a retired tenant, completed or cut, the job starts a new pass and seals its rows", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC50-T11 After a pass of a runtime before v0.207.0 that passed a retired tenant, completed or cut, the job starts a new pass and seals its rows", func(t *testing.T) {
 		for _, mode := range []string{"completed", "cut"} {
 			t.Run(mode, func(t *testing.T) {
 				n := newNoteEnv(t)
@@ -454,7 +454,7 @@ func TestSealRetired(t *testing.T) {
 				if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
 					t.Fatal(err)
 				}
-				// The seal job of a runtime before v0.208.0 passes over the active tenants alone: it completes its
+				// The seal job of a runtime before v0.207.0 passes over the active tenants alone: it completes its
 				// pass, or stops after its first batch (org-b), as at the rollout to this runtime.
 				old, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-old", lease.Settings{})
 				if err != nil {
@@ -561,6 +561,28 @@ func TestSealRetired(t *testing.T) {
 		}
 		if strings.Contains(logs.String(), "command.seal.clear_left") {
 			t.Fatalf("a run again started a new pass for a row in clear:\n%s", logs.String())
+		}
+		// The code of a postgres-adapter before 6.33.0 has no FirstNull: its job never reads a new row with the zero
+		// UUID of org-b, so each of its two runs starts a new pass, and the line names that adapter (sec-20d L1).
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-b"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-b', '` + zero + `', 'x', 'secret-zero-b')`)
+		old, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old.pause = 0
+		logs.Reset()
+		if _, err := old.Run(n.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Run(n.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(logs.String(), "command.seal.clear_left"); got != 2 || !strings.Contains(logs.String(), "postgres-adapter before 6.33.0") ||
+			!strings.Contains(logs.String(), "first_null=false") || strings.Contains(logs.String(), "as a runtime before v0.207.0 passed the retired tenants") {
+			t.Fatalf("the runs of the code of an earlier adapter logged %d new passes:\n%s\nwant one line for each run that names postgres-adapter 6.33.0", got, logs.String())
 		}
 	})
 	t.Run("ST-SUP-RP10-LC50-T13 The read of the rows in clear has the lock timeout of a batch, and a read that does not end fails the run and trusts no pass", func(t *testing.T) {

@@ -966,7 +966,7 @@ of the tenant, gave 404 in each such tenant, also after its relate step
 completed; a tenant provisioned on the new release got the tuple (walkthrough
 29, RELATE-TSVC).
 
-From runtime v0.208.0 the job `worker-tuples` of the controller also gives
+From runtime v0.207.0 the job `worker-tuples` of the controller also gives
 each active tenant the service tuple that SpiceDB does not hold (decision
 ST-SUP-Q220 (a)). It runs when the controller of the release starts, after
 the migration Job of the release wrote the release identity row, and then
@@ -983,9 +983,20 @@ it:
 3. Check a row of a tenant that was there before the release: the check
    through `tenant->service` now passes.
 
-A release with a runtime before v0.208.0 gives these tenants no service
-tuple. Move to runtime v0.208.0 or later: its first run of the job gives each
+A release with a runtime before v0.207.0 gives these tenants no service
+tuple. Move to runtime v0.207.0 or later: its first run of the job gives each
 active tenant the tuple, also for a relation that an earlier release added.
+
+### A seal open across the move to runtime v0.207.0
+
+Move the runtime and the generated code together: take rest-crud 3.276.0, or
+rpc-service or browser-service 1.276.0, and run `stego apply` and `stego deps`.
+A service on runtime v0.207.0 or later whose code a postgres-adapter before
+6.33.0 generated keeps a row with the zero UUID in clear: its seal job never
+reads that row, so each run of the job logs `command.seal.clear_left` with
+`first_null` `false` and starts the seal pass again, and the contract step
+refuses, until you build the release with postgres-adapter 6.33.0 and deploy
+it (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)).
 
 ## Upgrade over the old label keys
 
