@@ -326,8 +326,9 @@ func (s *service) principal(token string) (tenant.Tenant, string) {
 	t.Helper()
 	keys, err := authn.ParseKeys(authntest.Document(s.rsa.JWK(), s.es.JWK()))
 	must(t, err)
+	// The opt-in to an ID token changes no access token, so it maps the ID tokens of ST-SUP-RC37-OC02-T04 too.
 	verifier, err := authn.New(authn.Settings{Issuer: s.issuer, Audience: audience, TenantClaim: "org_id", ProblemCode: "CHECK",
-		Algorithms: []string{authn.AlgorithmRS256, authn.AlgorithmES256}, Keys: keys})
+		Algorithms: []string{authn.AlgorithmRS256, authn.AlgorithmES256}, AcceptIDToken: true, Keys: keys})
 	must(t, err)
 	defer verifier.Stop()
 	id, err := verifier.Verify(context.Background(), token)
@@ -337,6 +338,15 @@ func (s *service) principal(token string) (tenant.Tenant, string) {
 	principal, err := authz.Person("user", id)
 	must(t, err)
 	return tn, principal.Subject().ID
+}
+
+// idToken mints an ID token of the shape of tsidp for the subject in the organization org: RS256, the header typ JWT,
+// aud an array of the one audience, the nonce of a sign-in and a tailnet claim, and no at_hash or c_hash
+// (ST-SUP-Q218).
+func (s *service) idToken(subject, org string) string {
+	c := s.claims(subject, org)
+	c["aud"], c["nonce"], c["tailnet"] = []string{audience}, "n-"+subject, "example.ts.net"
+	return s.token("RS256", "r1", c, s.rsa)
 }
 
 // startFails runs the binary with the provider's discovery document set to the document, and gives the output of
@@ -436,6 +446,36 @@ func TestOIDC(t *testing.T) {
 			s.identity("org-1", s.token("ES256", "e1", good, s.es), s.token("RS256", "r1", s.claims("u1", "org-2"), s.rsa),
 				s.token("RS256", "r1", s.claims("u2", "org-1"), s.rsa))
 		})
+		t.Run("ST-SUP-RC37-OC02-T04 An ID token is refused with 401 when the declaration does not opt in", func(t *testing.T) {
+			s.t = t
+			if r := s.send(s.idToken("u1", "org-1"), http.MethodGet, "/orders/00000000-0000-4000-8000-000000000000", ""); r.status != http.StatusUnauthorized {
+				t.Fatalf("the ID token gave %d %s, want 401", r.status, r.body)
+			}
+			if !s.accepted(s.token("RS256", "r1", good, s.rsa)) {
+				t.Fatal("the access token was refused")
+			}
+		})
+	case "oidc-auth-id-token":
+		t.Run("ST-SUP-RC37-OC02-T04 An ID token with a nonce passes with 200 when the declaration states accept_id_token, and an ID token of two audiences is refused with 401", func(t *testing.T) {
+			s.t = t
+			// The owner creates and reads an order with an ID token: 201, then 200 (identity checks the tenant and
+			// the subject of the token as well).
+			s.identity("org-1", s.idToken("u1", "org-1"), s.idToken("u1", "org-2"), s.idToken("u2", "org-1"))
+			two := s.claims("u1", "org-1")
+			two["aud"], two["nonce"] = []string{audience, "billing-api"}, "n-u1"
+			other := s.claims("u1", "org-1")
+			other["azp"], other["nonce"] = "billing-web", "n-u1"
+			logout := s.claims("u1", "org-1")
+			logout["events"] = map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}
+			for name, claims := range map[string]map[string]any{"two audiences": two, "an azp of another client": other, "a logout token": logout} {
+				if r := s.send(s.token("RS256", "r1", claims, s.rsa), http.MethodGet, "/orders/00000000-0000-4000-8000-000000000000", ""); r.status != http.StatusUnauthorized {
+					t.Errorf("the ID token with %s gave %d %s, want 401", name, r.status, r.body)
+				}
+			}
+			if !s.accepted(s.token("RS256", "r1", good, s.rsa)) {
+				t.Error("the access token was refused under the opt-in")
+			}
+		})
 	case "rh-sso-auth":
 		t.Run("ST-SUP-RC21-OC15-T01 A service with rh-sso-auth on the runtime data path gets the oidc-auth verifier with the Red Hat SSO settings", func(t *testing.T) {
 			s.t = t
@@ -458,7 +498,7 @@ func TestOIDC(t *testing.T) {
 			s.refusals(good)
 		})
 	default:
-		t.Fatalf("STEGO_OIDC_FORM is %q, want oidc-auth or rh-sso-auth", form)
+		t.Fatalf("STEGO_OIDC_FORM is %q, want oidc-auth, oidc-auth-id-token or rh-sso-auth", form)
 	}
 }
 
