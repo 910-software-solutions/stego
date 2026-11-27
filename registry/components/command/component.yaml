@@ -47,9 +47,11 @@
 # Version 1.28.0 gives each declared reset of attempts the helper <Command>Reset<Entity><Field>AttemptsByID, which
 # resets the row of an ID with the reset permission alone (ST-SUP-RC32-OC24, decision ST-SUP-Q211 (a); walkthrough
 # 24, U-R).
+# Version 1.31.0 gives the min and the max of an integer field in the reason of its check as an integer, such as
+# more than max 2147483647, and not as 2.147483647e+09 (walkthrough 28, MSG-MAX).
 kind: component
 name: command
-version: 1.30.0
+version: 1.31.0
 stage: ga
 output_namespace: commands
 
