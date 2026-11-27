@@ -498,8 +498,9 @@ in each service of the chain.
 
 With more than one API replica, a Provision or a Retire reaches the other
 replicas within 5 seconds (`tenant.MaxGateAge`): in that time another replica
-can still refuse the new tenant with 403 `tenant.not_provisioned`, or serve
-the retired tenant. See
+can still refuse the new tenant with 403 `tenant.not_provisioned`, or admit
+a request of the retired tenant, which then runs to its end. Thus a retire
+is done 5 seconds plus the longest request time after it answered. See
 [Provision or retire a tenant on more than one replica](operations.md#provision-or-retire-a-tenant-on-more-than-one-replica).
 
 The

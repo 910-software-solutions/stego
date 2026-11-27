@@ -1029,8 +1029,11 @@ the change at once. Each other replica can keep its old answer for up to
 
 - After a Provision, another replica can refuse a request of the new tenant
   with 403 and the code `tenant.not_provisioned` for up to 5 seconds.
-- After a Retire, another replica can serve a request of the retired tenant
-  for up to 5 seconds.
+- After a Retire, another replica can admit a request of the retired tenant
+  for up to 5 seconds. A request that it admitted runs to its end, with its
+  writes: up to 10 seconds for an HTTP request or a unary gRPC call, and up
+  to `STEGO_GRPC_STREAM_TIMEOUT` (5 minutes when it is not set) for a gRPC
+  stream.
 
 What to do:
 
@@ -1038,8 +1041,10 @@ What to do:
   Provision, retry a 403 `tenant.not_provisioned` for up to 5 seconds, with a
   short pause, such as 500 ms, between the attempts. Do not retry it after
   that time: then the tenant is not provisioned.
-- Before you tell a customer that a retire is done, wait 5 seconds after the
-  Retire answered.
+- Before you tell a customer that a retire is done, wait 5 seconds plus the
+  longest request time after the Retire answered: 15 seconds for a service
+  with no gRPC stream, else 5 seconds plus `STEGO_GRPC_STREAM_TIMEOUT`
+  (security review of PR #14, L4).
 
 ## Write a grant in SpiceDB yourself
 
