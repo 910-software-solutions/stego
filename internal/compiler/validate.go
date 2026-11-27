@@ -869,7 +869,7 @@ var capabilityNamespaces = map[string]string{commandComponent: "commands", query
 
 // RevisionFillCheck gives the fill check of the fills of the commands, queries and workers of a declaration as the
 // project folder holds them, with no registry: their bindings, the import path of each contract package under out,
-// and their contracts as the generated Go files of out/commands, out/queries and out/workers. stego build compares
+// their contracts as the generated Go files of out/commands, out/queries and out/workers, and the fill modules. stego build compares
 // the contract digest of each such fill's evidence with it (ST-GEN-INV10, decision on ST-EXT-Q30).
 func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclaration) FillCheck {
 	contract := func(component string) string {
@@ -877,6 +877,10 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 	}
 	check := FillCheck{ProjectDir: projectDir, Module: module, Bindings: capabilityBindings(svcDecl),
 		QueryContract: contract(queryComponent), WorkerContract: contract(workerComponent)}
+	// The fill digest counts the files of each local fill module that a fill reaches (spike-localfill).
+	for _, module := range svcDecl.FillModules {
+		check.FillModules = append(check.FillModules, module.Module)
+	}
 	for _, binding := range check.Bindings {
 		if binding.Slot == commandComponent {
 			check.CommandFills = append(check.CommandFills, CommandFill{Fill: binding.Fill, Command: strings.TrimPrefix(binding.Owner, "command "),
