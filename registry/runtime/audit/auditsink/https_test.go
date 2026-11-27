@@ -30,7 +30,7 @@ import (
 	logs "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
 )
 
 // authority is a test certificate authority that issues the certificates of the stand-in and of the client.

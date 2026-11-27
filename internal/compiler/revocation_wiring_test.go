@@ -2,13 +2,12 @@ package compiler
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The service tests of the revocation wiring (ST-SUP-RC29-OC16 to OC19, ST-SUP-RC20-OC41, ST-SUP-RC33-OC10): a service generated with
@@ -178,10 +177,8 @@ func TestRevocationWiring(t *testing.T) {
 	p.goCommand("mod", "tidy")
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRevocationWiring$", "./out/revocationcheck")
-	cmd.Dir = p.dir
-	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_REVOCATION_BINARY="+binary)
-	output, runErr := runTLSCheck(cmd)
+	output, runErr := runTLSCheck(p.dir, "./out/revocationcheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_REVOCATION_BINARY="+binary),
+		"-test.count=1", "-test.timeout=300s", "-test.v", "-test.run", "^TestRevocationWiring$")
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {
 		name := strings.TrimPrefix(t.Name(), "TestRevocationWiring/")

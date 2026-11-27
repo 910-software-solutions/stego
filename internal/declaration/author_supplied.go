@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // AuthorSuppliedSettings names each setting that a config schema marks as author supplied (ST-SUP-EN09 field Config

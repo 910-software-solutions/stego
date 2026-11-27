@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // relaxBase is the release before four relax steps: the owned entity Board with the title of 1 to 40 characters,

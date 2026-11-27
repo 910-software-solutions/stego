@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The authorization of the service's own operations (ST-DECL-UC09): each command, query and worker decides one

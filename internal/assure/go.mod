@@ -1,4 +1,4 @@
-module github.com/jsell-rh/stego/internal/assure
+module github.com/910-software-solutions/stego/internal/assure
 
 go 1.26.11
 

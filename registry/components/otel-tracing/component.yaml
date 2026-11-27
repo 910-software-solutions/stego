@@ -10,7 +10,7 @@ name: otel-tracing
 # runtime samples each trace ID there (security review of PR #495, I2; ST-SUP-RC17-OC15). Its runtime gives its
 # instance identity (Instance), which the runtime of the service takes, so each line of one process names one
 # instance (core49 follow-up; ST-SUP-RP03-LC16).
-version: 1.23.0
+version: 1.25.0
 stage: ga
 output_namespace: tracing
 

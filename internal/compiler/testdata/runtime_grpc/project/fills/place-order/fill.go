@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jsell-rh/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
 
 	commands "example.com/shop/out/commands"
 )

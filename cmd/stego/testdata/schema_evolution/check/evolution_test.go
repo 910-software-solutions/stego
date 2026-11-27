@@ -34,10 +34,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 
 	"github.com/example/service/out/internal/stegoruntime"
 	"github.com/example/service/out/internal/tenancy"
@@ -796,6 +796,75 @@ func TestEvolution(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC12-R03-T05 A patchable int32 widened to an int64 keeps each value through both releases, and the new release holds the int32 range until the contract", func(t *testing.T) {
+		d.t = t
+		if jobErr != nil {
+			t.Fatalf("the migration job of v2 failed: %v\n%s", jobErr, job.out)
+		}
+		// Walkthrough 26, P3-RT: Organization.quota, an int32 with min 0 and no max that the collection patches,
+		// becomes an int64 with min 0 and no max. The migration job of v2 converted the 10 rows of the seed, which
+		// have the default 0.
+		if n := d.count(`SELECT count(*) FROM public.organizations WHERE quota_int64 IS DISTINCT FROM quota::bigint`); n != 0 {
+			t.Errorf("%d Organization rows have no quota_int64 equal to quota", n)
+		}
+		if n := d.count(`SELECT count(*) FROM stego_schema.backfills WHERE change_id = 'organization-quota-retype' AND completed_at IS NOT NULL AND failed_rows = 0`); n != 1 {
+			t.Errorf("the backfill of the widening is not complete with no failed row")
+		}
+		stored := func(id string) (string, string) {
+			var old, now sql.NullString
+			must(t, d.admin.QueryRow(`SELECT quota::text, quota_int64::text FROM public.organizations WHERE tenant_id = 't-00' AND id = $1`, id).Scan(&old, &now))
+			return old.String, now.String
+		}
+		patch := func(a *api, value string) reply {
+			return d.send(a, owner, http.MethodPatch, "/organizations/"+org, `{"quota":`+value+`}`)
+		}
+		// The edges of the int32 range through the patch of each release, and a change of the value of one release
+		// through the other.
+		for _, value := range []string{"0", "1", "2147483646", "2147483647"} {
+			for _, a := range []*api{v1api, v2api} {
+				if r := patch(a, value); r.status != http.StatusOK {
+					t.Fatalf("a patch of quota %s through %s answered %d %s", value, a.release, r.status, r.body)
+				}
+				if old, now := stored(org); old != value || now != value {
+					t.Errorf("the quota %s patched through %s is %q in the old column and %q in the new one", value, a.release, old, now)
+				}
+				for _, reader := range []*api{v1api, v2api} {
+					// The number is read as its JSON text, so no float rounds it.
+					var read struct{ Quota json.Number }
+					must(t, json.Unmarshal(d.send(reader, owner, http.MethodGet, "/organizations/"+org, "").body, &read))
+					if string(read.Quota) != value {
+						t.Errorf("%s reads the quota %s of %s as %v", reader.release, value, a.release, read.Quota)
+					}
+				}
+			}
+		}
+		// The new release takes no value that the column of the release before cannot hold: 400, and nothing is
+		// written, while v1 runs.
+		for _, value := range []string{"2147483648", "4000000000", "-1"} {
+			if r := patch(v2api, value); r.status != http.StatusBadRequest {
+				t.Errorf("a patch of quota %s through v2 answered %d %s, want 400 until the contract", value, r.status, r.body)
+			}
+			if old, now := stored(org); old != "2147483647" || now != "2147483647" {
+				t.Errorf("a refused patch of quota %s changed the row to %q and %q", value, old, now)
+			}
+		}
+		// A create through v1 sets the default 0, which v2 reads.
+		created := d.send(v1api, owner, http.MethodPost, "/organizations", `{"name":"r05-widen"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("a create through v1 answered %d %s", created.status, created.body)
+		}
+		id, _ := created.object(t)["id"].(string)
+		d.relate(owner, "organization", id, "owner")
+		if old, now := stored(id); old != "0" || now != "0" {
+			t.Errorf("a create through v1 gives the quota %q and %q, want 0 in both columns", old, now)
+		}
+		var read struct{ Quota json.Number }
+		must(t, json.Unmarshal(d.send(v2api, owner, http.MethodGet, "/organizations/"+id, "").body, &read))
+		if string(read.Quota) != "0" {
+			t.Errorf("v2 reads the quota of a create of v1 as %v", read.Quota)
+		}
+	})
+
 	t.Run("ST-GEN-UC12-FL-T The email rename starts while v1 and v2 both run on a table with rows", func(t *testing.T) {
 		d.t = t
 		if jobErr != nil || !v1Live {
@@ -1182,6 +1251,12 @@ func TestContract(t *testing.T) {
 		if n := d.count(`SELECT count(*) FROM public.org_settings WHERE rank_string IS NULL`); n != 0 {
 			t.Fatalf("%d OrgSetting rows lost their rank in the contract", n)
 		}
+		// The contract of the widening drops the old column quota and makes quota_int64 NOT NULL with its default;
+		// the release of the contract step takes the whole int64 range (walkthrough 26, P3-RT).
+		if n := d.count(`SELECT count(*) FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'public.organizations'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+  AND (a.attname = 'quota' OR (a.attname = 'quota_int64' AND a.attnotnull))`); n != 1 {
+			t.Fatalf("after the contract the organizations table has %d of the columns quota and quota_int64 NOT NULL, want only the second", n)
+		}
 		v3api := d.serve("v3")
 		created := d.send(v3api, owner, http.MethodPost, "/organizations/"+org+"/users", `{"email":"r02@acme.test","display_name":"R","role":"viewer"}`)
 		if created.status != http.StatusCreated {
@@ -1200,6 +1275,16 @@ func TestContract(t *testing.T) {
 		}
 		if list := d.send(v3api, owner, http.MethodGet, "/organizations/"+org+"/users", ""); list.status != http.StatusOK || !strings.Contains(string(list.body), "r02b@acme.test") {
 			t.Fatalf("a list through v3 answered %d %s", list.status, list.body)
+		}
+		for _, value := range []string{"4000000000", "9223372036854775807"} {
+			if r := d.send(v3api, owner, http.MethodPatch, "/organizations/"+org, `{"quota":`+value+`}`); r.status != http.StatusOK {
+				t.Fatalf("a patch of quota %s through v3 answered %d %s, want 200 after the contract", value, r.status, r.body)
+			}
+			var now string
+			must(t, d.admin.QueryRow(`SELECT quota_int64::text FROM public.organizations WHERE tenant_id = 't-02' AND id = $1`, org).Scan(&now))
+			if now != value {
+				t.Errorf("the quota %s patched through v3 is %q", value, now)
+			}
 		}
 		if strings.Contains(v3api.log.String(), "does not satisfy the schema manifest") {
 			t.Errorf("v3 alerts a schema mismatch after its contract:\n%s", v3api.log)

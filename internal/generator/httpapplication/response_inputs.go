@@ -3,9 +3,9 @@ package httpapplication
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/openapicontract"
-	"github.com/jsell-rh/stego/internal/responsemapping"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/openapicontract"
+	"github.com/910-software-solutions/stego/internal/responsemapping"
 )
 
 func responseInputs(raw any) ([]gen.GoModelField, error) {

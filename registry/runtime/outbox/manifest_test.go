@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
 )
 
 func TestManifest(t *testing.T) {

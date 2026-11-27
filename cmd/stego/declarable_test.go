@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // declarableReport is the structured report of what may be declared for an archetype.

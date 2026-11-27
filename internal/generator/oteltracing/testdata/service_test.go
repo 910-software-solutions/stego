@@ -344,6 +344,30 @@ func TestLocalAccessLines(t *testing.T) {
 	}
 }
 
+func TestLocalCommandRoute(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T05 The access line of a declared command route, a custom method with a colon, carries its template", func(t *testing.T) {
+		traceEnvironment(t)
+		t.Setenv("STEGO_LOG_LEVEL", "")
+		var output bytes.Buffer
+		runtime, err := newRuntime(formOf(&output))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /jobs/{job_id}/status:convert", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		mux.HandleFunc("POST /proposals/{id}/status:accept", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusConflict) })
+		handler := runtime.Handler(runtime.Route(mux))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/jobs/0198a1b2-7f3c-job/status:convert", nil))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/proposals/0198a1b2-7f3c-p/status:accept", nil))
+		runtime.Close()
+		access := linesOf(localLines(t, &output), "http.server.request.completed")
+		if len(access) != 2 || access[0]["http.route"] != "/jobs/{job_id}/status:convert" || access[1]["http.route"] != "/proposals/{id}/status:accept" {
+			t.Fatalf("the access lines of the command routes are %v, want the templates /jobs/{job_id}/status:convert and /proposals/{id}/status:accept", access)
+		}
+		noRequestValue(t, output.Bytes())
+	})
+}
+
 func TestLocalLogLevel(t *testing.T) {
 	t.Run("ST-SUP-RC17-OC23-T02 STEGO_LOG_LEVEL sets the lowest local line, a database call that does not fail is DEBUG, and a bad value is refused", func(t *testing.T) {
 		traceEnvironment(t)

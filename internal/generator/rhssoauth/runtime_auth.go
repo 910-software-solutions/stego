@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/oidcauth"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/oidcauth"
 )
 
 // The Red Hat SSO configuration of oidc-auth on the runtime data path (ST-SUP-RC21-OC15): the issuer form of Red

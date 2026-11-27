@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // These tests prove the exports of the architecture model (ST-GEN-UC17, ST-GEN-QRY05) on models that

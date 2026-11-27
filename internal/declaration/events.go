@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // maxEventFields is the most fields of the event fields of one entity (ST-DECL-INV105).

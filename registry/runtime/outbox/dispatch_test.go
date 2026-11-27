@@ -23,10 +23,10 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/seal"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // fakeDestination is the fake destination billing: an HTTP server that records each request it gets with its

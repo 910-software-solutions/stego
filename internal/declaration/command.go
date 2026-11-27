@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func commandPath(i int) string { return fmt.Sprintf("commands[%d]", i) }

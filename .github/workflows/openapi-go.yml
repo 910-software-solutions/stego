@@ -93,7 +93,7 @@ jobs:
               'internal/responsemapping': {'TestJSONStringsSource', 'TestJSONObjectsSource'},
           }
           for suffix, required in groups.items():
-              package = 'github.com/jsell-rh/stego/' + suffix
+              package = 'github.com/910-software-solutions/stego/' + suffix
               passed = {e.get('Test') for e in events
                         if e.get('Package') == package and e.get('Action') == 'pass'}
               assert required <= passed

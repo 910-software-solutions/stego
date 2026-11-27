@@ -5,8 +5,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/browseridentity"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/browseridentity"
 	"path"
 )
 

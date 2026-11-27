@@ -2,12 +2,11 @@ package compiler
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The system tests of ST-DECL-UC06-R04 on a running service: the service generated from the declaration of
@@ -91,10 +90,8 @@ func TestRelationshipOutbox(t *testing.T) {
 	p.goCommand("mod", "tidy")
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestRelationshipOutbox$", "./out/relationshipcheck")
-	cmd.Dir = p.dir
-	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_RELATIONSHIP_BINARY="+binary)
-	output, runErr := runTLSCheck(cmd)
+	output, runErr := runTLSCheck(p.dir, "./out/relationshipcheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_RELATIONSHIP_BINARY="+binary),
+		"-test.count=1", "-test.timeout=300s", "-test.v", "-test.run", "^TestRelationshipOutbox$")
 	// passed fails the subtest when the check of the same name did not run and pass in the generated module.
 	passed := func(t *testing.T) {
 		name := strings.TrimPrefix(t.Name(), "TestRelationshipOutbox/")

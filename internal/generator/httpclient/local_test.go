@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).

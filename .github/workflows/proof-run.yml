@@ -170,7 +170,7 @@ jobs:
             generators) go list -mod=readonly $(printf './%s ' $generators) > "$list" ;;
             rest)
               go list -mod=readonly ./... > "$RUNNER_TEMP/part/packages-root.txt"
-              grep -v -x -F -e github.com/jsell-rh/stego/cmd/stego $(printf -- '-e github.com/jsell-rh/stego/%s ' $generators) \
+              grep -v -x -F -e github.com/910-software-solutions/stego/cmd/stego $(printf -- '-e github.com/910-software-solutions/stego/%s ' $generators) \
                 "$RUNNER_TEMP/part/packages-root.txt" > "$list" ;;
             assure)
               : > "$out"
@@ -672,7 +672,7 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      REPOSITORY: jsell-rh/stego
+      REPOSITORY: 910-software-solutions/stego
     outputs:
       release: ${{ steps.publish.outputs.release }}
     steps:
@@ -899,7 +899,7 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
-      REPOSITORY: jsell-rh/stego
+      REPOSITORY: 910-software-solutions/stego
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

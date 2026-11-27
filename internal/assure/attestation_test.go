@@ -6,7 +6,7 @@ import (
 )
 
 func TestAttestation(t *testing.T) {
-	signer := Signer{Issuer: "https://token.actions.githubusercontent.com", Subject: "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@refs/heads/main"}
+	signer := Signer{Issuer: "https://token.actions.githubusercontent.com", Subject: "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@refs/heads/main"}
 	commit := "0123456789abcdef0123456789abcdef01234567"
 
 	t.Run("ST-VO56-C01-T An attestation names its subject by a full commit, never a tag, a branch or a short ID", func(t *testing.T) {

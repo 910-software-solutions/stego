@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // Schema and Table name the default sink: the table entries in the schema stego_audit_sink of the service database.

@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // BypassFlagPresent is the predicate of ST-DECL-SP07: a component setting of the declaration holds a value for a

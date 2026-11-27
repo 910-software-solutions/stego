@@ -1,5 +1,5 @@
 // Package command generates the per-service code of the command capability (ST-SUP-RC32) on the command runtime
-// github.com/jsell-rh/stego/registry/runtime/command (ST-SUP-RP10). For each declared command it emits the command slot contract (the typed
+// github.com/910-software-solutions/stego/registry/runtime/command (ST-SUP-RP10). For each declared command it emits the command slot contract (the typed
 // request and response messages, the fill type and the command handle), the typed refusals, the repository
 // declarations of the entities that the command writes, the command declaration with its permission and resource,
 // the probe wiring through the domain probes (ST-SUP-RC34), and one HTTP handler and one gRPC handler that call the
@@ -17,9 +17,9 @@ import (
 	"sort"
 	"strings"
 
-	authzschema "github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	authzschema "github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Generator is the generator of the command component.
@@ -29,7 +29,7 @@ type Generator struct{}
 const (
 	commandSlot    = "command.command"
 	probeComponent = "domain-probe"
-	runtimeModule  = "github.com/jsell-rh/stego/registry/runtime"
+	runtimeModule  = "github.com/910-software-solutions/stego/registry/runtime"
 	protobufModule = "google.golang.org/protobuf"
 	protobufPin    = "v1.36.12"
 	grpcModule     = "google.golang.org/grpc"

@@ -3,8 +3,8 @@ package healthcheck_test
 import (
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/healthcheck"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/healthcheck"
 )
 
 func TestInvalidHealthInputs(t *testing.T) {

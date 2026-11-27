@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/grpcapplication"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // grpcComponent is the component whose proto files declare the gRPC methods of the commands and queries.

@@ -12,8 +12,8 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 	modzip "golang.org/x/mod/zip"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // pinSum is the runtime pin's checksum in the registries of these tests: they generate and read module files and
@@ -22,7 +22,7 @@ const pinSum = "h1:2jc7mdW5JmAEJw0KYdJKSGW/vx5dqWB1LfkmGdo9GNk="
 
 // pinBlock is the runtime block of an archetype document with the runtime library at version.
 func pinBlock(version, sum string) string {
-	return "runtime:\n  module: github.com/jsell-rh/stego/registry/runtime\n  version: " + version + "\n  sum: " + sum + "\n"
+	return "runtime:\n  module: github.com/910-software-solutions/stego/registry/runtime\n  version: " + version + "\n  sum: " + sum + "\n"
 }
 
 // runtimeImporter is a component's generated file that imports the package path given.
@@ -115,8 +115,8 @@ func TestArchetypeRuntimePin(t *testing.T) {
 		for _, tc := range []struct{ name, runtime, part string }{
 			{"no pin", "", "pins no runtime library"},
 			{"no module path", "runtime:\n  version: v0.1.0\n  sum: " + pinSum + "\n", "runtime.module"},
-			{"no version", "runtime:\n  module: github.com/jsell-rh/stego/registry/runtime\n  sum: " + pinSum + "\n", "runtime.version"},
-			{"no module checksum", "runtime:\n  module: github.com/jsell-rh/stego/registry/runtime\n  version: v0.1.0\n", "runtime.sum"},
+			{"no version", "runtime:\n  module: github.com/910-software-solutions/stego/registry/runtime\n  sum: " + pinSum + "\n", "runtime.version"},
+			{"no module checksum", "runtime:\n  module: github.com/910-software-solutions/stego/registry/runtime\n  version: v0.1.0\n", "runtime.sum"},
 			{"two pins", pinBlock("v0.1.0", pinSum) + pinBlock("v0.2.0", pinSum), `duplicate key "runtime"`},
 		} {
 			_, registryDir := pinProject(t, "1.0.0", tc.runtime)
@@ -126,12 +126,12 @@ func TestArchetypeRuntimePin(t *testing.T) {
 		}
 
 		project, registryDir := pinProject(t, "1.0.0", pinBlock("v0.1.0", pinSum))
-		applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/jsell-rh/stego/registry/runtime/money")))
+		applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/910-software-solutions/stego/registry/runtime/money")))
 		checkModulePin(t, project, "v0.1.0", pinSum)
 
 		for path, part := range map[string]string{
-			"github.com/jsell-rh/stego/registry/runtime/v2/money": "the runtime library at another version",
-			"github.com/jsell-rh/stego/other/money":               "a STEGO module other than the runtime library",
+			"github.com/910-software-solutions/stego/registry/runtime/v2/money": "the runtime library at another version",
+			"github.com/910-software-solutions/stego/other/money":               "a STEGO module other than the runtime library",
 		} {
 			other, otherRegistry := pinProject(t, "1.0.0", pinBlock("v0.1.0", pinSum))
 			_, err := Reconcile(pinInput(other, otherRegistry, runtimeImporter(path)))
@@ -149,14 +149,14 @@ func TestArchetypeRuntimePin(t *testing.T) {
 		if err := os.WriteFile(archetype, []byte(strings.Replace(string(data), pinSum, moved, 1)), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err = Reconcile(pinInput(project, registryDir, runtimeImporter("github.com/jsell-rh/stego/registry/runtime/money")))
+		_, err = Reconcile(pinInput(project, registryDir, runtimeImporter("github.com/910-software-solutions/stego/registry/runtime/money")))
 		if err == nil || !strings.Contains(err.Error(), "svc-arch 1.0.0") || !strings.Contains(err.Error(), "must change") {
 			t.Fatalf("the pin that moved within version 1.0.0 was not refused naming svc-arch and its version: %v", err)
 		}
 		if err := os.WriteFile(archetype, []byte(strings.Replace(strings.Replace(string(data), pinSum, moved, 1), "version: 1.0.0", "version: 1.1.0", 1)), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/jsell-rh/stego/registry/runtime/money")))
+		applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/910-software-solutions/stego/registry/runtime/money")))
 		checkModulePin(t, project, "v0.1.0", moved)
 	})
 
@@ -166,7 +166,7 @@ func TestArchetypeRuntimePin(t *testing.T) {
 			{"2.0.0", "v0.3.2", strings.Replace(pinSum, "2jc7", "9zz9", 1)},
 		} {
 			project, registryDir := pinProject(t, archetype.version, pinBlock(archetype.pin, archetype.sum))
-			applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/jsell-rh/stego/registry/runtime/money")))
+			applyPin(t, pinInput(project, registryDir, runtimeImporter("github.com/910-software-solutions/stego/registry/runtime/money")))
 			checkModulePin(t, project, archetype.pin, archetype.sum)
 			drift, err := DetectDrift(project, "")
 			if err != nil || drift.HasDrift() {
@@ -179,9 +179,9 @@ func TestArchetypeRuntimePin(t *testing.T) {
 			}
 			for edit, text := range map[string]string{
 				"a pseudo-version":       strings.Replace(string(applied), registry.RuntimeModule+" "+archetype.pin, registry.RuntimeModule+" v0.0.0-20260101000000-abcdefabcdef", 1),
-				"a replace":              string(applied) + "\nreplace github.com/jsell-rh/stego/registry/runtime " + archetype.pin + " => ../runtime\n",
+				"a replace":              string(applied) + "\nreplace github.com/910-software-solutions/stego/registry/runtime " + archetype.pin + " => ../runtime\n",
 				"another tagged version": strings.Replace(string(applied), registry.RuntimeModule+" "+archetype.pin, registry.RuntimeModule+" v1.9.9", 1),
-				"a second module":        string(applied) + "\nrequire github.com/jsell-rh/stego/extra " + archetype.pin + "\n",
+				"a second module":        string(applied) + "\nrequire github.com/910-software-solutions/stego/extra " + archetype.pin + "\n",
 			} {
 				if text == string(applied) {
 					t.Fatalf("the edit %s changed nothing", edit)
@@ -265,7 +265,7 @@ func TestRuntimeProxyServesThePinnedZip(t *testing.T) {
 			proxy, err := writeRuntimeProxy(folder, registry.RuntimePin{Module: registry.RuntimeModule, Version: version, Sum: sum}, root, stage)
 			return stage, proxy, err
 		}
-		versions := filepath.Join("github.com", "jsell-rh", "stego", "registry", "runtime", "@v")
+		versions := filepath.Join("github.com", "910-software-solutions", "stego", "registry", "runtime", "@v")
 
 		// The pinned folder: the proxy serves the go.mod of the zip, and go.sum holds its hash.
 		folder := runtimeFolder(false)

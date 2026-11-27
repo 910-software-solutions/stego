@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // td02Composition reads ST-DECL-TD02 with the fields given for Todo, and the text given added at the end.

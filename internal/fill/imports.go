@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // querySlot and commandSlot are the slots whose contracts are not the package out/slots.

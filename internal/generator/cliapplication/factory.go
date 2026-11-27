@@ -11,8 +11,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/jsell-rh/stego/internal/gen"
 )
 
 // factoryNamespace is the folder under the CLI namespace of the definitions that the generator makes from the

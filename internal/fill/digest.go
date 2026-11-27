@@ -20,8 +20,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +123,13 @@ func combine(files map[string]string) string {
 // other fills of its package fresh, and a change to a declaration that the
 // fill uses makes it stale.
 func CapabilityContractDigest(check compiler.FillCheck, fill string, ref types.SlotRef) (string, error) {
+	// The name can come from the manifest, and it is joined to fills below: a name that is not empty must have the
+	// fill-name form, so that the join stays in fills.
+	if fill != "" {
+		if err := checkFillName(fill); err != nil {
+			return "", err
+		}
+	}
 	if check.CapabilityContract == nil {
 		return "", fmt.Errorf("the contract of the slot %s is not generated", ref)
 	}

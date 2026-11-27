@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/auditlog"
-	"github.com/jsell-rh/stego/internal/generator/idempotency"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/auditlog"
+	"github.com/910-software-solutions/stego/internal/generator/idempotency"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
@@ -106,7 +106,7 @@ func TestRuntimeOutput(t *testing.T) {
 			t.Fatalf("the outbox emits %s, want its wiring %s only", got, runtimeFile)
 		}
 		source := string(files["outbox"][0].Bytes())
-		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/outbox"`, "outbox.Migration(relayRole, runtimeRole, workerRole)", "outbox.NewWorker(queue, config)"} {
+		for _, want := range []string{`"github.com/910-software-solutions/stego/registry/runtime/outbox"`, "outbox.Migration(relayRole, runtimeRole, workerRole)", "outbox.NewWorker(queue, config)"} {
 			if !strings.Contains(source, want) {
 				t.Fatalf("the outbox wiring holds no %s", want)
 			}
@@ -148,7 +148,7 @@ func TestRuntimeOutput(t *testing.T) {
 			t.Fatalf("the outbox with kafka-producer was refused: %v", err)
 		}
 		source := string(files[0].Bytes())
-		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"`,
+		for _, want := range []string{`"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"`,
 			`var Destinations = []string{"audit-sink", "kafka"}`, "settings, err := kafkaoutbox.ReadSettings()",
 			"kafka, err := kafkaoutbox.New(settings, config.Logger)", "worker.Register(kafka.Registration())"} {
 			if !strings.Contains(source, want) {
@@ -183,7 +183,7 @@ func generateService(t *testing.T) *service {
 		t.Fatal(err)
 	}
 	s := &service{t: t, dir: t.TempDir()}
-	s.write("go.mod", "module "+moduleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.0.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n")
+	s.write("go.mod", "module "+moduleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.0.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n")
 	sum, err := os.ReadFile(filepath.Join(runtimeDir, "go.sum"))
 	if err != nil {
 		t.Fatal(err)

@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/jsell-rh/stego/registry/runtime/command"
-	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
 )

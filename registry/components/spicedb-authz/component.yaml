@@ -12,8 +12,9 @@ kind: component
 name: spicedb-authz
 # Version 1.6.0 gives the relay the definitions of the schema as its types, so the relay of a release leaves a
 # tuple of a type or a relation of a newer release to the relay of that release (ST-SUP-RP01-LC40,
-# ST-SUP-RP06-LC06; walkthrough 23, P2-R).
-version: 1.6.0
+# ST-SUP-RP06-LC06; walkthrough 23, P2-R). Version 1.7.0 adds STEGO_SPICEDB_CA_FILE, the certificate authorities that
+# verify a SpiceDB whose certificate a private authority signs (ST-SUP-RP14-LC14, ST-SUP-Q217).
+version: 1.7.0
 stage: ga
 output_namespace: internal/authz
 
@@ -74,6 +75,12 @@ environment:
     description: "Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS."
     secret: false
     allowed: {values: ["0", "1"]}
+  - name: STEGO_SPICEDB_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities that the connection to SpiceDB adds to the system roots. When it has no value, the connection uses the system roots."
+    secret: false
+    example: "/etc/stego/spicedb/ca.crt"
 # The platform needs (ST-SUP-EN09): the preshared key of SpiceDB, the connection string of the relay role and the
 # network path to SpiceDB on its gRPC port.
 needs:

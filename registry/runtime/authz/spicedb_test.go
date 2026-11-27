@@ -29,8 +29,8 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04): version 1.57.0 at its digest.

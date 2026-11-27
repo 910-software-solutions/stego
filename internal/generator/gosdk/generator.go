@@ -16,9 +16,9 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/httpclient"
-	"github.com/jsell-rh/stego/internal/openapicontract"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/httpclient"
+	"github.com/910-software-solutions/stego/internal/openapicontract"
 )
 
 type Generator struct{}

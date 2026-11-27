@@ -8,7 +8,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // TenantConfig gives the connection configuration of the runtime library's connectors, tenant.Open and

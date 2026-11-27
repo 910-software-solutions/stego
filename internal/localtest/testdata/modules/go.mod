@@ -2,17 +2,17 @@ module stego.local/modules
 
 go 1.26.11
 
-replace github.com/jsell-rh/stego/registry/runtime => ../../../../registry/runtime
+replace github.com/910-software-solutions/stego/registry/runtime => ../../../../registry/runtime
 
 require (
 	filippo.io/edwards25519 v1.1.1
+	github.com/910-software-solutions/stego/registry/runtime v0.0.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/jsell-rh/stego/registry/runtime v0.0.0
 	github.com/oapi-codegen/nullable v1.1.0
 	github.com/oapi-codegen/runtime v1.7.0
 	go.opentelemetry.io/otel v1.47.0

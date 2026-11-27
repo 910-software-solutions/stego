@@ -13,7 +13,7 @@ metadata:
     app.kubernetes.io/component: migration
     app.kubernetes.io/name: user-management
     app.kubernetes.io/part-of: user-management
-  name: user-management-migrate-e2c1216bbe
+  name: user-management-migrate-a09800f0f5
 spec:
   activeDeadlineSeconds: 7200
   backoffLimit: 2
@@ -265,6 +265,12 @@ spec:
               valueFrom:
                 configMapKeyRef:
                   key: STEGO_SERVICE_VERSION
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_SPICEDB_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SPICEDB_CA_FILE
                   name: user-management-config
                   optional: true
             - name: STEGO_SPICEDB_ENDPOINT

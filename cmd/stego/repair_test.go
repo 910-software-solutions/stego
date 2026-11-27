@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/declaration"
 	"gopkg.in/yaml.v3"
 )
 

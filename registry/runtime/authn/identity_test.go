@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // One file set and one source importer serve every type-check, so the imports are read once.
@@ -45,7 +45,7 @@ func typeCheck(t *testing.T) *types.Package {
 		files = append(files, file)
 	}
 	config := types.Config{Importer: checkImporter}
-	pkg, err := config.Check("github.com/jsell-rh/stego/registry/runtime/authn", fset, files, nil)
+	pkg, err := config.Check("github.com/910-software-solutions/stego/registry/runtime/authn", fset, files, nil)
 	if err != nil {
 		t.Fatalf("type-check the package: %v", err)
 	}
@@ -121,8 +121,8 @@ func TestIdentitySeal(t *testing.T) {
 		if err := checkOutside(t, `package outside
 
 import (
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 func use() { _ = tenant.Claim(authn.Identity{}) }
@@ -131,7 +131,7 @@ func use() { _ = tenant.Claim(authn.Identity{}) }
 		}
 		err := checkOutside(t, `package outside
 
-import "github.com/jsell-rh/stego/registry/runtime/tenant"
+import "github.com/910-software-solutions/stego/registry/runtime/tenant"
 
 type identity struct{}
 
@@ -144,7 +144,7 @@ func use() { _ = tenant.Claim(identity{}) }
 		}
 		err = checkOutside(t, `package outside
 
-import "github.com/jsell-rh/stego/registry/runtime/authn"
+import "github.com/910-software-solutions/stego/registry/runtime/authn"
 
 var forged = authn.Identity{tenant: "t9"}
 `)
@@ -318,8 +318,8 @@ func TestIdentityEmbedding(t *testing.T) {
 		if err := checkOutside(t, `package outside
 
 import (
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 type forged struct{ authn.Identity }

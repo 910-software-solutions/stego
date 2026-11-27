@@ -14,7 +14,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }

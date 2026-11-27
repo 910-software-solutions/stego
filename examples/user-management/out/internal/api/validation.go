@@ -20,7 +20,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	legacyrouter "github.com/getkin/kin-openapi/routers/legacy"
 
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
 )
 
 //go:embed openapi.json

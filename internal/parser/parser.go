@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 	"gopkg.in/yaml.v3"
 )
 
@@ -145,7 +145,7 @@ func (fixtureVerifier) VerifyBundle(data []byte, subjectDigest string) (assure.S
 }
 
 const (
-	proofRunWorkflow = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
+	proofRunWorkflow = "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
 	pullRef          = "refs/pull/7/merge"
 	mainRef          = "refs/heads/main"
 )
@@ -281,11 +281,11 @@ func proofRun(commit, reference string, logIndex int64, outcomes ...string) assu
 		source = pullMerge(commit)
 	}
 	return assure.SignedStatement{
-		Subjects:         []assure.StatementSubject{{Name: "git+https://github.com/jsell-rh/stego@" + commit, Digest: assure.SubjectDigest(commit)}},
+		Subjects:         []assure.StatementSubject{{Name: "git+https://github.com/910-software-solutions/stego@" + commit, Digest: assure.SubjectDigest(commit)}},
 		PredicateType:    assure.ProofRunPredicateType,
 		Predicate:        json.RawMessage(predicate),
 		Signer:           assure.Signer{Issuer: assure.GitHubIssuer, Subject: proofRunWorkflow + "@" + reference},
-		SourceRepository: "https://github.com/jsell-rh/stego",
+		SourceRepository: "https://github.com/910-software-solutions/stego",
 		SourceRef:        reference,
 		SourceDigest:     source,
 		LogIndex:         logIndex,
@@ -323,7 +323,7 @@ func (g gateRepository) gate(t *testing.T, commit, base, attestations string, en
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GITHUB_ACTIONS=true",
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 		"GITHUB_REF=" + pullRef,
 		"RUNNER_TEMP=" + g.runnerTemp,
 	}, env...)
@@ -1347,7 +1347,7 @@ func (g gateRepository) release(t *testing.T, commit, attestations, predicate st
 		"GITHUB_RUN_ID=36000000001",
 		"GITHUB_RUN_ATTEMPT=1",
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 		"GITHUB_REF=" + mainRef,
 		"GITHUB_WORKFLOW_REF=" + trustedWorkflowRef,
 		"RUNNER_TEMP=" + g.runnerTemp,
@@ -1499,7 +1499,7 @@ func TestGateRelease(t *testing.T) {
 		commit := strings.Repeat("ab", 20)
 		name, digest, err := runJobSubjectStep(t, "attest-release", commit)
 		sum := sha256.Sum256([]byte(commit))
-		if err != nil || name != "git+https://github.com/jsell-rh/stego@"+commit || digest != "sha256:"+hex.EncodeToString(sum[:]) {
+		if err != nil || name != "git+https://github.com/910-software-solutions/stego@"+commit || digest != "sha256:"+hex.EncodeToString(sum[:]) {
 			t.Fatalf("the attest-release job names the subject %s (%s), %v, not the commit %s", name, digest, err, commit)
 		}
 		if _, _, err := runJobSubjectStep(t, "attest-release", "main"); err == nil {
@@ -1580,8 +1580,8 @@ func TestGateRelease(t *testing.T) {
 		}
 
 		for name, env := range map[string]string{
-			"in a job of the trusted workflow at a pull request's ref": "GITHUB_WORKFLOW_REF=jsell-rh/stego/.github/workflows/proof-run.yml@" + pullRef,
-			"in a job of another workflow":                             "GITHUB_WORKFLOW_REF=jsell-rh/stego/.github/workflows/checks.yml@" + mainRef,
+			"in a job of the trusted workflow at a pull request's ref": "GITHUB_WORKFLOW_REF=910-software-solutions/stego/.github/workflows/proof-run.yml@" + pullRef,
+			"in a job of another workflow":                             "GITHUB_WORKFLOW_REF=910-software-solutions/stego/.github/workflows/checks.yml@" + mainRef,
 		} {
 			other := filepath.Join(g.runnerTemp, "decision", "other.json")
 			result := g.release(t, full, passed, other, env)
@@ -1668,7 +1668,7 @@ func TestGateRelease(t *testing.T) {
 		// predicate type, with the subject its subject step names, and does nothing else.
 		exactJob(t, readRawWorkflow(t), "attest-release", attestReleaseJob())
 		name, _, err := runJobSubjectStep(t, "attest-release", full)
-		if err != nil || name != "git+https://github.com/jsell-rh/stego@"+full {
+		if err != nil || name != "git+https://github.com/910-software-solutions/stego@"+full {
 			t.Fatalf("the attest-release job names the subject %s (%v), not the release commit", name, err)
 		}
 	})
@@ -1694,7 +1694,7 @@ func runJobSubjectStep(t *testing.T, job, commit string) (string, string, error)
 		"PATH=" + os.Getenv("PATH"),
 		"COMMIT=" + commit,
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 		"GITHUB_OUTPUT=" + outputs,
 	}
 	if out, err := command.CombinedOutput(); err != nil {

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // The release scan of ST-SUP-UC01-R10 and ST-SUP-INV22: each environment variable that the code a component emits,
@@ -137,7 +137,7 @@ func runtimeImport(toks []tok, name string) bool {
 			continue
 		}
 		path, err := strconv.Unquote(t.text)
-		if err == nil && strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") && filepath.Base(path) == name {
+		if err == nil && strings.HasPrefix(path, "github.com/910-software-solutions/stego/registry/runtime/") && filepath.Base(path) == name {
 			return true
 		}
 	}
@@ -673,7 +673,7 @@ func scanUnits(t *testing.T, root string) ([]scanUnit, []scanUnit, []scanUnit) {
 		for value.Kind() == reflect.Pointer {
 			value = value.Elem()
 		}
-		dir := strings.TrimPrefix(value.PkgPath(), "github.com/jsell-rh/stego/")
+		dir := strings.TrimPrefix(value.PkgPath(), "github.com/910-software-solutions/stego/")
 		byPackage[dir] = append(byPackage[dir], name)
 	}
 	var generators []scanUnit
@@ -1091,7 +1091,7 @@ func f(s string) {
 import (
 	"os"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox"
 )
 
 const (

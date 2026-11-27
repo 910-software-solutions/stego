@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // operationMethods gives the HTTP method that serves each collection operation. A request with another method

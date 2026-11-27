@@ -326,7 +326,7 @@ class InstallationAsAProcess(unittest.TestCase):
             downloads = [index for index, call in enumerate(calls) if call[:1] == ["api"] and "/assets/" in call[-1]]
             self.assertEqual(len(downloads), 4)
             self.assertLess(max(downloads), first_check)
-            release = self.world.state["api"]["repos/jsell-rh/stego/releases/tags/" + self.world.tag]
+            release = self.world.state["api"]["repos/910-software-solutions/stego/releases/tags/" + self.world.tag]
             for asset in release["assets"]:
                 downloaded = (self.world.bin / ("asset-" + str(asset["id"]))).read_bytes()
                 if asset["name"] in [installer.verification.BINARY, "build.json"]:

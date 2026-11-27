@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func queryPath(i int) string { return fmt.Sprintf("queries[%d]", i) }

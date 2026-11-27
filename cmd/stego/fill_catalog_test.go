@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/fill"
 )
 
 // catalogRow is one entry that stego registry fills prints.

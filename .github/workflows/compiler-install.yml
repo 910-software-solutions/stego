@@ -44,6 +44,26 @@ jobs:
         run: |
           set -euo pipefail
           revision=00573709fb15a2a54de4242aa8fdbabee325179a
+          # The repository moved to 910-software-solutions/stego on 2026-11-26, and the pinned release is on
+          # jsell-rh/stego only. Until the first compiler release of this repository exists, the check skips with a
+          # notice. It skips only when the pinned release is not found AND this repository has no release at all; any
+          # other error fails. The pin moves to the first release of this repository, and this skip goes, after that.
+          found=0
+          if view_error="$(gh release view "compiler-$revision" --repo "$GITHUB_REPOSITORY" --json tagName 2>&1 >/dev/null)"; then
+            found=1
+          elif ! grep -q 'release not found' <<<"$view_error"; then
+            echo "The lookup of the release compiler-$revision failed: $view_error" >&2
+            exit 1
+          fi
+          if [ "$found" = 0 ]; then
+            count="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq 'if type=="array" then length else error("the release list is not a list") end')"
+            if [ "$count" != 0 ]; then
+              echo "The release compiler-$revision is not on $GITHUB_REPOSITORY, which has other releases: move the pin" >&2
+              exit 1
+            fi
+            echo "::notice title=Compiler installation check skipped::$GITHUB_REPOSITORY has no compiler release yet, so the pinned release compiler-$revision cannot be installed. The check runs again when the pin names a release of this repository."
+            exit 0
+          fi
           python3 -B scripts/install-compiler.py --release --revision "$revision" \
             --gh "$(command -v gh)" --output "$RUNNER_TEMP/release-compiler"
           python3 -B scripts/install-compiler.py --package "$RUNNER_TEMP/release-compiler" \

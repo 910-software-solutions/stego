@@ -24,7 +24,7 @@ import (
 	"github.com/twmb/franz-go/pkg/sasl/oauth"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // DestinationName is the name of the Kafka destination on the outbox worker. A command or a worker stages its change
@@ -222,7 +222,7 @@ func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
 	)
 	d := &Destination{options: options, topic: s.Topic, now: time.Now}
 	if logs != nil {
-		d.logger = logs.Logger("github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox")
+		d.logger = logs.Logger("github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox")
 		if s.InsecureLoopback {
 			// The insecure loopback mode is for a local test only: a deployment that sets it says so in its log.
 			var record otellog.Record

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // This test proves that apply writes the architecture view architecture/index.html beside the model, rendered from

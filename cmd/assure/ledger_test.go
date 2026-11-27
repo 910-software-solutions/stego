@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 )
 
 // ledgerSpec is the spec of the ledger's fixture repository: two automated test records and a manual one.
@@ -88,7 +88,7 @@ func (g gateRepository) ledger(t *testing.T, attestations, fetches string, flags
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GITHUB_SERVER_URL=https://github.com",
-		"GITHUB_REPOSITORY=jsell-rh/stego",
+		"GITHUB_REPOSITORY=910-software-solutions/stego",
 	}, env...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -335,9 +335,9 @@ func TestLedger(t *testing.T) {
 			"FX-LEND-INV03-T (manual): none, last passed not within 1 commit\n" +
 			"proof run at " + workflow + ": none verified at release grade\n" +
 			"refused at " + workflow + ": the attestation at rekor:15 is refused: the certificate names the source https://github.com/someone/stego at " + pullRef +
-			", not the trusted workflow's repository https://github.com/jsell-rh/stego at " + pullRef + "\n" +
-			"refused at " + workflow + ": the attestation at rekor:16 is refused: the certificate names the source https://github.com/jsell-rh/stego at refs/heads/feature" +
-			", not the trusted workflow's repository https://github.com/jsell-rh/stego at " + pullRef + "\n" +
+			", not the trusted workflow's repository https://github.com/910-software-solutions/stego at " + pullRef + "\n" +
+			"refused at " + workflow + ": the attestation at rekor:16 is refused: the certificate names the source https://github.com/910-software-solutions/stego at refs/heads/feature" +
+			", not the trusted workflow's repository https://github.com/910-software-solutions/stego at " + pullRef + "\n" +
 			"not passed (3): FX-LEND-INV01-T, FX-LEND-INV02-T, FX-LEND-INV03-T\n"
 		if sources.code != 1 || sources.stdout != want {
 			t.Fatalf("pull-ref statements with another source: assure ledger exited %d with:\n%s%s\nwant:\n%s", sources.code, sources.stdout, sources.stderr, want)

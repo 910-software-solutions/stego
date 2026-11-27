@@ -7,7 +7,7 @@ package probes
 import (
 	"context"
 
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 // RecorderTenant and RecorderPrincipal are the fixed tenant and principal of a probe that a Record

@@ -14,7 +14,7 @@ func readWithRegistry(t *testing.T, readWith string) string {
 	dir := t.TempDir()
 	files := map[string]string{
 		"components/env-a/component.yaml": strings.Replace(envComponent, "    secret: true\n", "    secret: true\n    read_with: "+readWith+"\n", 1),
-		"runtime/go.mod":                  "module github.com/jsell-rh/stego/registry/runtime\n\ngo 1.26\n",
+		"runtime/go.mod":                  "module github.com/910-software-solutions/stego/registry/runtime\n\ngo 1.26\n",
 		"runtime/service/service.go":      "package service\n",
 		"runtime/query/query_test.go":     "package query\n",
 	}

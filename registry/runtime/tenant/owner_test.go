@@ -25,7 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
 )
 
 // countingServer accepts TCP connections and closes them at once, and counts them.

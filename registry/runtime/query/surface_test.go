@@ -93,7 +93,7 @@ func TestSurface(t *testing.T) {
 					p = p.Elem()
 				}
 				switch p.PkgPath() + "." + p.Name() {
-				case "github.com/jsell-rh/stego/registry/runtime/tenant.Tenant", "github.com/jsell-rh/stego/registry/runtime/authz.Principal", "database/sql.Tx", "github.com/jsell-rh/stego/registry/runtime/authz.Subject":
+				case "github.com/910-software-solutions/stego/registry/runtime/tenant.Tenant", "github.com/910-software-solutions/stego/registry/runtime/authz.Principal", "database/sql.Tx", "github.com/910-software-solutions/stego/registry/runtime/authz.Subject":
 					t.Errorf("%s.%s takes a %s", owner, m.Name, p)
 				}
 			}
@@ -199,7 +199,7 @@ func TestSurface(t *testing.T) {
 					text := types.TypeString(typ, nil)
 					if types.Implements(typ, writer) || types.Implements(types.NewPointer(typ), writer) ||
 						strings.Contains(text, "log.Logger") || strings.Contains(text, "slog.Logger") ||
-						strings.Contains(text, "github.com/jsell-rh/stego/registry/runtime/probe.") {
+						strings.Contains(text, "github.com/910-software-solutions/stego/registry/runtime/probe.") {
 						t.Errorf("%s.%s returns %s", named.Obj().Name(), m.Name(), text)
 					}
 					for {

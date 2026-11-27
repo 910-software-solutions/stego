@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authn"
-	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 )
 
 func TestServer(t *testing.T) {
@@ -59,7 +59,7 @@ func TestServer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		const path = "github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+		const path = "github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
 		scanned := 0
 		fset := token.NewFileSet()
 		err = filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {

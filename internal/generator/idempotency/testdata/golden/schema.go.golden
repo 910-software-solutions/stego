@@ -4,7 +4,7 @@
 
 package idempotency
 
-import stegoidempotency "github.com/jsell-rh/stego/registry/runtime/idempotency"
+import stegoidempotency "github.com/910-software-solutions/stego/registry/runtime/idempotency"
 
 // SchemaSQL gives the text that creates the key table idempotency_keys for the purge role and the runtime role
 // of the service. It is the runtime's Migration, and the service applies it with its own migrations.

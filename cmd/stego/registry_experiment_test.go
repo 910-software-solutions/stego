@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/declaration"
 )
 
 // experimentComponent is a component of the stage given, with a sunset date, that provides its own port.

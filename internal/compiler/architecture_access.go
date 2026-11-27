@@ -7,7 +7,7 @@ import (
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 
-	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/declaration"
 )
 
 // The grant paths of the access matrix (ST-GEN-UC08-R13): each permission that an operation checks is expanded

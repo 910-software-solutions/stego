@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/declaration"
 )
 
 // td02WithPatch is ST-DECL-TD02 with patch added to todos.

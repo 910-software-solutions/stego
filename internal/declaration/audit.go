@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // auditLevels are the audit levels (ST-DECL-EN10), and sensitivities the field sensitivities (ST-DECL-EN03).

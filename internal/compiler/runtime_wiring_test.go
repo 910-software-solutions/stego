@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/localtest"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The proofs of the runtime data path through the stego binary: a service with data access on the runtime data path
@@ -69,12 +69,71 @@ func stegoBinary(t *testing.T) string {
 // the builds before them run in parallel.
 var postgresTLS sync.Mutex
 
-// runTLSCheck runs the inner go test cmd of a check that turns TLS on in the PostgreSQL server, while it holds
-// postgresTLS, and gives its output and its error.
-func runTLSCheck(cmd *exec.Cmd) ([]byte, error) {
+// runTLSCheck builds the inner check package pkg of the module in dir with go test -c, with env, while it does not hold
+// postgresTLS, so the builds of the four checks run in parallel (security review of PR #507, I1). It then runs the
+// test binary in the folder of pkg, as go test does, with the test flags given, while it holds postgresTLS, and gives
+// the output of the build or of the run and its error.
+func runTLSCheck(dir, pkg string, env []string, flags ...string) ([]byte, error) {
+	binary := filepath.Join(dir, "bin", strings.ReplaceAll(strings.Trim(pkg, "./"), "/", "_")+".test")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		return nil, err
+	}
+	build := exec.Command(wiringPinnedGo(), "test", "-c", "-o", binary, pkg)
+	build.Dir, build.Env = dir, env
+	if output, err := build.CombinedOutput(); err != nil {
+		return output, fmt.Errorf("go test -c %s: %w", pkg, err)
+	}
+	tlsCheckStage("built")
 	postgresTLS.Lock()
 	defer postgresTLS.Unlock()
-	return cmd.CombinedOutput()
+	tlsCheckStage("run")
+	run := exec.Command(binary, flags...)
+	run.Dir, run.Env = filepath.Join(dir, pkg), env
+	return run.CombinedOutput()
+}
+
+// tlsCheckStage is called by runTLSCheck after the build of the check and just before its run; a test of the package
+// sets it to see which stage holds postgresTLS.
+var tlsCheckStage = func(string) {}
+
+func TestTLSCheckLock(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R01-T03 A check that turns TLS on in the local PostgreSQL server is built before it takes the TLS lock and runs under it", func(t *testing.T) {
+		dir := t.TempDir()
+		for name, text := range map[string]string{
+			"go.mod":                  "module example.com/tlslock\n\ngo 1.26\n",
+			"out/check/check_test.go": "package check\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestCheck(t *testing.T) {\n\tif _, err := os.Stat(\"check_test.go\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n}\n",
+		} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// At each stage, TryLock tells whether runTLSCheck holds the lock: it must be free after the build and held
+		// at the run.
+		held := map[string]bool{}
+		tlsCheckStage = func(stage string) {
+			if postgresTLS.TryLock() {
+				postgresTLS.Unlock()
+				held[stage] = false
+				return
+			}
+			held[stage] = true
+		}
+		t.Cleanup(func() { tlsCheckStage = func(string) {} })
+		output, err := runTLSCheck(dir, "./out/check", localtest.GoEnv(wiringPath()), "-test.count=1", "-test.v", "-test.run", "^TestCheck$")
+		if err != nil || !strings.Contains(string(output), "--- PASS: TestCheck ") {
+			t.Fatalf("the check did not run and pass in its package folder: %v\n%s", err, output)
+		}
+		if held["built"] || !held["run"] {
+			t.Fatalf("the TLS lock was held %v after the build and %v at the run; want free after the build and held at the run", held["built"], held["run"])
+		}
+		if !postgresTLS.TryLock() {
+			t.Fatal("the TLS lock is still held after the check")
+		}
+		postgresTLS.Unlock()
+	})
 }
 
 // buildBeside runs build in a goroutine and gives a function that waits for build and gives its error. The test waits
@@ -325,7 +384,7 @@ func (p *wiringProject) addLocalRuntime() error {
 	if err != nil {
 		return err
 	}
-	replace := "replace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir
+	replace := "replace github.com/910-software-solutions/stego/registry/runtime => " + runtimeDir
 	name := filepath.Join(p.dir, "go.mod")
 	mod, err := os.ReadFile(name)
 	if err != nil {
@@ -698,7 +757,7 @@ func TestRuntimeWiring(t *testing.T) {
 			t.Fatalf("go list -deps ./out: %v\n%s", err, output)
 		}
 		deps := strings.Fields(string(output))
-		if !slices.Contains(deps, "github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox") {
+		if !slices.Contains(deps, "github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox") {
 			t.Fatalf("the generated service does not link the Kafka destination, so the check proves nothing:\n%s", output)
 		}
 		for _, dep := range deps {
@@ -742,11 +801,9 @@ func TestRuntimeWiring(t *testing.T) {
 		t.Fatalf("the next release: %v", err)
 	}
 	endpoint, key := startWiringSpiceDB(t)
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^TestWiring$", "./out/wiringcheck")
-	cmd.Dir = p.dir
-	cmd.Env = localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
-		"STEGO_WIRING_NEXT_BINARY="+nextBinary)
-	output, runErr := runTLSCheck(cmd)
+	output, runErr := runTLSCheck(p.dir, "./out/wiringcheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
+		"STEGO_WIRING_NEXT_BINARY="+nextBinary),
+		"-test.count=1", "-test.timeout=480s", "-test.v", "-test.run", "^TestWiring$")
 	passed := func(t *testing.T, id string) {
 		t.Helper()
 		name := strings.ReplaceAll(id, " ", "_")
@@ -790,7 +847,7 @@ func TestKeyRingWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
+		for _, want := range []string{`"github.com/910-software-solutions/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
 			"Seal: svcstorage.SealColumns", `SealLeases: []string{"member-email-seal"}`} {
 			if !strings.Contains(string(withRing), want) {
 				t.Errorf("the wiring of a service with a pii field and an open seal does not hold %s", want)

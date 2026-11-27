@@ -4,7 +4,7 @@
 // query.ServeRPC or query.ServeStream (ST-SUP-RP11-LC19); a stream query gets no HTTP handler (ST-SUP-RC33-OC08): the handler verifies the caller, opens one READ ONLY transaction of the
 // caller's tenant through query.Run, decides a get query's permission on its resource before the fill and calls the
 // fill once with a query handle. The handle, its authorization part, Run, Serve and the sealed list cursor live in
-// github.com/jsell-rh/stego/registry/runtime/query; the generated code holds only what varies with the declaration (ST-STD-RUNTIME-R05).
+// github.com/910-software-solutions/stego/registry/runtime/query; the generated code holds only what varies with the declaration (ST-STD-RUNTIME-R05).
 package query
 
 import (
@@ -15,9 +15,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/capability"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/capability"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Slot is the slot that a query fill implements, as component.slot (ST-DECL-INV45).
@@ -26,7 +26,7 @@ const Slot = "query.query"
 // probeComponent is the component whose typed probes the query handles carry (ST-SUP-RC34-OC04).
 const probeComponent = "domain-probe"
 
-// tenantColumn is the tenant column that the query runtime adds to each read (github.com/jsell-rh/stego/registry/runtime/query.TenantColumn).
+// tenantColumn is the tenant column that the query runtime adds to each read (github.com/910-software-solutions/stego/registry/runtime/query.TenantColumn).
 const tenantColumn = "tenant_id"
 
 // Generator is the generator of the query component.

@@ -3,14 +3,17 @@ package fill
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -269,7 +272,7 @@ func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) (
 			faults = append(faults, fmt.Sprintf("fill %q: %v", name, err))
 			continue
 		}
-		f, err := ParseFill(filepath.Join(folder, ManifestFile))
+		f, err := parseFillIn(filepath.Join(dir, "fills"), name)
 		if err != nil {
 			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
 			continue
@@ -367,7 +370,7 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 		}
 		f, seen := manifests[binding.Fill]
 		if !seen {
-			f, _ = ReadManifest(filepath.Join(check.ProjectDir, "fills", binding.Fill, ManifestFile), check)
+			f, _ = ReadManifest(check, binding.Fill)
 			manifests[binding.Fill] = f
 		}
 		// A manifest that cannot be read gives the untested fault, with the reason.
@@ -455,8 +458,9 @@ func projectQualification(check compiler.FillCheck, rules bool) ([]Qualification
 	var rows []Qualification
 	for _, name := range names {
 		row := Qualification{Fill: name, Fits: true}
+		// The name is checked before it is joined to a path, so no folder outside fills is read or hashed.
+		f, err := ReadManifest(check, name)
 		dir := filepath.Join(check.ProjectDir, "fills", name)
-		f, err := ReadManifest(filepath.Join(dir, ManifestFile), check)
 		if err != nil {
 			row.Standing, row.Fits = Untested, false
 			row.Reasons = append(row.Reasons, err.Error())
@@ -554,18 +558,29 @@ func findSlot(check compiler.FillCheck, ref types.SlotRef) (compiler.FillSlot, b
 	return compiler.FillSlot{}, false
 }
 
-// ReadManifest reads a fill manifest and checks it against the declaration
-// and the active registry (ST-EXT-INV01): it names exactly one slot of a
-// component of the active set and, for a slot of a collection, one collection
-// of the declaration. A fill of the command, query or worker slot names no
-// collection, as its binding is the command, query or worker that names it
-// (decision on ST-EXT-Q30). A refusal names the fill and the field.
-func ReadManifest(path string, check compiler.FillCheck) (*Fill, error) {
-	name := filepath.Base(filepath.Dir(path))
-	if err := checkOneValue(path, name); err != nil {
+// ReadManifest reads the manifest fills/<name>/fill.yaml of the project of
+// check and checks it against the declaration and the active registry
+// (ST-EXT-INV01): it names exactly one slot of a component of the active set
+// and, for a slot of a collection, one collection of the declaration. A fill
+// of the command, query or worker slot names no collection, as its binding
+// is the command, query or worker that names it (decision on ST-EXT-Q30). A
+// refusal names the fill and the field.
+//
+// It refuses a name outside the fill-name form before it joins the name to a
+// path, and reads the manifest through an os.Root of the fills folder, so
+// that a link or a .. cannot take the read out of that folder (security
+// review of PR #518, finding 1).
+func ReadManifest(check compiler.FillCheck, name string) (*Fill, error) {
+	fills := filepath.Join(check.ProjectDir, "fills")
+	data, err := readFillManifest(fills, name)
+	if err != nil {
 		return nil, err
 	}
-	f, err := ParseFill(path)
+	path := filepath.Join(fills, name, ManifestFile)
+	if err := checkOneValue(data, name); err != nil {
+		return nil, err
+	}
+	f, err := decodeFill(data, path)
 	if err != nil {
 		return nil, fmt.Errorf("fill %q: %w", name, err)
 	}
@@ -597,14 +612,57 @@ func ReadManifest(path string, check compiler.FillCheck) (*Fill, error) {
 	return f, nil
 }
 
+// checkFillName refuses a fill name outside the fill-name form
+// (ST-DECL-INV86): such a name names no folder under fills. The fault names
+// the name only.
+func checkFillName(name string) error {
+	if !declaration.ValidFillName(name) {
+		return fmt.Errorf("fill %q: the name does not have the fill-name form ^[a-z][a-z0-9-]{0,62}$, so it names no folder under fills", name)
+	}
+	return nil
+}
+
+// readFillManifest reads <name>/fill.yaml in the folder fills through an
+// os.Root of fills, with the size limit of a declaration. The root refuses a
+// link that leads out of fills. It refuses a name outside the fill-name form.
+func readFillManifest(fills, name string) ([]byte, error) {
+	if err := checkFillName(name); err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(fills)
+	if err != nil {
+		return nil, fmt.Errorf("fill %q: %w", name, err)
+	}
+	defer root.Close()
+	file, err := root.Open(name + "/" + ManifestFile)
+	if err != nil {
+		return nil, fmt.Errorf("fill %q: %w", name, err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, parser.MaxDocumentBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("fill %q: %w", name, err)
+	}
+	if len(data) > parser.MaxDocumentBytes {
+		return nil, fmt.Errorf("fill %q: the fill manifest exceeds the %d byte limit", name, parser.MaxDocumentBytes)
+	}
+	return data, nil
+}
+
+// parseFillIn reads and parses the manifest of the fill name in the folder
+// fills as ParseFill does, through readFillManifest.
+func parseFillIn(fills, name string) (*Fill, error) {
+	data, err := readFillManifest(fills, name)
+	if err != nil {
+		return nil, err
+	}
+	return decodeFill(data, filepath.Join(fills, name, ManifestFile))
+}
+
 // checkOneValue refuses a manifest whose implements or collection is not
 // one value, such as a list of slots, and names the field. The strict reader
 // refuses it too, but does not name the field.
-func checkOneValue(path, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("fill %q: %w", name, err)
-	}
+func checkOneValue(data []byte, name string) error {
 	var document yaml.Node
 	if yaml.Unmarshal(data, &document) != nil || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return nil
@@ -664,7 +722,7 @@ func AddedKeySignOffs(check compiler.FillCheck, base Signers) ([]AddedKeySignOff
 		if row.Standing != Qualified {
 			continue
 		}
-		f, err := ReadManifest(filepath.Join(check.ProjectDir, "fills", row.Fill, ManifestFile), check)
+		f, err := ReadManifest(check, row.Fill)
 		if err != nil {
 			return nil, err
 		}

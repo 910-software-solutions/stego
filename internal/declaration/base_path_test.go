@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/parser"
 )
 
 // basePathFaults reads ST-DECL-TD02 with the base path given and gives its base-path faults.

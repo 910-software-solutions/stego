@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // sunsetLayout is how a sunset date is written: a calendar date.

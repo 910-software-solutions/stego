@@ -51,12 +51,12 @@ class VerificationChecks(unittest.TestCase):
         def check(args, cwd, env, **limits):
             self.assertFalse(self.output.exists())
             self.assertNotEqual(cwd, self.inputs)
-            for option, value in [("--repo", "jsell-rh/stego"),
+            for option, value in [("--repo", "910-software-solutions/stego"),
                                   ("--source-digest", self.revision), ("--signer-digest", self.revision),
                                   ("--source-ref", "refs/heads/main"),
                                   ("--predicate-type", "https://slsa.dev/provenance/v1"),
                                   ("--hostname", "github.com"),
-                                  ("--cert-identity", "https://github.com/jsell-rh/stego/.github/workflows/compiler-artifact.yml@refs/heads/main")]:
+                                  ("--cert-identity", "https://github.com/910-software-solutions/stego/.github/workflows/compiler-artifact.yml@refs/heads/main")]:
                 self.assertEqual(args[args.index(option) + 1], value)
             self.assertIn("--deny-self-hosted-runners", args)
             # The CLI rejects these selectors together with --cert-identity.

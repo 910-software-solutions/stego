@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // checkNamespace is the rule of ST-SUP-INV13 that the registry holds: a component's output namespace, as the

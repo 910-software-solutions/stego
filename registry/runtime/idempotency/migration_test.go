@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
 )
 
 // TestMain gives the PostgreSQL tests of the package their local server (ST-STD-LOCAL-R04).

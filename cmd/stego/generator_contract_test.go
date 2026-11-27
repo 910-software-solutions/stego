@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // generatorUse is one use of a package, or of a name in it, in generator code.

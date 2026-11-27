@@ -14,7 +14,7 @@ func TestRelease(t *testing.T) {
 		full := Measurement{Commit: commit, Obligations: map[string]Standing{"ST-FIX-INV01": all, "ST-FIX-SP01": all, "ST-FIX-UC01-R01": all}}
 		passed := verifiedRun("ST-FIX-INV01-T passed", "ST-FIX-INV02-T passed", "ST-FIX-SP01-T passed", "ST-FIX-UC01-R01-T01 passed")
 		passed.Attestation = Attestation{PredicateType: ProofRunPredicateType, Subject: commit, LogEntry: "rekor:7",
-			Signer: Signer{Issuer: GitHubIssuer, Subject: "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml@" + MainRef}}
+			Signer: Signer{Issuer: GitHubIssuer, Subject: "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml@" + MainRef}}
 		why := noVerifiedProofRun + commit + ": the provider keeps no proof run attestation for it"
 		if reasons := fullyProved(full, passed, spec, why); len(reasons) != 0 {
 			t.Fatalf("a commit with every share and a passed release-grade proof run is not fully proved: %q", reasons)

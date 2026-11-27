@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // vault is a test entity with a readable secret, token, and a compare-only secret, pin, as the generated code

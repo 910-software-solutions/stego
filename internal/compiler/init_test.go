@@ -12,9 +12,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/registry"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,7 +31,7 @@ func initTestFile(t *testing.T, project, name, content string) {
 
 func initTestRegistry(t *testing.T, project, directory, archetype string) {
 	t.Helper()
-	initTestFile(t, project, directory+"/archetypes/"+archetype+"/archetype.yaml", "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: "+archetype+"\nlanguage: go\nversion: 1.0.0\ncomponents: []\n")
+	initTestFile(t, project, directory+"/archetypes/"+archetype+"/archetype.yaml", "kind: archetype\nruntime: {module: github.com/910-software-solutions/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: "+archetype+"\nlanguage: go\nversion: 1.0.0\ncomponents: []\n")
 }
 
 // initDefaultRegistry puts a registry with the archetype in the default local registry folder of a new home

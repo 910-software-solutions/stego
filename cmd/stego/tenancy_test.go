@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/declaration"
 )
 
 // The system tests of ST-DECL-UC05, Declare tenancy with its audit settings. Each runs the stego binary built from
