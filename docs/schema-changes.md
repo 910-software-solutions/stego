@@ -1074,13 +1074,18 @@ before keeps working, but only until a value above the `int32` range
 (2147483647) is written. After the contract step, a client that holds the
 field as an `int32`, such as the Go SDK of the release before, cannot read
 a row with such a value: a read of the row fails, and so does each list
-that holds it (walkthrough 27, W-OLD). Do one of these:
+that holds it (walkthrough 27, W-OLD). Thus move each typed client, such
+as a Go SDK and a TypeScript client, to the release of the expand step
+before you release the contract step.
 
-- Move each typed client, such as a Go SDK and a TypeScript client, to the
-  release of the expand step before the contract step.
-- Or keep the maximum of the release before (2147483647) in the
-  declaration after the contract step, until all clients use the new
-  release.
+Do not add `max: 2147483647` to the field at the contract step to keep
+the old clients working. The checks refuse it (ST-GEN-INV33): the max
+changes the stored shape of the field, and no schema step declares that
+change. Also, do not change the definition of the retype in a later
+release: a schema change that a release declared stays as it is. A max
+that the release of the expand step declares is accepted, but it stays:
+no schema step takes a `min` or a `max` off a field, so the field never
+gets the whole `int64` range (walkthrough 28, W-OLD2).
 
 The field keeps its name in the API, but its JSON type in the API changes with
 its type: a retype from `int64` to `string` changes the value `14` to `"14"`,

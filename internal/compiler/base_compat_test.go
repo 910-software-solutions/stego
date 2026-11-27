@@ -283,6 +283,61 @@ func TestBaseCompat(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-INV33-T A widening from int32 to int64 keeps the int32 max after its contract step only when its expand release declares it, and no later release takes it off", func(t *testing.T) {
+		t.Parallel()
+		// Walkthrough 28, W-OLD2: docs/schema-changes.md said that a release could keep the max of the release before
+		// (2147483647) after the contract step, until all clients use the new release. The checks refuse that max at
+		// the contract release, and a max that the expand release declares stays: no schema step takes it off.
+		td01 := string(userManagementBase(t))
+		const metadata = "      - { name: metadata, type: jsonb, optional: true }\n"
+		const int32Field = "      - { name: points, type: int32, min: 0, default: 0 }\n"
+		const wide = "      - { name: points, type: int64, min: 0, default: 0 }\n"
+		const capped = "      - { name: points, type: int64, min: 0, max: 2147483647, default: 0 }\n"
+		const retype = "  - {id: user-points-retype, kind: retype, entity: User, field: points, from: int32, definition: \"int32, min 0, default 0\", conversion: integer_to_int64, inverse_conversion: int64_to_integer}\n"
+		const expand = "  - {change: user-points-retype, phase: expand}\n"
+		const contract = "  - {change: user-points-retype, phase: contract}\n"
+		release := func(field, history string) string {
+			declaration := strings.Replace(td01, metadata, metadata+field, 1)
+			if history == "" {
+				return declaration
+			}
+			return withChanges(declaration, retype, history)
+		}
+		for _, c := range []struct {
+			name, base, head string
+			says             string
+		}{
+			{"the expand release with no max", release(int32Field, ""), release(wide, expand), ""},
+			{"the contract release with no max", release(wide, expand), release(wide, expand+contract), ""},
+			{"the expand release that declares the max of int32", release(int32Field, ""), release(capped, expand), ""},
+			{"the contract release that keeps the max of its expand release", release(capped, expand), release(capped, expand+contract), ""},
+			{"the contract release that adds the max of int32", release(wide, expand), release(capped, expand+contract), "changes the stored shape of User.points from int64"},
+			{"a later release that takes the max off", release(capped, expand+contract), release(wide, expand+contract), "changes the stored shape of User.points from int64"},
+		} {
+			if strings.Count(c.head, "name: points") != 1 {
+				t.Fatalf("%s: the head does not declare points once", c.name)
+			}
+			base := []byte(c.base)
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if c.says == "" {
+				if check.HasFaults() {
+					t.Errorf("%s: want accepted, got %+v", c.name, check.Faults)
+				}
+				continue
+			}
+			found := false
+			for _, fault := range check.Faults {
+				found = found || (fault.Rule == BaseCompatRule && fault.Field == "points" && strings.Contains(fault.Message, c.says))
+			}
+			if !found {
+				t.Errorf("%s: want refused with %q, got %+v", c.name, c.says, check.Faults)
+			}
+		}
+	})
+
 	t.Run("ST-GEN-INV33-T A change of the indexes that a collection gives a base entity is refused, and a change that gives no index is accepted", func(t *testing.T) {
 		t.Parallel()
 		td01 := string(userManagementBase(t))

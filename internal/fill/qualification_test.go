@@ -134,7 +134,7 @@ func TestFillManifestReader(t *testing.T) {
 }
 
 func TestReadManifestStaysInFills(t *testing.T) {
-	t.Run("ST-EXT-UC01-R02-T05 The fill manifest reader refuses a name outside the fill-name form and a link out of the fills folder, and reads no file outside it", func(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T05 The fill manifest reader and writer refuse a name outside the fill-name form and a link out of the fills folder, and read or write no file outside it", func(t *testing.T) {
 		// Security review of PR #518, finding 1: ReadManifest read <project>/fills/<name>/fill.yaml for any name, so
 		// the name ../../outside read and quoted a manifest outside the project.
 		check := builtInCheck()
@@ -191,6 +191,27 @@ func TestReadManifestStaysInFills(t *testing.T) {
 		}
 		if len(faults) != 2 || strings.Contains(strings.Join(faults, "\n"), "secret-collection") {
 			t.Errorf("the revision check gave %q, want a fault for each link and no quote of the manifest outside", faults)
+		}
+		// Security review of PR #518, item b (CWE-367): the writer of the evidence and the sign-off read the manifest
+		// again by its path, so a link put there after ReadManifest copied the manifest outside into fill.yaml.
+		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"policy.go": strings.Repeat("c", 64)}}
+		signOff := FillSignOff{EvidenceDigest: strings.Repeat("d", 64), Signature: Signature{KeyType: KeySSH, Signer: "listed@example.com", Armored: "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"}, SignedAt: time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)}
+		for _, name := range []string{"linked", "real"} {
+			manifest := filepath.Join(check.ProjectDir, "fills", name, ManifestFile)
+			for what, write := range map[string]func() error{
+				"evidence": func() error { return WriteEvidence(manifest, evidence) },
+				"sign-off": func() error { return WriteSignOff(manifest, signOff) },
+			} {
+				if err := write(); err == nil || strings.Contains(err.Error(), "secret-collection") || !strings.Contains(err.Error(), "escapes") {
+					t.Errorf("the %s of %q through the link gave %v, want a refused link and no quote of the manifest outside", what, name, err)
+				}
+			}
+		}
+		if info, err := os.Lstat(filepath.Join(check.ProjectDir, "fills", "real", ManifestFile)); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("fills/real/fill.yaml is no longer the link: %v %v", info, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(outside, ManifestFile)); err != nil || string(data) != secret {
+			t.Errorf("the manifest outside changed: %q %v", data, err)
 		}
 	})
 }
