@@ -21,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/cliapplication"
@@ -419,42 +418,18 @@ func (run *crudRun) passed(t *testing.T, p *crudProject, endpoint, key, id strin
 	}
 }
 
-// crudSpiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin
-// it.
-const crudSpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startCrudSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and
-// gives its endpoint and preshared key. It removes the container when the test ends.
+// startCrudSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and gives its
+// endpoint and preshared key. localtest runs it without privilege, with limits, a time limit and a reaper, and removes
+// it when the test ends (security review of PR #7, N2).
 func startCrudSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
 	if endpoint := os.Getenv("STEGO_TEST_SPICEDB"); endpoint != "" {
 		return endpoint, os.Getenv("STEGO_TEST_SPICEDB_KEY")
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-crud-spicedb-"+hex.EncodeToString(suffix), "crud-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", crudSpiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	var port string
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			port = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-			break
-		}
-	}
-	if port == "" {
-		t.Fatal("the SpiceDB container publishes no port")
-	}
-	return port, key
+	key := "crud-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
 
 // handlerCalls gives, for each handler method of the file, the selectors that it calls, such as command.Run.

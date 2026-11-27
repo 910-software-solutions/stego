@@ -38,9 +38,10 @@ import (
 // whose every value is one; and it must not set a go setting that GoEnv sets (innerGoSettings), except an entry of
 // innerGoAllowed.
 
-// innerGoScope is the folder whose packages innerGoFaults reads: the generator packages, whose tests build and run
-// generated modules with the checked module cache of localtest.
-const innerGoScope = "internal/generator/"
+// innerGoScopes are the folders whose packages innerGoFaults reads: the generator packages and the compiler, whose
+// tests build and run generated modules with the checked module cache of localtest (the compiler since the fix of
+// PR #7).
+var innerGoScopes = []string{"internal/generator/", "internal/compiler/"}
 
 // innerGoSettings are the go settings that localtest.GoEnv sets, which no entry after it may set again.
 var innerGoSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSUMDB": true, "GONOSUMDB": true, "GONOSUMCHECK": true,
@@ -51,6 +52,13 @@ var innerGoSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSU
 // proxy. -mod=mod lets a command update go.mod from the checked cache. -modcacherw is refused: it makes the folders of
 // the long-lived checked cache writable (security review of PR #7, F1).
 var innerGoAllowed = map[string]bool{"GOFLAGS=-mod=mod": true, "GOFLAGS=": true}
+
+// innerGoExempt are the functions, by their file and name, whose command runs a program that the scan cannot read and
+// that is not go, each with its reason. Only a command whose program the scan does not know is exempt; a go command
+// of such a function is still checked.
+var innerGoExempt = map[string]string{
+	"internal/compiler/architecture_view_browser_test.go startBrowser": "it runs the Chrome or Chromium that STEGO_BROWSER or the browser lookup names, never go",
+}
 
 // goProgram is what the scan knows of the program of a command.
 type goProgram int
@@ -580,7 +588,31 @@ func (g *goScan) entryFault(expr ast.Expr, sc *goScope, depth int) string {
 		}
 		text, ok := stringLiteral(left)
 		if !ok {
-			break
+			// A constant of the package that holds the name, followed by "=", such as processVariable + "=" + value
+			// (fix of PR #7, internal/compiler).
+			id, isIdent := left.(*ast.Ident)
+			if !isIdent || g.consts[id.Name] == nil {
+				break
+			}
+			name, isText := stringLiteral(g.consts[id.Name])
+			if !isText {
+				break
+			}
+			text = name
+			if next, nested := v.X.(*ast.BinaryExpr); nested {
+				for {
+					inner, deeper := next.X.(*ast.BinaryExpr)
+					if !deeper {
+						break
+					}
+					next = inner
+				}
+				if rest, isText := stringLiteral(next.Y); isText {
+					text += rest
+				}
+			} else if rest, isText := stringLiteral(v.Y); isText {
+				text += rest
+			}
 		}
 		name, _, found := strings.Cut(text, "=")
 		if !found {
@@ -590,6 +622,19 @@ func (g *goScan) entryFault(expr ast.Expr, sc *goScope, depth int) string {
 			return "an entry after localtest that sets the go setting " + name + ": " + g.text(expr)
 		}
 		return ""
+	case *ast.CallExpr:
+		// A call of a function of the package whose every result is an entry that the scan reads, such as
+		// wiringPath() for "PATH=" + ... (fix of PR #7, internal/compiler).
+		if id, ok := v.Fun.(*ast.Ident); ok {
+			if f := g.funcs[id.Name]; f != nil && len(f.results) > 0 {
+				for _, r := range f.results {
+					if why := g.entryFault(r, f, depth+1); why != "" {
+						return why
+					}
+				}
+				return ""
+			}
+		}
 	case *ast.Ident:
 		values, found, _ := g.values(v.Name, sc)
 		if found && len(values) > 0 {
@@ -618,6 +663,10 @@ func (g *goScan) commandFault(call *ast.CallExpr, sc *goScope, args []ast.Expr) 
 		}
 	}
 	if kind == programNotGo {
+		return
+	}
+	// A command of a function that innerGoExempt names runs a program that the scan cannot read and that is not go.
+	if kind == programUnknown && sc.file != nil && innerGoExempt[g.fset.Position(sc.file.Pos()).Filename+" "+sc.name] != "" {
 		return
 	}
 	g.commands++
@@ -803,6 +852,21 @@ func innerGoFaults(files map[string][]byte) []string {
 // refused GOFLAGS=-modcacherw (F1), each as a test file of a package with one inner go command; the check must name
 // exactly one fault in each. innerGoClean is a package that it must pass.
 var innerGoPlants = map[string]string{
+	// The fix of PR #7 reads an entry through a constant name and through a function of the package.
+	"a go setting held in a constant after localtest": `
+const proxyVariable = "GOPROXY"
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(proxyVariable + "=direct")
+	_ = cmd.Run()
+}`,
+	"a go setting that a function gives after localtest": `
+func flags() string { return "GOFLAGS=-modcacherw" }
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(flags())
+	_ = cmd.Run()
+}`,
 	"helper with the pinned Go in a variable": `
 func (s *service) goTool(args ...string) ([]byte, error) {
 	name := os.Getenv("STEGO_TEST_PINNED_GO")
@@ -951,6 +1015,8 @@ func TestX(t *testing.T) {
 // innerGoClean is a package that the check must pass: each form that the generator tests use.
 const innerGoClean = `
 type service struct{ env []string }
+const processVariable = "STEGO_PROCESS_BINARY"
+func binaryPath() string { return "PATH=" + os.Getenv("PATH") }
 func pinnedGo() string {
 	if name := os.Getenv("STEGO_TEST_PINNED_GO"); name != "" {
 		return name
@@ -984,6 +1050,9 @@ func TestX(t *testing.T) {
 	vuln.Env = localtest.FillEnv(t)
 	_ = vuln.Run()
 	binary := filepath.Join(t.TempDir(), "cli")
+	named := exec.Command("go", "build")
+	named.Env = localtest.GoEnv(processVariable+"="+binary, binaryPath())
+	_ = named.Run()
 	run := exec.Command(binary, "version")
 	run.Env = append(os.Environ(), "X=1")
 	_ = run.Run()
@@ -1020,7 +1089,7 @@ func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
 		_, tree := readHead(t)
 		packages := map[string]map[string][]byte{}
 		for _, name := range tree.paths() {
-			if !strings.HasPrefix(name, innerGoScope) || !strings.HasSuffix(name, ".go") || strings.Contains(name, "/testdata/") {
+			if !slices.ContainsFunc(innerGoScopes, func(scope string) bool { return strings.HasPrefix(name, scope) }) || !strings.HasSuffix(name, ".go") || strings.Contains(name, "/testdata/") {
 				continue
 			}
 			data, _ := tree.File(name)
