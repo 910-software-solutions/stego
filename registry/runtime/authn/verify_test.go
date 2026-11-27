@@ -949,6 +949,24 @@ func TestIDTokenBearer(t *testing.T) {
 			{"header typ JOSE", nil, withHeader("typ", "JOSE"), key, errType},
 			{"header jku", nil, withHeader("jku", "https://attacker.authn.test/keys"), key, errHeader},
 			{"another key", nil, nil, authntest.NewKey(t, "k1"), errSignature},
+			// The payload typ Bearer does not make a marked ID token an access token.
+			{"payload typ Bearer with a nonce, aud of two members", func(c map[string]any) {
+				c["typ"], c["aud"] = "Bearer", []string{testAudience, "billing-api"}
+			}, nil, key, errAudience},
+			// azp is checked for aud as text too.
+			{"aud as text, azp of another client", func(c map[string]any) {
+				c["aud"], c["azp"] = testAudience, "billing-web"
+			}, nil, key, errAudience},
+			// The payload typ ID alone marks an ID token: the ID token rules apply with no nonce, at_hash or c_hash.
+			{"payload typ ID alone, aud of two members", func(c map[string]any) {
+				delete(c, "nonce")
+				c["typ"], c["aud"] = "ID", []string{testAudience, "billing-api"}
+			}, nil, key, errAudience},
+			{"payload typ ID alone, azp of another client", func(c map[string]any) {
+				delete(c, "nonce")
+				c["typ"], c["azp"] = "ID", "billing-web"
+			}, nil, key, errAudience},
+			{"payload typ bearer in lower case", func(c map[string]any) { c["typ"] = "bearer" }, nil, key, errIDToken},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
@@ -969,6 +987,20 @@ func TestIDTokenBearer(t *testing.T) {
 				id, err := on.Verify(context.Background(), token)
 				expectRefused(t, id, err, c.want)
 			})
+		}
+		// With no opt-in, the payload typ Bearer does not make a token with a nonce an access token, and the payload
+		// typ bearer in lower case is no access token.
+		bearerNonce := tsidpClaims()
+		bearerNonce["typ"] = "Bearer"
+		lower := goodClaims()
+		lower["typ"] = "bearer"
+		for name, claims := range map[string]map[string]any{"payload typ Bearer with a nonce": bearerNonce, "payload typ bearer": lower} {
+			id, err := off.Verify(context.Background(), authntest.Mint(t, authntest.Header("k1"), claims, key))
+			if err == nil {
+				t.Errorf("the verifier with no opt-in accepted the token with %s", name)
+				continue
+			}
+			expectRefused(t, id, err, errIDToken)
 		}
 		// A logout token is refused with and without the opt-in, also when it holds no other ID token claim.
 		logout := goodClaims()
