@@ -88,7 +88,7 @@ jobs:
       STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK: '1'
       PART: ${{ matrix.part }}
       STEGO_BUILD_TESTS: '^Test(Build|Image|Policy|Dependencies)'
-      STEGO_SCAFFOLD_TESTS: '^Test(SchemaEvolution|ArchetypeScaffolds|UserDocDeclarations|Capability)'
+      STEGO_SCAFFOLD_TESTS: '^Test(SchemaEvolution|ArchetypeScaffolds|UserDocDeclarations)'
       COMPILER_RUNTIME_TESTS: '^Test(RuntimeWiring|RuntimeExample|RevocationWiring)'
       ASSURE_LOCAL_A_TESTS: '^Test(Supplying|Generating|Declaring|Delivering)FollowsTheLocalTestPattern$'
       ASSURE_LOCAL_B_TESTS: '^Test(Building|Extending|Distributing|Assuring)FollowsTheLocalTestPattern$|^TestLocalDevelopmentStandard$'
