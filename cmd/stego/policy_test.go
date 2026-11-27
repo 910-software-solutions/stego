@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/google/go-containerregistry/pkg/registry"
 )
 
@@ -51,7 +53,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fixtureRoot = root
-	code := m.Run()
+	// localtest.MainModules fills the checked module cache first and runs no test without it, and removes the
+	// PostgreSQL container that a test started (ST-STD-LOCAL-R03, R04, R05).
+	code := localtest.MainModules(m)
 	// A build keeps read-only module sources; make them writable to remove them.
 	_ = filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
 		if err == nil && entry.IsDir() {
@@ -81,7 +85,7 @@ func (f *onceFixture) get(t *testing.T, make func() (skip string, err error)) {
 		}
 	})
 	if f.skip != "" {
-		t.Skip(f.skip)
+		skipNotPinned(t, f.skip)
 	}
 	if f.failure != "" {
 		t.Fatal(f.failure)
@@ -173,8 +177,9 @@ type applicationFixture struct {
 var applicationOnce onceFixture
 var application applicationFixture
 
-// builtApplication makes one real application build with the stego binary,
-// from a module cache that the binary downloads, and gives its result.
+// builtApplication makes one real application build with the stego binary, from a module cache that stego build
+// download fills in process from the local module proxy and sum database of proxytest (ST-STD-LOCAL-R03), and gives
+// its result. The build itself is offline (ST-BLD-INV04), so the binary reaches no proxy.
 func builtApplication(t *testing.T) applicationFixture {
 	t.Helper()
 	binary := stegoBinary(t)
@@ -186,8 +191,22 @@ func builtApplication(t *testing.T) applicationFixture {
 		source, revision := buildSourceIn(t, root)
 		goTool := pinnedGo(t)
 		cache := filepath.Join(root, "cache")
+		servers := proxytest.Start(t, goTool, checkedModules(t), tinyModule+"@"+tinyVersion)
+		restore, err := appbuild.UseTestModuleSources(servers.ProxyURL, servers.SumDBKey, servers.SumDBURL)
+		if err != nil {
+			return "", err
+		}
+		record, err := appbuild.Download(context.Background(), appbuild.DownloadOptions{Source: source, Revision: revision, Module: ".",
+			Target: "out/internal/api/tiny", Go: goTool, Output: cache})
+		restore()
+		if err != nil {
+			if strings.Contains(err.Error(), "is not the pinned official release") {
+				return "the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: " + err.Error(), nil
+			}
+			return "", fmt.Errorf("stego build download: %v", err)
+		}
+		_ = record
 		for _, args := range [][]string{
-			{"build", "download", "--source", source, "--revision", revision, "--target", "out/internal/api/tiny", "--go", goTool, "--output", cache},
 			buildArgs(source, revision, goTool, filepath.Join(root, "work"), filepath.Join(root, "result"), cache),
 		} {
 			if args[0] != "build" {

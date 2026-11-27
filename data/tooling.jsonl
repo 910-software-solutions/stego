@@ -13,6 +13,7 @@
 {"id":"ST-BLD-TOOL07","title":"prepare-compiler-toolchain.py","domain_id":"ST-BLD","file":"scripts/prepare-compiler-toolchain.py"}
 {"id":"ST-BLD-TOOL08","title":"registry-fixture.go","domain_id":"ST-BLD","file":"scripts/registry-fixture.go"}
 {"id":"ST-BLD-TOOL09","title":"verify-application-records.py","domain_id":"ST-BLD","file":"scripts/verify-application-records.py"}
+{"id":"ST-BLD-TOOL10","title":"proxytest.go","domain_id":"ST-BLD","file":"internal/appbuild/proxytest/proxytest.go"}
 {"id":"ST-DIS-TOOL01","title":"check-compiler-provenance.py","domain_id":"ST-DIS","file":"scripts/check-compiler-provenance.py"}
 {"id":"ST-SUP-TOOL01","title":"check-allocation-account-identity.py","domain_id":"ST-SUP","file":"scripts/check-allocation-account-identity.py"}
 {"id":"ST-SUP-TOOL02","title":"check-allocation-control-identity.py","domain_id":"ST-SUP","file":"scripts/check-allocation-control-identity.py"}

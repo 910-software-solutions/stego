@@ -20,8 +20,10 @@ import (
 	"golang.org/x/mod/sumdb/dirhash"
 
 	"github.com/910-software-solutions/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild/proxytest"
 	"github.com/910-software-solutions/stego/internal/compiler"
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 )
 
@@ -44,11 +46,26 @@ func pinnedGo(t *testing.T) string {
 	return filepath.Join(runtime.GOROOT(), "bin", "go")
 }
 
-func skipUnlessPinned(t *testing.T, err error) {
+func skipUnlessPinned(t testing.TB, err error) {
 	t.Helper()
 	if err != nil && strings.Contains(err.Error(), "is not the pinned official release") {
-		t.Skipf("the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: %v", err)
+		skipNotPinned(t, fmt.Sprintf("the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: %v", err))
 	}
+}
+
+// requirePinnedVariable set to 1 makes a test that needs the pinned Go SDK fail, and not skip, when the SDK of the
+// run is not the pinned one, so a run that must prove the downloads and builds of stego build cannot pass with them
+// skipped (security review of PR #8, F4). CI sets it.
+const requirePinnedVariable = "STEGO_REQUIRE_PINNED_GO"
+
+// skipNotPinned skips the test for the reason, a Go SDK that is not the pinned one, or fails it when
+// requirePinnedVariable is 1.
+func skipNotPinned(t testing.TB, reason string) {
+	t.Helper()
+	if os.Getenv(requirePinnedVariable) == "1" {
+		t.Fatal(reason + " (" + requirePinnedVariable + "=1: a test that needs the pinned Go SDK must run)")
+	}
+	t.Skip(reason)
 }
 
 func git(t testing.TB, directory string, args ...string) string {
@@ -105,6 +122,31 @@ func folderNames(t *testing.T, folder string) []string {
 	return names
 }
 
+// localModuleSources starts the local module proxy and sum database of proxytest (ST-BLD-TOOL10), which play
+// proxy.golang.org and sum.golang.org for the downloads and builds of this process until the test ends
+// (ST-STD-LOCAL-R03). They serve the modules mods, module@version. The records still name proxy.golang.org.
+func localModuleSources(t *testing.T, mods ...string) *proxytest.Servers {
+	t.Helper()
+	servers := proxytest.Start(t, pinnedGo(t), checkedModules(t), mods...)
+	servers.Use(t)
+	return servers
+}
+
+// checkedModules is the source of the modules of proxytest: the module cache of localtest, which its fill checks
+// against go.sum or sum.golang.org, with the environment of that fill (ST-STD-LOCAL-R03). proxytest is of Building,
+// which does not import Supplying (ST-STD-CODE-R03), so this cmd package gives it the cache.
+func checkedModules(t testing.TB) proxytest.Source {
+	t.Helper()
+	return proxytest.Source{Cache: localtest.ModuleCache(t), Env: append(localtest.FillEnv(t), "GOFLAGS=")}
+}
+
+// runtimeModuleSources starts the local stand-ins with each module that the go.sum of registry/runtime names, as the
+// module graph of a service on the runtime library needs them (localModuleSources).
+func runtimeModuleSources(t *testing.T) *proxytest.Servers {
+	t.Helper()
+	return localModuleSources(t, proxytest.ModulesOf(t, filepath.Join("..", "..", "registry", "runtime", "go.sum"))...)
+}
+
 func downloadArgs(source, revision, goTool, output string) []string {
 	return []string{"download", "--source", source, "--revision", revision, "--target", "cmd/tiny", "--go", goTool, "--output", output}
 }
@@ -142,6 +184,7 @@ func TestBuildDownloadWritesAStatedRecordedCache(t *testing.T) {
 	t.Run("ST-BLD-UC02-R01-T01 A downloaded cache holds only the zips whose hashes go.sum states", func(t *testing.T) {
 		source, revision := tinySource(t, nil)
 		output := filepath.Join(t.TempDir(), "cache")
+		localModuleSources(t, tinyModule+"@"+tinyVersion)
 		_, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), output)...)
 		skipUnlessPinned(t, err)
 		if err != nil {
@@ -156,6 +199,7 @@ func TestBuildDownloadWritesAStatedRecordedCache(t *testing.T) {
 		source, revision := tinySource(t, map[string]string{"go.sum": tinyModule + " " + tinyVersion + " " + wrong + "\n" + tinyModule + " " + tinyVersion + "/go.mod " + tinyModSum + "\n"})
 		parent := t.TempDir()
 		output := filepath.Join(parent, "cache")
+		localModuleSources(t, tinyModule+"@"+tinyVersion)
 		_, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), output)...)
 		skipUnlessPinned(t, err)
 		if err == nil {
@@ -173,6 +217,7 @@ func TestBuildDownloadWritesAStatedRecordedCache(t *testing.T) {
 	t.Run("ST-BLD-UC02-R02-T01 The cache record lists each module by path, version and hash, and the revision it serves", func(t *testing.T) {
 		source, revision := tinySource(t, nil)
 		output := filepath.Join(t.TempDir(), "cache")
+		localModuleSources(t, tinyModule+"@"+tinyVersion)
 		printed, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), output)...)
 		skipUnlessPinned(t, err)
 		if err != nil {
@@ -296,6 +341,7 @@ func realRuntime(t *testing.T) (map[string]string, string, string) {
 func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 	const version = "v0.206.0"
 	t.Run("ST-BLD-UC02-R05-T01 The runtime folder that is STEGO's registry pin supplies it with no module proxy", func(t *testing.T) {
+		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
 		source, revision, sum := commitRuntimeSource(t, files, pinned, "", goSum, "money")
 		output := filepath.Join(t.TempDir(), "cache")
@@ -313,6 +359,7 @@ func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T04 The cache record names the runtime folder as the source of the runtime pin", func(t *testing.T) {
+		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
 		source, revision, sum := commitRuntimeSource(t, files, pinned, "", goSum, "money")
 		output := filepath.Join(t.TempDir(), "cache")
@@ -328,6 +375,7 @@ func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T09 A changed runtime folder at a pinned version is refused although go.sum agrees with it", func(t *testing.T) {
+		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
 		files["money/changed.go"] = "package money\n\n// Changed is not in the pin.\nconst Changed = true\n"
 		source, revision, sum := commitRuntimeSource(t, files, pinned, "", goSum, "money")
@@ -347,6 +395,7 @@ func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T02 A runtime folder that differs from go.sum stops the download, which names both hashes and leaves nothing", func(t *testing.T) {
+		runtimeModuleSources(t)
 		wrong := "h1:" + strings.Repeat("A", 43) + "="
 		source, revision, sum := commitRuntimeSource(t, fixtureRuntime(), version, wrong, "", "probe")
 		parent := t.TempDir()
@@ -365,6 +414,7 @@ func TestBuildDownloadTakesTheRuntimePinFromTheRuntimeFolder(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T03 A runtime folder that holds a link stops the download, which leaves nothing", func(t *testing.T) {
+		runtimeModuleSources(t)
 		source, revision, _ := commitRuntimeSource(t, fixtureRuntime(), version, "", "", "probe", "probe/linked.go")
 		parent := t.TempDir()
 		_, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), filepath.Join(parent, "cache"))...)
@@ -428,6 +478,7 @@ func commitUserSource(t *testing.T, version, sum, modSum, goSum, imported string
 
 func TestBuildDownloadTakesTheRuntimePinFromACheckout(t *testing.T) {
 	t.Run("ST-BLD-UC02-R05-T10 A user project with no runtime folder takes the pin from --runtime-folder into a clean module cache and builds", func(t *testing.T) {
+		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
 		folder, sum, modSum := runtimeCheckout(t, files, pinned)
 		source, revision := generatedSourceIn(t, t.TempDir(), pinned, sum, registry.RuntimeModule+"/money", "",
@@ -485,6 +536,7 @@ func TestBuildDownloadTakesTheRuntimePinFromACheckout(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T11 A --runtime-folder whose module sum is not the pin is refused although go.sum agrees, and leaves nothing", func(t *testing.T) {
+		runtimeModuleSources(t)
 		files, pinned, goSum := realRuntime(t)
 		files["money/changed.go"] = "package money\n\n// Changed is not in the pin.\nconst Changed = true\n"
 		folder, sum, modSum := runtimeCheckout(t, files, pinned)
@@ -505,6 +557,7 @@ func TestBuildDownloadTakesTheRuntimePinFromACheckout(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T12 A --runtime-folder is refused for a source with its own runtime folder, a module with no runtime pin, and a folder with no go.mod", func(t *testing.T) {
+		runtimeModuleSources(t)
 		const version = "v0.206.0"
 		folder, sum, modSum := runtimeCheckout(t, fixtureRuntime(), version)
 		own, ownRevision, _ := commitRuntimeSource(t, fixtureRuntime(), version, "", "", "probe")
@@ -567,6 +620,8 @@ func TestBuildDownloadLeavesNothingWhenItFails(t *testing.T) {
 			"cmd/tiny/main.go": "package main\n\nimport _ \"" + missing + "\"\n\nfunc main() {}\n",
 		})
 		parent := t.TempDir()
+		// The local proxy holds no module, as the public proxy holds no example.invalid module.
+		localModuleSources(t)
 		_, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), filepath.Join(parent, "cache"))...)
 		skipUnlessPinned(t, err)
 		if err == nil || !strings.Contains(err.Error(), missing+" v1.0.0") {
@@ -578,6 +633,7 @@ func TestBuildDownloadLeavesNothingWhenItFails(t *testing.T) {
 	})
 	t.Run("ST-BLD-UC02-R03-T02 An interrupted download leaves no cache folder and no record", func(t *testing.T) {
 		source, revision := tinySource(t, nil)
+		localModuleSources(t, tinyModule+"@"+tinyVersion)
 		goTool := pinnedGo(t)
 		guard := make(chan os.Signal, 1)
 		signal.Notify(guard, os.Interrupt)
@@ -616,6 +672,8 @@ func TestBuildDownloadLeavesNothingWhenItFails(t *testing.T) {
 
 func TestBuildDownloadChecksTargetAndSDKFirst(t *testing.T) {
 	t.Run("ST-BLD-UC02-R04-T01 A target that exists or overlaps, or an SDK that is not pinned, is refused by name before any work", func(t *testing.T) {
+		// A refusal before any work fetches nothing: the local proxy holds no module, so a fetch would fail.
+		localModuleSources(t)
 		root := t.TempDir()
 		source := filepath.Join(root, "source")
 		fakeSDK := filepath.Join(root, "sdk")
@@ -658,6 +716,8 @@ func TestBuildDownloadChecksTargetAndSDKFirst(t *testing.T) {
 		}
 	})
 	t.Run("ST-BLD-UC02-R04-T02 A target with ./ and a file:// source are taken, and a bad flag is refused by its name and value", func(t *testing.T) {
+		// A refusal before any work fetches nothing: the local proxy holds no module, so a fetch would fail.
+		localModuleSources(t)
 		root := t.TempDir()
 		source := filepath.Join(root, "source")
 		fakeSDK := filepath.Join(root, "sdk")
@@ -706,6 +766,8 @@ func TestBuildDownloadChecksTargetAndSDKFirst(t *testing.T) {
 
 func TestBuildSourceRefusalHidesUserInfo(t *testing.T) {
 	t.Run("ST-BLD-UC02-R04-T03 A refused --source names only the scheme and the host of a URL, so no token is shown", func(t *testing.T) {
+		// A refusal before any work fetches nothing: the local proxy holds no module, so a fetch would fail.
+		localModuleSources(t)
 		root := t.TempDir()
 		revision := strings.Repeat("a", 40)
 		for _, testCase := range []struct{ source, shown string }{
@@ -881,11 +943,16 @@ func stegoBuild(t *testing.T, env []string, args ...string) error {
 }
 
 func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
-	// The test runs stego build through the binary, with the environment of each run given, so it can run in
-	// parallel with the other tests of the binary.
-	t.Parallel()
+	// The test runs stego build download and stego build in process (runBuild), against the local module proxy and
+	// sum database of proxytest, which play proxy.golang.org and sum.golang.org (ST-STD-LOCAL-R03); stego build verify
+	// runs through the binary. A build reads no ambient setting: appbuild runs each go command with the fixed
+	// environment of the build (fixedEnvironment), with paths in its own work folder. The caller's environment of each
+	// build is set to a credential and a GOFLAGS that the record must not name, and the same for both builds. The test
+	// sets the environment, so it does not run in parallel. TestBuildDownloadFromTheRealProxy runs the binary against
+	// proxy.golang.org as a second, external proof.
 	// The source is made through a recorder, so its failure too is the outcome of each check below.
 	source, revision, sourceErr := recordedSource(t)
+	localModuleSources(t, tinyModule+"@"+tinyVersion)
 	goTool := pinnedGo(t)
 	root := t.TempDir()
 	// A build keeps its work folders, which hold the read-only module
@@ -906,7 +973,7 @@ func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
 	ready := func(t *testing.T) {
 		t.Helper()
 		if notPinned != "" {
-			t.Skip(notPinned)
+			skipNotPinned(t, notPinned)
 		}
 		if setupErr != nil {
 			t.Fatal(setupErr)
@@ -914,7 +981,7 @@ func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
 	}
 	err := sourceErr
 	if err == nil {
-		err = stegoBuild(t, nil, "download", "--source", source, "--revision", revision, "--target", "out/internal/api/tiny", "--go", goTool, "--output", cache)
+		_, err = capture(t, runBuild, "download", "--source", source, "--revision", revision, "--target", "out/internal/api/tiny", "--go", goTool, "--output", cache)
 	}
 	if err == sourceErr && err != nil {
 		setupErr = err
@@ -924,13 +991,14 @@ func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
 		setupErr = fmt.Errorf("download: %v", err)
 	}
 	// A credential in the caller's environment must not reach the record.
-	caller := []string{"GH_TOKEN=stego-test-credential", "GOFLAGS=-race"}
+	t.Setenv("GH_TOKEN", "stego-test-credential")
+	t.Setenv("GOFLAGS", "-race")
 	results := []string{filepath.Join(root, "first"), filepath.Join(root, "second")}
 	for index, result := range results {
 		if notPinned != "" || setupErr != nil {
 			break
 		}
-		if err := stegoBuild(t, caller, buildArgs(source, revision, goTool, filepath.Join(root, "work"+string(rune('a'+index))), result, cache)...); err != nil {
+		if _, err := capture(t, runBuild, buildArgs(source, revision, goTool, filepath.Join(root, "work"+string(rune('a'+index))), result, cache)...); err != nil {
 			setupErr = fmt.Errorf("build %d: %v", index+1, err)
 		}
 	}
@@ -957,7 +1025,7 @@ func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = stegoBuild(t, nil, buildArgs(source, revision, goTool, filepath.Join(parent, "work"), filepath.Join(parent, "result"), copied)...)
+		_, err = capture(t, runBuild, buildArgs(source, revision, goTool, filepath.Join(parent, "work"), filepath.Join(parent, "result"), copied)...)
 		names := folderNames(t, parent)
 		return err, names
 	}
@@ -1322,4 +1390,29 @@ func copyFile(from, to string) error {
 		return err
 	}
 	return os.WriteFile(to, data, 0o644)
+}
+
+// TestBuildDownloadFromTheRealProxy runs the stego binary for one stego build download against proxy.golang.org and
+// sum.golang.org, as a second proof beside the tests of the local stand-ins (ST-STD-LOCAL-R03): its record is
+// external, and no obligation counts it. It runs only on a GitHub-hosted runner, where the network to the hosted
+// proxy is the runner's, and it skips on a workstation.
+func TestBuildDownloadFromTheRealProxy(t *testing.T) {
+	t.Run("ST-BLD-UC02-R01-T03 stego build download through the binary takes from proxy.golang.org only the zips that go.sum states", func(t *testing.T) {
+		if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("RUNNER_ENVIRONMENT") != "github-hosted" {
+			t.Skip("reaches proxy.golang.org, so it runs only on a GitHub-hosted runner; the local stand-ins prove the download")
+		}
+		source, revision := tinySource(t, nil)
+		output := filepath.Join(t.TempDir(), "cache")
+		err := stegoBuild(t, nil, downloadArgs(source, revision, pinnedGo(t), output)...)
+		skipUnlessPinned(t, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if zips := cachedZips(t, output); len(zips) != 1 || zips[0] != tinyModule+"/@v/"+tinyVersion+".zip" {
+			t.Fatalf("the cache holds the zips %v; expected only the zip of %s %s", zips, tinyModule, tinyVersion)
+		}
+		if record := readCacheRecord(t, output); record.DependencyProxy != appbuild.ProxySource {
+			t.Fatalf("the record names the proxy %q, want %s", record.DependencyProxy, appbuild.ProxySource)
+		}
+	})
 }

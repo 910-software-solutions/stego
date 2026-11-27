@@ -16,6 +16,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/compiler"
 	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/parser"
 	"gopkg.in/yaml.v3"
 )
@@ -168,10 +169,12 @@ func TestScaffoldDeniesUnimplementedPolicy(t *testing.T) {
 		for _, args := range [][]string{{"test", "-mod=readonly", "./..."}, {"mod", "tidy"}} {
 			cmd := exec.Command("go", args...)
 			cmd.Dir = project
+			cmd.Env = localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("after repeated apply, go %v: %v\n%s", args, err, output)
 			}
 		}
+		localtest.CheckSums(t, project)
 		afterTidy, err := os.ReadFile("go.mod")
 		if err != nil || !bytes.Equal(resolvedModule, afterTidy) {
 			t.Fatalf("dependency resolution changed the module after repeated apply: %v\nbefore:\n%s\nafter:\n%s", err, resolvedModule, afterTidy)
