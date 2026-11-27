@@ -970,6 +970,38 @@ func TestFieldCheckEmission(t *testing.T) {
 	})
 }
 
+func TestHeldBoundsCheck(t *testing.T) {
+	t.Run("ST-GEN-UC12-R03-T07 The generated check of an int64 that an open retype from int32 widens refuses a value above the int32 range until the contract", func(t *testing.T) {
+		// Security review of PR #499, I2: only PATCH had a test of the 400 above int32; the check of the command is
+		// what refuses a value of a command or a CRUD write before any statement (gen.HeldBounds, ST-DECL-Q48).
+		zero := 0.0
+		meeting := types.Entity{Name: "Meeting", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
+			{Name: "seats", Type: types.FieldTypeInt64, Min: &zero}}}
+		changes := []types.SchemaChange{{ID: "meeting-seats-retype", Kind: "retype", Entity: "Meeting", Field: "seats", From: "int32",
+			Definition: "int32, min 0", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}}
+		for _, contracted := range []bool{false, true} {
+			history := []types.SchemaStep{{Change: "meeting-seats-retype", Phase: "expand"}}
+			if contracted {
+				history = append(history, types.SchemaStep{Change: "meeting-seats-retype", Phase: "contract"})
+			}
+			held := gen.HeldBounds([]types.Entity{meeting}, changes, history)[0]
+			p, err := planEntity(held, map[string]types.Entity{"Meeting": held}, "tenant_id", Relations{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &writer{}
+			renderEntity(w, p, "tenant_id")
+			text := w.String()
+			if !strings.Contains(text, "if float64(v.Seats) < 0 {") {
+				t.Fatalf("contract %t: the check does not hold the declared min 0:\n%s", contracted, text)
+			}
+			if got := strings.Contains(text, "if float64(v.Seats) > 2.147483647e+09 {\n\t\t\treturn \"seats\", \"more than max 2.147483647e+09\", false"); got == contracted {
+				t.Fatalf("contract %t: the check refuses a value above 2147483647: %t, want it only until the contract:\n%s", contracted, got, text)
+			}
+		}
+	})
+}
+
 func TestRPCRevocation(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC17-T01 The gRPC handler of each command serves it through the runtime's ServeRPC, which answers the revocation metadata", func(t *testing.T) {
 		handlers := string(generated(t, commandContext(t, declaration(t), commandSlot))["commands/handlers/handlers.go"])

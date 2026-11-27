@@ -95,3 +95,39 @@ func TestRetypedPatchableField(t *testing.T) {
 		}
 	})
 }
+
+func TestRetypedPatchableNarrowing(t *testing.T) {
+	t.Run("ST-GEN-UC12-R04-T05 A collection patches a field that a retype which is not a widening changes, and the API holds no int32 bound", func(t *testing.T) {
+		// Security review of PR #499, I2: the relaxation that lets a patchable field be retyped holds for each
+		// retype, not only for a widening from int32 (walkthrough 26, P3-RT). A retype from string to int64 and a
+		// narrowing from int64 to int32 keep the field patchable, in the column of its new type, with no held bound.
+		hundred := 100.0
+		for _, c := range []struct {
+			name, from, definition, conversion, inverse string
+			field                                       types.Field
+			column                                      string
+		}{
+			{"string to int64", "string", "string, pattern ^[0-9]{1,9}$", "text_to_int64", "int64_to_text",
+				types.Field{Name: "lead_days", Type: types.FieldTypeInt64}, "lead_days_int64"},
+			{"int64 to int32", "int64", "int64, max 100", "int64_to_integer", "integer_to_int64",
+				types.Field{Name: "lead_days", Type: types.FieldTypeInt32, Max: &hundred}, "lead_days_int32"},
+		} {
+			svc := &types.ServiceDeclaration{
+				Entities: []types.Entity{{Name: "Item", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}, c.field}}},
+				Collections: []types.Collection{{Name: "items", Entity: "Item", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpPatch},
+					Patchable: []string{"name", "lead_days"}}},
+				SchemaChanges: []types.SchemaChange{{ID: "item-lead-days-retype", Kind: "retype", Entity: "Item", Field: "lead_days", From: c.from,
+					Definition: c.definition, Conversion: c.conversion, InverseConversion: c.inverse}},
+				SchemaHistory: []types.SchemaStep{{Change: "item-lead-days-retype", Phase: "expand"}},
+			}
+			live, _, err := storedEntities(svc, svc.SchemaChanges)
+			if err != nil {
+				t.Fatalf("%s: generation refused a retype of a patchable field: %v", c.name, err)
+			}
+			field := live[0].Fields[1]
+			if field.Name != "lead_days" || field.ColumnName() != c.column || field.HeldMin != nil || field.HeldMax != nil {
+				t.Fatalf("%s: the generator gets the field %+v; want lead_days in the column %s with no held bound", c.name, field, c.column)
+			}
+		}
+	})
+}

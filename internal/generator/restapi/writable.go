@@ -113,9 +113,28 @@ func (w *runtimeHandlerWriter) keptCheck() {
 	}
 	w.f("\tif len(refused) > 0 {\n\t\treturn &invalidRequest{problem: Validation(refused)}\n\t}\n\treturn nil\n}\n\n")
 	if keptJSON(e) {
+		// The compare decodes each number as its JSON text (json.Number), and not as a float64, which holds an
+		// integer exactly only up to 2^53: two values that differ only above it are not the same (security review of
+		// PR #519, B-I2). The text of a number is compared in a canonical form, so 1 and 1.0 and 1e0 are the same.
 		w.f("// %sSameJSON tells whether the JSON member raw holds the same JSON value as stored; a nil stored is null.\n", c.camel)
+		w.f("// It compares each number by its exact decimal value and not as a float64, so values above 2^53 that\n")
+		w.f("// differ are not the same.\n")
 		w.f("func %sSameJSON(raw, stored []byte) bool {\n\tif stored == nil {\n\t\treturn strings.TrimSpace(string(raw)) == \"null\"\n\t}\n", c.camel)
-		w.f("\tvar given, held any\n\tif json.Unmarshal(raw, &given) != nil || json.Unmarshal(stored, &held) != nil {\n\t\treturn false\n\t}\n\treturn reflect.DeepEqual(given, held)\n}\n\n")
+		w.f("\tgiven, ok := %sExactJSON(raw)\n\tif !ok {\n\t\treturn false\n\t}\n\theld, ok := %sExactJSON(stored)\n\treturn ok && reflect.DeepEqual(given, held)\n}\n\n", c.camel, c.camel)
+		w.f("// %sExactJSON decodes data with each number as its exact value: a json.Number in the form of\n// %sCanonicalNumber.\n", c.camel, c.camel)
+		w.f("func %sExactJSON(data []byte) (any, bool) {\n\tdecoder := json.NewDecoder(strings.NewReader(string(data)))\n\tdecoder.UseNumber()\n\tvar value any\n", c.camel)
+		w.f("\tif decoder.Decode(&value) != nil || decoder.More() {\n\t\treturn nil, false\n\t}\n\treturn %sCanonical(value), true\n}\n\n", c.camel)
+		w.f("// %sCanonical gives value with each json.Number in the form of %sCanonicalNumber.\n", c.camel, c.camel)
+		w.f("func %sCanonical(value any) any {\n\tswitch v := value.(type) {\n\tcase json.Number:\n\t\treturn %sCanonicalNumber(v)\n", c.camel, c.camel)
+		w.f("\tcase []any:\n\t\tfor i := range v {\n\t\t\tv[i] = %sCanonical(v[i])\n\t\t}\n\tcase map[string]any:\n\t\tfor k := range v {\n\t\t\tv[k] = %sCanonical(v[k])\n\t\t}\n\t}\n\treturn value\n}\n\n", c.camel, c.camel)
+		w.f("// %sCanonicalNumber gives the exact value of a JSON number as a json.Number, which no JSON string equals:\n// its sign, its significant digits and\n", c.camel)
+		w.f("// its exponent, so that 1, 1.0 and 1e0 are one value and 9007199254740993 is not 9007199254740992. It reads\n")
+		w.f("// the text once and makes no arithmetic, so a long number costs no more than its length. A number whose\n")
+		w.f("// exponent does not fit in 30 bits keeps its text.\n")
+		w.f("func %sCanonicalNumber(n json.Number) json.Number {\n\ttext, sign := string(n), \"\"\n\tif rest, negative := strings.CutPrefix(text, \"-\"); negative {\n\t\ttext, sign = rest, \"-\"\n\t}\n", c.camel)
+		w.f("\tmantissa, exponent := text, 0\n\tif i := strings.IndexAny(text, \"eE\"); i >= 0 {\n\t\te, err := strconv.Atoi(text[i+1:])\n\t\tif err != nil || e > 1<<30 || e < -(1<<30) {\n\t\t\treturn n\n\t\t}\n\t\tmantissa, exponent = text[:i], e\n\t}\n")
+		w.f("\twhole, fraction, _ := strings.Cut(mantissa, \".\")\n\tdigits := strings.TrimLeft(whole+fraction, \"0\")\n\tif digits == \"\" {\n\t\treturn \"0\"\n\t}\n")
+		w.f("\tsignificant := strings.TrimRight(digits, \"0\")\n\texponent += len(digits) - len(significant) - len(fraction)\n\treturn json.Number(sign + significant + \"e\" + strconv.Itoa(exponent))\n}\n\n")
 	}
 }
 

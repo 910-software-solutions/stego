@@ -1360,7 +1360,7 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 	result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: projectDir})
 	if err != nil {
-		return compiler.ReconcilerInput{}, err
+		return compiler.ReconcilerInput{}, &registryResolveError{err: err}
 	}
 
 	moduleName, goVersion, err := compiler.ProjectModuleSettings(projectDir, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
@@ -1379,14 +1379,21 @@ func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 		ModuleName:   moduleName,
 		RegistrySHA:  result.Ref,
 		OutDir:       outDir,
-		ReadFill:     fill.ReadCollection,
-		ReadFillSlot: fill.ReadImplements,
+		ReadFill:     fill.DecodeCollection,
+		ReadFillSlot: fill.DecodeImplements,
 		QualifyFills: fill.QualificationFaults,
 
 		WriteRequirements: writeRequirements,
 		WriteDeployment:   writeDeployment,
 	}, nil
 }
+
+// registryResolveError is a registry that the resolver could not resolve for the project, such as a source that
+// cannot be read. Its text is the text of the error of the resolver.
+type registryResolveError struct{ err error }
+
+func (e *registryResolveError) Error() string { return e.err.Error() }
+func (e *registryResolveError) Unwrap() error { return e.err }
 
 // writeDeployment gives the compiler's port for the Kubernetes base and the delivery object to Delivering
 // (delivery.WriteDeployment, ST-DLV-CMD03, ST-DLV-PO04): the platform requirements of the run and the probes of the

@@ -1014,6 +1014,21 @@ of the month in UTC, as above, and not `tick.AddDate(0, -1, 0)`: on 31 March
 that gives 3 March. A daily job is `every 24h`. A worker that must run at one
 time of the day uses the same form: `every 1h` and a check of the hour.
 
+A job of each week uses the same pattern with the ISO week as the period
+(walkthrough 27, W-WEEK). There is no weekly trigger, because `every` stops
+at `24h`. Declare the period as `pattern: "^[0-9]{4}-W[0-9]{2}$"`, such as
+`2026-W47`, and find the week before the tick from its ISO year and week:
+
+```go
+year, week := tick.AddDate(0, 0, -7).ISOWeek() // the week before the tick
+period := fmt.Sprintf("%04d-W%02d", year, week)
+```
+
+Use `ISOWeek` and not `tick.Year()`: the first days of January can be in
+the last week of the year before, such as 1 January 2027 in `2026-W53`. An
+ISO week starts on Monday in UTC, so the first run on Monday closes the
+week before it.
+
 ### The permission of a worker
 
 A worker acts as the service account `service_account:<worker name>`, not as
@@ -1666,7 +1681,7 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
-### Release notes for runtime v0.200.0
+### Release notes for runtime v0.203.0
 
 - `STEGO_SPICEDB_CA_FILE` names a PEM file of certificate authorities that
   the connection to SpiceDB adds to the system roots, for a SpiceDB whose
@@ -1675,10 +1690,19 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   `ReadMigrationSettings` read it with the checks of the key files, and
   `DialSpiceDB` verifies SpiceDB with `SpiceDB.Roots`. With no value the
   roots are the system roots, as before. spicedb-authz 1.7.0 states the
-  variable; rest-crud 3.266.0, rpc-service 1.266.0 and browser-service
-  1.266.0 pin this runtime.
-- apidiff against v0.198.0: compatible (added `service.SpiceDB.Roots` and
+  variable; rest-crud 3.271.0, rpc-service 1.271.0 and browser-service
+  1.271.0 pin this runtime. It holds each change of v0.202.0 too.
+- apidiff against v0.202.0: compatible (added `service.SpiceDB.Roots` and
   `service.SpiceDBCAFileSetting`).
+
+### Release notes for runtime v0.202.0
+
+- The WARN line `command.database.unavailable` names `sqlstate_class`, the
+  class of the SQLSTATE of the error, such as `53` for a full disk (53100)
+  or no memory (53200), `57` for a server that shuts down and `08` for a
+  lost connection, or `none` for an error with no SQLSTATE (security review
+  of PR #499, L1). It never names the full code or the message.
+- apidiff against v0.198.0: compatible (no change of the exported API).
 
 ### Release notes for runtime v0.198.0
 
@@ -1689,6 +1713,13 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   and 53200 beside 53300. Thus such a request gets 503 with `Retry-After`
   and the code `unavailable`, not 500 `internal`. A 55000 of a statement,
   such as `currval` before `nextval`, stays 500.
+  The code `unavailable` comes from the tenant check, which reads the tenant
+  list. The tenant check keeps each answer for at most 5 s
+  (`tenant.MaxGateAge`). In that time a request of a collection route passes
+  the tenant check, and its handler answers the 503 with the code
+  `<SVC>-INT-001` of the CRUD routes, with the same type and `Retry-After`
+  (walkthrough 27, U-503). Thus an alert or a client reads the type
+  `service-unavailable` or the status 503, not only the code.
 - Each 503 has the one problem type `<error_type_base>service-unavailable`,
   from the command runtime, the query runtime, the tenant check and the
   CRUD routes. Before, a 503 of the command or query runtime or of the

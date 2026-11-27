@@ -372,6 +372,7 @@ was only on a separate log line:
 |---|---|---|---|---|
 | `service.start.spicedb` | `spicedb.connection` | `spicedb` | `unavailable`, `timeout` or another class of the gRPC status code, or `not_serving` | The start cannot reach SpiceDB in 10 s, or SpiceDB answers that it does not serve. The fault is the fault of the migration Job for the same cause. |
 | `service.start.spicedb` | `spicedb.settings` | `spicedb` | `invalid_setting` | `STEGO_SPICEDB_ENDPOINT` or `STEGO_SPICEDB_KEY_FILE` gives no value. |
+| `service.start.setting.spicedb-authz.STEGO_SPICEDB_CA_FILE` | none | none | none | The record gives the stage only, as for each refused setting. From runtime v0.203.0 (rest-crud 3.271.0, rpc-service and browser-service 1.271.0): the file of `STEGO_SPICEDB_CA_FILE` is not there, is not a regular file, is larger than the limit of a setting file, holds no PEM certificate, or has a mode that gives other users access or the group write access (such as 0644). A value together with `STEGO_SPICEDB_INSECURE_LOOPBACK=1` is refused too. See [Trust a SpiceDB that a private CA signs](#trust-a-spicedb-that-a-private-ca-signs). |
 | `service.start.migration` | `migration.pending` | `migration_ledger` | `ledger_missing`, `ledger_not_granted` or `migration_missing` | The ledger is not there, the runtime role may not read it, or it does not hold a migration of the release. Run the migration Job of the release. |
 | `service.start.migration` | `migration.changed` | `migration_ledger` | `digest_changed` | The ledger holds another body of a migration of the release. |
 
@@ -460,6 +461,8 @@ of the release, such as a shared preview database that ran the build of a branch
 before the merge, the Job stops at the stage `migrate.ledger_check` and logs a line that names the ledger row, the
 migration and the remedy: restore a backup made before the other build, or make the database again. To wait in a script, after the two commands:
 
+`stego compat` exits 2 with a cause class, and never says `No fault`, when it cannot run the checks of `stego validate` for a cause other than the registry (see [stego compat](compat.md)).
+
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
 kubectl rollout status -n <namespace> deployment/<service>
@@ -479,7 +482,10 @@ manifest of the Job with the kustomize library. To run the migration of a servic
 
 Each process of a service keeps pools of database connections of its own.
 `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` (16 when it has no value) bounds each
-pool that reads the setting. At the defaults, one process can open at most:
+pool that reads the setting: the main pool, the audit pool, the pool of the
+worker role (with the lower limit W below) and the pool of the relay role.
+The pool of the charges of counted values does not read it: it is always 4.
+At the defaults, one process can open at most:
 
 | Process | Pools | Most connections |
 |---|---|---|
@@ -495,6 +501,19 @@ subscription). Each slot holds one connection, and the claims and the purge
 timer hold one more each. For example, a worker that consumes five topics
 and has three destinations has S = 4 + 5 = 9 and W = 16. With
 `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` 4, the same worker has W = 11, not 4.
+
+To count the destinations of the outbox worker, count each of these that
+the service has (walkthrough 27, D-PS):
+
+- `audit-sink`, when the service has the audit-log component.
+- `kafka`, when the service has the kafka-producer component.
+- `rest-api.after-slots`, when the service has the rest-api component, also
+  when no collection binds an after slot.
+- One destination for each topic that a declared worker consumes
+  (`trigger: consumes`).
+
+A service with four destinations or fewer has S = 4 + the Kafka inboxes,
+because the concurrency of the outbox worker is 4.
 
 A pool opens a connection only when it needs one, so an idle service holds
 fewer. But a burst, a slow database or a restart of many pods at the same
@@ -649,6 +668,106 @@ kubectl get events -n <namespace> --field-selector reason=FailedMount,involvedOb
 ```
 
 The kubelet tries again, and the pod starts when the Secret holds the key.
+
+### Trust a SpiceDB that a private CA signs
+
+From runtime v0.203.0 (rest-crud 3.271.0, rpc-service and browser-service 1.271.0), a service connects to a SpiceDB
+whose certificate a private certificate authority signs, such as a CA issuer of cert-manager. Without
+`STEGO_SPICEDB_CA_FILE`, the service verifies SpiceDB with the system roots only, and the start fails with the stage
+`service.start.spicedb` and the cause `unavailable`. `STEGO_SPICEDB_CA_FILE` names a PEM file of certificate
+authorities. The process adds them to the system roots, and still verifies the name of the server. The api, worker
+and controller modes and the migration Job read the file. The generated Deployments and the migration Job take the
+variable from the ConfigMap. STEGO does not mount the file: the overlay mounts it.
+
+1. Give SpiceDB a certificate from the CA issuer. For example, with cert-manager and the SpiceDB operator:
+
+   ```yaml
+   apiVersion: cert-manager.io/v1
+   kind: Certificate
+   metadata:
+     name: spicedb-grpc
+     namespace: orders
+   spec:
+     secretName: spicedb-grpc-tls
+     dnsNames:
+       - spicedb.orders.svc
+       - spicedb.orders.svc.cluster.local
+     issuerRef:
+       kind: Issuer
+       name: orders-ca
+   ---
+   apiVersion: authzed.com/v1alpha1
+   kind: SpiceDBCluster
+   metadata:
+     name: spicedb
+     namespace: orders
+   spec:
+     secretName: spicedb-config
+     config:
+       datastoreEngine: postgres
+       tlsSecretName: spicedb-grpc-tls
+   ```
+
+   cert-manager writes the key `ca.crt`, the certificate of the CA, into the Secret `spicedb-grpc-tls`. Use the
+   name of the certificate in `STEGO_SPICEDB_ENDPOINT`, such as `spicedb.orders.svc:50051`, not an IP address.
+
+2. Set the path in the ConfigMap, through the `configuration` of the environment file:
+
+   ```yaml
+   configuration:
+     STEGO_SPICEDB_ENDPOINT: spicedb.orders.svc:50051
+     STEGO_SPICEDB_CA_FILE: /etc/orders/spicedb-ca/ca.crt
+   ```
+
+3. Mount only the key `ca.crt` with the mode 0440 (or 0400) on each Deployment and on the migration Job. The process
+   refuses a file that other users can read or that its group can write (the check is `mode & 0o137`). The
+   Kubernetes default mode of a Secret or ConfigMap volume is 0644, and the process refuses it. The mode 0440 needs
+   the pod `fsGroup`, so that the process, which does not run as root, reads the file through its group: on
+   OpenShift the restricted-v2 SCC sets it; on another cluster, list the Component `fs-group` (see
+   [Secrets as files](#secrets-as-files)). A patch of the overlay for the api Deployment:
+
+   ```yaml
+   patches:
+     - target:
+         kind: Deployment
+         name: orders
+       patch: |-
+         - op: add
+           path: /spec/template/spec/volumes/-
+           value:
+             name: spicedb-ca
+             secret:
+               secretName: spicedb-grpc-tls
+               defaultMode: 0440
+               items:
+                 - key: ca.crt
+                   path: ca.crt
+         - op: add
+           path: /spec/template/spec/containers/0/volumeMounts/-
+           value:
+             name: spicedb-ca
+             mountPath: /etc/orders/spicedb-ca
+             readOnly: true
+   ```
+
+   Write the same patch for the worker Deployment (`orders-worker`) when the service has one, and for the
+   migration Job. The name of the Job changes with each release, so select it by its label:
+
+   ```yaml
+     - target:
+         kind: Job
+         labelSelector: app.kubernetes.io/component=migration
+       patch: |-
+         # the same two operations as for the Deployment
+   ```
+
+   The Secret must be in the namespace of the service. When SpiceDB is in another namespace, copy only `ca.crt`
+   there, for example with trust-manager, and give the bundle volume the mode 0440 too.
+
+The process reads the file once, at the start. When the CA changes, restart the pods after the volume holds the
+new certificate, for example with `kubectl rollout restart deployment/orders deployment/orders-worker`, and run the
+next migration Job after the change. Until the restart, a pod verifies with the old CA. During a change of CA, put
+the old and the new certificate in the file, restart, and remove the old one later.
 
 ## The CI file
 

@@ -54,16 +54,19 @@ func noNetwork(t *testing.T) *atomic.Int64 {
 	return &calls
 }
 
-// networkPackages are the packages whose functions, methods, types or values can open a connection, resolve a name
-// or start a process that does. The observation helpers may use none of them.
-var networkPackages = map[string]bool{"net": true, "net/http": true, "net/http/httptrace": true, "net/rpc": true, "net/smtp": true,
-	"crypto/tls": true, "os/exec": true, "syscall": true, "plugin": true, "unsafe": true, "reflect": true}
+// allowedPackages are the standard packages whose objects the observation helpers may use: the packages that they
+// use today, none of which can open a connection, resolve a name or start a process. A use of an object of any other
+// package fails the walk, so a new import is refused until a review adds it here (security review of PR #509).
+var allowedPackages = map[string]bool{"bytes": true, "crypto/x509": true, "encoding/base64": true, "encoding/json": true, "encoding/pem": true,
+	"errors": true, "strings": true}
 
-// pureNetwork names the objects of networkPackages that only parse or hold a value and make no call: the parse of an
-// IP address and the key pair of a TLS Secret. A field or method of the types named here is allowed too.
+// pureNetwork names the objects of the network packages net and crypto/tls that only parse or hold a value and make
+// no call: the parse of an IP address and the key pair of a TLS Secret. A field or method of the types named here is
+// allowed too.
 var pureNetwork = map[string]bool{"net.ParseIP": true, "net.IP": true, "crypto/tls.X509KeyPair": true, "crypto/tls.Certificate": true}
 
-// pure tells whether the object of a network package is one of pureNetwork, or a field or method of a type of it.
+// pure tells whether the object of a package that is not allowed is one of pureNetwork, or a field or method of a
+// type of it.
 func pure(object types.Object) bool {
 	if pureNetwork[object.Pkg().Path()+"."+object.Name()] {
 		return true
@@ -86,132 +89,173 @@ func pure(object types.Object) bool {
 	return ok && pureNetwork[named.Obj().Pkg().Path()+"."+named.Obj().Name()]
 }
 
-// generated holds the generated package of this test, type-checked once from the export data of the build.
-var generated struct {
-	once  sync.Once
-	err   error
+// allowedObject tells whether a use of the object of another package is allowed: an object of an allowed package,
+// or one of pureNetwork.
+func allowedObject(object types.Object) bool {
+	return allowedPackages[object.Pkg().Path()] || pure(object)
+}
+
+// checked is one package that the walk reads, type-checked from the export data of the build.
+type checked struct {
 	pkg   *types.Package
 	info  *types.Info
 	decls map[types.Object]*ast.FuncDecl
 	// values maps each package variable to the declaration that gives its value.
-	values map[types.Object]ast.Node
+	values map[types.Object]*ast.ValueSpec
+	// inits are the init functions, which run when the package loads, so the walk starts at each of them too.
+	inits []*ast.FuncDecl
+	// bodies are the bodies of each function and method of the package, init functions included, with the object of
+	// the function (nil for an init function), so that the walk finds the writers of a package variable.
+	bodies []body
 }
 
-// loadGenerated type-checks the files of this package that are not tests, with the export data that go list -export
-// gives for each import, and maps each function and method that the package declares to its declaration.
-func loadGenerated() error {
-	generated.once.Do(func() {
-		out, err := exec.Command("go", "list", "-export", "-deps", "-f", "{{if .Export}}{{.ImportPath}}={{.Export}}{{end}}", ".").Output()
+// body is the body of one function or method of the package.
+type body struct {
+	object types.Object
+	node   *ast.BlockStmt
+}
+
+// generated is the generated package of this test, type-checked once.
+var generated struct {
+	once sync.Once
+	err  error
+	pkg  *checked
+}
+
+// loadGenerated type-checks the generated package of this test once.
+func loadGenerated() (*checked, error) {
+	generated.once.Do(func() { generated.pkg, generated.err = loadPackage(nil) })
+	return generated.pkg, generated.err
+}
+
+// loadPackage type-checks the files of this package that are not tests, and each planted file of extra (name to
+// source), with the export data that go list -export gives for each import, and maps each function, method and
+// package variable that the package declares to its declaration.
+func loadPackage(extra map[string]string) (*checked, error) {
+	fset := token.NewFileSet()
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		return nil, err
+	}
+	var files []*ast.File
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
 		if err != nil {
-			generated.err = fmt.Errorf("go list -export: %w", err)
-			return
+			return nil, err
 		}
-		exports := map[string]string{}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if path, file, ok := strings.Cut(line, "="); ok {
-				exports[path] = file
-			}
-		}
-		fset := token.NewFileSet()
-		lookup := func(path string) (io.ReadCloser, error) {
-			file, ok := exports[path]
-			if !ok {
-				return nil, fmt.Errorf("no export data of %s", path)
-			}
-			return os.Open(file)
-		}
-		names, err := filepath.Glob("*.go")
+		files = append(files, file)
+	}
+	listed := []string{"."}
+	for name, source := range extra {
+		file, err := parser.ParseFile(fset, name, source, 0)
 		if err != nil {
-			generated.err = err
-			return
+			return nil, err
 		}
-		var files []*ast.File
-		for _, name := range names {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			file, err := parser.ParseFile(fset, name, nil, 0)
-			if err != nil {
-				generated.err = err
-				return
-			}
-			files = append(files, file)
+		files = append(files, file)
+		for _, spec := range file.Imports {
+			listed = append(listed, strings.Trim(spec.Path.Value, `"`))
 		}
-		info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}, Types: map[ast.Expr]types.TypeAndValue{}}
-		pkg, err := (&types.Config{Importer: importer.ForCompiler(fset, "gc", lookup)}).Check("generated", fset, files, info)
-		if err != nil {
-			generated.err = err
-			return
+	}
+	out, err := exec.Command("go", append([]string{"list", "-export", "-deps", "-f", "{{if .Export}}{{.ImportPath}}={{.Export}}{{end}}"}, listed...)...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -export: %w", err)
+	}
+	exports := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if path, file, ok := strings.Cut(line, "="); ok {
+			exports[path] = file
 		}
-		decls, values := map[types.Object]*ast.FuncDecl{}, map[types.Object]ast.Node{}
-		for _, file := range files {
-			for _, declaration := range file.Decls {
-				switch d := declaration.(type) {
-				case *ast.FuncDecl:
-					if d.Body != nil {
-						decls[info.Defs[d.Name]] = d
-					}
-				case *ast.GenDecl:
-					for _, spec := range d.Specs {
-						if value, ok := spec.(*ast.ValueSpec); ok {
-							for _, name := range value.Names {
-								values[info.Defs[name]] = value
-							}
+	}
+	lookup := func(path string) (io.ReadCloser, error) {
+		file, ok := exports[path]
+		if !ok {
+			return nil, fmt.Errorf("no export data of %s", path)
+		}
+		return os.Open(file)
+	}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}, Types: map[ast.Expr]types.TypeAndValue{}}
+	pkg, err := (&types.Config{Importer: importer.ForCompiler(fset, "gc", lookup)}).Check("generated", fset, files, info)
+	if err != nil {
+		return nil, err
+	}
+	c := &checked{pkg: pkg, info: info, decls: map[types.Object]*ast.FuncDecl{}, values: map[types.Object]*ast.ValueSpec{}}
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			switch d := declaration.(type) {
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				if d.Recv == nil && d.Name.Name == "init" {
+					c.inits = append(c.inits, d)
+					c.bodies = append(c.bodies, body{node: d.Body})
+					continue
+				}
+				c.decls[info.Defs[d.Name]] = d
+				c.bodies = append(c.bodies, body{object: info.Defs[d.Name], node: d.Body})
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					if value, ok := spec.(*ast.ValueSpec); ok {
+						for _, name := range value.Names {
+							c.values[info.Defs[name]] = value
 						}
 					}
 				}
 			}
 		}
-		generated.pkg, generated.info, generated.decls, generated.values = pkg, info, decls, values
-	})
-	return generated.err
+	}
+	return c, nil
 }
 
-// staticNoNetwork walks the static call graph of the package from the named functions: each function or method of
-// the package that a reachable body names, as a call or as a value, and the declaration of each package variable or
-// constant that it reads. It fails the test on a use of an object of
-// networkPackages, of a package of the module outside this one, a call of an interface method, or a go statement
-// in a reachable body, and on a root that the package does not declare.
+// staticNoNetwork fails the test when the code that the named functions reach can make a network call (reach).
 func staticNoNetwork(t *testing.T, roots ...string) {
 	t.Helper()
-	if err := loadGenerated(); err != nil {
+	c, err := loadGenerated()
+	if err != nil {
 		t.Fatalf("the generated package does not type-check: %v", err)
 	}
-	pkg, info := generated.pkg, generated.info
+	faults, err := reach(c, roots...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(faults) > 0 {
+		t.Fatalf("the code that %v reaches can make a network call: %v", roots, faults)
+	}
+}
+
+// reach walks the static call graph of the package from the named functions and from each init function: each
+// function or method of the package that a reachable body names, as a call or as a value, the declaration of each package variable or constant that it reads, and each function that
+// writes a package variable that it reads. It gives a fault for a use of an object of a package that is not
+// allowed (allowedObject), a call of an interface method other than error.Error, a go statement, a package
+// variable whose value can hold a func, an interface, a map, a pointer, a slice or a chan and that is written outside
+// its declaration, and a use of a package variable that can hold a map, a pointer, a slice or a chan other than a
+// read through it. It gives an error for a root that the package does not declare.
+func reach(c *checked, roots ...string) ([]string, error) {
+	pkg, info := c.pkg, c.info
 	var faults []string
 	seen := map[types.Object]bool{}
 	var walk func(types.Object)
-	walk = func(object types.Object) {
-		if seen[object] {
-			return
-		}
-		seen[object] = true
-		// A function or method gives its body; a package variable or constant gives its declaration, so that a
-		// variable that holds a network function is judged by its value.
-		var body ast.Node
-		if function := generated.decls[object]; function != nil {
-			body = function.Body
-		} else if value := generated.values[object]; value != nil {
-			body = value
-		} else {
-			faults = append(faults, object.Name()+": no body in the package")
-			return
-		}
-		ast.Inspect(body, func(node ast.Node) bool {
+	var inspect func(string, ast.Node)
+	inspect = func(name string, node ast.Node) {
+		ast.Inspect(node, func(node ast.Node) bool {
 			switch n := node.(type) {
 			case *ast.GoStmt:
-				faults = append(faults, object.Name()+": a go statement")
+				faults = append(faults, name+": a go statement")
 			case *ast.SelectorExpr:
 				if selection, ok := info.Selections[n]; ok {
-					// A field of a type of a network package, such as Certificate.Leaf, is judged by its struct type.
-					if field, isField := selection.Obj().(*types.Var); isField && field.Pkg() != nil && networkPackages[field.Pkg().Path()] {
+					// A field of a type of a package that is not allowed, such as Certificate.Leaf, is judged by its
+					// struct type.
+					if field, isField := selection.Obj().(*types.Var); isField && field.Pkg() != nil && field.Pkg() != pkg && !allowedPackages[field.Pkg().Path()] {
 						if named, ok := derefNamed(selection.Recv()); !ok || !pureNetwork[named.Obj().Pkg().Path()+"."+named.Obj().Name()] {
-							faults = append(faults, object.Name()+": reads the field "+field.Pkg().Path()+"."+field.Name())
+							faults = append(faults, name+": reads the field "+field.Pkg().Path()+"."+field.Name())
 						}
 					}
 					if _, isInterface := selection.Recv().Underlying().(*types.Interface); isInterface && selection.Kind() == types.MethodVal {
 						if !allowedInterfaceMethod(selection.Obj()) {
-							faults = append(faults, object.Name()+": calls the interface method "+selection.Obj().Name())
+							faults = append(faults, name+": calls the interface method "+selection.Obj().Name())
 						}
 					}
 				}
@@ -221,8 +265,8 @@ func staticNoNetwork(t *testing.T, roots ...string) {
 					return true
 				}
 				if used.Pkg() != pkg {
-					if (networkPackages[used.Pkg().Path()] && !pure(used)) || !isStandard(used.Pkg().Path()) {
-						faults = append(faults, object.Name()+": uses "+used.Pkg().Path()+"."+used.Name())
+					if !allowedObject(used) {
+						faults = append(faults, name+": uses "+used.Pkg().Path()+"."+used.Name())
 					}
 					return true
 				}
@@ -238,16 +282,152 @@ func staticNoNetwork(t *testing.T, roots ...string) {
 			return true
 		})
 	}
+	walk = func(object types.Object) {
+		if seen[object] {
+			return
+		}
+		seen[object] = true
+		name := object.Name()
+		// A function or method gives its body; a package variable or constant gives its declaration, so that a
+		// variable that holds a network function is judged by its value, and each writer of a package variable.
+		if function := c.decls[object]; function != nil {
+			inspect(name, function.Body)
+			return
+		}
+		value := c.values[object]
+		if value == nil {
+			faults = append(faults, name+": no body in the package")
+			return
+		}
+		inspect(name, value)
+		if _, isVar := object.(*types.Var); !isVar {
+			return
+		}
+		reference, alias := holdsReference(object.Type(), map[types.Type]bool{})
+		for _, b := range c.bodies {
+			writer := "init"
+			if b.object != nil {
+				writer = b.object.Name()
+			}
+			writes, escapes := uses(info, b.node, object)
+			if writes {
+				if reference {
+					faults = append(faults, name+": a package variable that can hold a func, an interface, a map, a pointer, a slice or a chan is written outside its declaration, in "+writer)
+				}
+				if b.object != nil {
+					walk(b.object)
+				}
+			}
+			if escapes && alias {
+				faults = append(faults, name+": a package variable that can hold a map, a pointer, a slice or a chan is used other than by a read through it, in "+writer)
+			}
+		}
+	}
+	for _, d := range c.inits {
+		inspect("init", d.Body)
+	}
 	for _, root := range roots {
 		object := pkg.Scope().Lookup(root)
 		if _, ok := object.(*types.Func); !ok {
-			t.Fatalf("the generated package declares no function %s", root)
+			return nil, fmt.Errorf("the generated package declares no function %s", root)
 		}
 		walk(object)
 	}
-	if len(faults) > 0 {
-		t.Fatalf("the code that %v reaches can make a network call: %v", roots, faults)
+	return faults, nil
+}
+
+// holdsReference tells whether a value of the type can hold a func, an interface, a map, a pointer, a slice or a chan
+// (reference), and whether it can hold a map, a pointer, a slice or a chan, through which a copy can change it
+// (alias).
+func holdsReference(typ types.Type, seen map[types.Type]bool) (reference, alias bool) {
+	if seen[typ] {
+		return false, false
 	}
+	seen[typ] = true
+	switch u := typ.Underlying().(type) {
+	case *types.Signature, *types.Interface:
+		return true, false
+	case *types.Map, *types.Pointer, *types.Slice, *types.Chan:
+		return true, true
+	case *types.Array:
+		return holdsReference(u.Elem(), seen)
+	case *types.Struct:
+		for field := range u.Fields() {
+			r, a := holdsReference(field.Type(), seen)
+			reference, alias = reference || r, alias || a
+		}
+	}
+	return reference, alias
+}
+
+// uses tells whether the body writes the package variable object (an assignment, an increment or a range whose
+// target is the variable or a part of it, or the address of the variable or of a part of it), and whether it uses it
+// other than by a read through it: as the operand of a selector or of an index that is not written, or of a
+// comparison.
+func uses(info *types.Info, node ast.Node, object types.Object) (writes, escapes bool) {
+	root := func(expr ast.Expr) bool {
+		for {
+			switch e := expr.(type) {
+			case *ast.Ident:
+				return info.Uses[e] == object
+			case *ast.SelectorExpr:
+				expr = e.X
+			case *ast.IndexExpr:
+				expr = e.X
+			case *ast.IndexListExpr:
+				expr = e.X
+			case *ast.StarExpr:
+				expr = e.X
+			case *ast.ParenExpr:
+				expr = e.X
+			case *ast.SliceExpr:
+				expr = e.X
+			default:
+				return false
+			}
+		}
+	}
+	read := map[*ast.Ident]bool{}
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				writes = writes || root(lhs)
+			}
+		case *ast.IncDecStmt:
+			writes = writes || root(s.X)
+		case *ast.RangeStmt:
+			writes = writes || s.Key != nil && root(s.Key) || s.Value != nil && root(s.Value)
+		case *ast.UnaryExpr:
+			if s.Op == token.AND {
+				writes = writes || root(s.X)
+			}
+		case *ast.SelectorExpr:
+			if id, ok := s.X.(*ast.Ident); ok {
+				read[id] = true
+			}
+		case *ast.IndexExpr:
+			if id, ok := s.X.(*ast.Ident); ok {
+				read[id] = true
+			}
+		case *ast.BinaryExpr:
+			if s.Op == token.EQL || s.Op == token.NEQ {
+				for _, operand := range []ast.Expr{s.X, s.Y} {
+					if id, ok := operand.(*ast.Ident); ok {
+						read[id] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	ast.Inspect(node, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && info.Uses[id] == object && !read[id] {
+			escapes = true
+		}
+		return true
+	})
+	return writes, escapes
 }
 
 // derefNamed gives the named type of a type or of a pointer to it.
@@ -263,12 +443,6 @@ func derefNamed(typ types.Type) (*types.Named, bool) {
 // Error of error, which reads a value and makes no call.
 func allowedInterfaceMethod(method types.Object) bool {
 	return method.Name() == "Error" && method.Pkg() == nil
-}
-
-// isStandard tells whether the import path is of the standard library: its first element has no dot.
-func isStandard(path string) bool {
-	first, _, _ := strings.Cut(path, "/")
-	return !strings.Contains(first, ".")
 }
 
 type roundTrip func(*http.Request) (*http.Response, error)
@@ -373,6 +547,57 @@ func TestObservationHelpersMakeNoNetworkCall(t *testing.T) {
 		}
 		if n := calls.Load(); n != 0 {
 			t.Fatalf("the TLS Secret checks made %d network calls, also to the OCSP or CRL address", n)
+		}
+	})
+	t.Run("ST-SUP-RC14-OC24-T04 The static walk refuses a dialer that an init function or another writer stores, and each network or process package that the helpers do not use", func(t *testing.T) {
+		// Each plant is a file of this package with the root PlantedCheck. Under the walk of PR #509 (a refused list,
+		// with no init function and no writer of a package variable walked), each one but the control passed.
+		plants := []struct{ name, source, fault string }{
+			{"an init function that stores a dialer in a func variable",
+				"package kubernetes\nimport \"net\"\nvar plantedDial = func(string) error { return nil }\nfunc init() { plantedDial = func(address string) error { conn, err := net.Dial(\"tcp\", address); if err == nil { _ = conn.Close() }; return err } }\nfunc PlantedCheck() bool { return plantedDial(\"192.0.2.1:80\") == nil }\n",
+				"uses net.Dial"},
+			{"an init function that stores a connection in an io.Writer, then io.Copy",
+				"package kubernetes\nimport (\"io\"; \"net\"; \"strings\")\nvar plantedWriter io.Writer = io.Discard\nfunc init() { if conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); err == nil { plantedWriter = conn } }\nfunc PlantedCheck() bool { _, err := io.Copy(plantedWriter, strings.NewReader(\"x\")); return err == nil }\n",
+				"is written outside its declaration, in init"},
+			{"a function that the helper does not call and that stores a dialer in a func variable",
+				"package kubernetes\nimport \"net\"\nvar plantedHook = func() error { return nil }\nfunc plantedSetup() { plantedHook = func() error { _, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); return err } }\nfunc PlantedCheck() bool { return plantedHook() == nil }\n",
+				"plantedSetup: uses net.Dial"},
+			{"textproto.Dial",
+				"package kubernetes\nimport \"net/textproto\"\nfunc PlantedCheck() bool { conn, err := textproto.Dial(\"tcp\", \"192.0.2.1:25\"); if err == nil { _ = conn.Close() }; return err == nil }\n",
+				"uses net/textproto.Dial"},
+			{"syslog.Dial",
+				"package kubernetes\nimport \"log/syslog\"\nfunc PlantedCheck() bool { writer, err := syslog.Dial(\"tcp\", \"192.0.2.1:514\", syslog.LOG_INFO, \"observation\"); if err == nil { _ = writer.Close() }; return err == nil }\n",
+				"uses log/syslog.Dial"},
+			{"os.StartProcess",
+				"package kubernetes\nimport \"os\"\nfunc PlantedCheck() bool { process, err := os.StartProcess(\"/bin/true\", nil, &os.ProcAttr{}); if err == nil { _, _ = process.Wait() }; return err == nil }\n",
+				"uses os.StartProcess"},
+			{"a map variable that a helper reads and another function fills",
+				"package kubernetes\nvar plantedTable = map[string]string{}\nfunc plantedFill(table map[string]string) { table[\"a\"] = \"b\" }\nfunc plantedShare() { plantedFill(plantedTable) }\nfunc PlantedCheck() bool { return plantedTable[\"a\"] == \"b\" }\n",
+				"is used other than by a read through it, in plantedShare"},
+			{"the control: a check that uses only an allowed package", "package kubernetes\nimport \"strings\"\nvar plantedPrefix = \"tenant-\"\nfunc PlantedCheck() bool { return strings.HasPrefix(\"tenant-1\", plantedPrefix) }\n", ""},
+		}
+		for _, plant := range plants {
+			c, err := loadPackage(map[string]string{"planted.go": plant.source})
+			if err != nil {
+				t.Fatalf("%s: the package with the plant does not type-check: %v", plant.name, err)
+			}
+			faults, err := reach(c, "PlantedCheck")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plant.fault == "" {
+				if len(faults) != 0 {
+					t.Errorf("%s: the walk gave the faults %v, want none", plant.name, faults)
+				}
+				continue
+			}
+			found := false
+			for _, fault := range faults {
+				found = found || strings.Contains(fault, plant.fault)
+			}
+			if !found {
+				t.Errorf("%s: the walk gave the faults %v, want one that holds %q", plant.name, faults, plant.fault)
+			}
 		}
 	})
 }

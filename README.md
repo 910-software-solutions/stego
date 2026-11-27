@@ -335,7 +335,11 @@ an update replaces the row, so the field becomes empty. Thus a collection
 whose optional fields a client must clear needs `update` in its
 `operations`. A field that is the subject of a relationship
 (`subject_source: field`) is set at the create only: an update or a patch
-that changes it, also to empty, gets 400 with the name of the field. The `apply` command of the
+that changes it, also to empty, gets 400 with the name of the field. Thus
+an update must give that field with its stored value: an update that leaves
+it out changes it to empty, and also gets 400 (walkthrough 27, P2-NULL). To
+clear the other optional fields of such a row, send an update that leaves
+them out and gives the related field. The `apply` command of the
 generated CLI changes a resource that it finds with this patch, so a
 collection is an apply resource only when it has `create`, `list` and
 `patch`, has no scope, and both the create and `patchable` hold a text field

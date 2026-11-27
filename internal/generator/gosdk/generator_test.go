@@ -65,6 +65,7 @@ components:
         description: {type: string, nullable: true}
         enabled: {type: boolean, nullable: true}
         count: {type: integer, nullable: true}
+        total: {type: integer, format: int64}
         updated: {type: string, format: date-time, nullable: true}
         tags: {type: array, nullable: true, items: {type: string}}
 `
@@ -283,7 +284,7 @@ func testGeneratedSDK(t *testing.T, traced bool) {
 					passed[event.Test] = true
 				}
 			}
-			for _, name := range []string{"", "TestHTTPSAndStatus", "TestNullableExchange"} {
+			for _, name := range []string{"", "TestHTTPSAndStatus", "TestHTTPSAndStatus/ST-SUP-RC06-OC03-T02_The_emitted_SDK_client_reads_an_int64_above_2^53_and_the_int64_bounds_exactly", "TestNullableExchange"} {
 				if !passed[name] {
 					t.Fatal("missing generated SDK test result:", name)
 				}
@@ -294,7 +295,7 @@ func testGeneratedSDK(t *testing.T, traced bool) {
 }
 
 const runtimeTest = `package sdk
-import("context";"crypto/tls";"encoding/pem";"errors";"net/http";"net/http/httptest";"os";"path/filepath";"strings";"testing";"time")
+import("context";"crypto/tls";"encoding/pem";"errors";"math";"net/http";"net/http/httptest";"os";"path/filepath";"strconv";"strings";"testing";"time")
 func TestHTTPSAndStatus(t *testing.T){
  t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT","")
  server:=httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
@@ -305,6 +306,7 @@ func TestHTTPSAndStatus(t *testing.T){
   if r.URL.Path=="/widgets/redirect"{http.Redirect(w,r,"https://invalid.example",302);return}
   if r.URL.Path=="/widgets/large"{w.Header().Set("Content-Type","application/json");w.Write([]byte(strings.Repeat("x",(4<<20)+1)));return}
   if r.URL.Path=="/widgets/wait"{<-r.Context().Done();return}
+  if strings.HasPrefix(r.URL.Path,"/widgets/total"){w.Header().Set("Content-Type","application/json");w.Write([]byte("{\"id\":\"one\",\"name\":\"Widget\",\"total\":"+strings.TrimPrefix(r.URL.Path,"/widgets/total")+"}"));return}
   w.Header().Set("Content-Type","application/json");w.Write([]byte("{\"id\":\"one\",\"name\":\"Widget\"}"))
  }));server.TLS=&tls.Config{MinVersion:tls.VersionTLS13};server.StartTLS();defer server.Close()
  ca:=filepath.Join(t.TempDir(),"ca.pem");os.WriteFile(ca,pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:server.Certificate().Raw}),0600)
@@ -320,6 +322,12 @@ func TestHTTPSAndStatus(t *testing.T){
  })
  t.Run("ST-SUP-RC06-OC03-T01 The emitted SDK client sends its bearer token and hides its transport",func(t *testing.T){
   got,err:=client.GetWidgetWithResponse(context.Background(),"one");if err!=nil||got.JSON200==nil||got.JSON200.Id!="one"{t.Fatal("typed SDK read failed",err)}
+ })
+ t.Run("ST-SUP-RC06-OC03-T02 The emitted SDK client reads an int64 above 2^53 and the int64 bounds exactly",func(t *testing.T){
+  for _,want:=range []int64{9007199254740993,math.MaxInt64,math.MinInt64}{
+   got,err:=client.GetWidgetWithResponse(context.Background(),"total"+strconv.FormatInt(want,10))
+   if err!=nil||got.JSON200==nil||got.JSON200.Total==nil||*got.JSON200.Total!=want{t.Fatalf("the SDK read the int64 %d as %v (%v)",want,got,err)}
+  }
  })
  t.Run("ST-SUP-RC06-OC04-T01 A failed SDK call keeps its status and hides its secrets",func(t *testing.T){
   denied,err:=client.GetWidgetWithResponse(context.Background(),"missing");if err!=nil||denied.StatusCode()!=404{t.Fatal("SDK lost status",err)}
