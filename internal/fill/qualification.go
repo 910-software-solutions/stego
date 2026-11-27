@@ -622,14 +622,30 @@ func checkFillName(name string) error {
 	return nil
 }
 
+// openFills opens the folder fills as an os.Root inside an os.Root of its
+// parent folder, the project folder. So a fills folder that is itself a link
+// out of the project is refused: os.OpenRoot(fills) follows a link that is the
+// last part of its path (security review of PR #12, L1, CWE-59). A link to a
+// folder inside the project is followed, as os.Root follows each link that
+// stays in its root.
+func openFills(fills string) (*os.Root, error) {
+	project, err := os.OpenRoot(filepath.Dir(fills))
+	if err != nil {
+		return nil, err
+	}
+	defer project.Close()
+	return project.OpenRoot(filepath.Base(fills))
+}
+
 // readFillManifest reads <name>/fill.yaml in the folder fills through an
-// os.Root of fills, with the size limit of a declaration. The root refuses a
-// link that leads out of fills. It refuses a name outside the fill-name form.
+// os.Root of fills (openFills), with the size limit of a declaration. The root
+// refuses a link that leads out of fills, and a fills folder that is a link
+// out of the project. It refuses a name outside the fill-name form.
 func readFillManifest(fills, name string) ([]byte, error) {
 	if err := checkFillName(name); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(fills)
+	root, err := openFills(fills)
 	if err != nil {
 		return nil, fmt.Errorf("fill %q: %w", name, err)
 	}

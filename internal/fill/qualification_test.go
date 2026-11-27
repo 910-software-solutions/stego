@@ -1,6 +1,7 @@
 package fill
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -331,6 +332,97 @@ func TestFillWriteRace(t *testing.T) {
 		}
 		if left, _ := filepath.Glob(filepath.Join(fills, "*", ".fill-*")); len(left) != 0 {
 			t.Errorf("the writes left %d temporary files in the fill folders: %v", len(left), left)
+		}
+	})
+}
+
+func TestFillsFolderLink(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T08 A fills folder that is a link out of the project is refused for the read and the write of a fill manifest", func(t *testing.T) {
+		// Security review of PR #12, L1 (CWE-59): os.OpenRoot(fills) followed a link that is the fills folder itself,
+		// so project/fills -> outside read and wrote outside/x/fill.yaml.
+		check := builtInCheck()
+		parent := t.TempDir()
+		check.ProjectDir = filepath.Join(parent, "project")
+		outside := filepath.Join(parent, "outside")
+		secret := "kind: fill\nname: x\nimplements: rest-api.before_create\ncollection: secret-collection\n"
+		if err := os.MkdirAll(filepath.Join(outside, "x"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(check.ProjectDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outside, "x", ManifestFile), []byte(secret), 0644); err != nil {
+			t.Fatal(err)
+		}
+		fills := filepath.Join(check.ProjectDir, "fills")
+		if err := os.Symlink(outside, fills); err != nil {
+			t.Fatal(err)
+		}
+		if f, err := ReadManifest(check, "x"); err == nil || f != nil || strings.Contains(err.Error(), "secret-collection") || !strings.Contains(err.Error(), "escapes") {
+			t.Errorf("the read of the fill through the linked fills folder gave %+v, %v, want a refused link and no quote of the manifest outside", f, err)
+		}
+		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"policy.go": strings.Repeat("c", 64)}}
+		signOff := FillSignOff{EvidenceDigest: strings.Repeat("d", 64), Signature: Signature{KeyType: KeySSH, Signer: "listed@example.com", Armored: "-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n"}, SignedAt: time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)}
+		if err := WriteEvidence(fills, "x", evidence); err == nil || !strings.Contains(err.Error(), "escapes") {
+			t.Errorf("the evidence through the linked fills folder gave %v, want a refused link", err)
+		}
+		if err := WriteSignOff(fills, "x", signOff); err == nil || !strings.Contains(err.Error(), "escapes") {
+			t.Errorf("the sign-off through the linked fills folder gave %v, want a refused link", err)
+		}
+		if data, err := os.ReadFile(filepath.Join(outside, "x", ManifestFile)); err != nil || string(data) != secret {
+			t.Errorf("the manifest outside changed: %q %v", data, err)
+		}
+		// A fills folder that is a link to a folder in the project is still read: the root follows a link that
+		// stays in it.
+		if err := os.Remove(fills); err != nil {
+			t.Fatal(err)
+		}
+		inside := filepath.Join(check.ProjectDir, "fill-sources")
+		if err := os.MkdirAll(filepath.Join(inside, "x"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(inside, "x", ManifestFile), []byte(secret), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("fill-sources", fills); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteEvidence(fills, "x", evidence); err != nil {
+			t.Errorf("the evidence through a fills folder linked inside the project gave %v", err)
+		}
+	})
+}
+
+func TestFailedWriteLeavesNoTemporaryFile(t *testing.T) {
+	t.Run("ST-EXT-UC01-R02-T09 A write of a fill manifest that fails after its temporary file exists removes that file and keeps the manifest", func(t *testing.T) {
+		// Security review of PR #12, L3: no test showed that writeSection removes its temporary file on a failure.
+		fills := filepath.Join(t.TempDir(), "fills")
+		manifest := "kind: fill\nname: x\nimplements: rest-api.before_create\ncollection: c\n"
+		if err := os.MkdirAll(filepath.Join(fills, "x"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fills, "x", ManifestFile), []byte(manifest), 0644); err != nil {
+			t.Fatal(err)
+		}
+		seen := 0
+		afterTemp = func() error {
+			matches, _ := filepath.Glob(filepath.Join(fills, "x", ".fill-*.yaml"))
+			seen = len(matches)
+			return errors.New("the disk is full")
+		}
+		t.Cleanup(func() { afterTemp = nil })
+		evidence := FillEvidence{FillDigest: strings.Repeat("a", 64), ContractDigest: strings.Repeat("b", 64), PassedAt: time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC), Files: map[string]string{"policy.go": strings.Repeat("c", 64)}}
+		if err := WriteEvidence(fills, "x", evidence); err == nil || !strings.Contains(err.Error(), "the disk is full") {
+			t.Fatalf("the failed write gave %v, want the failure", err)
+		}
+		if seen != 1 {
+			t.Fatalf("the failure ran with %d temporary files, want the one of the write", seen)
+		}
+		if matches, _ := filepath.Glob(filepath.Join(fills, "x", ".fill-*.yaml")); len(matches) != 0 {
+			t.Errorf("the failed write left the temporary files %v", matches)
+		}
+		if data, err := os.ReadFile(filepath.Join(fills, "x", ManifestFile)); err != nil || string(data) != manifest {
+			t.Errorf("the failed write changed the manifest: %q %v", data, err)
 		}
 	})
 }

@@ -108,6 +108,11 @@ func DecodeImplements(data []byte, path string) (string, error) {
 	return f.Implements, nil
 }
 
+// afterTemp, when a test sets it, runs in writeSection after the temporary
+// file exists and before the write, so a test can fail the write there and
+// check that no temporary file stays. It is nil outside the tests.
+var afterTemp func() error
+
 // writeSection sets one top-level key of the manifest fills/<name>/fill.yaml to
 // value, or removes the key when value is nil, and keeps each other key and its
 // comments as they are. It writes a new file and renames it over the old one,
@@ -115,7 +120,9 @@ func DecodeImplements(data []byte, path string) (string, error) {
 //
 // It refuses a name outside the fill-name form before it opens a file, as
 // ReadManifest does (security review of PR #9, INFO-1). It opens the fill
-// folder once as an os.Root inside an os.Root of the fills folder, and reads,
+// folder once as an os.Root inside an os.Root of the fills folder, which
+// openFills opens inside the project folder, so a fills folder that is a link
+// out of the project is refused (security review of PR #12, L1), and reads,
 // writes, renames and removes through that one root, so a link that takes the
 // path out of the fills folder is refused also when a process puts it there
 // after ReadManifest (security review of PR #518, item b, CWE-367), and a swap
@@ -126,9 +133,9 @@ func writeSection(fills, name, key string, value any) (err error) {
 		return err
 	}
 	path := filepath.Join(fills, name, ManifestFile)
-	root, err := os.OpenRoot(fills)
+	root, err := openFills(fills)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	defer root.Close()
 	dir, err := root.OpenRoot(name)
@@ -191,6 +198,11 @@ func writeSection(fills, name, key string, value any) (err error) {
 			}
 		}
 	}()
+	if afterTemp != nil {
+		if err := afterTemp(); err != nil {
+			return err
+		}
+	}
 	if _, err := written.Write(out); err != nil {
 		return err
 	}
