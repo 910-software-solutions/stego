@@ -84,6 +84,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateObservationSeries(service.Observations, service.Entities)...)
 	faults = append(faults, validateObservationEmitters(service)...)
 	faults = append(faults, validateObservationCounts(service.Observations)...)
+	faults = append(faults, validateFillModules(service.FillModules)...)
 	return faults
 }
 
