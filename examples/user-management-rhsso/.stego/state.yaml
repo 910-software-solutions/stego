@@ -41,7 +41,7 @@ last_applied:
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: 1c93d03dd1f78243c7fa00041969aff97ba4d2605ceebff18a96494c9c184839
+    registry_content_sha256: a526d1c0483e1fbff31e91ca536b1071d3006f13b71da4ab0ee579ce186d8684
     components:
         audit-log:
             version: 1.2.0
@@ -66,7 +66,7 @@ last_applied:
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.33.0
-            sha: cd5710819aad2653d7eb0dff48f58ff8ae3096e44f3e56d5fe6bdf4625335185
+            sha: eb67f17d57a241cb1cc1c11e789b7f7ee1fee63d80ef8af761bde9fe8fe485a7
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
