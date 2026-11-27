@@ -11,8 +11,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
 )
 
 //go:embed sso.go.tmpl

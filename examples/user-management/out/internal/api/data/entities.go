@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/jsell-rh/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/command"
 )
 
 // Organization is a row of the entity Organization, as its command handle reads and writes it.

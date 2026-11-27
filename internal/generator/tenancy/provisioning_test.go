@@ -3,7 +3,7 @@ package tenancy
 import (
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 func TestProvisioningRoutes(t *testing.T) {

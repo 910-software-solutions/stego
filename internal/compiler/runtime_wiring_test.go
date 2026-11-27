@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The proofs of the runtime data path through the stego binary: a service with data access on the runtime data path
@@ -379,7 +379,7 @@ func (p *wiringProject) addLocalRuntime() error {
 	if err != nil {
 		return err
 	}
-	replace := "replace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir
+	replace := "replace github.com/910-software-solutions/stego/registry/runtime => " + runtimeDir
 	name := filepath.Join(p.dir, "go.mod")
 	mod, err := os.ReadFile(name)
 	if err != nil {
@@ -754,7 +754,7 @@ func TestRuntimeWiring(t *testing.T) {
 			t.Fatalf("go list -deps ./out: %v\n%s", err, output)
 		}
 		deps := strings.Fields(string(output))
-		if !slices.Contains(deps, "github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox") {
+		if !slices.Contains(deps, "github.com/910-software-solutions/stego/registry/runtime/outbox/kafkaoutbox") {
 			t.Fatalf("the generated service does not link the Kafka destination, so the check proves nothing:\n%s", output)
 		}
 		for _, dep := range deps {
@@ -843,7 +843,7 @@ func TestKeyRingWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
+		for _, want := range []string{`"github.com/910-software-solutions/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
 			"Seal: svcstorage.SealColumns", `SealLeases: []string{"member-email-seal"}`} {
 			if !strings.Contains(string(withRing), want) {
 				t.Errorf("the wiring of a service with a pii field and an open seal does not hold %s", want)

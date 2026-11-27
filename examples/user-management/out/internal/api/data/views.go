@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/910-software-solutions/stego/registry/runtime/query"
 )
 
 // OrganizationView is the read-only value of one stored Organization.

@@ -21,15 +21,15 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/authz"
-	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	"github.com/jsell-rh/stego/registry/runtime/otel"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
-	"github.com/jsell-rh/stego/registry/runtime/sealed"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/sealed"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // The timings of ST-SUP-RP10-LC25 and ST-SUP-RP10-LC28.
@@ -268,10 +268,10 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		rt.slots.entities[e] = true
 	}
 	if cfg.Logger != nil {
-		rt.logger = cfg.Logger.Logger("github.com/jsell-rh/stego/registry/runtime/command")
+		rt.logger = cfg.Logger.Logger("github.com/910-software-solutions/stego/registry/runtime/command")
 	}
 	if cfg.Meter != nil {
-		if rt.attemptsFailed, err = cfg.Meter.Meter("github.com/jsell-rh/stego/registry/runtime/command").Int64Counter(AttemptsFailedEvent,
+		if rt.attemptsFailed, err = cfg.Meter.Meter("github.com/910-software-solutions/stego/registry/runtime/command").Int64Counter(AttemptsFailedEvent,
 			metric.WithUnit("{charge}"), metric.WithDescription(attemptsFailedDescription)); err != nil {
 			return nil, fmt.Errorf("command: the counter %s: %w", AttemptsFailedEvent, err)
 		}

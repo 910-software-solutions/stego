@@ -8,7 +8,7 @@ import (
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // maxAttemptsLimit is the highest limit of wrong checks: the most failed attempts that a verifier of a memorized

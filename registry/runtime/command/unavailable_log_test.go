@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 // unavailableState is an error of the driver with a SQLSTATE and a message, as pgconn.PgError gives them.

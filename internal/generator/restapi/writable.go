@@ -3,7 +3,7 @@ package restapi
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The writable setting of a field on the runtime data path (ST-DECL-EN03, ST-DECL-Q45 (a)): a field with writable

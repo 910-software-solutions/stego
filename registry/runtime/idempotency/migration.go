@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jsell-rh/stego/registry/runtime/internal/catalogfirst"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/catalogfirst"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
 )
 
 // KeySchema is the schema of the key table that a service makes with its migration job, in which Wrap and Purge

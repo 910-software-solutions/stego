@@ -472,7 +472,7 @@ each secret member.
 ### sealed.Secret
 
 `sealed.Secret` is the Go type of a readable secret in `out/commands` and
-`out/workers`. The package is `github.com/jsell-rh/stego/registry/runtime/sealed`.
+`out/workers`. The package is `github.com/910-software-solutions/stego/registry/runtime/sealed`.
 
 | Function or method | What it does |
 |---|---|
@@ -928,7 +928,7 @@ the target wallet:
 		}
 ```
 
-`command` is the package `github.com/jsell-rh/stego/registry/runtime/command`.
+`command` is the package `github.com/910-software-solutions/stego/registry/runtime/command`.
 The answer is then 422 with the code `transfer.no_target`. The refusal tells
 the same for a missing wallet and for a wallet of another customer, so it
 tells nothing of the rows of another customer.
@@ -1164,7 +1164,7 @@ such as the stored hash of a counted PIN. A test file, whose name ends in
 A fill does not import `crypto/rand` or `math/rand`, so that its review finds
 each source of randomness by name. To issue a secret, such as an API key or a
 one-time code, call `command.NewToken(size)` of the package
-`github.com/jsell-rh/stego/registry/runtime/command`, which the contract of a
+`github.com/910-software-solutions/stego/registry/runtime/command`, which the contract of a
 command fill and of a worker fill always imports (from runtime v0.163.0). It
 gives `size` new random bytes from `crypto/rand`, from 16 to 64, and refuses
 another size with an error. Encode the bytes with `encoding/base64` or

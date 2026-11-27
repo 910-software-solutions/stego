@@ -318,7 +318,7 @@ func (e *evolution) buildWith(goBin, tag, root string) error {
 		return fmt.Errorf("check out %s: %v\n%s", tag, err, output)
 	}
 	for _, args := range [][]string{
-		{"mod", "edit", "-replace", "github.com/jsell-rh/stego/registry/runtime=" + filepath.Join(root, "registry", "runtime")},
+		{"mod", "edit", "-replace", "github.com/910-software-solutions/stego/registry/runtime=" + filepath.Join(root, "registry", "runtime")},
 		{"mod", "tidy"},
 		{"build", "-o", filepath.Join(e.bin, tag), "./out"},
 	} {

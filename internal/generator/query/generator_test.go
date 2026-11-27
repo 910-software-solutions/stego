@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	parse "github.com/jsell-rh/stego/internal/parser"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	parse "github.com/910-software-solutions/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // shopModule is the module of the test service of testdata/service.yaml.
@@ -304,7 +304,7 @@ func TestContractRuntimeImports(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, spec := range file.Imports {
-					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/910-software-solutions/stego/registry/runtime/") {
 						found[path] = true
 					}
 				}

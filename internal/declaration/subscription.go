@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // MaxSubscriptions is the most subscriptions of a service. Each reads its topic in a consumer group of its own, with

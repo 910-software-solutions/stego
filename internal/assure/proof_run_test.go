@@ -12,7 +12,7 @@ import (
 const (
 	fixtureCommit = "0123456789abcdef0123456789abcdef01234567"
 	otherCommit   = "fedcba9876543210fedcba9876543210fedcba98"
-	trustedRef    = "https://github.com/jsell-rh/stego/.github/workflows/proof-run.yml"
+	trustedRef    = "https://github.com/910-software-solutions/stego/.github/workflows/proof-run.yml"
 )
 
 // keptStore is an attestation store that keeps each proof run handed to it, for the tests to read.
@@ -264,7 +264,7 @@ func TestProofRunInvariants(t *testing.T) {
 		for name, attestation := range map[string]Attestation{
 			"another commit as subject":             {PredicateType: ProofRunPredicateType, Subject: otherCommit, Signer: want.Signer},
 			"another predicate type":                {PredicateType: "https://slsa.dev/provenance/v1", Subject: fixtureCommit, Signer: want.Signer},
-			"another workflow":                      {PredicateType: ProofRunPredicateType, Subject: fixtureCommit, Signer: Signer{Issuer: GitHubIssuer, Subject: "https://github.com/jsell-rh/stego/.github/workflows/checks.yml@refs/heads/main"}},
+			"another workflow":                      {PredicateType: ProofRunPredicateType, Subject: fixtureCommit, Signer: Signer{Issuer: GitHubIssuer, Subject: "https://github.com/910-software-solutions/stego/.github/workflows/checks.yml@refs/heads/main"}},
 			"a workflow whose name starts the same": {PredicateType: ProofRunPredicateType, Subject: fixtureCommit, Signer: Signer{Issuer: GitHubIssuer, Subject: trustedRef + ".bak@refs/heads/main"}},
 			"the workflow in a fork":                {PredicateType: ProofRunPredicateType, Subject: fixtureCommit, Signer: Signer{Issuer: GitHubIssuer, Subject: "https://github.com/someone/stego/.github/workflows/proof-run.yml@refs/heads/main"}},
 			"another issuer":                        {PredicateType: ProofRunPredicateType, Subject: fixtureCommit, Signer: Signer{Issuer: "https://issuer.example", Subject: want.Signer.Subject}},
@@ -277,7 +277,7 @@ func TestProofRunInvariants(t *testing.T) {
 		}
 
 		request := fixtureRequest(everyTest, pythonPass)
-		request.Signer.Subject = "https://github.com/jsell-rh/stego/.github/workflows/checks.yml@refs/heads/main"
+		request.Signer.Subject = "https://github.com/910-software-solutions/stego/.github/workflows/checks.yml@refs/heads/main"
 		store = &keptStore{}
 		_, _, err = RecordProofRun(request, store)
 		refusedBy(t, err, "attestedByTrustedSigner", store)

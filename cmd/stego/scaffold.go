@@ -10,11 +10,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/fill"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/capability"
-	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/capability"
+	"github.com/910-software-solutions/stego/internal/parser"
 	"golang.org/x/mod/module"
 	"gopkg.in/yaml.v3"
 )

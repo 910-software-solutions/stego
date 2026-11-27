@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/buildidentity"
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/compiler"
 	"golang.org/x/mod/modfile"
 )
 

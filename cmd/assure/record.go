@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jsell-rh/stego/internal/assure"
+	"github.com/910-software-solutions/stego/internal/assure"
 )
 
 // record (ST-ASR-CH01) is assure record (ST-ASR-CLI01). It reads the suites' output, writes the proof run

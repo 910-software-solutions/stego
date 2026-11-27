@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/lifecycle"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/lifecycle"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // referenceList is a flag that may be given more than once.

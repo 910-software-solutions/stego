@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/910-software-solutions/stego/internal/appbuild"
 	"io"
 	"os"
 	"os/signal"

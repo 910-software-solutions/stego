@@ -3,7 +3,7 @@ package declaration
 import (
 	"fmt"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // CollectionServer is the one component that serves declared collections today (ST-SUP-RC20), and CollectionPort the

@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/fleet"
-	"github.com/jsell-rh/stego/internal/lifecycle"
+	"github.com/910-software-solutions/stego/internal/fleet"
+	"github.com/910-software-solutions/stego/internal/lifecycle"
 )
 
 // runFleet parses stego fleet (ST-DIS-CLI06), stego fleet vex (ST-DIS-CLI09) and stego fleet measures

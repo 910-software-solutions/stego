@@ -16,9 +16,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jsell-rh/stego/registry/runtime/audit"
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
-	"github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/audit"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // Kind is the kind of each outbox message of the audit sink.
@@ -29,7 +29,7 @@ const Kind = "audit.sink"
 const maxKey = 255
 
 // Queue is the writer-to-outbox adapter: the audit.Enqueuer that the Writer, the Anchorer and the Maintainer take,
-// on the outbox queue of github.com/jsell-rh/stego/registry/runtime/outbox. Each sink message goes in the caller's transaction as a message
+// on the outbox queue of github.com/910-software-solutions/stego/registry/runtime/outbox. Each sink message goes in the caller's transaction as a message
 // of the destination audit-sink that is idempotent and must land, with the key of the event or the anchor as its
 // outgoing key.
 type Queue struct {

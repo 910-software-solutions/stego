@@ -12,16 +12,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/command"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/generator/query"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/command"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/generator/query"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The runtime data path, the one data path of the rest-api component (ST-SUP-RC20-OC39): each declared collection operation is
-// one generated command on github.com/jsell-rh/stego/registry/runtime/command (create, update, patch, delete) or one query on
-// github.com/jsell-rh/stego/registry/runtime/query (read, list), and each handler calls that command's or query's Run. The handlers open no
+// one generated command on github.com/910-software-solutions/stego/registry/runtime/command (create, update, patch, delete) or one query on
+// github.com/910-software-solutions/stego/registry/runtime/query (read, list), and each handler calls that command's or query's Run. The handlers open no
 // database connection and hold no store; the bound before slots run in the command's fill, before its write, and
 // the after slots run after the command committed, so tenancy, idempotency, audit and authorization are applied once,
 // by the runtime (ST-SUP-RC20-OC37).
@@ -515,8 +515,8 @@ func renderRuntimeHelpers(ctx gen.Context, names []string, dataImport, slotsImpo
 	pkg := path.Base(ctx.OutputNamespace)
 	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"errors\"\n\t\"log/slog\"\n\t\"net\"\n\t\"net/http\"\n\t\"net/url\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"time\"\n\t\"unicode/utf8\"\n\n", pkg)
 	fmt.Fprintf(&b, "\t\"go.opentelemetry.io/otel/attribute\"\n\t\"go.opentelemetry.io/otel/metric\"\n\n")
-	fmt.Fprintf(&b, "\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n\t\"github.com/jsell-rh/stego/registry/runtime/authn\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
-	fmt.Fprintf(&b, "\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n\t\"github.com/jsell-rh/stego/registry/runtime/outbox\"\n\t\"github.com/jsell-rh/stego/registry/runtime/probe\"\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n\n")
+	fmt.Fprintf(&b, "\t\"github.com/910-software-solutions/stego/registry/runtime/audit\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/authn\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
+	fmt.Fprintf(&b, "\t\"github.com/910-software-solutions/stego/registry/runtime/idempotency\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/outbox\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/probe\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/query\"\n\n")
 	fmt.Fprintf(&b, "\tdata %q\n", dataImport)
 	if hasSlots {
 		fmt.Fprintf(&b, "\tslots %q\n", slotsImportPath)
@@ -1271,15 +1271,15 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 		w.f("\t\"github.com/google/uuid\"\n\n")
 	}
 	// Each handler binds the verified identity through command.BindIdentity.
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n")
 	if hasWrite {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/idempotency\"\n")
 	}
 	if c.ops[types.OpRead] || c.ops[types.OpList] {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/query\"\n")
 	}
 	if w.hasSecret() {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+		w.f("\t\"github.com/910-software-solutions/stego/registry/runtime/sealed\"\n")
 	}
 	w.f("\n\tdata %q\n", dataImport)
 	if len(c.slots) > 0 {
@@ -2847,7 +2847,7 @@ func renderChainLinks(ctx gen.Context, collections []*runtimeCollection) ([]byte
 	}
 	names := slices.Sorted(maps.Keys(links))
 	var b bytes.Buffer
-	b.WriteString("package data\n\nimport (\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n)\n\n")
+	b.WriteString("package data\n\nimport (\n\t\"github.com/910-software-solutions/stego/registry/runtime/command\"\n\t\"github.com/910-software-solutions/stego/registry/runtime/query\"\n)\n\n")
 	tenant := strconv.Quote(ctx.Tenancy.Key)
 	for _, typeName := range names {
 		entity, link := links[typeName][0], links[typeName][1]

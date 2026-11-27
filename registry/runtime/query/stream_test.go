@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 )
 
 func TestStream(t *testing.T) {

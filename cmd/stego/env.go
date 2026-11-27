@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jsell-rh/stego/internal/delivery"
+	"github.com/910-software-solutions/stego/internal/delivery"
 )
 
 // runEnv parses stego env check (ST-DLV-CLI02) and its flags, reads the platform requirements file and the

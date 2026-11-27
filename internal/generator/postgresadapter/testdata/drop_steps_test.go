@@ -19,8 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
-	runtimetenant "github.com/jsell-rh/stego/registry/runtime/tenant"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
+	runtimetenant "github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 func TestDropSteps(t *testing.T) {

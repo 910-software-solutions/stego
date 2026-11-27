@@ -15,7 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/delivery"
+	"github.com/910-software-solutions/stego/internal/delivery"
 )
 
 // These tests prove stego env check (ST-DLV-UC02) on the files of ST-DLV-TD02: the platform requirements that

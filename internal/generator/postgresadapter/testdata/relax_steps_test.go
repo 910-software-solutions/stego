@@ -14,10 +14,10 @@ import (
 	"example.com/tables-check/boardsrx"
 	"example.com/tables-check/boardsrxbase"
 	"example.com/tables-check/tenancy"
+	"github.com/910-software-solutions/stego/registry/runtime/manifest"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/jsell-rh/stego/registry/runtime/manifest"
 )
 
 func TestRelaxSteps(t *testing.T) {

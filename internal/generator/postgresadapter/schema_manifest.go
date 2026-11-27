@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 // The schema manifest of the runtime data path (ST-SUP-RC01-OC12): what the generated commands and queries need of
@@ -23,9 +23,9 @@ import (
 const (
 	schemaManifestFile     = "schema_manifest.go"
 	schemaManifestVariable = "SchemaManifest"
-	manifestImport         = "github.com/jsell-rh/stego/registry/runtime/manifest"
-	leaseImport            = "github.com/jsell-rh/stego/registry/runtime/lease"
-	runtimeTenantImport    = "github.com/jsell-rh/stego/registry/runtime/tenant"
+	manifestImport         = "github.com/910-software-solutions/stego/registry/runtime/manifest"
+	leaseImport            = "github.com/910-software-solutions/stego/registry/runtime/lease"
+	runtimeTenantImport    = "github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
 
 // StepSchema is the held schema of the sync functions of the schema steps (ST-SUP-RP15-LC02): the manifest names it,

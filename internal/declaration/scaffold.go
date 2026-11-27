@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // Scaffold makes the declaration of a new service of the named archetype (ST-DECL-CMD01). The caller gives the facts of

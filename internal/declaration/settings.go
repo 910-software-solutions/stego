@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ValidateSettings checks the settings of one component against the component's schema (ST-DECL-INV36): each

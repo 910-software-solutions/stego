@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // validateAuthorizationCoverage checks that authorization fails closed (ST-DECL-INV31): when the declaration binds

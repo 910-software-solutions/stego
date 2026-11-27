@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/compiler"
 )
 
 // allowedStandard is the fill allow list of the standard library (ST-EXT-UC01-R03). The print functions of fmt and

@@ -379,7 +379,7 @@ key set, and it loads the key set again in these cases:
   no load succeeded in 15 minutes, the pod refuses each token.
 
 The runtime version of your service is in the line
-`github.com/jsell-rh/stego/registry/runtime` of its `go.mod`.
+`github.com/910-software-solutions/stego/registry/runtime` of its `go.mod`.
 
 A browser service loads the key set of the issuer again when a token names an
 unknown key ID.

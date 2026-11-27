@@ -5,8 +5,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 func validateComponentNamespaces(components map[string]*registry.Component) []ValidationError {

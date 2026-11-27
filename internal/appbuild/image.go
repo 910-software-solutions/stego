@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/910-software-solutions/stego/internal/buildidentity"
 	"io"
 	"os"
 	"path/filepath"

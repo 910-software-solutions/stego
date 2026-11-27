@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // treeOf reads every file and folder under a folder, as projectFiles does, with the apply lock and with the

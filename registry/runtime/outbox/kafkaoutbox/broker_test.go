@@ -29,7 +29,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/noop"
 
-	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/910-software-solutions/stego/registry/runtime/outbox"
 )
 
 // The tests of this file run against kfake, franz-go's in-process Kafka broker, and against hand-made listeners, so

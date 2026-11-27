@@ -13,7 +13,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 var schemaGenerationPattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)

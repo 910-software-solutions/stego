@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/gen"
 )
 
 var apiResource = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}(/[a-z][a-z0-9-]{0,62})?$`)

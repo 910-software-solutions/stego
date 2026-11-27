@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // The relax step of the runtime data path (ST-SUP-RC01-OC45; decision on finding F12 of the schema-change

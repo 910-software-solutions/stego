@@ -13,10 +13,10 @@ import (
 
 	"golang.org/x/mod/modfile"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/auditlog"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/auditlog"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // compiledService writes a test registry with the archetype audit-arch, which has the runtime pin of the shipped

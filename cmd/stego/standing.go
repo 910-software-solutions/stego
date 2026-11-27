@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/lifecycle"
-	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/lifecycle"
+	"github.com/910-software-solutions/stego/internal/registry"
 )
 
 // pinReport is the standing of each pin of one run, as validate, plan and apply show it (ST-DIS-QRY03), with the

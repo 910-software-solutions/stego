@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jsell-rh/stego/internal/compiler"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/compiler"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // CatalogEntry is one fill of the project that implements a slot, with its

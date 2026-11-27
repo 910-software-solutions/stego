@@ -260,7 +260,7 @@ class SigningRefTests(unittest.TestCase):
 
             provenance = job("application-build.yml", "provenance")
             self.assertEqual(provenance["if"],
-                             "github.repository == 'jsell-rh/stego' && github.event_name == 'push' && github.ref == 'refs/heads/main'")
+                             "github.repository == '910-software-solutions/stego' && github.event_name == 'push' && github.ref == 'refs/heads/main'")
             sign = job("application-target.yml", "sign")
             self.assertEqual(sign["if"],
                              "github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')")

@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
-	"github.com/jsell-rh/stego/internal/gen"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 // Each running process of a release reports itself in the database, so that the contract step of a schema change

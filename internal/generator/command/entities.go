@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	authzschema "github.com/jsell-rh/stego/internal/declaration"
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
-	"github.com/jsell-rh/stego/internal/types"
+	authzschema "github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // ContractRuntimeImports gives the packages of the runtime library that the command slot contract out/commands
@@ -30,14 +30,14 @@ func ContractRuntimeImports(entities []types.Entity, commands []types.Command) [
 	}
 	var out []string
 	if WritesSensitive(entities, writes) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/audit")
 	}
 	if relations {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/authz")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/authz")
 	}
-	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	out = append(out, "github.com/910-software-solutions/stego/registry/runtime/command")
 	if WritesSecret(entities, writes) {
-		out = append(out, "github.com/jsell-rh/stego/registry/runtime/sealed")
+		out = append(out, "github.com/910-software-solutions/stego/registry/runtime/sealed")
 	}
 	return out
 }

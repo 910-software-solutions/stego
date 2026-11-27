@@ -19,9 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/generator/domainprobe"
-	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
+	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
 )
 
 // The service test of the generated query component: testdata/query_test.go runs in the module of the generated
@@ -134,7 +134,7 @@ func shopProject(t *testing.T) string {
 	}
 	write("go.sum", sums)
 	write("go.mod", []byte("module "+shopModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.203.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeFolder+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.203.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
 	goCommand(t, project, nil, "mod", "tidy")
 	goCommand(t, project, nil, "vet", "./...")
 	goCommand(t, project, nil, "build", "./...")
@@ -297,7 +297,7 @@ func checkSlotTypes(t *testing.T, project string) {
 			t.Errorf("%s takes %s second, want the decoded request %s", name, got, request)
 		}
 		handle, ok := params.At(2).Type().(*types.Pointer)
-		if !ok || !strings.HasPrefix(handle.Elem().String(), "github.com/jsell-rh/stego/registry/runtime/query.Handle[") {
+		if !ok || !strings.HasPrefix(handle.Elem().String(), "github.com/910-software-solutions/stego/registry/runtime/query.Handle[") {
 			t.Errorf("%s takes %s third, want *query.Handle", name, params.At(2).Type())
 		}
 		for i := 0; i < params.Len(); i++ {

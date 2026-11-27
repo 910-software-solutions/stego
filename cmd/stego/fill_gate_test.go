@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/910-software-solutions/stego/internal/fill"
 )
 
 // expectRefused runs plan, then apply, and expects each to exit non-zero with

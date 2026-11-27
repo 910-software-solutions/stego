@@ -695,11 +695,11 @@ func TestQualifiedSQL(t *testing.T) {
 			"paren":      "const a = `SELECT coalesce((oldest($1)), 0)`",
 			"call":       "const a = `CALL resolve($1)`",
 			"sql":        "",
-			"selector":   "import \"github.com/jsell-rh/stego/registry/runtime/names\"\n\nconst a = `SELECT 1 FROM ` + names.Leases",
+			"selector":   "import \"github.com/910-software-solutions/stego/registry/runtime/names\"\n\nconst a = `SELECT 1 FROM ` + names.Leases",
 			"variable":   "var t = \"leases\"\n\nvar a = `DELETE FROM ` + t",
 			"sprintf":    "import \"fmt\"\n\nfunc f() string { return fmt.Sprintf(\"SELECT 1 FROM %s WHERE %s\", \"leases\", \"x\") }",
 			"argument":   "import \"fmt\"\n\nfunc f(t string) string { return fmt.Sprintf(\"UPDATE %s SET x = 1\", t) }",
-			"owner":      "import \"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n\nconst a = `SELECT 1 FROM ` + idempotency.Keys",
+			"owner":      "import \"github.com/910-software-solutions/stego/registry/runtime/idempotency\"\n\nconst a = `SELECT 1 FROM ` + idempotency.Keys",
 			"replaceall": "import \"strings\"\n\nconst tmpl = \"SELECT 1 FROM {t} WHERE x\"\n\nfunc f() string { return strings.ReplaceAll(tmpl, \"{t}\", \"leases\") }",
 			"replacer":   "import \"strings\"\n\nvar r = strings.NewReplacer(\"{t}\", \"leases\")\n\nfunc f() string { return r.Replace(\"DELETE FROM {t}\") }",
 			"reassigned": "var t = \"public.leases\"\n\nfunc init() { t = \"x\" }\n\nfunc f() string { return \"SELECT 1 FROM \" + t }",
@@ -709,7 +709,7 @@ func TestQualifiedSQL(t *testing.T) {
 			"action":     "const q = \"SELECT 1 FROM {{.Table}} WHERE x\"",
 			"joined":     "import \"strings\"\n\nfunc f() string { return strings.Join([]string{\"SELECT 1 FROM\", \"leases\"}, \" \") }",
 			"builder":    "import \"strings\"\n\nfunc f(b *strings.Builder, t string) {\n\tb.WriteString(\"DELETE FROM \")\n\tb.WriteString(t)\n}",
-			"chain":      "import \"github.com/jsell-rh/stego/registry/runtime/alias\"\n\nconst a = \"SELECT 1 FROM \" + alias.Leases",
+			"chain":      "import \"github.com/910-software-solutions/stego/registry/runtime/alias\"\n\nconst a = \"SELECT 1 FROM \" + alias.Leases",
 			"indexed":    "import \"fmt\"\n\nfunc f() string { return fmt.Sprintf(\"SELECT %[2]s FROM %[1]s\", \"leases\", \"x\") }",
 			"fprintf":    "import (\n\t\"fmt\"\n\t\"io\"\n)\n\nfunc f(w io.Writer) { fmt.Fprintf(w, \"SELECT 1 FROM %s\", \"leases\") }",
 			// A common table expression with the name of a table: its own body, a query around it and a later
@@ -743,7 +743,7 @@ func TestQualifiedSQL(t *testing.T) {
 			"qualified": "import \"fmt\"\n\nfunc f(t string) string { return fmt.Sprintf(\"UPDATE public.%s SET x = 1\", t) }\n\nconst a = `SELECT public.leases.x FROM public.leases, stego_outbox.messages m WHERE stego_outbox.claim($1) AND 'public.leases'::regclass IS NOT NULL`\n// FROM leases in a comment is no statement\n",
 		}
 		files := map[string][]byte{"examples/e/out/internal/storage/schema_manifest.go": []byte("package storage\n\nvar m = `{Schema: \"public\", Name: \"orders\",`\n"),
-			"registry/runtime/go.mod":                   []byte("module github.com/jsell-rh/stego/registry/runtime\n"),
+			"registry/runtime/go.mod":                   []byte("module github.com/910-software-solutions/stego/registry/runtime\n"),
 			"registry/runtime/names/names.go":           []byte("package names\n\nconst Leases = \"leases\"\n"),
 			"registry/runtime/idempotency/migration.go": []byte("package idempotency\n\nconst Keys = \"idempotency_keys\"\n\nconst ddl = `ALTER TABLE idempotency_keys ENABLE ROW LEVEL SECURITY`\n"),
 			"internal/generator/g/query.go.tmpl":        []byte("const q = `SELECT 1 FROM leases WHERE {{.Key}}`\n"),
@@ -758,7 +758,7 @@ func TestQualifiedSQL(t *testing.T) {
 			// The comments of a .sql file are no statement.
 			"internal/generator/g/clean.sql.tmpl": []byte("-- the rows from leases\n/* and into leases */\nSELECT 1 FROM public.leases WHERE {{.Key}};\n" +
 				"DO $do$ BEGIN -- reads from leases\n\tPERFORM 1 FROM public.leases; END $do$;\nSELECT '--', \"a--b\" FROM public.leases;\n"),
-			"registry/runtime/alias/alias.go": []byte("package alias\n\nimport \"github.com/jsell-rh/stego/registry/runtime/names\"\n\nconst Leases = names.Leases\n"),
+			"registry/runtime/alias/alias.go": []byte("package alias\n\nimport \"github.com/910-software-solutions/stego/registry/runtime/names\"\n\nconst Leases = names.Leases\n"),
 			// A template whose Go comments and Go code, and its text outside a literal, name a table or a function.
 			"internal/generator/g/clean.go.tmpl": []byte("// SELECT 1 FROM leases\nfunc f() { _ = move(1); _ = x(claim(2)) }\n{{if .X}}FROM leases{{end}}\nvar s = \"LOCK TABLE \" + name\n"),
 		}

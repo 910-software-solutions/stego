@@ -34,13 +34,13 @@ require (
 )
 
 require (
+	github.com/910-software-solutions/stego/registry/runtime v0.203.0
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/jsell-rh/stego/registry/runtime v0.203.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.23.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0

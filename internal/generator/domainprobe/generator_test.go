@@ -17,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jsell-rh/stego/internal/gen"
-	"github.com/jsell-rh/stego/internal/types"
+	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/types"
 )
 
 // reservationContext is the declaration of the RC34 test records, as the compiler gives it to the generator: the
@@ -72,7 +72,7 @@ func generateService(t *testing.T, ctx gen.Context) *service {
 		t.Fatal(err)
 	}
 	s := &service{t: t, dir: t.TempDir()}
-	s.write("go.mod", "module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.0.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n")
+	s.write("go.mod", "module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.0.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n")
 	sum, err := os.ReadFile(filepath.Join(runtimeDir, "go.sum"))
 	if err != nil {
 		t.Fatal(err)
@@ -253,9 +253,9 @@ func TestProbeCallsOnlyTheRuntime(t *testing.T) {
 					}
 					if s := info.Selections[sel]; s != nil {
 						m := s.Obj()
-						if m.Pkg() != nil && m.Pkg().Path() == "github.com/jsell-rh/stego/registry/runtime/probe" && m.Name() == "Emit" {
+						if m.Pkg() != nil && m.Pkg().Path() == "github.com/910-software-solutions/stego/registry/runtime/probe" && m.Name() == "Emit" {
 							emits++
-						} else if m.Pkg() == nil || m.Pkg().Path() != "github.com/jsell-rh/stego/registry/runtime/command" {
+						} else if m.Pkg() == nil || m.Pkg().Path() != "github.com/910-software-solutions/stego/registry/runtime/command" {
 							t.Errorf("%s calls %s", fn.Name.Name, m.Name())
 						}
 					}
@@ -308,7 +308,7 @@ import (
 	"testing"
 
 	"example.com/reservations/probes"
-	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/910-software-solutions/stego/registry/runtime/probe"
 )
 
 func TestEnum(t *testing.T) {
