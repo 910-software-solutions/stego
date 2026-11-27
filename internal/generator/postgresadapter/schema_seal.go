@@ -614,8 +614,10 @@ func sealColumns(ctx gen.Context) (string, int, error) {
 		}
 		table := "public." + sqlIdentifier(tableName(change.Entity))
 		tenant, id := sqlIdentifier(key), sqlIdentifier(keyColumn)
-		fmt.Fprintf(&b, "\t{Change: %q, Entity: %q, Table: %q, Clear: %q, Sealed: %q,\n", change.ID, change.Entity, tableName(change.Entity), clear, sealed)
-		fmt.Fprintf(&b, "\t\tSelect: %q,\n", fmt.Sprintf("SELECT %s::text, %s::text, %s FROM %s WHERE %s = $1 AND %s > $2::uuid ORDER BY %s LIMIT $3 FOR UPDATE",
+		// The first page takes NULL, so it starts before every ID, also the zero UUID (FirstNull; confirmation
+		// review of PR #20, F2).
+		fmt.Fprintf(&b, "\t{Change: %q, Entity: %q, Table: %q, Clear: %q, Sealed: %q, FirstNull: true,\n", change.ID, change.Entity, tableName(change.Entity), clear, sealed)
+		fmt.Fprintf(&b, "\t\tSelect: %q,\n", fmt.Sprintf("SELECT %s::text, %s::text, %s FROM %s WHERE %s = $1 AND ($2::uuid IS NULL OR %s > $2::uuid) ORDER BY %s LIMIT $3 FOR UPDATE",
 			id, sqlIdentifier(clear), sqlIdentifier(sealed), table, tenant, id, id))
 		fmt.Fprintf(&b, "\t\tUpdate: %q},\n", fmt.Sprintf("UPDATE %s SET %s = $3 WHERE %s = $1 AND %s = $2::uuid", table, sqlIdentifier(sealed), tenant, id))
 		count++
