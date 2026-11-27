@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 //go:embed testdata/http_diagnostics_test.go
@@ -66,7 +67,7 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "./...")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated HTTP lifecycle: %v\n%s", err, output)
 	}
@@ -75,7 +76,7 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 		// this record's outcome is theirs.
 		command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "-count=1", "-run", "^(TestFailureRecordDoesNotFormatCause|TestFailureOutputHasDeadline|TestFailureOutputDoesNotRetry|TestFailureTaskNamesAreData)$", "-v", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil || !strings.Contains(string(output), "--- PASS: TestFailureRecordDoesNotFormatCause") {
 			t.Fatalf("generated failure record: %v\n%s", err, output)
@@ -84,7 +85,7 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 	t.Run("ST-SUP-RC02-OC57-T02 The failure record names a fault class and object of the strict form and drops any other", func(t *testing.T) {
 		command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "-count=1", "-run", "^TestFailureRecordFaultClass$", "-v", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil || !strings.Contains(string(output), "--- PASS: TestFailureRecordFaultClass/ST-SUP-RC02-OC57-T02") {
 			t.Fatalf("generated failure record: %v\n%s", err, output)
@@ -93,7 +94,7 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 	t.Run("ST-SUP-RC02-OC57-T03 The failure record names the remedy of a classified fault, a fixed text of printable ASCII, and drops any other", func(t *testing.T) {
 		command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "-count=1", "-run", "^TestFailureRecordRemedy$", "-v", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil || !strings.Contains(string(output), "--- PASS: TestFailureRecordRemedy/ST-SUP-RC02-OC57-T03") {
 			t.Fatalf("generated failure record: %v\n%s", err, output)
@@ -103,7 +104,7 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 		for _, target := range []struct{ os, arch string }{{"windows", "amd64"}, {"darwin", "arm64"}} {
 			command := exec.Command("go", "test", "-c", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "http-test"))
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
+			command.Env = localtest.GoEnv("CGO_ENABLED=0", "GOOS="+target.os, "GOARCH="+target.arch)
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("generated HTTP cross compilation for %s/%s: %v\n%s", target.os, target.arch, err, output)
 			}
@@ -176,7 +177,7 @@ func TestListenFailure(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-race", "-mod=readonly", "./...")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated startup test: %v\n%s", err, output)
 	}

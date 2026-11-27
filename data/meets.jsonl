@@ -70,4 +70,7 @@
 {"source_id":"ST-SUP-TOOL14","target_id":"ST-STD-LOCAL-R05"}
 {"source_id":"ST-SUP-TOOL15","target_id":"ST-STD-LOCAL-R04"}
 {"source_id":"ST-SUP-TOOL15","target_id":"ST-STD-LOCAL-R05"}
+{"source_id":"ST-SUP-TOOL16","target_id":"ST-STD-LOCAL-R03"}
+{"source_id":"ST-SUP-TOOL16","target_id":"ST-STD-LOCAL-R04"}
+{"source_id":"ST-SUP-TOOL16","target_id":"ST-STD-LOCAL-R05"}
 {"source_id":"ST-VO61-VT","target_id":"ST-STD-TXN-R12"}

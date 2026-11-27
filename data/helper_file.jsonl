@@ -73,3 +73,5 @@
 {"record_id":"ST-SUP-RC33-G01","file":"internal/generator/query/testdata/fills/list-charges/fill.go"}
 {"record_id":"ST-SUP-RC33-G01","file":"internal/generator/query/testdata/fills/list-orders/fill.go"}
 {"record_id":"ST-SUP-RC33-G01","file":"internal/generator/query/testdata/fills/watch-orders/fill.go"}
+{"record_id":"ST-SUP-TOOL16","file":"internal/localtest/testdata/modules-other/imports.go"}
+{"record_id":"ST-SUP-TOOL16","file":"internal/localtest/testdata/modules/imports.go"}

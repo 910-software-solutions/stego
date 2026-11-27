@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestDatabaseOpenerValidation(t *testing.T) {
@@ -143,9 +144,12 @@ func(*Reader)Run(ctx context.Context)error{<-ctx.Done();return ctx.Err()}
 	for _, args := range [][]string{{"mod", "tidy"}, {"build", "-race", "-o", binary, "."}} {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("pool assembly: %v %s", err, output)
+		}
+		if args[0] == "mod" {
+			localtest.CheckSums(t, project)
 		}
 	}
 	for _, source := range []string{"environment", "file"} {
@@ -271,9 +275,12 @@ func(connection)Ping(context.Context)error{return refused{}}
 		for _, args := range [][]string{{"mod", "tidy"}, {"build", "-o", binary, "."}} {
 			command := exec.Command("go", args...)
 			command.Dir = project
-			command.Env = append(os.Environ(), "GOWORK=off")
+			command.Env = localtest.GoEnv()
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("ping assembly: %v %s", err, output)
+			}
+			if args[0] == "mod" {
+				localtest.CheckSums(t, project)
 			}
 		}
 		command := exec.Command(binary)

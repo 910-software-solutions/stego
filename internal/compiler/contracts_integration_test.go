@@ -15,6 +15,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
 	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestGeneratedHealth(t *testing.T) {
@@ -52,7 +53,7 @@ func NewHandler()http.Handler{return http.HandlerFunc(func(w http.ResponseWriter
 	for _, args := range [][]string{{"vet", "./..."}, {"test", "-race", "-count=1", "-timeout=30s", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("generated health: %v\n%s", err, output)
 		}
@@ -88,14 +89,14 @@ func testGeneratedApplicationEndpoint(t *testing.T, pattern string) {
 	}
 	command := exec.Command("go", args...)
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated HTTP application: %v\n%s", err, output)
 	}
 	if os.Getenv("STEGO_BENCH_PROJECTION") == "1" {
 		command := exec.Command("go", "test", "-run=^$", "-bench=^BenchmarkProjectionPage$", "-benchtime=200ms", "-count=3", "./sample")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("projection benchmark: %v\n%s", err, output)
@@ -167,10 +168,11 @@ func makeHTTPApplication(t *testing.T, project string) {
 	}
 	command := exec.Command("go", "mod", "tidy")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated HTTP application: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestApplicationRequiresVerifierProducer(t *testing.T) {
@@ -239,7 +241,7 @@ func testGeneratedGRPCApplication(t *testing.T, watch bool, selected ...string) 
 	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated gRPC application: %v\n%s", err, output)
 	}
@@ -316,11 +318,12 @@ func makeGRPCApplication(t *testing.T, project string, watch bool) {
 	for _, args := range [][]string{{"mod", "tidy", "-go=" + new(grpcapplication.Generator).MinimumGoVersion()}, {"vet", "-mod=readonly", "./..."}} {
 		cmd := exec.Command("go", args...)
 		cmd.Dir = project
-		cmd.Env = append(os.Environ(), "GOWORK=off")
+		cmd.Env = localtest.GoEnv()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("generated gRPC application: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestGeneratedGRPCProcesses(t *testing.T) {
@@ -348,7 +351,7 @@ func testGeneratedGRPCProcesses(t *testing.T, selected string) {
 	for _, args := range commands {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off", processBinaryVariable+"="+filepath.Join(project, "_bin", "records"))
+		command.Env = localtest.GoEnv(processBinaryVariable + "=" + filepath.Join(project, "_bin", "records"))
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("generated RPC process: %v\n%s", err, output)
@@ -417,16 +420,17 @@ func makeGRPCProcesses(t *testing.T, project string) {
 	}
 	command := exec.Command("go", "mod", "tidy")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("generated RPC process: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	// The process executable is built once, with the race detector, outside the time limit of the inner tests:
 	// they run it through processBinaryVariable, so their limit bounds the scenarios and not a build. The folder
 	// _bin is one that go vet and go test leave out.
 	build := exec.Command("go", "build", "-race", "-mod=readonly", "-o", filepath.Join(project, "_bin", "records"), "./out/grpcapi/processes/records")
 	build.Dir = project
-	build.Env = append(os.Environ(), "GOWORK=off")
+	build.Env = localtest.GoEnv()
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build the generated RPC process: %v\n%s", err, output)
 	}

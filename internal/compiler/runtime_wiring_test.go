@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
 
@@ -39,11 +40,11 @@ func wiringPinnedGo() string {
 	return filepath.Join(goruntime.GOROOT(), "bin", "go")
 }
 
-// wiringGoEnv is the environment of a go command and of the stego binary: no workspace, the pinned Go first on the
-// path, and no toolchain switch.
-func wiringGoEnv(extra ...string) []string {
-	return append(append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local",
-		"PATH="+filepath.Dir(wiringPinnedGo())+string(os.PathListSeparator)+os.Getenv("PATH")), extra...)
+// wiringPath is the PATH entry of a go command and of the stego binary: the pinned Go first. The tests give it to
+// localtest.GoEnv, which adds no workspace, no toolchain switch and no module proxy: the modules come from the module
+// cache that localtest fills once (ST-STD-LOCAL-R03).
+func wiringPath() string {
+	return "PATH=" + filepath.Dir(wiringPinnedGo()) + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 // stegoFixture is the stego binary of this commit, which the tests share.
@@ -55,7 +56,7 @@ func stegoBinary(t *testing.T) string {
 	return filepath.Join(stegoFixture.Dir(t, func(t *testing.T, dir string) {
 		cmd := exec.Command(wiringPinnedGo(), "build", "-o", filepath.Join(dir, "stego"), "./cmd/stego")
 		cmd.Dir = filepath.Join("..", "..")
-		cmd.Env = wiringGoEnv()
+		cmd.Env = localtest.GoEnv(wiringPath())
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("building stego: %v\n%s", err, output)
 		}
@@ -121,7 +122,7 @@ func TestTLSCheckLock(t *testing.T) {
 			held[stage] = true
 		}
 		t.Cleanup(func() { tlsCheckStage = func(string) {} })
-		output, err := runTLSCheck(dir, "./out/check", wiringGoEnv(), "-test.count=1", "-test.v", "-test.run", "^TestCheck$")
+		output, err := runTLSCheck(dir, "./out/check", localtest.GoEnv(wiringPath()), "-test.count=1", "-test.v", "-test.run", "^TestCheck$")
 		if err != nil || !strings.Contains(string(output), "--- PASS: TestCheck ") {
 			t.Fatalf("the check did not run and pass in its package folder: %v\n%s", err, output)
 		}
@@ -263,7 +264,7 @@ func (p *wiringProject) stegoExec(extra []string, args ...string) (string, error
 	p.t.Helper()
 	cmd := exec.Command(p.binary, args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule), extra...)
+	cmd.Env = append(localtest.GoEnv(wiringPath(), "STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule), extra...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -357,9 +358,13 @@ func (p *wiringProject) goCommand(args ...string) {
 func (p *wiringProject) goRun(args ...string) error {
 	cmd := exec.Command(wiringPinnedGo(), args...)
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("GOFLAGS=-mod=mod")
+	cmd.Env = localtest.GoEnv(wiringPath(), "GOFLAGS=-mod=mod")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	// A tidy takes only modules that a checked go.sum of the repository names (localtest.SumsChecked).
+	if len(args) >= 2 && args[0] == "mod" && args[1] == "tidy" {
+		return localtest.SumsChecked(p.dir)
 	}
 	return nil
 }
@@ -447,7 +452,7 @@ func (p *wiringProject) applyWithAfterSlot() {
 	signed := func(args ...string) string {
 		cmd := exec.Command(p.binary, args...)
 		cmd.Dir = p.dir
-		cmd.Env = wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule, "GOFLAGS=-mod=mod -modcacherw",
+		cmd.Env = localtest.GoEnv(wiringPath(), "STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule, "GOFLAGS=-mod=mod -modcacherw",
 			"HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
 		output, _ := cmd.CombinedOutput()
 		return string(output)
@@ -594,7 +599,7 @@ func TestRuntimeDataPath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cmd.Env = wiringGoEnv("STEGO_REGISTRY=" + registryDir)
+			cmd.Env = localtest.GoEnv(wiringPath(), "STEGO_REGISTRY="+registryDir)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("stego plan of %s: %v\n%s", example, err, output)
@@ -705,7 +710,7 @@ const (
 
 // TestRuntimeWiring generates the test service with stego apply, builds it with the pinned Go, and runs the check of
 // testdata/runtime_wiring/check in its module once: the check runs the migration job and the service binary against
-// the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN, a local SpiceDB container and the local Kafka broker of
+// the local PostgreSQL server of localtest (STEGO_TEST_POSTGRES_DSN, else a container that the test binary starts), a local SpiceDB container and the local Kafka broker of
 // kafkatest, and sends collection calls, one command and one query over HTTP. A missing server fails the test: a
 // missing result is not a pass.
 func TestRuntimeWiring(t *testing.T) {
@@ -713,9 +718,7 @@ func TestRuntimeWiring(t *testing.T) {
 		t.Skip("builds and runs a generated service")
 	}
 	t.Parallel()
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
-	}
+	postgres := "STEGO_TEST_POSTGRES_DSN=" + localtest.PostgresDSN(t)
 	stego := stegoBinary(t)
 	// The next release adds the entity Tag with no schema step, and declares its three modes out of order, which the
 	// check of ST-GEN-INV26 starts it with. Its apply and build run beside the apply and build of the first release:
@@ -748,7 +751,7 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run("ST-SUP-RC18-OC31-T03 The generated service links no test support of the runtime library", func(t *testing.T) {
 		cmd := exec.Command(wiringPinnedGo(), "list", "-deps", "./out")
 		cmd.Dir = p.dir
-		cmd.Env = wiringGoEnv("GOFLAGS=-mod=mod")
+		cmd.Env = localtest.GoEnv(wiringPath(), "GOFLAGS=-mod=mod")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go list -deps ./out: %v\n%s", err, output)
@@ -798,8 +801,9 @@ func TestRuntimeWiring(t *testing.T) {
 		t.Fatalf("the next release: %v", err)
 	}
 	endpoint, key := startWiringSpiceDB(t)
-	output, runErr := runTLSCheck(p.dir, "./out/wiringcheck", wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key,
-		"STEGO_WIRING_BINARY="+binary, "STEGO_WIRING_NEXT_BINARY="+nextBinary), "-test.count=1", "-test.timeout=480s", "-test.v", "-test.run", "^TestWiring$")
+	output, runErr := runTLSCheck(p.dir, "./out/wiringcheck", localtest.GoEnv(wiringPath(), postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
+		"STEGO_WIRING_NEXT_BINARY="+nextBinary),
+		"-test.count=1", "-test.timeout=480s", "-test.v", "-test.run", "^TestWiring$")
 	passed := func(t *testing.T, id string) {
 		t.Helper()
 		name := strings.ReplaceAll(id, " ", "_")
