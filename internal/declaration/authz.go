@@ -342,7 +342,7 @@ func (s *AuthzSchema) grantsBut(subjectType, typeName, relation string) bool {
 // is the project folder; a schema path that leaves it is refused.
 func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []ValidationError {
 	if service.Authorization == nil {
-		return authorizationUnbound(service)
+		return append(authorizationUnbound(service), CreatesWithChildrenFaults(service, nil)...)
 	}
 	faults := validateAuthorizationSetting(service.Authorization)
 	faults = append(faults, validateAuthorizationTenancy(service)...)
@@ -355,8 +355,10 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 		return append(faults, *fault)
 	}
 	if schema == nil {
+		faults = append(faults, CreatesWithChildrenFaults(service, nil)...)
 		return append(faults, operationsAuthorization(service, nil)...)
 	}
+	faults = append(faults, CreatesWithChildrenFaults(service, schema)...)
 	faults = append(faults, operationsAuthorization(service, schema)...)
 	faults = append(faults, validateResetSchema(service, schema)...)
 	faults = append(faults, validateSchemaNames(service, schema)...)

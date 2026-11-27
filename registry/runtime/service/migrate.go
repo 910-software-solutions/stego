@@ -75,6 +75,7 @@ const (
 	StepReleaseReports      = "release_reports"
 	StepSchemaAgain         = "authorization_schema_again"
 	StepSchemaServed        = "authorization_schema_served"
+	StepSchemaReadBack      = "authorization_schema_read_back"
 	StepManifestBefore      = "manifest_before_backfill"
 	StepBackfill            = "backfill"
 	StepManifest            = "manifest"
@@ -117,6 +118,12 @@ type Migration struct {
 	// until SpiceDB serves each of them (authz.AwaitSchema), so the release does not start while a read of a new
 	// resource type fails (StepSchemaServed; walkthrough 3, G4; ST-SUP-Q140).
 	Definitions []string
+	// Schema is the schema text that WriteSchema sends, the one text compiled into the release. After
+	// StepSchemaServed the job reads the schema back with ReadSchema and fails when its canonical digest is not the
+	// canonical digest of Schema, so a schema that another writer wrote between the two is never taken as the
+	// release's own (StepSchemaReadBack, ST-SUP-RP10-LC59). The generator gives it for each service; empty skips the
+	// read-back, for the job of an earlier generator.
+	Schema string
 	// Parts are the declared parts of the service, which service.New takes: the job checks the database against the
 	// same joined schema manifest at its end (StepManifest), and refuses a database that does not satisfy it, as the
 	// start of a pod only alerts (decision on finding F10 of the schema-change research, owner, 2026-11-13, and the
@@ -196,6 +203,7 @@ const (
 	MigrateSpiceDBFault       = "spicedb.connection"
 	MigrateSchemaRefusedFault = "spicedb.schema_refused"
 	MigrateSchemaServedFault  = "spicedb.schema_not_served"
+	MigrateSchemaReadFault    = "spicedb.schema_read_back"
 )
 
 // The fixed remedies of the faults of the steps of the migration job.
@@ -204,6 +212,7 @@ const (
 	migrateSpiceDBRemedy  = "the migration job cannot reach SpiceDB: check that SpiceDB runs, that STEGO_SPICEDB_ENDPOINT names it and that STEGO_SPICEDB_KEY_FILE holds its preshared key; then run the migration Job again"
 	migrateRefusedRemedy  = "SpiceDB refuses the authorization schema of the release: with the cause invalid_argument.relationships_exist, the schema removes a definition or a relation that still has relationships; delete them with zed relationship delete, or keep them in authz/schema.zed; then run the migration Job again"
 	migrateServedRemedy   = "SpiceDB does not serve each definition of the schema of the release within the time limit of the job: check the SpiceDB pods and their datastore, then run the migration Job again"
+	migrateReadBackRemedy = "the schema that SpiceDB serves after the write is not the schema of the release: check that no other job or operator writes the schema of this SpiceDB at the same time, then run the migration Job again"
 )
 
 // faultOf gives the fault class, the object and the remedy of the step, fixed texts with no text of the cause: those
@@ -234,6 +243,8 @@ func (e *StepError) faultOf() (class, object, remedy string) {
 		return MigrateSpiceDBFault, "spicedb", migrateSpiceDBRemedy
 	case StepSchemaServed:
 		return MigrateSchemaServedFault, "spicedb", migrateServedRemedy
+	case StepSchemaReadBack:
+		return MigrateSchemaReadFault, "spicedb", migrateReadBackRemedy
 	}
 	return "", "", ""
 }
@@ -269,6 +280,31 @@ var stepped func(step string, conn *sql.Conn)
 
 // awaitSchema waits until SpiceDB serves each definition of the written schema; a test of the package replaces it.
 var awaitSchema = authz.AwaitSchema
+
+// readBack reads the schema that SpiceDB serves and refuses one whose canonical digest is not the canonical digest of
+// written, the schema text that the job wrote (ST-SUP-RP10-LC59).
+func readBack(ctx context.Context, conn grpc.ClientConnInterface, written string) error {
+	want, err := authz.SchemaDigest(written)
+	if err != nil {
+		return errors.New("the schema of the release does not compile")
+	}
+	if beforeReadBack != nil {
+		beforeReadBack(ctx, conn)
+	}
+	served, err := authz.ReadSchemaText(ctx, conn)
+	if err != nil {
+		return err
+	}
+	got, err := authz.SchemaDigest(served)
+	if err != nil || got != want {
+		return errors.New("the schema that SpiceDB serves is not the schema that the job wrote")
+	}
+	return nil
+}
+
+// beforeReadBack, when a test of the package sets it, runs between the schema write and the read-back, on the job's
+// SpiceDB connection.
+var beforeReadBack func(ctx context.Context, conn grpc.ClientConnInterface)
 
 // retried, when a test of the package sets it, runs each time a migration text waited too long for a lock and is
 // run again, with the step's name.
@@ -537,6 +573,14 @@ func migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	// closed with authz.ErrSchemaNotServed, so the release does not start (ST-SUP-Q140).
 	if err := step(StepSchemaServed, func() error { return awaitSchema(ctx, spice, m.Definitions, since) }); err != nil {
 		return err
+	}
+	// The job reads the schema back, so a schema that another writer wrote after its write is never taken as the
+	// release's own, and a pod that proves a reference by the schema of its release does so only while SpiceDB
+	// serves it (ST-SUP-RP10-LC59). The error names the step and holds no schema text.
+	if m.Schema != "" {
+		if err := step(StepSchemaReadBack, func() error { return readBack(ctx, spice, m.Schema) }); err != nil {
+			return err
+		}
 	}
 	// Before the backfills, which write the rows of the entity tables as the owner role, the job refuses a database
 	// that does not satisfy the joined schema manifest of the service, so no trigger, rule or constraint that the

@@ -50,3 +50,22 @@ func Set(cfg any, clocks Clocks) bool {
 	}
 	return set(cfg, clocks)
 }
+
+// setGate is the setter of the clock of a schema gate that the authz package registers when it starts.
+var setGate func(gate any, now func() time.Time) bool
+
+// RegisterGate sets the setter of the clock of a schema gate. Only the authz package calls it, once, from its init.
+func RegisterGate(setter func(gate any, now func() time.Time) bool) {
+	if setGate == nil {
+		setGate = setter
+	}
+}
+
+// SetGate gives gate, a *authz.SchemaGate, the clock now of its digest bound (ST-SUP-RP10-LC59), and reports false
+// for any other value.
+func SetGate(gate any, now func() time.Time) bool {
+	if setGate == nil || gate == nil {
+		return false
+	}
+	return setGate(gate, now)
+}

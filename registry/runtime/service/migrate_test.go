@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 	"github.com/910-software-solutions/stego/registry/runtime/audit"
 	"github.com/910-software-solutions/stego/registry/runtime/authz"
 	"github.com/910-software-solutions/stego/registry/runtime/command"
+	"github.com/910-software-solutions/stego/registry/runtime/internal/authzclock"
 	"github.com/910-software-solutions/stego/registry/runtime/internal/pgtest"
 	"github.com/910-software-solutions/stego/registry/runtime/lease"
 	"github.com/910-software-solutions/stego/registry/runtime/manifest"
@@ -2293,6 +2295,12 @@ var spiceServer struct {
 // the test binary, and gives its endpoint and preshared key.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
+	// STEGO_TEST_SPICEDB names a running local SpiceDB server in place of the container, with its key in
+	// STEGO_TEST_SPICEDB_KEY, as the tests of the generators take it (ST-STD-LOCAL).
+	if endpoint := os.Getenv("STEGO_TEST_SPICEDB"); endpoint != "" {
+		spiceServer.endpoint, spiceServer.key = endpoint, os.Getenv("STEGO_TEST_SPICEDB_KEY")
+		return spiceServer.endpoint, spiceServer.key
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		if os.Getenv(pgtest.NoContainersVariable) == "1" {
 			t.Skip("docker is not on the PATH, and STEGO_TEST_NO_CONTAINERS=1: this test needs a local SpiceDB container")
@@ -3343,6 +3351,143 @@ func TestMigrateLines(t *testing.T) {
 		t.Setenv(otel.LogLevelSetting, "verbose-private")
 		if err := Migrate(context.Background(), settings, f.migration(nil)); Stage(err) != "migrate."+StepSettings || strings.Contains(err.Error(), "verbose-private") {
 			t.Fatalf("a bad STEGO_LOG_LEVEL gave %v, want the stage migrate.%s and no echo of the value", err, StepSettings)
+		}
+	})
+}
+
+// The schemas of the read-back test: r1, and r2, which changes only the .zed schema with the same Release name.
+const (
+	catalogR1 = spiceSchema + `
+definition org {
+	relation owner: user
+	permission catalog_edit = owner
+}
+definition cost_item {
+	relation org: org
+	permission edit = org->catalog_edit
+}`
+	catalogR2 = spiceSchema + `
+definition org {
+	relation owner: user
+	relation frozen: user
+	permission catalog_edit = owner
+}
+definition cost_item {
+	relation org: org
+	permission edit = org->catalog_edit - org->frozen
+}`
+)
+
+// writing gives a schema writer of the job that writes text.
+func writing(text string) func(ctx context.Context, conn grpc.ClientConnInterface) error {
+	return func(ctx context.Context, conn grpc.ClientConnInterface) error {
+		_, err := v1.NewSchemaServiceClient(conn).WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: text})
+		return err
+	}
+}
+
+// reordered gives text with its definitions in the opposite order and a comment before each.
+func reordered(text string) string {
+	parts := strings.Split(text, "\ndefinition ")
+	out := []string{}
+	for i := len(parts) - 1; i >= 1; i-- {
+		out = append(out, "// written again\ndefinition "+parts[i])
+	}
+	return strings.Join(append(out, parts[0]), "\n")
+}
+
+// emptySpiceDB deletes each relationship of each served definition, so that a schema write that removes a relation is
+// not refused for relationships that another test wrote on the same local SpiceDB server (STEGO_TEST_SPICEDB).
+func emptySpiceDB(t *testing.T, spice SpiceDB) {
+	t.Helper()
+	conn, err := DialSpiceDB(spice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx := context.Background()
+	read, err := v1.NewSchemaServiceClient(conn).ReadSchema(ctx, &v1.ReadSchemaRequest{})
+	if status.Code(err) == codes.NotFound {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range regexp.MustCompile(`(?m)^definition\s+(\S+)`).FindAllStringSubmatch(read.GetSchemaText(), -1) {
+		if _, err := v1.NewPermissionsServiceClient(conn).DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
+			RelationshipFilter: &v1.RelationshipFilter{ResourceType: m[1]},
+		}); err != nil {
+			t.Fatalf("delete the relationships of %s: %v", m[1], err)
+		}
+	}
+}
+
+func TestMigrateSchemaReadBack(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC59-T13 A pod uses a proof only while the served schema is its own release's: an older pod beside a newer schema, a failed read and a mismatched read-back fail closed, and order and comments do not change the digest", func(t *testing.T) {
+		ctx := context.Background()
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		emptySpiceDB(t, settings.SpiceDB)
+		// The later tests of the package write schemas with no cost_item on the same server.
+		t.Cleanup(func() { emptySpiceDB(t, settings.SpiceDB) })
+		job := func(text, schema string) Migration {
+			m := f.migration(nil)
+			m.WriteSchema, m.Schema = writing(text), schema
+			return m
+		}
+		if err := Migrate(ctx, settings, job(catalogR1, catalogR1)); err != nil {
+			t.Fatalf("the job of r1 gave %v, want its read-back to pass", err)
+		}
+		conn, err := DialSpiceDB(settings.SpiceDB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		provider, err := authz.NewSpiceDB(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The pod of r1 computes its digest at start from the schema of its release.
+		pod, err := authz.NewSchemaGate(catalogR1, provider, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Unix(1793966400, 0)
+		authzclock.SetGate(pod, func() time.Time { return now })
+		if !pod.Holds(ctx) {
+			t.Fatal("the pod of r1 does not hold beside the schema of r1")
+		}
+		// r2 changes only the .zed schema, with the same Release name: within the bound the pod uses its reading,
+		// after it the pod decides at the provider.
+		if err := Migrate(ctx, settings, job(catalogR2, catalogR2)); err != nil {
+			t.Fatalf("the job of r2 gave %v", err)
+		}
+		now = now.Add(time.Second)
+		if !pod.Holds(ctx) {
+			t.Fatal("the pod of r1 does not use its reading within the bound")
+		}
+		now = now.Add(authz.SchemaDigestBound)
+		if pod.Holds(ctx) {
+			t.Fatal("the pod of r1 holds beside the schema of r2 after the bound")
+		}
+		// Another writer writes a schema between the write of the job and its read-back: the job fails at the step of
+		// the read-back, with no schema text.
+		beforeReadBack = func(ctx context.Context, conn grpc.ClientConnInterface) { _ = writing(catalogR2)(ctx, conn) }
+		err = Migrate(ctx, settings, job(catalogR1, catalogR1))
+		beforeReadBack = nil
+		var step *StepError
+		if !errors.As(err, &step) || step.Step != StepSchemaReadBack || strings.Contains(err.Error(), "definition") ||
+			step.FaultClass() != MigrateSchemaReadFault {
+			t.Fatalf("the job with a foreign write gave %v, want a fault of the step %s with no schema text", err, StepSchemaReadBack)
+		}
+		// The schema of r1 written again in another order and with comments has the digest of r1.
+		if err := Migrate(ctx, settings, job(reordered(catalogR1), reordered(catalogR1))); err != nil {
+			t.Fatalf("the job of the reordered r1 gave %v", err)
+		}
+		now = now.Add(authz.SchemaDigestBound)
+		if !pod.Holds(ctx) {
+			t.Fatal("the pod of r1 does not hold beside the reordered schema of r1")
 		}
 	})
 }

@@ -248,6 +248,9 @@ func New(cfg Config) (*Runtime, error) {
 	return r, nil
 }
 
+// DecisionTimeout returns the time limit of each call of the decision provider.
+func (r *Runtime) DecisionTimeout() time.Duration { return r.port.timeout }
+
 // DroppedResults returns the number of resource search results that the handles of the runtime dropped, because
 // their ID is not tenant-qualified or names another tenant than the handle's (ST-SUP-RP06-LC22).
 func (r *Runtime) DroppedResults() int64 { return r.dropped.Load() }

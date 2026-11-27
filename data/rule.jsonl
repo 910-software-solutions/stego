@@ -38,6 +38,7 @@
 {"id":"ST-DECL-INV104-RL","title":"declaration.validateAttempts","invariant_id":"ST-DECL-INV104","file":"internal/declaration/attempts.go"}
 {"id":"ST-DECL-INV105-RL","title":"declaration.validateEvents","invariant_id":"ST-DECL-INV105","file":"internal/declaration/events.go"}
 {"id":"ST-DECL-INV106-RL","title":"declaration.validateCollectionReferences","invariant_id":"ST-DECL-INV106","file":"internal/declaration/validate.go"}
+{"id":"ST-DECL-INV108-RL","title":"declaration.CreatesWithChildrenFaults","invariant_id":"ST-DECL-INV108","file":"internal/declaration/creates_with_children.go"}
 {"id":"ST-DECL-INV13-RL","title":"declaration.validateFieldDefaults","invariant_id":"ST-DECL-INV13","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV15-RL","title":"declaration.AcceptanceOutlivesSunset","invariant_id":"ST-DECL-INV15","file":"internal/declaration/acceptance.go"}
 {"id":"ST-DECL-INV17-RL","title":"gen.ValidateGoImportNamespace","invariant_id":"ST-DECL-INV17","file":"internal/gen/go_namespace.go"}
