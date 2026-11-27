@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -68,9 +69,14 @@ func skipNotPinned(t testing.TB, reason string) {
 	t.Skip(reason)
 }
 
+// noMaintenance stops the automatic maintenance of git in the test repositories. From git 2.4x a commit can start a
+// maintenance in the background, which makes and removes .git/objects/maintenance.lock while a test copies the
+// repository (cp: cannot stat maintenance.lock, PR #27 run 46066145278).
+var noMaintenance = []string{"-c", "maintenance.auto=false", "-c", "gc.auto=0"}
+
 func git(t testing.TB, directory string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-c", "user.name=STEGO", "-c", "user.email=stego@example.test", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)...)
+	command := exec.Command("git", slices.Concat(noMaintenance, []string{"-c", "user.name=STEGO", "-c", "user.email=stego@example.test", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args)...)
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	output, err := command.CombinedOutput()

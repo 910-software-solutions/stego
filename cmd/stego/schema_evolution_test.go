@@ -269,7 +269,7 @@ var (
 // git runs git in the repository and gives its output.
 func (e *evolution) git(t *testing.T, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", slices.Concat(noMaintenance, args)...)
 	cmd.Dir, cmd.Env = e.repo, e.env
 	output, err := cmd.CombinedOutput()
 	if err != nil {

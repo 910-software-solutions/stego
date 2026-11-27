@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -777,7 +778,7 @@ func TestFillQualification(t *testing.T) {
 		p.must(t, "no-key", "apply")
 		git := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", append([]string{"-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"}, args...)...)
+			cmd := exec.Command("git", slices.Concat(noMaintenance, []string{"-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"}, args)...)
 			cmd.Dir = p.dir
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 			if out, err := cmd.CombinedOutput(); err != nil {
@@ -853,7 +854,7 @@ func TestFillQualification(t *testing.T) {
 		p.must(t, "no-key", "apply")
 		git := func(args ...string) {
 			t.Helper()
-			cmd := exec.Command("git", append([]string{"-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"}, args...)...)
+			cmd := exec.Command("git", slices.Concat(noMaintenance, []string{"-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false"}, args)...)
 			cmd.Dir = p.dir
 			cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 			if out, err := cmd.CombinedOutput(); err != nil {
