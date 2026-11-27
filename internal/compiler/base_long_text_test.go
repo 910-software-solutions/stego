@@ -76,5 +76,29 @@ func TestBaseLongText(t *testing.T) {
 			"  - {change: user-display-name-relax, phase: expand}\n"), "6.34.0"); len(faults) != 0 {
 			t.Errorf("a relax of User.display_name to 4000 characters with the item searchable: got %+v, want no fault", faults)
 		}
+		// A record with no postgres-adapter pin, or a pin that does not parse, counts as a base that gave long text its
+		// search index, so the check fails closed (security review of PR #22, L2).
+		data := []byte(td01)
+		archetype := "  archetype:\n    name: rest-crud\n    version: 3.0.0\n    runtime:\n      version: v0.207.0\n"
+		records := map[string][]byte{
+			"a record with no postgres-adapter pin and a runtime": append(recordFor(data), []byte(archetype)...),
+			"a record with no pin":                                recordFor(data),
+			"a postgres-adapter pin that does not parse":          runtimeRecord(t, data, "6.x", "v0.207.0"),
+		}
+		for name, record := range records {
+			check, err := CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: data, Record: record}, parseHead(t, td01))
+			if err != nil {
+				t.Fatal(err)
+			}
+			asked := false
+			for _, fault := range check.Faults {
+				for _, change := range fault.Declare {
+					asked = asked || (fault.Entity == "Organization" && fault.Field == "description" && change.Needs == "the definition searchable")
+				}
+			}
+			if !asked {
+				t.Errorf("%s: got %+v, want the fault that asks for the relax of Organization.description with the definition searchable", name, check.Faults)
+			}
+		}
 	})
 }

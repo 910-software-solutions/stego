@@ -178,15 +178,16 @@ const LongTextVersion = "6.34.0"
 
 // LongTextIndexed tells whether the record of a release pins a postgres-adapter before LongTextVersion: its
 // 001_initial and its steps gave a search index to each public string field of a listed entity, also to long text. A
-// version that does not parse counts as such a release, so the check fails closed. A record with no postgres-adapter
-// has no tables of the adapter.
+// version that does not parse, a record with no postgres-adapter pin, or no record, counts as such a release, so the
+// check fails closed, as before does (security review of PR #22, L2). The runtime library does not tell the two
+// apart: runtime v0.207.0 ran with postgres-adapter 6.33.0 and 6.34.0.
 func LongTextIndexed(applied *AppliedState) bool {
 	if applied == nil {
-		return false
+		return true
 	}
 	pin, pinned := applied.Components["postgres-adapter"]
 	if !pinned {
-		return false
+		return true
 	}
 	version := "v" + strings.TrimPrefix(pin.Version, "v")
 	return !semver.IsValid(version) || semver.Compare(version, "v"+LongTextVersion) < 0
