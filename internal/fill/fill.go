@@ -4,7 +4,10 @@ package fill
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -109,10 +112,36 @@ func DecodeImplements(data []byte, path string) (string, error) {
 // or removes the key when value is nil, and keeps each other key and its
 // comments as they are. It writes a new file and renames it over the old one,
 // so a reader sees the old manifest or the new one, never a part of either.
+//
+// The path is fills/<name>/fill.yaml. It reads, writes and renames the
+// manifest through an os.Root of the fills folder, as ReadManifest reads it, so
+// that a link that takes the path out of that folder is refused also when a
+// process puts it there after ReadManifest (security review of PR #518, item
+// b, CWE-367).
 func writeSection(path, key string, value any) error {
-	data, err := os.ReadFile(path)
+	fills, name := filepath.Dir(filepath.Dir(path)), filepath.Base(filepath.Dir(path))
+	manifest := name + "/" + filepath.Base(path)
+	root, err := os.OpenRoot(fills)
 	if err != nil {
 		return err
+	}
+	defer root.Close()
+	file, err := root.Open(manifest)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, parser.MaxDocumentBytes+1))
+	file.Close()
+	if err != nil {
+		return err
+	}
+	if len(data) > parser.MaxDocumentBytes {
+		return fmt.Errorf("%s: the fill manifest exceeds the %d byte limit", path, parser.MaxDocumentBytes)
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
@@ -121,45 +150,45 @@ func writeSection(path, key string, value any) error {
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return fmt.Errorf("%s: the fill manifest is not a mapping", path)
 	}
-	root := document.Content[0]
-	removeKey(root, key)
+	top := document.Content[0]
+	removeKey(top, key)
 	if value != nil {
 		var encoded yaml.Node
 		if err := encoded.Encode(value); err != nil {
 			return err
 		}
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &encoded)
+		top.Content = append(top.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &encoded)
 	}
 	out, err := encodeNode(&document)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(path)
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	temp := name + "/.fill-" + hex.EncodeToString(random[:]) + ".yaml"
+	written, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".fill-*.yaml")
-	if err != nil {
+	defer root.Remove(temp)
+	if _, err := written.Write(out); err != nil {
+		written.Close()
 		return err
 	}
-	name := temp.Name()
-	defer os.Remove(name)
-	if _, err := temp.Write(out); err != nil {
-		temp.Close()
+	if err := written.Chmod(info.Mode().Perm()); err != nil {
+		written.Close()
 		return err
 	}
-	if err := temp.Chmod(info.Mode().Perm()); err != nil {
-		temp.Close()
+	if err := written.Sync(); err != nil {
+		written.Close()
 		return err
 	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
+	if err := written.Close(); err != nil {
 		return err
 	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return root.Rename(temp, manifest)
 }
 
 // removeKey removes a key and its value from a mapping node.
