@@ -950,7 +950,9 @@ func fillEnvironment() []string {
 	if proxy == "" || proxy == "off" {
 		proxy = "https://proxy.golang.org"
 	}
-	return append(fillEnv, "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
+	// GOPATH of its own, beside the module cache: the go command writes the state of the sum database into
+	// GOPATH/pkg/sumdb, and never into the GOPATH of the developer (security review of PR #8).
+	return append(fillEnv, "GOPATH="+filepath.Join(filepath.Dir(moduleCache), "localtest-gopath"), "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
 		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
 		"GOTOOLCHAIN=local")
 }

@@ -102,10 +102,24 @@ func Start(t testing.TB, goTool string, from Source, mods ...string) *Servers {
 }
 
 // CheckSource gives an error for a source whose go command can write a module that no sum database or go.sum
-// checked: a source with no cache; an environment whose GOMODCACHE is not the cache, or that reads the go env file
-// (GOENV is not off), which can turn a check off; a cache that is the shared GOMODCACHE of goTool, or a folder in it,
-// as localtest refuses it; and an environment whose last value of a setting turns the checks off: GOSUMDB=off, a
-// GONOSUMDB, GONOSUMCHECK, GOPRIVATE or GOINSECURE that is not empty, or GOFLAGS with -insecure.
+// checked. It refuses:
+//
+//   - a source with no cache, and an environment whose GOMODCACHE is not the cache;
+//   - an environment that reads the go env file (GOENV is not off), which can turn a check off;
+//   - a cache that is the shared GOMODCACHE of goTool, or a folder in it, as localtest refuses it;
+//   - an environment whose GOPATH is the GOPATH of the test, as the go command writes the state of each sum database
+//     into GOPATH/pkg/sumdb;
+//   - an environment with GOSUMDB=off, a GONOSUMDB, GONOSUMCHECK, GOPRIVATE or GOINSECURE that is not empty, or
+//     GOFLAGS with -insecure;
+//   - a GOROOT that is not the GOROOT of goTool: the go command reads GOROOT/go.env also with GOENV=off, and takes a
+//     setting from it that the environment leaves empty (security review of PR #8, N1).
+//
+// CheckSource reads the settings twice: as the entries of Env give them (the last entry of a key), and as the go
+// command takes them in effect (go env -json with Env), so a value from GOROOT/go.env or another default is seen.
+//
+// By design, CheckSource takes a GOSUMDB with another key or host than sum.golang.org: the tests of proxytest use a
+// sum database of their own on 127.0.0.1. It also takes any GOPROXY, also direct: the sum database still checks each
+// module that the go command writes.
 func CheckSource(goTool string, from Source) error {
 	if from.Cache == "" {
 		return errors.New("no module cache to take the modules from")
@@ -117,33 +131,130 @@ func CheckSource(goTool string, from Source) error {
 	if got := lastSetting(from.Env, "GOMODCACHE"); got != from.Cache {
 		return fmt.Errorf("the environment of the source names the module cache %q, not %q", got, from.Cache)
 	}
-	if got := lastSetting(from.Env, "GOENV"); got != "off" {
-		return fmt.Errorf("the environment of the source sets GOENV=%q, not off, so the go env file can turn a check off", got)
+	settings := map[string]string{}
+	for _, key := range checkedSettings {
+		settings[key] = lastSetting(from.Env, key)
 	}
-	if got := lastSetting(from.Env, "GOSUMDB"); got == "off" {
-		return errors.New("the environment of the source sets GOSUMDB=off")
+	if err := checkSettings("the environment of the source sets", settings); err != nil {
+		return err
 	}
-	for _, key := range []string{"GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE"} {
-		if got := lastSetting(from.Env, key); got != "" {
-			return fmt.Errorf("the environment of the source sets %s=%s, which turns the check of a module off", key, got)
-		}
-	}
-	for _, flag := range strings.Fields(lastSetting(from.Env, "GOFLAGS")) {
-		if flag == "-insecure" || strings.HasPrefix(flag, "-insecure=") || flag == "--insecure" || strings.HasPrefix(flag, "--insecure=") {
-			return fmt.Errorf("the environment of the source sets GOFLAGS with %s", flag)
-		}
-	}
-	// The shared module cache is the GOMODCACHE that goTool takes from the environment of the test, as
-	// localtest.cacheFolder reads it.
-	shared, err := exec.Command(goTool, "env", "GOMODCACHE").Output()
+	// The settings in effect, as the go command of the source takes them.
+	effective, err := goEnv(goTool, from.Env)
 	if err != nil {
-		return fmt.Errorf("read the shared GOMODCACHE with %s: %v", goTool, err)
+		return fmt.Errorf("read the settings of the source with %s: %v", goTool, err)
 	}
-	if abs, err := filepath.Abs(strings.TrimSpace(string(shared))); err == nil && strings.TrimSpace(string(shared)) != "" &&
-		(cache == abs || strings.HasPrefix(cache, abs+string(filepath.Separator))) {
-		return fmt.Errorf("the module cache %s is the shared GOMODCACHE %s, or a folder in it", cache, abs)
+	// go env gives GOENV as the go env file that the go command reads, and "" when GOENV is off.
+	if effective["GOENV"] == "" {
+		effective["GOENV"] = "off"
+	}
+	if err := checkSettings("the go command of the source takes", effective); err != nil {
+		return err
+	}
+	if got, _ := filepath.Abs(effective["GOMODCACHE"]); got != cache {
+		return fmt.Errorf("the go command of the source takes the module cache %q, not %q", effective["GOMODCACHE"], cache)
+	}
+	// The settings of the test: the GOROOT of goTool itself, with no GOROOT entry, and the shared GOMODCACHE and the
+	// GOPATH that goTool takes from the environment of the test, as localtest.cacheFolder reads them.
+	own, err := goEnv(goTool, withoutSetting(os.Environ(), "GOROOT"))
+	if err != nil {
+		return fmt.Errorf("read the settings of %s: %v", goTool, err)
+	}
+	if !samePath(effective["GOROOT"], own["GOROOT"]) {
+		return fmt.Errorf("the go command of the source takes the GOROOT %s, not the GOROOT %s of %s, whose go.env can turn a check off",
+			effective["GOROOT"], own["GOROOT"], goTool)
+	}
+	ambient, err := goEnv(goTool, os.Environ())
+	if err != nil {
+		return fmt.Errorf("read the settings of the test with %s: %v", goTool, err)
+	}
+	if shared := ambient["GOMODCACHE"]; shared != "" {
+		if abs, err := filepath.Abs(shared); err == nil && (cache == abs || strings.HasPrefix(cache, abs+string(filepath.Separator))) {
+			return fmt.Errorf("the module cache %s is the shared GOMODCACHE %s, or a folder in it", cache, abs)
+		}
+	}
+	if first(effective["GOPATH"]) != "" && samePath(first(effective["GOPATH"]), first(ambient["GOPATH"])) {
+		return fmt.Errorf("the go command of the source takes the GOPATH %s of the test, into which it writes the state of the sum database; give the source a GOPATH of its own",
+			first(effective["GOPATH"]))
 	}
 	return nil
+}
+
+// checkedSettings are the settings that checkSettings reads, and the other settings that CheckSource compares.
+var checkedSettings = []string{"GOENV", "GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE", "GOFLAGS"}
+
+// checkSettings gives an error for settings that turn the check of a module off, or let the go env file do it.
+func checkSettings(how string, settings map[string]string) error {
+	if got := settings["GOENV"]; got != "off" {
+		return fmt.Errorf("%s GOENV=%q, not off, so the go env file can turn a check off", how, got)
+	}
+	if got := settings["GOSUMDB"]; got == "off" {
+		return fmt.Errorf("%s GOSUMDB=off", how)
+	}
+	// GOPRIVATE first: the go command takes it as the default of GONOSUMDB, so its own name is the reason.
+	for _, key := range []string{"GOPRIVATE", "GONOSUMDB", "GONOSUMCHECK", "GOINSECURE"} {
+		if got := settings[key]; got != "" {
+			return fmt.Errorf("%s %s=%s, which turns the check of a module off", how, key, got)
+		}
+	}
+	for _, flag := range strings.Fields(settings["GOFLAGS"]) {
+		if flag == "-insecure" || strings.HasPrefix(flag, "-insecure=") || flag == "--insecure" || strings.HasPrefix(flag, "--insecure=") {
+			return fmt.Errorf("%s GOFLAGS with %s", how, flag)
+		}
+	}
+	return nil
+}
+
+// goEnv gives the settings that the go command goTool takes in effect with the environment env: GOROOT, GOMODCACHE,
+// GOPATH and checkedSettings. A setting that the go command does not know, such as GONOSUMCHECK, is the last entry of
+// env.
+func goEnv(goTool string, env []string) (map[string]string, error) {
+	command := exec.Command(goTool, append([]string{"env", "-json", "GOROOT", "GOMODCACHE", "GOPATH"}, checkedSettings...)...)
+	command.Env = env
+	command.Dir = os.TempDir()
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	out, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%v: %s", err, stderr.Bytes())
+	}
+	settings := map[string]string{}
+	if err := json.Unmarshal(out, &settings); err != nil {
+		return nil, err
+	}
+	if _, known := settings["GONOSUMCHECK"]; !known || settings["GONOSUMCHECK"] == "" {
+		settings["GONOSUMCHECK"] = lastSetting(env, "GONOSUMCHECK")
+	}
+	return settings, nil
+}
+
+// withoutSetting gives env with no entry of key.
+func withoutSetting(env []string, key string) []string {
+	var out []string
+	for _, entry := range env {
+		if k, _, _ := strings.Cut(entry, "="); k != key {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// first gives the first folder of a list of folders such as GOPATH.
+func first(list string) string {
+	return strings.Split(list, string(filepath.ListSeparator))[0]
+}
+
+// samePath tells if a and b name the same folder, after symbolic links.
+func samePath(a, b string) bool {
+	resolve := func(name string) string {
+		if abs, err := filepath.Abs(name); err == nil {
+			name = abs
+		}
+		if real, err := filepath.EvalSymlinks(name); err == nil {
+			name = real
+		}
+		return name
+	}
+	return a != "" && b != "" && resolve(a) == resolve(b)
 }
 
 // lastSetting gives the value of the last entry key=value of env, as the go command takes it, or "".

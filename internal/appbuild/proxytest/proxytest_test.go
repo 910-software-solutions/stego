@@ -246,6 +246,36 @@ func TestStartServesOnlyCheckedModules(t *testing.T) {
 			t.Fatal(err)
 		}
 		shared := strings.TrimSpace(string(sharedOut))
+		ambientOut, err := exec.Command(testGo(), "env", "GOPATH").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ambientGOPATH := strings.TrimSpace(string(ambientOut))
+		// plantedRoot is a copy of the GOROOT of the go command, by symbolic links, with a go.env of its own. The go
+		// command reads GOROOT/go.env also with GOENV=off, and takes a setting from it that the environment leaves
+		// empty (security review of PR #8, N1).
+		rootOut, err := exec.Command(testGo(), "env", "GOROOT").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		plantedRoot := func(goEnv string) string {
+			real, root := strings.TrimSpace(string(rootOut)), t.TempDir()
+			entries, err := os.ReadDir(real)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.Name() != "go.env" {
+					if err := os.Symlink(filepath.Join(real, entry.Name()), filepath.Join(root, entry.Name())); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "go.env"), []byte(goEnv), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return root
+		}
 		with := func(cache string, extra ...string) Source {
 			env := append(append([]string(nil), good.Env...), extra...)
 			if cache != good.Cache {
@@ -269,6 +299,14 @@ func TestStartServesOnlyCheckedModules(t *testing.T) {
 			"GOINSECURE":               {with(good.Cache, "GOINSECURE=example.com"), "GOINSECURE=example.com"},
 			"GOFLAGS -insecure":        {with(good.Cache, "GOFLAGS=-mod=mod -insecure"), "-insecure"},
 			"the go env file":          {with(good.Cache, "GOENV="+filepath.Join(t.TempDir(), "env")), "GOENV"},
+			// A GOROOT whose go.env turns a check off, with the setting empty in the environment.
+			"GOROOT/go.env GONOSUMDB":  {with(good.Cache, "GOROOT="+plantedRoot("GONOSUMDB=*\n")), "takes GONOSUMDB=*"},
+			"GOROOT/go.env GOSUMDB":    {with(good.Cache, "GOSUMDB=", "GOROOT="+plantedRoot("GOSUMDB=off\n")), "takes GOSUMDB=off"},
+			"GOROOT/go.env GOPRIVATE":  {with(good.Cache, "GOROOT="+plantedRoot("GOPRIVATE=*\n")), "takes GOPRIVATE=*"},
+			"GOROOT/go.env GOINSECURE": {with(good.Cache, "GOROOT="+plantedRoot("GOINSECURE=*\n")), "takes GOINSECURE=*"},
+			"another GOROOT":           {with(good.Cache, "GOROOT="+plantedRoot("GOSUMDB=sum.golang.org\n")), "not the GOROOT"},
+			// GOPROXY=off: when the check is gone, the go command still writes nothing into the GOPATH of the test.
+			"the GOPATH of the test": {with(good.Cache, "GOPATH="+ambientGOPATH, "GOPROXY=off"), "the GOPATH " + ambientGOPATH + " of the test"},
 		} {
 			failure, _ := startFails(t, c.from, mod)
 			if !strings.Contains(failure, c.want) {
