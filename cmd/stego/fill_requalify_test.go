@@ -123,7 +123,7 @@ func qualifyAsBefore(t *testing.T, p *fillProject, change func(file string)) {
 		t.Fatal(err)
 	}
 	evidence := fill.FillEvidence{FillDigest: digest, ContractDigest: contractDigest(t, p, "before_create"), PassedAt: time.Now().UTC().Truncate(time.Second), Files: files}
-	if err := fill.WriteEvidence(p.path("fills/qualified-fill/fill.yaml"), evidence); err != nil {
+	if err := fill.WriteEvidence(p.path("fills"), "qualified-fill", evidence); err != nil {
 		t.Fatal(err)
 	}
 	p.must(t, "listed-ssh", "fill", "sign", "qualified-fill")

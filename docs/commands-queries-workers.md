@@ -615,6 +615,8 @@ alone (walkthrough 28, GRPC-CODES):
 | The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
 | The same key while the first request runs | 409 | `Aborted` | `idempotency-key-in-progress` |
 | A message that cannot be read | 400 | `InvalidArgument` | `bad_request` |
+| An `authz-revocation-after` value that is not a revocation, or more than one `authz-revocation-after` value | 400 | `InvalidArgument` | `bad_request` |
+| A call that its client cancelled, or whose deadline passed, during the wait for a revocation | none | `Canceled` or `DeadlineExceeded`, the status of the context | the text of the context error |
 | A value that the checks of the command refuse | 400 | `InvalidArgument`, with a `google.rpc.BadRequest` detail that names the field | `invalid` |
 | The caller does not have the permission on the row, or the row is not there | 404 | `NotFound` | `denied` |
 | The fill returns `command.ErrNotFound` | 404 | `NotFound` | `not_found` |
