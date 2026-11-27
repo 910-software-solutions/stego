@@ -168,6 +168,7 @@
 {"id":"ST-GEN-INV37-RL","title":"compiler.validateSelectedComponents","invariant_id":"ST-GEN-INV37","file":"internal/compiler/selection.go"}
 {"id":"ST-GEN-INV38-RL","title":"compiler.MigrationBodyFaults","invariant_id":"ST-GEN-INV38","file":"internal/compiler/base_compat.go"}
 {"id":"ST-GEN-INV39-RL","title":"compiler.eventFieldFaults","invariant_id":"ST-GEN-INV39","file":"internal/compiler/event_fields.go"}
+{"id":"ST-GEN-INV41-RL","title":"compiler.resourceTypeFaults","invariant_id":"ST-GEN-INV41","file":"internal/compiler/resource_types.go"}
 {"id":"ST-SUP-INV01-RL","title":"registry.LoadSources","invariant_id":"ST-SUP-INV01","file":"internal/registry/registry.go"}
 {"id":"ST-SUP-INV02-RL","title":"registry.WritesOwnNamespace","invariant_id":"ST-SUP-INV02","file":"internal/registry/namespace.go"}
 {"id":"ST-SUP-INV03-RL","title":"registry.checkExperimentPorts","invariant_id":"ST-SUP-INV03","file":"internal/registry/stage.go"}
