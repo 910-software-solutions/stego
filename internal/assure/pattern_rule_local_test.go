@@ -119,9 +119,6 @@ func report(t *testing.T, rule string, faults []string) {
 	}
 }
 
-// plantMark ends each line of a test of a check that holds a planted form, in Assuring's own files of checks.
-const plantMark = "// a plant of a test of a check"
-
 // localTestsFile is the file of these checks.
 const localTestsFile = "internal/assure/pattern_rule_local_test.go"
 
@@ -133,17 +130,68 @@ func ownCheck(name string) bool {
 
 // codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
 // files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
-// for, nor a planted line of a test of a check, which ends with plantMark.
+// for. Only a line that holds a string literal of the pattern of a call of regexp.MustCompile, as the parser finds
+// it, is not read: the text regexp.MustCompile( in a comment or in another string hides nothing (security review of
+// PR #10, L3).
 func codeLines(name string, data []byte) []string {
+	patterns := map[int]bool{}
+	if ownCheck(name) {
+		patterns = patternLines(name, data)
+	}
 	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for i, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && (strings.Contains(line, "regexp.MustCompile(") || strings.HasSuffix(trimmed, plantMark)) {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || patterns[i+1] {
 			continue
 		}
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// patternLines gives the numbers of the lines of a Go file that hold a string literal in the arguments of a call of
+// regexp.MustCompile. A file that does not parse gives none, so each of its lines is read.
+func patternLines(name string, data []byte) map[int]bool {
+	lines := map[int]bool{}
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, name, data, parser.SkipObjectResolution)
+	if err != nil {
+		return lines
+	}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if pkg, isIdent := selectorPackage(selector); !ok || !isIdent || pkg != "regexp" || selector.Sel.Name != "MustCompile" {
+			return true
+		}
+		for _, argument := range call.Args {
+			ast.Inspect(argument, func(node ast.Node) bool {
+				if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					for line := fset.Position(lit.Pos()).Line; line <= fset.Position(lit.End()).Line; line++ {
+						lines[line] = true
+					}
+				}
+				return true
+			})
+		}
+		return true
+	})
+	return lines
+}
+
+// selectorPackage gives the name on the left of a selector, such as regexp of regexp.MustCompile.
+func selectorPackage(selector *ast.SelectorExpr) (string, bool) {
+	if selector == nil {
+		return "", false
+	}
+	id, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return id.Name, true
 }
 
 // The things a test that runs on a workstation must not need (ST-STD-LOCAL-R01): a privileged container, the
@@ -456,11 +504,32 @@ func optIn(name string) bool {
 var namesVariable = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:string\s*)?:?=\s*"(STEGO_[A-Z0-9_]+)"`)
 
 // A set of a variable through a name: an entry of the environment of a command, name+"=...", or a Setenv of the name.
-var setsNamed = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"=|Setenv\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,`)
+var setsNamed = regexp.MustCompile(`(?:\b([A-Za-z_][A-Za-z0-9_]*)\.)?\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"=|Setenv\(\s*(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,`)
 
 // A read of a variable through a name, also of another package, such as Getenv(DSNVariable) or
 // Getenv(pgtest.DSNVariable).
-var readsNamed = regexp.MustCompile(`(?:Getenv|LookupEnv)\((?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\)`)
+var readsNamed = regexp.MustCompile(`(?:Getenv|LookupEnv)\((?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+// An import of a package of this repository, with its name when the file gives one.
+var repositoryImport = regexp.MustCompile(`(?m)^\s*(?:import\s+)?(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"github\.com/910-software-solutions/stego/([^"]+)"`)
+
+// variableNames are the names that the Go files of the tree give to STEGO_ variables, by the folder of the file,
+// which is its package: a name is resolved in the package of the file that uses it, or, qualified, in the package
+// that the file imports under the qualifier, never by its bare name across the tree (security review of PR #10, L2).
+type variableNames map[string]map[string][]string
+
+// resolve gives the variables that the name, with the qualifier or none, names in the file.
+func (n variableNames) resolve(file, text, qualifier, name string) []string {
+	if qualifier == "" {
+		return n[path.Dir(file)][name]
+	}
+	for _, match := range repositoryImport.FindAllStringSubmatch(text, -1) {
+		if match[1] == qualifier || match[1] == "" && path.Base(match[2]) == qualifier {
+			return n[match[2]][name]
+		}
+	}
+	return nil
+}
 
 // A function of a Go file whose body reads the variable that its string parameter names, and one that returns the
 // read of a STEGO_ variable: their calls read the variable too.
@@ -556,10 +625,10 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 	// A test sets a variable for the tests of its own module only: a child process that it runs, or the tests of the
 	// process. So a set counts only in the suite of the file that sets it (security review of PR #504, L2).
 	set := map[string]map[string]bool{}
-	names := map[string][]string{}
+	names := variableNames{}
 	// namedSet is the text of a file that can set a variable through a name, such as marker+"=1" or
 	// t.Setenv(consoleSetting, ...), which is read when all the names are known.
-	type namedSet struct{ folder, text string }
+	type namedSet struct{ folder, file, text string }
 	var sets []namedSet
 	for _, name := range p.tree.paths() {
 		if path.Ext(name) != ".go" {
@@ -568,7 +637,10 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 		data, _ := p.tree.File(name)
 		text := strings.Join(codeLines(name, data), "\n")
 		for _, match := range namesVariable.FindAllStringSubmatch(text, -1) {
-			names[match[1]] = append(names[match[1]], match[2])
+			if names[path.Dir(name)] == nil {
+				names[path.Dir(name)] = map[string][]string{}
+			}
+			names[path.Dir(name)][match[1]] = append(names[path.Dir(name)][match[1]], match[2])
 		}
 		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
 			suite, ok := p.suiteOf(name)
@@ -581,12 +653,12 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 			for _, match := range setsVariable.FindAllStringSubmatch(text, -1) {
 				set[suite.folder][match[1]+match[2]+match[3]] = true
 			}
-			sets = append(sets, namedSet{suite.folder, text})
+			sets = append(sets, namedSet{suite.folder, name, text})
 		}
 	}
 	for _, named := range sets {
 		for _, match := range setsNamed.FindAllStringSubmatch(named.text, -1) {
-			for _, name := range names[match[1]+match[2]] {
+			for _, name := range names.resolve(named.file, named.text, match[1]+match[3], match[2]+match[4]) {
 				set[named.folder][name] = true
 			}
 		}
@@ -614,7 +686,7 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 					reads = append(reads, variableRead{name: match[1]})
 				}
 				for _, match := range readsNamed.FindAllStringSubmatch(line, -1) {
-					for _, name := range names[match[1]] {
+					for _, name := range names.resolve(file, strings.Join(lines, "\n"), match[1], match[2]) {
 						reads = append(reads, variableRead{name: name})
 					}
 				}
@@ -955,17 +1027,19 @@ func TestLocalChecks(t *testing.T) {
 			source string
 			fault  bool
 		}{
-			{`exec.Command("sh", "-c", "docker run --rm --privileged busybox true")`, true},          // a plant of a test of a check
-			{`exec.Command("docker", "run", "--rm", "-v", "/:/host", "busybox", "true")`, true},      // a plant of a test of a check
-			{`exec.Command("sh", "-c", "podman run --rm -v /:/host busybox true")`, true},            // a plant of a test of a check
-			{"kubectl := \"kubectl\"\n\t_ = exec.Command(kubectl, \"get\", \"pods\")", true},         // a plant of a test of a check
-			{"const client = \"/usr/local/bin/oc\"\n\t_ = exec.Command(client, \"whoami\")", true},   // a plant of a test of a check
-			{`_, _ = exec.LookPath("kubectl")`, true},                                                // a plant of a test of a check
-			{`_, _ = os.ReadFile(os.Getenv("HOME") + "/.kube/config")`, true},                        // a plant of a test of a check
-			{`_, _ = os.ReadFile(filepath.Join(os.Getenv("HOME"), ".docker", "config.json"))`, true}, // a plant of a test of a check
-			{`exec.Command("sh", "-c", "cat $HOME/.kube/config")`, true},                             // a plant of a test of a check
-			{`exec.Command("docker", "run", "--rm", "-v", dir+":/work", "busybox", "true")`, false},  // a plant of a test of a check
-			{"program := \"go\"\n\t_ = exec.Command(program, \"version\")", false},                   // a plant of a test of a check
+			// Each plant that a check of a line finds is written in two pieces, so that the scan of this file does not
+			// read it as a fault (security review of PR #10, L3).
+			{`exec.Command("sh", "-c", "docker run --rm --privi` + `leged busybox true")`, true},
+			{`exec.Command("docker", "run", "--rm", "-v", "/` + `:/host", "busybox", "true")`, true},
+			{`exec.Command("sh", "-c", "podman run --rm -v /:` + `/host busybox true")`, true},
+			{"kubectl := \"kubectl\"\n\t_ = exec.Command(kubectl, \"get\", \"pods\")", true},
+			{"const client = \"/usr/local/bin/oc\"\n\t_ = exec.Command(client, \"whoami\")", true},
+			{`_, _ = exec.LookPath("kubectl")`, true},
+			{`_, _ = os.ReadFile(os.Getenv("HOME") + "/.ku` + `be/config")`, true},
+			{`_, _ = os.ReadFile(filepath.Join(os.Getenv("HOME"), ".dock` + `er", "config.json"))`, true},
+			{`exec.Command("sh", "-c", "cat $HOME/.ku` + `be/config")`, true},
+			{`exec.Command("docker", "run", "--rm", "-v", dir+":/work", "busybox", "true")`, false},
+			{"program := \"go\"\n\t_ = exec.Command(program, \"version\")", false},
 		} {
 			data := []byte("package plant\n\nfunc TestPlant(t *testing.T) {\n\t" + c.source + "\n}\n")
 			var faults []string
@@ -981,6 +1055,20 @@ func TestLocalChecks(t *testing.T) {
 				t.Errorf("%s: the checks give %v, want a fault: %t", c.source, faults, c.fault)
 			}
 		}
+		// In Assuring's own files of checks, only the pattern of a call of regexp.MustCompile is not read: a line that
+		// names it in a comment, or ends with any mark, is read (security review of PR #10, L3).
+		own := []byte("package assure\n\nimport \"regexp\"\n\nvar checked = regexp.MustCompile(`--cap-` + `add`)\n\nvar _ = []string{\"--cap-" + "add\"} // regexp.MustCompile(\nvar _ = []string{\"--cap-" + "add\", \"x\"} // a plant of a test of a check\n")
+		var found []string
+		for _, line := range codeLines("internal/assure/plant_test.go", own) {
+			for _, fault := range workstationFaults {
+				if fault.pattern.MatchString(line) {
+					found = append(found, strings.TrimSpace(line))
+				}
+			}
+		}
+		if len(found) != 2 || strings.Contains(strings.Join(found, "\n"), "var checked") {
+			t.Errorf("the checks of an own file of checks find %q, want the two marked lines and not the pattern of regexp.MustCompile", found)
+		}
 	})
 	t.Run("ST-STD-LOCAL-R02-T03 The check of R02 counts a set of a variable only in the module of the test that sets it, and finds a read through a constant, a wrapper, a helper and an unlisted copy variable", func(t *testing.T) {
 		skip := "\tif %s == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n"
@@ -988,16 +1076,21 @@ func TestLocalChecks(t *testing.T) {
 			return []byte("package plant\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + body + "}\n")
 		}
 		files := map[string][]byte{
-			"go.mod":                []byte("module example.com/plant\n"),
-			"other/go.mod":          []byte("module example.com/other\n"),
-			"other/sets_test.go":    plantFile("\t_ = []string{\"STEGO_PLANT_OTHER=\" + \"x\", \"STEGO_PLANT_SAME=1\"}\n"),
-			"other/reads_test.go":   plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_SAME")`)),
-			"a/other_test.go":       plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_OTHER")`)),
-			"a/constant_test.go":    append(plantFile(fmt.Sprintf(skip, `os.Getenv(plantVariable)`)), []byte("\nconst plantVariable = \"STEGO_PLANT_CONSTANT\"\n")...),
-			"a/wrapper_test.go":     append(plantFile("\t_ = need(t, \"STEGO_PLANT_WRAPPED\")\n"), []byte("\nfunc need(t *testing.T, name string) string {\n\tvalue := os.Getenv(name)\n\tif value == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n\treturn value\n}\n")...),
-			"a/helper_test.go":      append(plantFile(fmt.Sprintf(skip, "plantDSN()")), []byte("\nfunc plantDSN() string {\n\treturn os.Getenv(\"STEGO_PLANT_HELPER\")\n}\n")...),
-			"a/copy_test.go":        plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DUMP")`)),
-			"a/documented_test.go":  plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DOCUMENTED")`)),
+			"go.mod":               []byte("module example.com/plant\n"),
+			"other/go.mod":         []byte("module example.com/other\n"),
+			"other/sets_test.go":   plantFile("\t_ = []string{\"STEGO_PLANT_OTHER=\" + \"x\", \"STEGO_PLANT_SAME=1\"}\n"),
+			"other/reads_test.go":  plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_SAME")`)),
+			"a/other_test.go":      plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_OTHER")`)),
+			"a/constant_test.go":   append(plantFile(fmt.Sprintf(skip, `os.Getenv(plantVariable)`)), []byte("\nconst plantVariable = \"STEGO_PLANT_CONSTANT\"\n")...),
+			"a/wrapper_test.go":    append(plantFile("\t_ = need(t, \"STEGO_PLANT_WRAPPED\")\n"), []byte("\nfunc need(t *testing.T, name string) string {\n\tvalue := os.Getenv(name)\n\tif value == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n\treturn value\n}\n")...),
+			"a/helper_test.go":     append(plantFile(fmt.Sprintf(skip, "plantDSN()")), []byte("\nfunc plantDSN() string {\n\treturn os.Getenv(\"STEGO_PLANT_HELPER\")\n}\n")...),
+			"a/copy_test.go":       plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DUMP")`)),
+			"a/documented_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DOCUMENTED")`)),
+			// Security review of PR #10, L2: a name of another package that holds a STEGO_ variable, and a name of the
+			// same text that a test of this module sets with a value other than a STEGO_ variable.
+			"other/names.go":        []byte("package other\n\nfunc names() string {\n\tkey := \"STEGO_PLANT_COLLIDE\"\n\treturn key\n}\n"),
+			"a/unrelated_test.go":   plantFile("\tkey := \"HOME\"\n\t_ = []string{key + \"=/x\"}\n"),
+			"a/collide_test.go":     plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_COLLIDE")`)),
 			"a/child_test.go":       append(plantFile(fmt.Sprintf(skip, `os.Getenv(childVariable)`)+"\t_ = []string{childVariable + \"=1\"}\n"), []byte("\nconst childVariable = \"STEGO_PLANT_CHILD\"\n")...),
 			"a/listed_copy_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_CRUD_DUMP")`)),
 		}
@@ -1016,7 +1109,7 @@ func TestLocalChecks(t *testing.T) {
 			}
 		}
 		slices.Sort(needed)
-		want := []string{"STEGO_PLANT_CONSTANT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_WRAPPED"}
+		want := []string{"STEGO_PLANT_COLLIDE", "STEGO_PLANT_CONSTANT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_WRAPPED"}
 		if !slices.Equal(needed, want) {
 			t.Errorf("the check finds %v, want %v: %v", needed, want, faults)
 		}
