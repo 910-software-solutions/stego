@@ -34,7 +34,7 @@ require (
 )
 
 require (
-	github.com/910-software-solutions/stego/registry/runtime v0.203.0
+	github.com/910-software-solutions/stego/registry/runtime v0.204.0
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
