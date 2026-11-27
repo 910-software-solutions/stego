@@ -491,6 +491,78 @@ func GoEnv(extra ...string) []string {
 	return append(env, extra...)
 }
 
+// RuntimeWorkspace gives the GOWORK entry of a go command of GoEnv in the module folder that takes the runtime library
+// from this checkout's registry/runtime folder: the work file that scripts/runtime-workspace.sh writes for the folder,
+// in a temporary folder of the test. Give it after the other entries of GoEnv, whose GOWORK=off it replaces. It
+// fails the test unless the work file uses only the module folder and registry/runtime and replaces only the runtime
+// module with registry/runtime, so the work file changes no module source but that one (ST-STD-LOCAL-R03).
+func RuntimeWorkspace(t testing.TB, module string) string {
+	t.Helper()
+	root := filepath.Join(filepath.Dir(ModulesFolder()), "..", "..", "..")
+	work := filepath.Join(t.TempDir(), "runtime.work")
+	if err := runtimeWork(root, module, work); err != nil {
+		t.Fatal("localtest: " + err.Error())
+	}
+	return "GOWORK=" + work
+}
+
+// runtimeWork writes the work file with scripts/runtime-workspace.sh of root and checks it with checkRuntimeWork.
+func runtimeWork(root, module, work string) error {
+	script := exec.Command(filepath.Join(root, "scripts", "runtime-workspace.sh"), module, work)
+	if out, err := script.CombinedOutput(); err != nil {
+		return fmt.Errorf("runtime-workspace.sh: %v\n%s", err, out)
+	}
+	if why := checkRuntimeWork(root, module, work); why != "" {
+		return errors.New(why)
+	}
+	return nil
+}
+
+// runtimeModule is the module path of the runtime library in registry/runtime.
+const runtimeModule = "github.com/910-software-solutions/stego/registry/runtime"
+
+// checkRuntimeWork gives the reason why the work file is not one that uses only the module folder and the
+// registry/runtime folder of root and replaces only the runtime module with that folder, or "".
+func checkRuntimeWork(root, module, work string) string {
+	root, _ = filepath.Abs(root)
+	module, _ = filepath.Abs(module)
+	real := func(name string) string {
+		if !filepath.IsAbs(name) {
+			// A relative folder of a work file is relative to the folder of the work file.
+			name = filepath.Join(filepath.Dir(work), name)
+		}
+		if resolved, err := filepath.EvalSymlinks(name); err == nil {
+			name = resolved
+		}
+		absolute, _ := filepath.Abs(name)
+		return absolute
+	}
+	runtimeDir := real(filepath.Join(root, "registry", "runtime"))
+	allowed := map[string]bool{real(module): true, runtimeDir: true}
+	data, err := os.ReadFile(work)
+	if err != nil {
+		return err.Error()
+	}
+	file, err := modfile.ParseWork(work, data, nil)
+	if err != nil {
+		return err.Error()
+	}
+	if len(file.Use) == 0 {
+		return "the work file " + work + " uses no folder"
+	}
+	for _, use := range file.Use {
+		if !allowed[real(use.Path)] {
+			return fmt.Sprintf("the work file %s uses %s, which is not the module folder or registry/runtime", work, use.Path)
+		}
+	}
+	for _, replace := range file.Replace {
+		if replace.Old.Path != runtimeModule || real(replace.New.Path) != runtimeDir {
+			return fmt.Sprintf("the work file %s replaces %s with %s, not only the runtime module with registry/runtime", work, replace.Old.Path, replace.New.Path)
+		}
+	}
+	return ""
+}
+
 // emptyCache gives an empty module cache of this process, made once in the temporary folder, for the go commands of
 // GoEnv when the module cache of localtest is not there. Main removes it when the tests end.
 func emptyCache() string {
