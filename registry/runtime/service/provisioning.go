@@ -254,6 +254,13 @@ func (a *routerAnswer) Write(b []byte) (int, error) {
 // maxRouterAnswer bounds the body of the router's own answer that notRouted keeps.
 const maxRouterAnswer = 4096
 
+// TenantGateAction is the action of the warn line command.database.unavailable of the tenant gate: the step is http
+// or grpc, the transport of the call.
+const TenantGateAction = "tenant-gate"
+
+// gateUnavailableLog holds back the warn lines of the tenant gate to one for each transport in each authz.LogEvery.
+var gateUnavailableLog = authz.NewCauseLog(nil)
+
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
 // verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
 // because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11), and a request that
@@ -277,7 +284,9 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 			writeTenantProblem(w, http.StatusForbidden, tp.problemType, tenant.ErrNotProvisionedCode)
 		case tenant.Unavailable(err):
 			// A tenant list that the database cannot serve now is 503 with Retry-After, never a bare 500
-			// (walkthrough 10, B7; ST-SUP-RP10-LC43).
+			// (walkthrough 10, B7; ST-SUP-RP10-LC43), with the warn line of its SQLSTATE class (walkthrough 29,
+			// SQL53-LOG).
+			command.LogUnavailable(r.Context(), gateUnavailableLog, TenantGateAction, "http", err)
 			w.Header().Set("Retry-After", authz.RetryAfter())
 			writeTenantProblem(w, http.StatusServiceUnavailable, tp.problemType, command.ErrorCodeUnavailable)
 		default:
@@ -342,6 +351,7 @@ func (svc *Service) Authenticate(ctx context.Context, credential string) (contex
 	case errors.Is(err, errNotProvisioned):
 		return nil, status.Error(codes.PermissionDenied, tenant.ErrNotProvisionedCode)
 	case tenant.Unavailable(err):
+		command.LogUnavailable(ctx, gateUnavailableLog, TenantGateAction, "grpc", err)
 		return nil, status.Error(codes.Unavailable, command.ErrorCodeUnavailable)
 	default:
 		return nil, status.Error(codes.Internal, command.ErrorCodeInternal)
