@@ -433,5 +433,48 @@ func TestSharedResourceType(t *testing.T) {
 				t.Errorf("an entity with a resource type of its own is refused: %+v", fault)
 			}
 		}
+		// Security review of PR #21, L1: the rule compares each entity with each earlier entity, not only with the
+		// entity just before or with the first, and an entity with no resource type shares nothing.
+		ownSchema := func(types ...string) string {
+			out := schema
+			for _, resourceType := range types {
+				out += "\ndefinition " + resourceType + " {\n\trelation owner: user\n\tpermission view = owner\n\tpermission edit = owner\n}\n"
+			}
+			return out
+		}
+		for _, c := range []struct {
+			name, schema string
+			entities     [][2]string // name, resource type; no resource type is an entity of the tenant system
+			want         []string    // path and the two names of each fault
+		}{
+			{"a third entity with the type of the first", ownSchema("folder"), [][2]string{{"Folder", "folder"}, {"Note", "document"}},
+				[]string{"entities[2].resource_type: entity Note has the resource type \"document\" of the entity Todo"}},
+			{"two later entities with one type", ownSchema("note"), [][2]string{{"Note", "note"}, {"Memo", "note"}},
+				[]string{"entities[2].resource_type: entity Memo has the resource type \"note\" of the entity Note"}},
+			{"two entities with no resource type", schema, [][2]string{{"Setting", ""}, {"Counter", ""}}, nil},
+		} {
+			var entities, collections strings.Builder
+			for _, e := range c.entities {
+				entities.WriteString("  - name: " + e[0] + "\n")
+				if e[1] == "" {
+					entities.WriteString("    tenant: system\n    fields:\n      - {name: body, type: string}\n")
+					continue
+				}
+				entities.WriteString("    fields:\n      - {name: body, type: string}\n    resource_type: " + e[1] +
+					"\n    public_reasons: {create: a new row has no resource to decide on before it exists}\n    permissions: {create: public, read: view, update: edit, delete: edit, list: view}\n" +
+					"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n")
+				collections.WriteString("  " + strings.ToLower(e[0]) + "s:\n    entity: " + e[0] + "\n    operations: [create, read, list]\n")
+			}
+			declaration := change(t, service, "collections:\n", entities.String()+"collections:\n"+collections.String())
+			var got []string
+			for _, fault := range checkTD03(t, declaration, c.schema) {
+				if fault.Rule == "resource-type-shared" {
+					got = append(got, fault.Path+": "+strings.TrimPrefix(strings.SplitN(fault.Message, ";", 2)[0], "the "))
+				}
+			}
+			if strings.Join(got, "\n") != strings.Join(c.want, "\n") {
+				t.Errorf("%s: the faults of resource-type-shared are %q, want %q", c.name, got, c.want)
+			}
+		}
 	})
 }
