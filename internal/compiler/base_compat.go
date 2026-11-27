@@ -196,7 +196,9 @@ func LongTextIndexed(applied *AppliedState) bool {
 // withLongTextIndexes gives a copy of the declaration in which each public string field out of the search with no
 // searchable setting, of a live or a dropped entity, is marked searchable: the stored shape of a release whose
 // generator gave it a search index (ST-GEN-INV40). A field that a relax with the item searchable of the declaration
-// names keeps its form, as that relax drops the index.
+// names keeps its form, as that relax drops the index. The Definition of a drop or a retype of such a field of a
+// listed entity takes the item searchable, as the field that it gives back had its search index (security review of
+// PR #22, M1).
 func withLongTextIndexes(service *types.ServiceDeclaration) *types.ServiceDeclaration {
 	out := *service
 	searchable := true
@@ -221,7 +223,77 @@ func withLongTextIndexes(service *types.ServiceDeclaration) *types.ServiceDeclar
 		return copied
 	}
 	out.Entities, out.DroppedEntities = mark(service.Entities), mark(service.DroppedEntities)
+	out.SchemaChanges = append([]types.SchemaChange(nil), service.SchemaChanges...)
+	for i, change := range out.SchemaChanges {
+		if definition, ok := searchableDefinition(service, change); ok {
+			out.SchemaChanges[i].Definition = definition
+		}
+	}
 	return &out
+}
+
+// searchDefinitionFaults asks for the item searchable in each definition of a drop or a retype of the head that
+// gives back a public long text field of a listed entity, when the generator of the base gave such a field its
+// search index (LongTextIndexed): the item keeps that index in the 001_initial and the steps, so their bodies do not
+// change (security review of PR #22, M1). A drop of the base takes the item too: it changes no body.
+func searchDefinitionFaults(applied *AppliedState, head *types.ServiceDeclaration) []BaseFault {
+	if !LongTextIndexed(applied) {
+		return nil
+	}
+	var faults []BaseFault
+	for _, change := range head.SchemaChanges {
+		if definition, ok := searchableDefinition(head, change); ok {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the generator of the base gave %s.%s, which the %s %s gives back, its search index, and the definition does not keep it; add the item searchable to the definition: %s", change.Entity, change.Field, change.Kind, change.ID, definition)})
+		}
+	}
+	// A dropped entity gives back its fields as the base stored them: a long text field keeps its index with
+	// searchable: true, which ST-DECL-INV109 accepts on a dropped entity.
+	for _, entity := range head.DroppedEntities {
+		if !slices.ContainsFunc(head.DroppedCollections, func(c types.Collection) bool {
+			return c.Entity == entity.Name && slices.Contains(c.Operations, types.OpList)
+		}) {
+			continue
+		}
+		for _, field := range entity.Fields {
+			if field.Searchable == nil && field.Public() && field.Unsearched() {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: field.Name, Message: fmt.Sprintf("the generator of the base gave %s.%s of the dropped entity %s its search index, and the head does not keep it; set searchable: true on the field, so the 001_initial and the steps keep their bodies", entity.Name, field.Name, entity.Name)})
+			}
+		}
+	}
+	return faults
+}
+
+// searchableDefinition gives the Definition of a drop or a retype of a field with the item searchable added, when
+// the field that the Definition gives is a public long text field with no searchable item, of an entity that a
+// collection lists, and that no relax with the item searchable names: a release before postgres-adapter 6.34.0 gave
+// it a search index (security review of PR #22, M1). The item goes before a pattern, which is the last item.
+func searchableDefinition(service *types.ServiceDeclaration, change types.SchemaChange) (string, bool) {
+	if change.Field == "" || change.Definition == "" || (change.Kind != "drop" && change.Kind != "retype") || !listed(service, change.Entity) {
+		return "", false
+	}
+	// A relax with the item searchable of the field took it out of the search before the drop or the retype: the
+	// undo of that relax gives back the index (ST-GEN-INV40).
+	if slices.ContainsFunc(service.SchemaChanges, func(c types.SchemaChange) bool {
+		return c.RelaxesSearch() && c.Entity == change.Entity && c.Field == change.Field
+	}) {
+		return "", false
+	}
+	var field types.Field
+	var reason string
+	if change.Kind == "drop" {
+		var dropped gen.DroppedField
+		dropped, reason = gen.DropDefinition(change.Definition)
+		field = dropped.Field
+	} else {
+		field, reason = gen.DefinitionField(change.Definition)
+	}
+	if reason != "" || field.Searchable != nil || !field.Public() || !field.Unsearched() {
+		return "", false
+	}
+	if before, pattern, found := strings.Cut(change.Definition, ", pattern"); found {
+		return before + ", searchable, pattern" + pattern, true
+	}
+	return change.Definition + ", searchable", true
 }
 
 // ClearSecrets tells whether the record of a release names a postgres-adapter before SecretStorageVersion, or, with
@@ -482,8 +554,9 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 		// collections describe them.
 		faults = append(faults, collectionIndexFaults(base, head)...)
 	}
-	// A drop of a field whose seal is open has a fault that names the seal, in place of the fault of its stored form.
-	sealDrops := openSealDropFaults(base, head)
+	// A drop of a field whose seal is open has a fault that names the seal, and a drop or a retype whose definition
+	// needs the item searchable one that names the item, in place of the fault of its stored form.
+	sealDrops := append(openSealDropFaults(base, head), searchDefinitionFaults(applied, head)...)
 	named := map[[2]string]bool{}
 	for _, fault := range sealDrops {
 		named[[2]string{fault.Entity, fault.Field}] = true
@@ -944,7 +1017,14 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		}
 		// A fill value of a retype is in the text of its expand step, which the ledger digest covers, so it does not
 		// change either (decision on ST-GEN-Q24 (c), orchestrator under the owner's delegation, 2026-11-14).
-		if now := head.SchemaChanges[index]; !reflect.DeepEqual(now, change) {
+		now := head.SchemaChanges[index]
+		if marked := change; marked.Definition != now.Definition && reflect.DeepEqual(func() types.SchemaChange { marked.Definition = now.Definition; return marked }(), now) &&
+			strings.Contains(change.Definition, "searchable") && !strings.Contains(now.Definition, "searchable") {
+			// The generator of the base gave the field of the Definition its search index (security review of PR #22,
+			// M1): searchDefinitionFaults asks for the item searchable in the definition.
+			continue
+		}
+		if !reflect.DeepEqual(now, change) {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, also its fill value, which its expand step holds", change.ID)})
 		}
 	}

@@ -366,6 +366,12 @@ body of its `001_initial` stays as it ran.
    reports itself, and names it; then it drops the index, and keeps each row.
    From this step, a long value of the field is stored.
 
+A drop or a retype of a long text field, and a dropped entity, also keep the
+search index of the base: `stego compat` asks for the item `searchable` at the
+end of the `definition` of the drop or the retype, and for `searchable: true`
+on the field of the dropped entity, with the text to write. Add it, also to a
+drop that the base already declares.
+
 See [Relax steps](schema-changes.md#drop-the-search-index-of-a-field).
 
 ## Move a browser-service database to the owner and migrator logins

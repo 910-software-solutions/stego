@@ -105,7 +105,67 @@ func migrationBodies(t *testing.T, ctx gen.Context) map[string]string {
 	return bodies
 }
 
+// migrationsText gives the migration files of ctx as one text, each after a line == <file name>, in the order of
+// the generator: the form of the golden files of a drop that postgres-adapter 6.32.0 wrote.
+func migrationsText(t *testing.T, ctx gen.Context) string {
+	t.Helper()
+	files, _, err := new(postgresadapter.Generator).Generate(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, f := range files {
+		if strings.Contains(f.Path, "migrations"+string(os.PathSeparator)) {
+			b.WriteString("== " + filepath.Base(f.Path) + "\n" + string(f.Content))
+		}
+	}
+	return b.String()
+}
+
 func TestLongText(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC53-T04 A drop with the item searchable and a dropped entity with searchable: true keep the migrations of postgres-adapter 6.32.0", func(t *testing.T) {
+		// The golden files are the migrations that postgres-adapter 6.32.0 (the merge base of PR #22) wrote for a drop
+		// of Note.summary, of at most 1000 characters, and for a drop of the listed entity Memo with body of at most
+		// 1000 (security review of PR #22, M1).
+		n := func(v int) *int { return &v }
+		golden := func(name string) string {
+			data, err := os.ReadFile(filepath.Join("testdata", "golden", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(data)
+		}
+		notes := []types.Entity{{Name: "Note", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString, MaxLength: n(200)}}}}
+		drop := func(definition string) gen.Context {
+			ctx := runtimeService("notesdrop", "notesdroptenancy", notes, noteCollections())
+			ctx.SchemaChanges = []types.SchemaChange{{ID: "note-summary-drop", Kind: "drop", Entity: "Note", Field: "summary", Definition: definition}}
+			ctx.SchemaHistory = []types.SchemaStep{{Change: "note-summary-drop", Phase: "expand"}, {Change: "note-summary-drop", Phase: "contract"}}
+			return ctx
+		}
+		want := golden("note_summary_drop_6.32.0_migrations.sql")
+		if got := migrationsText(t, drop("string, optional, max_length 1000, after title, searchable")); got != want {
+			t.Errorf("the drop with the item searchable gives the migrations\n%s\nwant the ones of 6.32.0\n%s", got, want)
+		}
+		if got := migrationsText(t, drop("string, optional, max_length 1000, after title")); got == want || strings.Contains(got, "notes_summary_search") {
+			t.Errorf("the drop with no item searchable gives the search index of summary:\n%s", got)
+		}
+		memo := func(searchable *bool) gen.Context {
+			ctx := runtimeService("notesentitydrop", "notesentitydroptenancy", notes, noteCollections())
+			ctx.DroppedEntities = []types.Entity{{Name: "Memo", DroppedBy: "memo-drop", Fields: []types.Field{{Name: "body", Type: types.FieldTypeString, Optional: true, MaxLength: n(1000), Searchable: searchable}}}}
+			ctx.DroppedCollections = []types.Collection{{Name: "memos", Entity: "Memo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}}}
+			ctx.SchemaChanges = []types.SchemaChange{{ID: "memo-drop", Kind: "drop", Entity: "Memo"}}
+			ctx.SchemaHistory = []types.SchemaStep{{Change: "memo-drop", Phase: "expand"}}
+			return ctx
+		}
+		yes := true
+		want = golden("memo_drop_6.32.0_migrations.sql")
+		if got := migrationsText(t, memo(&yes)); got != want {
+			t.Errorf("the dropped entity with searchable: true gives the migrations\n%s\nwant the ones of 6.32.0\n%s", got, want)
+		}
+		if got := migrationsText(t, memo(nil)); strings.Contains(got, "memos_body_search") {
+			t.Errorf("the dropped entity with no searchable setting gives the search index of body:\n%s", got)
+		}
+	})
 	t.Run("ST-SUP-RC01-OC53-T01 001_initial gives no search index to a string field out of the search, and one to each other searched field", func(t *testing.T) {
 		initial := migrationBodies(t, notesFresh("notes", "notestenancy"))["001_initial"]
 		if !strings.Contains(initial, `CREATE INDEX "notes_title_search" ON public."notes" ("tenant_id", "title");`) {

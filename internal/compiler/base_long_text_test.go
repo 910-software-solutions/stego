@@ -98,6 +98,47 @@ func TestBaseLongText(t *testing.T) {
 		if faults := longTextFaults(t, unlisted, unlisted, "6.32.0"); len(faults) != 0 {
 			t.Errorf("a 6.32.0 base with Organization.description on an entity that no collection lists: got %+v, want no fault", faults)
 		}
+		// A drop of a long text field, or of an entity with one, keeps the search index that a 6.32.0 base built: the
+		// definition of the drop names the item searchable, and a dropped entity sets searchable: true (security
+		// review of PR #22, M1). The check asks for each, and accepts the head with it.
+		gone := strings.Replace(td01, "      - { name: description, type: string, optional: true, max_length: 1000 }\n", "", 1)
+		drop := func(definition string) string {
+			return withChanges(gone, "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \""+definition+"\"}\n",
+				"  - {change: organization-description-drop, phase: expand}\n")
+		}
+		plain, kept := drop("string, optional, max_length 1000, after name"), drop("string, optional, max_length 1000, after name, searchable")
+		asks := func(faults []BaseFault, entity, field, text string) bool {
+			for _, fault := range faults {
+				if fault.Entity == entity && fault.Field == field && strings.Contains(fault.Message, text) {
+					return true
+				}
+			}
+			return false
+		}
+		for name, c := range map[string][2]string{"a new drop": {td01, plain}, "a drop of the base": {plain, plain}} {
+			if faults := longTextFaults(t, c[0], c[1], "6.32.0"); !asks(faults, "Organization", "description", "add the item searchable to the definition: string, optional, max_length 1000, after name, searchable") {
+				t.Errorf("%s of Organization.description with no item searchable on a 6.32.0 base: got %+v, want the fault that asks for the item", name, faults)
+			}
+		}
+		for name, c := range map[string][2]string{"a new drop": {td01, kept}, "a drop of the base": {plain, kept}} {
+			if faults := longTextFaults(t, c[0], c[1], "6.32.0"); len(faults) != 0 {
+				t.Errorf("%s of Organization.description with the item searchable on a 6.32.0 base: got %+v, want no fault", name, faults)
+			}
+		}
+		if faults := longTextFaults(t, td01, kept, "6.34.0"); len(faults) == 0 {
+			t.Error("a drop with the item searchable of a field that a 6.34.0 base built with no search index is accepted")
+		}
+		const action = "      - { name: action, type: string, max_length: 100 }\n"
+		noted := withChanges(strings.Replace(td01, action, action+"      - { name: note, type: string, optional: true, max_length: 1000 }\n", 1), descriptionRelax, descriptionRelaxExpand)
+		dropped := withChanges(strings.Replace(noted, "  - name: ActivityEntry\n", "  - name: ActivityEntry\n    dropped_by: activity-entry-drop\n", 1),
+			"  - {id: activity-entry-drop, kind: drop, entity: ActivityEntry}\n", "  - {change: activity-entry-drop, phase: expand}\n")
+		if faults := longTextFaults(t, noted, dropped, "6.32.0"); !asks(faults, "ActivityEntry", "note", "set searchable: true on the field") {
+			t.Errorf("a drop of ActivityEntry with note of 1000 characters and no searchable setting on a 6.32.0 base: got %+v, want the fault that asks for searchable: true", faults)
+		}
+		on := strings.Replace(dropped, "{ name: note, type: string, optional: true, max_length: 1000 }", "{ name: note, type: string, optional: true, max_length: 1000, searchable: true }", 1)
+		if faults := longTextFaults(t, noted, on, "6.32.0"); len(faults) != 0 {
+			t.Errorf("a drop of ActivityEntry with note set searchable: true on a 6.32.0 base: got %+v, want no fault", faults)
+		}
 		// A record with no postgres-adapter pin, or a pin that does not parse, counts as a base that gave long text its
 		// search index, so the check fails closed (security review of PR #22, L2).
 		data := []byte(td01)

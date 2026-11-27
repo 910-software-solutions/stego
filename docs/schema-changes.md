@@ -209,6 +209,14 @@ schema_history:
 - A relax that makes a `max_length` longer than 500 must also name the item
   `searchable`. Without it, no step drops the index, and a long value fails
   its write.
+- On such a base, a drop or a retype that gives back a public long text field
+  of a listed entity, with no relax with the item `searchable` of it, needs
+  the item `searchable` at the end of its `definition` (before a `pattern`),
+  such as `definition: "string, optional, max_length 1000, after name,
+  searchable"`. A dropped entity of a listed dropped collection needs
+  `searchable: true` on each such field. The fault gives the definition to
+  write. The item keeps the search index of the base in the stored shape;
+  it is taken only on a public string field with a `max_length` over 500.
 
 No schema change builds a search index. Thus `stego compat` refuses a head
 that puts a field of the base back into the search, such as a field whose
