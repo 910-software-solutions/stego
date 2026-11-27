@@ -496,6 +496,12 @@ again. (A provision of an ID that is active answers 409 with the code
 tenant ID. A retire changes only the service that gets it: retire the tenant
 in each service of the chain.
 
+With more than one API replica, a Provision or a Retire reaches the other
+replicas within 5 seconds (`tenant.MaxGateAge`): in that time another replica
+can still refuse the new tenant with 403 `tenant.not_provisioned`, or serve
+the retired tenant. See
+[Provision or retire a tenant on more than one replica](operations.md#provision-or-retire-a-tenant-on-more-than-one-replica).
+
 The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later

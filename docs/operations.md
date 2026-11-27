@@ -1019,6 +1019,28 @@ the lost rows.
 The audit rows after `T0` are lost in the database. The audit sink holds the
 copies that it got. Keep them as the record of that time.
 
+## Provision or retire a tenant on more than one replica
+
+Each API replica keeps the answer of the tenant list for each tenant for at
+most 5 seconds (`tenant.MaxGateAge`). The replica that serves a Provision or
+a Retire drops its own answer for that tenant after the commit, so it acts on
+the change at once. Each other replica can keep its old answer for up to
+5 seconds after the commit (erp-demo production run, 2026-11-27):
+
+- After a Provision, another replica can refuse a request of the new tenant
+  with 403 and the code `tenant.not_provisioned` for up to 5 seconds.
+- After a Retire, another replica can serve a request of the retired tenant
+  for up to 5 seconds.
+
+What to do:
+
+- In a client or a setup script that sends its first requests just after a
+  Provision, retry a 403 `tenant.not_provisioned` for up to 5 seconds, with a
+  short pause, such as 500 ms, between the attempts. Do not retry it after
+  that time: then the tenant is not provisioned.
+- Before you tell a customer that a retire is done, wait 5 seconds after the
+  Retire answered.
+
 ## Write a grant in SpiceDB yourself
 
 Most grants come from the service: Provision, a command, or the owner of a new
