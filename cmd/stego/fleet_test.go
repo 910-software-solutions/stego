@@ -142,7 +142,7 @@ func (f *fleetFixture) stegoIn(t *testing.T, folder string, args ...string) (str
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoBinary(t), args...)
-	command.Dir, command.Env = folder, f.env
+	command.Dir, command.Env = folder, serviceEnv(f.smallService)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -247,7 +247,7 @@ func TestFindEveryServiceBuiltFromADigest(t *testing.T) {
 	t.Run("ST-DIS-UC02-R01-T01 The fleet query answers from the records alone with no network and no service", func(t *testing.T) {
 		args := append([]string{"fleet", "--digest", fleetD1}, f.order...)
 		online := mustStego(t, args...)
-		answer, events := offline(t, f.parent, f.env, args...)
+		answer, events := offline(t, f.parent, serviceEnv(f.smallService), args...)
 		if answer != online {
 			t.Fatalf("the answer with no network differs:\n%s\nfrom the answer with the network:\n%s", answer, online)
 		}
@@ -317,7 +317,7 @@ func TestFindEveryServiceBuiltFromADigest(t *testing.T) {
 	vex := func(t *testing.T, names ...string) map[[2]string]map[string]any {
 		t.Helper()
 		before := tree(t, f.parent)
-		output, events := offline(t, f.parent, f.env, append([]string{"fleet", "vex", "--registry", f.registry}, f.paths(names...)...)...)
+		output, events := offline(t, f.parent, serviceEnv(f.smallService), append([]string{"fleet", "vex", "--registry", f.registry}, f.paths(names...)...)...)
 		checkStartsOnlyStegoAndGit(t, stegoBinary(t), events)
 		if after := tree(t, f.parent); !mapsEqual(before, after) {
 			t.Fatal("stego fleet vex wrote a file")
@@ -409,7 +409,7 @@ func TestFindEveryServiceBuiltFromADigest(t *testing.T) {
 	})
 	t.Run("ST-DIS-UC02-FL-T The platform engineer names every service built from a digest and gets the fleet's VEX statements", func(t *testing.T) {
 		before := tree(t, f.parent)
-		answer, events := offline(t, f.parent, f.env, append([]string{"fleet", "--digest", fleetD1}, f.order...)...)
+		answer, events := offline(t, f.parent, serviceEnv(f.smallService), append([]string{"fleet", "--digest", fleetD1}, f.order...)...)
 		checkStartsOnlyStegoAndGit(t, stegoBinary(t), events)
 		lines := fleetLines(t, answer)
 		for _, name := range []string{"alpha", "bravo"} {

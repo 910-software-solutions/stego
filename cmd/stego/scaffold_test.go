@@ -130,6 +130,7 @@ func TestScaffoldDeniesUnimplementedPolicy(t *testing.T) {
 			name, value, _ := strings.Cut(entry, "=")
 			t.Setenv(name, value)
 		}
+		t.Setenv("GOMODCACHE", localtest.ModuleCache(t))
 		t.Setenv("HOME", keys.homes["listed-ssh"])
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(keys.homes["listed-ssh"], ".config"))
 		if err := runFillSign([]string{"policy"}); err != nil {
@@ -143,7 +144,7 @@ func TestScaffoldDeniesUnimplementedPolicy(t *testing.T) {
 		}
 		for _, args := range [][]string{{"test", "-mod=readonly", "./..."}, {"build", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "service"), "./out"}} {
 			cmd := exec.Command("go", args...)
-			cmd.Dir = project
+			cmd.Dir, cmd.Env = project, localtest.GoEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("go %v: %v\n%s", args, err, output)
 			}
@@ -306,8 +307,8 @@ func TestStrictFillManifest(t *testing.T) {
 // error.
 func goInProject(t *testing.T, args ...string) {
 	t.Helper()
-	cmd := exec.Command("go", args...)
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+	cmd := exec.Command("go", append([]string{args[0], "-mod=readonly"}, args[1:]...)...)
+	cmd.Env = localtest.GoEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go %v: %v\n%s", args, err, output)
 	}
@@ -579,8 +580,8 @@ func TestCapabilityFillScaffold(t *testing.T) {
 			t.Fatalf("fills/place-order/fill.go has no unfinished return:\n%s", source)
 		}
 		writeProjectFile(t, "fills/place-order/fill.go", written)
-		command := exec.Command("go", "test", "-count=1", "./fills/place-order")
-		command.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+		command := exec.Command("go", "test", "-mod=readonly", "-count=1", "./fills/place-order")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		writeProjectFile(t, "fills/place-order/fill.go", string(source))
 		if err == nil || !strings.Contains(string(output), "replace it in fill_test.go with the tests of what the fill does") {

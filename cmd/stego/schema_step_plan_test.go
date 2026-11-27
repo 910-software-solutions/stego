@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -87,7 +86,8 @@ func TestSchemaStepPlan(t *testing.T) {
 		}
 		git(t, s.service, "branch", "-m", "main")
 		noGit := *s
-		noGit.env = append(slices.Clone(s.env[1:]), "PATH="+filepath.Dir(stegoBinary(t)))
+		// The last PATH entry is the one that the run takes.
+		noGit.entries = append(append([]string{}, s.entries...), "PATH="+filepath.Dir(stegoBinary(t)))
 		if stdout, stderr, err := noGit.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "git cannot read the repository") {
 			t.Errorf("with no git to run: %v, want a refusal, not a plan with no check:\n%s%s", err, stdout, stderr)
 		}
@@ -119,7 +119,7 @@ func TestSchemaStepPlan(t *testing.T) {
 		}
 		through := *other
 		through.service = linked
-		through.env = append(slices.Clone(other.env), "PWD="+linked)
+		through.entries = append(append([]string{}, other.entries...), "PWD="+linked)
 		if stdout, stderr, err := through.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "git cannot read the repository") {
 			t.Errorf("a linked folder whose real parent holds a .git that git cannot read: %v, want a refusal:\n%s%s", err, stdout, stderr)
 		}
@@ -138,7 +138,7 @@ func TestSchemaStepPlan(t *testing.T) {
 		}
 		writeFile(t, fresh, ".stego/config.yaml", s.read(t, ".stego/config.yaml"), 0o644)
 		initialize := exec.Command(stegoBinary(t), "init", "--archetype", "rest-crud")
-		initialize.Dir, initialize.Env = fresh, s.env
+		initialize.Dir, initialize.Env = fresh, serviceEnv(s)
 		if output, err := initialize.CombinedOutput(); err != nil || !strings.Contains(string(output), "Commit the service folder to Git before its first release") {
 			t.Errorf("stego init: %v, want the hint to commit before the first release:\n%s", err, output)
 		}

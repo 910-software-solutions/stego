@@ -17,6 +17,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/appbuild"
 	"github.com/910-software-solutions/stego/internal/compiler"
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 )
 
@@ -105,30 +106,6 @@ func (g staticGenerator) Generate(gen.Context) ([]gen.File, *gen.Wiring, error) 
 	return g.files, g.wiring, nil
 }
 
-// offlineGo is the environment of a go command with no network: the pinned Go SDK first on PATH, a private module
-// cache, as the only module proxy the download cache of this machine's module cache, so the third-party modules
-// that the runtime library requires come from it, and a sum database at a closed local port. Nothing can reach
-// github.com or any other host, and a checksum that go.sum lacks fails the command.
-func offlineGo(t *testing.T, goTool, modules string, extra ...string) []string {
-	t.Helper()
-	cache := strings.TrimSpace(goOutput(t, exec.Command(goTool, "env", "GOMODCACHE")))
-	env := []string{}
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "PATH", "GOPROXY", "GOSUMDB", "GOMODCACHE", "GOFLAGS", "GOWORK", "GONOSUMDB", "GOPRIVATE", "GONOPROXY", "GOTOOLCHAIN", "GOENV":
-			continue
-		}
-		env = append(env, entry)
-	}
-	env = append(env,
-		"PATH="+filepath.Dir(goTool)+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"GOMODCACHE="+modules, "GOPROXY=file://"+filepath.ToSlash(filepath.Join(cache, "cache", "download"))+",off",
-		"GOSUMDB=sum.golang.org http://127.0.0.1:9", "GOTOOLCHAIN=local", "GOENV=off", "GOWORK=off", "GOFLAGS=-modcacherw",
-	)
-	return append(env, extra...)
-}
-
 func goOutput(t *testing.T, command *exec.Cmd) string {
 	t.Helper()
 	output, err := command.CombinedOutput()
@@ -170,13 +147,15 @@ func runAllocation(t *testing.T, binary string) string {
 func TestRuntimePinBuildsWithNoNetwork(t *testing.T) {
 	t.Run("ST-STD-RUNTIME-R04-T02 A generated service that imports a runtime package resolves the pin from the common registry with no network, builds with the pinned Go and runs", func(t *testing.T) {
 		goTool := pinnedGo(t)
-		version := strings.TrimSpace(goOutput(t, exec.Command(goTool, "env", "GOVERSION")))
+		versionCommand := exec.Command(goTool, "env", "GOVERSION")
+		versionCommand.Env = localtest.GoEnv()
+		version := strings.TrimSpace(goOutput(t, versionCommand))
 		if version != appbuild.GoVersion {
 			t.Fatalf("%s is %s; this test builds with the pinned Go %s: set STEGO_TEST_PINNED_GO", goTool, version, appbuild.GoVersion)
 		}
 		input, pin := runtimeService(t)
 		// The checksums of the modules that the runtime library requires come from its own go.sum, as the sum
-		// database gives them; the sum database itself is unreachable, so any other lookup fails.
+		// database gives them; localtest.CheckSums checks each line that the resolution writes.
 		_, source, _, _ := runtime.Caller(0)
 		repository := filepath.Join(filepath.Dir(source), "..", "..")
 		runtimeSums, err := os.ReadFile(filepath.Join(repository, "registry", "runtime", "go.sum"))
@@ -195,26 +174,19 @@ func TestRuntimePinBuildsWithNoNetwork(t *testing.T) {
 		}
 
 		// stego deps: the go command reads the pin from the common registry's runtime folder through the local
-		// proxy, and every other module from the machine's module cache, with no network.
-		modules := filepath.Join(t.TempDir(), "modules")
-		// The go command keeps module sources read-only; make them writable so that the folder can be removed.
-		t.Cleanup(func() {
-			_ = filepath.WalkDir(modules, func(name string, entry os.DirEntry, err error) error {
-				if err == nil && entry.IsDir() {
-					_ = os.Chmod(name, 0o755)
-				}
-				return nil
-			})
-		})
-		for _, entry := range offlineGo(t, goTool, modules) {
-			key, value, _ := strings.Cut(entry, "=")
-			t.Setenv(key, value)
-		}
+		// proxy, and every other module from the checked module cache of localtest, with no network
+		// (offlineModules), with the pinned Go SDK first on PATH.
+		offlineModules(t)
+		t.Setenv("PATH", filepath.Dir(goTool)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("GOWORK", "off")
+		t.Setenv("GOTOOLCHAIN", "local")
+		t.Setenv("GOFLAGS", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := appbuild.ResolveDependencies(ctx, input); err != nil {
 			t.Fatal(err)
 		}
+		localtest.CheckSums(t, input.ProjectDir)
 		data, err := os.ReadFile(filepath.Join(input.ProjectDir, "go.mod"))
 		if err != nil {
 			t.Fatal(err)
@@ -247,28 +219,33 @@ func TestRuntimePinBuildsWithNoNetwork(t *testing.T) {
 			t.Fatalf("the resolved project drifts: %v\n%s", err, compiler.FormatDrift(drift))
 		}
 
-		// A build from the module cache that stego deps filled, with the proxy off.
+		// A build from the checked module cache, which holds the pin that stego deps staged, with no network.
 		binary := filepath.Join(t.TempDir(), "svc")
 		build := exec.Command(goTool, "build", "-mod=readonly", "-o", binary, "./out")
 		build.Dir = input.ProjectDir
-		build.Env = append(os.Environ(), "GOPROXY=off")
+		build.Env = localtest.GoEnv()
 		goOutput(t, build)
 		want := "allocated 334 USD 333 USD 333 USD"
 		if line := runAllocation(t, binary); line != want {
 			t.Fatalf("the service printed %q, want %q", line, want)
 		}
 
-		// Local development and CI: the work file of scripts/runtime-workspace.sh resolves the pin from the
-		// checkout's registry/runtime folder, with the proxy off and a module cache that holds no runtime version.
-		work := filepath.Join(t.TempDir(), "runtime.work")
-		goOutput(t, exec.Command(filepath.Join(repository, "scripts", "runtime-workspace.sh"), input.ProjectDir, work))
-		empty := filepath.Join(t.TempDir(), "modules")
+		// Local development and CI: the work file of scripts/runtime-workspace.sh (localtest.RuntimeWorkspace) resolves
+		// the pin from the checkout's registry/runtime folder, not from the module cache, with no network.
+		work := localtest.RuntimeWorkspace(t, input.ProjectDir)
 		workspace := exec.Command(goTool, "build", "-o", binary, "./out")
 		workspace.Dir = input.ProjectDir
-		workspace.Env = offlineGo(t, goTool, empty, "GOWORK="+work)
+		workspace.Env = localtest.GoEnv(work)
 		goOutput(t, workspace)
-		if entries, err := os.ReadDir(filepath.Join(empty, "cache", "download", "github.com", "910-software-solutions", "stego")); err == nil && len(entries) > 0 {
-			t.Fatalf("the workspace build put the runtime library in the module cache: %v", entries)
+		folder := exec.Command(goTool, "list", "-m", "-f", "{{.Dir}}", pin.Module)
+		folder.Dir = input.ProjectDir
+		folder.Env = localtest.GoEnv(work)
+		runtimeDir, err := filepath.EvalSymlinks(filepath.Join(repository, "registry", "runtime"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir := strings.TrimSpace(goOutput(t, folder)); dir != runtimeDir {
+			t.Fatalf("the workspace build takes the runtime library from %s, not from %s", dir, runtimeDir)
 		}
 		if line := runAllocation(t, binary); line != want {
 			t.Fatalf("the workspace build printed %q, want %q", line, want)

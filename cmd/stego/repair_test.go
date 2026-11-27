@@ -227,16 +227,9 @@ func stegoIn(t *testing.T, folder string, environment []string, args ...string) 
 	if err := os.MkdirAll(home, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		switch name {
-		case "STEGO_REGISTRY", "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME":
-			continue
-		}
-		command.Env = append(command.Env, entry)
-	}
-	command.Env = append(command.Env, "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"))
-	command.Env = append(command.Env, environment...)
+	// An empty STEGO_REGISTRY is no registry override, as an unset one is.
+	command.Env = stegoEnv(append([]string{"STEGO_REGISTRY=", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache")}, environment...)...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()

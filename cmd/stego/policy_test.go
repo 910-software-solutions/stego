@@ -92,6 +92,14 @@ func (f *onceFixture) get(t *testing.T, make func() (skip string, err error)) {
 	}
 }
 
+// stegoEnv gives the environment of a run of the stego binary: the environment of localtest.GoEnv, so the go
+// commands that stego runs take the checked module cache of localtest, with GOPROXY=off, then the entries extra.
+// GOPROXY=off keeps the fill check of stego off the hosted proxy (internal/fill moduleSources): each module comes
+// from the checked module cache (ST-STD-LOCAL-R03).
+func stegoEnv(extra ...string) []string {
+	return localtest.GoEnv(append([]string{"GOPROXY=off"}, extra...)...)
+}
+
 var binaryFixture onceFixture
 var stegoPath string
 
@@ -119,7 +127,7 @@ func stegoBinary(t *testing.T) string {
 		stegoPath = filepath.Join(fixtureRoot, "bin", "stego")
 		build := exec.Command(pinnedGo(t), "build", "-mod=readonly", "-trimpath", "-o", stegoPath, "./cmd/stego")
 		build.Dir = snapshot
-		build.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+		build.Env = localtest.GoEnv()
 		if output, err := build.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("build stego: %v\n%s", err, output)
 		}
@@ -142,9 +150,7 @@ func runStegoEnv(t *testing.T, env []string, args ...string) (string, string, er
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoBinary(t), args...)
-	if env != nil {
-		command.Env = append(os.Environ(), env...)
-	}
+	command.Env = stegoEnv(env...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -213,6 +219,7 @@ func builtApplication(t *testing.T) applicationFixture {
 				args = append([]string{"build"}, args...)
 			}
 			command := exec.Command(binary, args...)
+			command.Env = stegoEnv()
 			var stdout, stderr bytes.Buffer
 			command.Stdout, command.Stderr = &stdout, &stderr
 			if err := command.Run(); err != nil {

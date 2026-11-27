@@ -16,6 +16,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/compiler"
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/auditlog"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 )
 
@@ -148,18 +149,13 @@ func TestAuditLogCompiledService(t *testing.T) {
 		if required != pin.Module+" "+pin.Version+";" || len(module.Replace) != 0 {
 			t.Fatalf("go.mod requires %q with %d replace directives, want only the pin %s %s", required, len(module.Replace), pin.Module, pin.Version)
 		}
-		work := filepath.Join(t.TempDir(), "runtime.work")
-		script := exec.Command(filepath.Join("..", "..", "scripts", "runtime-workspace.sh"), input.ProjectDir, work)
-		if out, err := script.CombinedOutput(); err != nil {
-			t.Fatalf("runtime-workspace.sh: %v\n%s", err, out)
-		}
 		name := os.Getenv("STEGO_TEST_PINNED_GO")
 		if name == "" {
 			name = filepath.Join(runtime.GOROOT(), "bin", "go")
 		}
 		build := exec.Command(name, "vet", "./out/internal/auditlog")
 		build.Dir = input.ProjectDir
-		build.Env = append(os.Environ(), "GOWORK="+work, "GOFLAGS=", "GOTOOLCHAIN=local")
+		build.Env = localtest.GoEnv(localtest.RuntimeWorkspace(t, input.ProjectDir))
 		if out, err := build.CombinedOutput(); err != nil {
 			t.Fatalf("go vet of the compiled audit wiring: %v\n%s", err, out)
 		}

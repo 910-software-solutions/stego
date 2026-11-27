@@ -4,9 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // subscriptionDeclaration is what an author adds to the rpc-service scaffold to take the change events of two other
@@ -96,7 +97,7 @@ func TestRPCSubscriptionScaffold(t *testing.T) {
 		// The fills are tested, then signed with listed-ssh of ST-EXT-TD02, a key that the test run makes.
 		keys := testFillKeys(t)
 		putFile(t, project, "SIGNERS", keys.signers)
-		signing := append(append(slices.Clone(environment), keys.goEnv...), "GOFLAGS=-modcacherw",
+		signing := append(append(append([]string{}, environment...), keys.goEnv...),
 			"HOME="+keys.homes["listed-ssh"], "XDG_CONFIG_HOME="+filepath.Join(keys.homes["listed-ssh"], ".config"))
 		for _, command := range [][]string{{"test"}, {"fill", "sign", "get-greeting"}, {"fill", "sign", "record-orders"}, {"fill", "sign", "record-carriers"}} {
 			if run := stegoIn(t, project, signing, command...); run.code != 0 {
@@ -134,7 +135,7 @@ func TestRPCSubscriptionScaffold(t *testing.T) {
 		}
 		build := exec.Command("go", "build", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "service"), "./out")
 		build.Dir = project
-		build.Env = append(os.Environ(), "GOWORK=off")
+		build.Env = localtest.GoEnv()
 		if output, err := build.CombinedOutput(); err != nil {
 			t.Errorf("go build ./out: %v\n%s", err, output)
 		}

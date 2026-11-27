@@ -177,9 +177,8 @@ func (f *supplyingFixture) runStegoIn(t *testing.T, folder string, env []string,
 	trace := filepath.Join(t.TempDir(), "git-trace")
 	command := exec.CommandContext(ctx, stegoBinary(t), args...)
 	command.Dir = folder
-	command.Env = append(os.Environ(), "XDG_CACHE_HOME="+f.cache, "STEGO_REGISTRY=", "GIT_TRACE="+trace,
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-	command.Env = append(command.Env, env...)
+	command.Env = stegoEnv(append([]string{"XDG_CACHE_HOME=" + f.cache, "STEGO_REGISTRY=", "GIT_TRACE=" + trace,
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}, env...)...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()

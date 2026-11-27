@@ -933,7 +933,7 @@ func stegoBuild(t *testing.T, env []string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoBinary(t), append([]string{"build"}, args...)...)
-	command.Env = append(os.Environ(), env...)
+	command.Env = stegoEnv(env...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {

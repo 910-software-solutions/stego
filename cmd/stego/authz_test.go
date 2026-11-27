@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/declaration"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // The system tests of ST-DECL-UC06 Declare authorization. Each runs the stego binary built from the commit under
@@ -531,20 +532,17 @@ func registryWithout(t *testing.T, component string) string {
 }
 
 // buildWithRuntime builds the packages of the applied project against registry/runtime, through the work file of
-// scripts/runtime-workspace.sh, with the pinned Go SDK, STEGO_TEST_PINNED_GO, else the Go SDK of the test.
+// scripts/runtime-workspace.sh (localtest.RuntimeWorkspace), with the pinned Go SDK, STEGO_TEST_PINNED_GO, else the Go
+// SDK of the test, and the checked module cache of localtest (ST-STD-LOCAL-R03).
 func buildWithRuntime(t *testing.T, project string, packages ...string) {
 	t.Helper()
-	work := filepath.Join(t.TempDir(), "runtime.work")
-	if out, err := exec.Command(filepath.Join("..", "..", "scripts", "runtime-workspace.sh"), project, work).CombinedOutput(); err != nil {
-		t.Fatalf("runtime-workspace.sh: %v\n%s", err, out)
-	}
 	goBinary := os.Getenv("STEGO_TEST_PINNED_GO")
 	if goBinary == "" {
 		goBinary = filepath.Join(runtime.GOROOT(), "bin", "go")
 	}
 	build := exec.Command(goBinary, append([]string{"build"}, packages...)...)
 	build.Dir = project
-	build.Env = append(os.Environ(), "GOWORK="+work, "GOFLAGS=", "GOTOOLCHAIN=local")
+	build.Env = localtest.GoEnv(localtest.RuntimeWorkspace(t, project))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build of the generated service: %v\n%s", err, out)
 	}

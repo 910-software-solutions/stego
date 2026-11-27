@@ -183,7 +183,7 @@ func runInProject(t *testing.T, dir string, env []string, args ...string) (strin
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoBinary(t), args...)
 	command.Dir = dir
-	command.Env = append(os.Environ(), env...)
+	command.Env = stegoEnv(env...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()

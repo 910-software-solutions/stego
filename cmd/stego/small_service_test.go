@@ -35,7 +35,16 @@ import (
 type smallService struct {
 	parent, service, registry string
 	r1, r2                    string
-	env                       []string
+	// entries are the environment entries of a run of stego in the fixture, after those of localtest.GoEnv
+	// (serviceEnv).
+	entries []string
+}
+
+// serviceEnv gives the environment of a run of stego, or of git, in the fixture: the environment of a run of the
+// stego binary (stegoEnv), so each go command that stego runs takes the checked module cache of localtest, with the
+// home of the fixture and no Git configuration of the machine, then the entries extra.
+func serviceEnv(s *smallService, extra ...string) []string {
+	return stegoEnv(append(append([]string{}, s.entries...), extra...)...)
 }
 
 // smallServiceDeclaration is the declaration of ST-GEN-TD03: the rest-crud
@@ -81,10 +90,9 @@ func newSmallService(t *testing.T) *smallService {
 			t.Fatal(err)
 		}
 	}
-	s.env = []string{
+	s.entries = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_CACHE_HOME=" + filepath.Join(home, "cache"),
 		"TMPDIR=" + os.TempDir(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
-		"GOTOOLCHAIN=local", "GOPROXY=off", "GOWORK=off",
 	}
 	if output, err := exec.Command("cp", "-a", shippedRegistry(t), s.registry).CombinedOutput(); err != nil {
 		t.Fatalf("copy the registry: %v\n%s", err, output)
@@ -157,7 +165,7 @@ func (s *smallService) stego(t *testing.T, args ...string) (string, string, erro
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoBinary(t), args...)
-	command.Dir, command.Env = s.service, s.env
+	command.Dir, command.Env = s.service, serviceEnv(s)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -348,7 +356,7 @@ func TestServiceRecordIsCommittedWithItsCode(t *testing.T) {
 				continue
 			}
 			show := exec.Command("git", "show", "HEAD:"+path)
-			show.Dir, show.Env = s.service, s.env
+			show.Dir, show.Env = s.service, serviceEnv(s)
 			data, err := show.Output()
 			if err != nil {
 				t.Fatal(err)
