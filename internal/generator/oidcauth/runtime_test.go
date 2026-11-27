@@ -28,6 +28,9 @@ func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 // testdata/oidc_test.go in its module, which starts the service against a local PostgreSQL server, a local SpiceDB
 // container and a local OpenID Connect provider (ST-STD-LOCAL).
 
+// formIDToken is the form of oidc-auth whose declaration states accept_id_token: true (ST-SUP-RC37-OC02-T04).
+const formIDToken = "oidc-auth-id-token"
+
 // shopModule is the module of the generated service, which the fills of the fixture import.
 const shopModule = "example.com/shop"
 
@@ -96,6 +99,11 @@ func newProject(t *testing.T, stego, provider string) *project {
 	text := p.read(service)
 	auth := "  auth-provider: oidc-auth\n  oidc-auth:\n    issuer: https://" + p.address + "/realms/shop\n    audience: orders-api\n    algorithms: [RS256, ES256]\n"
 	name := "oidc-shop"
+	if provider == formIDToken {
+		// The declaration opts in to an ID token as the bearer (ST-SUP-Q218).
+		auth += "    accept_id_token: true\n"
+		name = "idt-shop"
+	}
 	if provider == "rh-sso-auth" {
 		auth = "  auth-provider: rh-sso-auth\n  rh-sso-auth:\n    issuer: https://" + p.address + "/auth/realms/redhat-external\n    audience: orders-api\n"
 		name = "sso-shop"
@@ -398,5 +406,21 @@ func TestOIDCService(t *testing.T) {
 	oidc.checkRuns(binary, Component, "/realms/shop", endpoint, key,
 		"ST-SUP-RC37-OC01-T01 A provider is found through its discovery document, and a mismatched document is refused",
 		"ST-SUP-RC37-OC02-T01 A token for another audience or with another algorithm is refused",
-		"ST-SUP-RC37-OC03-T01 The subject and the tenant come only from the declared claims")
+		"ST-SUP-RC37-OC03-T01 The subject and the tenant come only from the declared claims",
+		"ST-SUP-RC37-OC02-T04 An ID token is refused with 401 when the declaration does not opt in")
+
+	idt := newProject(t, stego, formIDToken)
+	if output, err := idt.run("apply"); err != nil {
+		t.Fatalf("stego apply of the service with oidc-auth and accept_id_token: %v\n%s", err, output)
+	}
+	t.Run("ST-SUP-RC37-OC02-T04 The declared opt-in reaches the runtime verifier, and only there", func(t *testing.T) {
+		on, off := idt.generated()["internal/stegoruntime/runtime.go"], oidc.generated()["internal/stegoruntime/runtime.go"]
+		if !strings.Contains(on, "AcceptIDToken: true") || strings.Contains(off, "AcceptIDToken") {
+			t.Fatal("the runtime wiring of the opt-in does not state AcceptIDToken: true, or the wiring with no opt-in states it")
+		}
+	})
+	idt.t = t
+	binary = idt.build()
+	idt.checkRuns(binary, formIDToken, "/realms/shop", endpoint, key,
+		"ST-SUP-RC37-OC02-T04 An ID token with a nonce passes with 200 when the declaration states accept_id_token, and an ID token of two audiences is refused with 401")
 }

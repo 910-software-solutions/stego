@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
 	"github.com/910-software-solutions/stego/registry/runtime/query"
 	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
@@ -188,6 +189,23 @@ func TestSettings(t *testing.T) {
 						t.Fatalf("%s gave %v, want a refusal that names %s and holds no value", name, err, c.names)
 					}
 				})
+			}
+		})
+		t.Run("ST-SUP-RP14-LC01-T04 The declared opt-in to an ID token reaches the verifier, and no environment variable turns it on", func(t *testing.T) {
+			oidc := Auth{Issuer: "https://declared.example/realms/r1", Discovery: true, AcceptIDToken: true}
+			set(t, with(map[string]string{IssuerSetting: "", KeysURLSetting: ""}))
+			var keys *authn.KeySet
+			s, err := ReadSettings(oidc)
+			if err != nil || !s.AcceptIDToken || !verifierSettings(s, Parts{}, keys).AcceptIDToken {
+				t.Fatalf("the declared opt-in gave the settings %+v, %v, want the opt-in in the settings and the verifier settings", s, err)
+			}
+			oidc.AcceptIDToken = false
+			for _, value := range []string{"1", "true"} {
+				t.Setenv("STEGO_AUTHN_ACCEPT_ID_TOKEN", value)
+				s, err := ReadSettings(oidc)
+				if err != nil || s.AcceptIDToken || verifierSettings(s, Parts{}, keys).AcceptIDToken {
+					t.Fatalf("STEGO_AUTHN_ACCEPT_ID_TOKEN=%s with no declared opt-in gave %+v, %v, want no opt-in", value, s, err)
+				}
 			}
 		})
 		refused := map[string]map[string]string{

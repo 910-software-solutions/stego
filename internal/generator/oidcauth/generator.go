@@ -31,12 +31,15 @@ var SubjectClaims = []string{"sub", "oid"}
 type Generator struct{}
 
 // Config is the sign-in that a declaration states for an OpenID Connect provider: the issuer that names the
-// provider, the audience, the accepted signing algorithms, the subject claim, the role claim, the header and the CA
-// file. An empty field takes the default of the runtime verifier, except the issuer and the audience, which every
-// declaration states.
+// provider, the audience, the accepted signing algorithms, the subject claim, the role claim, the header, the CA
+// file and the opt-in to an ID token as the bearer. An empty field takes the default of the runtime verifier, except
+// the issuer and the audience, which every declaration states.
 type Config struct {
 	Issuer, Audience, Header, RoleClaim, SubjectClaim, CAFile string
 	Algorithms                                                []string
+	// AcceptIDToken is the setting accept_id_token: true opts the verifier in to an ID token as the bearer, for a
+	// web client and an API that share one client ID at a provider with no JWT access token (ST-SUP-Q218).
+	AcceptIDToken bool
 }
 
 // ValidateContext refuses a declaration of oidc-auth that RuntimeAuth refuses.
@@ -45,7 +48,8 @@ func (g *Generator) ValidateContext(ctx gen.Context) error {
 	return err
 }
 
-// RuntimeAuth reads the settings of oidc-auth from the declaration and gives them to the runtime wiring. It refuses
+// RuntimeAuth reads the settings of oidc-auth from the declaration and gives them to the runtime wiring, with the
+// opt-in accept_id_token, which must be true or false and is false when absent (ST-SUP-Q218). It refuses
 // a service with no entity, no command and no query: the runtime verifier guards the generated commands and queries,
 // and such a service has none, so oidc-auth would verify nothing (ST-SUP-RC37-OC04).
 func (*Generator) RuntimeAuth(ctx gen.Context) (gen.RuntimeAuth, error) {
@@ -73,6 +77,13 @@ func (*Generator) RuntimeAuth(ctx gen.Context) (gen.RuntimeAuth, error) {
 			}
 			c.Algorithms = append(c.Algorithms, name)
 		}
+	}
+	if raw, present := ctx.ComponentConfig["accept_id_token"]; present && raw != nil {
+		accept, ok := raw.(bool)
+		if !ok {
+			return gen.RuntimeAuth{}, fmt.Errorf("the setting accept_id_token of %s must be true or false", Component)
+		}
+		c.AcceptIDToken = accept
 	}
 	return Configure(Component, c)
 }
@@ -145,7 +156,7 @@ func Configure(component string, c Config) (gen.RuntimeAuth, error) {
 		return refuse("ca_file must be an absolute clean path;")
 	}
 	return gen.RuntimeAuth{Issuer: c.Issuer, Audience: c.Audience, Header: c.Header, RoleClaim: c.RoleClaim,
-		SubjectClaim: c.SubjectClaim, CAFile: c.CAFile, Algorithms: algorithms}, nil
+		SubjectClaim: c.SubjectClaim, CAFile: c.CAFile, Algorithms: algorithms, AcceptIDToken: c.AcceptIDToken}, nil
 }
 
 // text gives a setting that is text, or empty when it is absent.
