@@ -119,6 +119,9 @@ func report(t *testing.T, rule string, faults []string) {
 	}
 }
 
+// plantMark ends each line of a test of a check that holds a planted form, in Assuring's own files of checks.
+const plantMark = "// a plant of a test of a check"
+
 // localTestsFile is the file of these checks.
 const localTestsFile = "internal/assure/pattern_rule_local_test.go"
 
@@ -130,12 +133,12 @@ func ownCheck(name string) bool {
 
 // codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
 // files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
-// for.
+// for, nor a planted line of a test of a check, which ends with plantMark.
 func codeLines(name string, data []byte) []string {
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && strings.Contains(line, "regexp.MustCompile(") {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && (strings.Contains(line, "regexp.MustCompile(") || strings.HasSuffix(trimmed, plantMark)) {
 			continue
 		}
 		lines = append(lines, line)
@@ -151,14 +154,17 @@ var workstationFaults = []struct {
 	pattern *regexp.Regexp
 	why     string
 }{
-	{regexp.MustCompile(`"--privileged(=[^"]*)?"|\bPrivileged:\s*true\b`), "starts a privileged container"},
+	{regexp.MustCompile(`"--privileged(=[^"]*)?"|\bPrivileged:\s*true\b|\b(docker|podman)\s+(container\s+)?(run|create)\b[^"\n]*\s--privileged\b`), "starts a privileged container"},
+	// The root folder of the host given to a container as a volume, as an argument or in a shell script (security
+	// review of PR #504).
+	{regexp.MustCompile(`"(-v|--volume|--mount)",\s*"(type=bind,\s*source=)?/:|"(-v|--volume)=/:|\s(-v|--volume)[\s=]+/:/`), "gives a container the root folder of the host"},
 	{regexp.MustCompile(`"--(network|net|pid|ipc|uts|userns|cgroupns)(=|",\s*")"?host"|\b(NetworkMode|PidMode|IpcMode|UTSMode|UsernsMode):\s*"host"`), "starts a container in a namespace of the host"},
 	{regexp.MustCompile(`"--cap-add|\bCapAdd:`), "adds a capability to a container"},
 	{regexp.MustCompile(`"--device|\bDevices:`), "gives a container a device of the host"},
 	{regexp.MustCompile(`docker\.sock|podman\.sock`), "gives a container the socket of the container engine"},
 	{regexp.MustCompile(`(seccomp|apparmor)[=:]unconfined`), "starts a container with no seccomp or AppArmor profile"},
 	{regexp.MustCompile(`(Getenv|LookupEnv|environ\.get|environ\[)\(?\s*["'](KUBECONFIG|GH_TOKEN|GITHUB_TOKEN|DOCKER_CONFIG|REGISTRY_AUTH_FILE|AWS_ACCESS_KEY_ID|GOOGLE_APPLICATION_CREDENTIALS)["']`), "reads a cluster configuration or a credential of a hosted service from the environment"},
-	{regexp.MustCompile(`(UserHomeDir\(\)|Path\.home\(\)|expanduser\()[^\n]*(\.kube|\.docker|\.config/gh|\.netrc)`), "reads a cluster configuration or a credential from the user's home folder"},
+	{regexp.MustCompile(`(UserHomeDir\(\)|Getenv\("HOME"\)|LookupEnv\("HOME"\)|Path\.home\(\)|expanduser\(|\$HOME|"~/)[^\n]*(\.kube|\.docker|\.config/gh|\.netrc)`), "reads a cluster configuration or a credential from the user's home folder"},
 	{regexp.MustCompile(`subprocess\.\w+\(\s*\[\s*["'](\S*/)?(kubectl|oc|helm|argocd|gh|kind)["']`), "runs the client of a cluster or of a hosted service"},
 }
 
@@ -166,7 +172,8 @@ var workstationFaults = []struct {
 var clusterClients = map[string]bool{"kubectl": true, "oc": true, "helm": true, "argocd": true, "gh": true, "kind": true}
 
 // commandFaults parses a Go test file and gives each call of exec.Command or exec.CommandContext that runs a client
-// of a cluster or of a hosted service: as the program, by any path, or as the first word of a shell's -c script.
+// of a cluster or of a hosted service: as the program, by any path, also through a constant or a variable of the
+// file that holds its name, or as the first word of a shell's -c script; and each exec.LookPath of such a client.
 func commandFaults(file string, data []byte) []string {
 	if path.Ext(file) != ".go" {
 		return nil
@@ -176,7 +183,22 @@ func commandFaults(file string, data []byte) []string {
 		return []string{file + " does not parse: " + err.Error()}
 	}
 	var faults []string
-	literal := func(expr ast.Expr) (string, bool) {
+	// named holds the string literals that the file gives a name to, in a constant, a variable or an assignment, so
+	// that a program held in a name is read too (security review of PR #504).
+	named := map[string][]string{}
+	var literal func(ast.Expr) (string, bool)
+	literal = func(expr ast.Expr) (string, bool) {
+		if id, ok := expr.(*ast.Ident); ok {
+			for _, text := range named[id.Name] {
+				if clusterClients[path.Base(text)] {
+					return text, true
+				}
+			}
+			if texts := named[id.Name]; len(texts) > 0 {
+				return texts[0], true
+			}
+			return "", false
+		}
 		lit, ok := expr.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return "", false
@@ -185,11 +207,45 @@ func commandFaults(file string, data []byte) []string {
 		return text, err == nil
 	}
 	ast.Inspect(parsed, func(node ast.Node) bool {
+		bind := func(names []*ast.Ident, values []ast.Expr) {
+			for i, name := range names {
+				if i < len(values) {
+					if lit, ok := values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if text, err := strconv.Unquote(lit.Value); err == nil {
+							named[name.Name] = append(named[name.Name], text)
+						}
+					}
+				}
+			}
+		}
+		switch n := node.(type) {
+		case *ast.ValueSpec:
+			bind(n.Names, n.Values)
+		case *ast.AssignStmt:
+			var names []*ast.Ident
+			for _, lhs := range n.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok {
+					names = append(names, id)
+				} else {
+					names = append(names, &ast.Ident{})
+				}
+			}
+			bind(names, n.Rhs)
+		}
+		return true
+	})
+	ast.Inspect(parsed, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "LookPath" && len(call.Args) == 1 {
+			if program, ok := literal(call.Args[0]); ok && clusterClients[path.Base(program)] {
+				faults = append(faults, fmt.Sprintf("%s looks up the client %s of a cluster or of a hosted service", file, program))
+			}
+			return true
+		}
 		if !ok || selector.Sel.Name != "Command" && selector.Sel.Name != "CommandContext" {
 			return true
 		}
@@ -383,21 +439,80 @@ var optInVariables = map[string]string{
 	"STEGO_TEST_NO_CONTAINERS": "turns the failure of a test with no container engine into a skip; without it the test fails, as R02 asks",
 }
 
-// optInSuffixes are the endings of the names of opt-in variables that copy what a test made to a folder, for a
-// person or a CI job to read: the test proves the same without them.
-var optInSuffixes = []string{"_DUMP", "_ARTIFACTS"}
+// copyVariables are the opt-in variables that copy what a test made to a folder, for a person or a CI job to read:
+// the test proves the same without them. Each is named, so a new variable with such an ending that a test stops on
+// is not let through by its name alone (security review of PR #504, N3).
+var copyVariables = []string{"STEGO_ALLOCATION_ARTIFACTS", "STEGO_ALLOCATION_ENDPOINT_ARTIFACTS", "STEGO_BROWSER_LOGOUT_ARTIFACTS",
+	"STEGO_COMMAND_DUMP", "STEGO_CRUD_DUMP", "STEGO_DEPLOYMENT_ARTIFACTS", "STEGO_KEYCLOAK_PROVIDER_ARTIFACTS",
+	"STEGO_KUBERNETES_ROTATION_ARTIFACTS", "STEGO_PINNED_POLICY_ARTIFACTS"}
 
-// optIn tells if the variable is an opt-in one, by name or by the ending of its name.
+// optIn tells if the variable is an opt-in one.
 func optIn(name string) bool {
-	if _, held := optInVariables[name]; held {
-		return true
-	}
-	for _, suffix := range optInSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return true
+	_, held := optInVariables[name]
+	return held || slices.Contains(copyVariables, name)
+}
+
+// A name that a Go file gives to the name of a STEGO_ variable, in a constant, a variable or an assignment.
+var namesVariable = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:string\s*)?:?=\s*"(STEGO_[A-Z0-9_]+)"`)
+
+// A set of a variable through a name: an entry of the environment of a command, name+"=...", or a Setenv of the name.
+var setsNamed = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"=|Setenv\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,`)
+
+// A read of a variable through a name, also of another package, such as Getenv(DSNVariable) or
+// Getenv(pgtest.DSNVariable).
+var readsNamed = regexp.MustCompile(`(?:Getenv|LookupEnv)\((?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+// A function of a Go file whose body reads the variable that its string parameter names, and one that returns the
+// read of a STEGO_ variable: their calls read the variable too.
+var (
+	readerFunction   = regexp.MustCompile(`(?m)^func\s+([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)[^{\n]*\{`)
+	returnsRead      = regexp.MustCompile(`^\s*return\s+(?:os\.)?(?:Getenv|LookupEnv)\("(STEGO_[A-Z0-9_]+)"\)`)
+	stringParameters = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s+string\b`)
+)
+
+// variableReads gives, for each line of the code lines of a file, the STEGO_ variables that the line reads: a read
+// by its literal name; a read through a name that a Go file of the tree gives to the variable (names); a call of a
+// function of the same folder that reads the variable that its parameter names, with the name as a literal, and
+// which stops the test itself (wrappers, whose call is its own condition); and a call of a function of the same
+// folder that returns the read of the variable (returners), such as dsn() for Getenv("STEGO_X") (security review of
+// PR #504, N3). stopsHere tells, for each read, whether the line itself stops the test, as a wrapper does.
+type variableRead struct {
+	name      string
+	stopsHere bool
+}
+
+// readerFunctions finds the wrappers and the returners of the code lines of the files of one folder.
+func readerFunctions(files map[string][]string) (wrappers map[string]bool, returners map[string]string) {
+	wrappers, returners = map[string]bool{}, map[string]string{}
+	for _, lines := range files {
+		for i, line := range lines {
+			match := readerFunction.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			end := i + 1
+			for end < len(lines) && !strings.HasPrefix(lines[end], "}") {
+				end++
+			}
+			body := strings.Join(lines[i+1:min(end, len(lines))], "\n")
+			if end == i+1 {
+				body = line
+			}
+			for _, parameter := range stringParameters.FindAllStringSubmatch(match[2], -1) {
+				for _, name := range strings.Split(strings.TrimSuffix(strings.TrimSpace(parameter[0]), "string"), ",") {
+					if name = strings.TrimSpace(name); name != "" && regexp.MustCompile(`(?:Getenv|LookupEnv)\(`+regexp.QuoteMeta(name)+`\)`).MatchString(body) && stopsTest.MatchString(body) {
+						wrappers[match[1]] = true
+					}
+				}
+			}
+			for _, bodyLine := range strings.Split(body, "\n") {
+				if read := returnsRead.FindStringSubmatch(bodyLine); read != nil {
+					returners[match[1]] = read[1]
+				}
+			}
 		}
 	}
-	return false
+	return wrappers, returners
 }
 
 // conditionLine gives the line that tests the value of the read on line i: line i when it is an if statement or
@@ -438,12 +553,41 @@ func conditionLine(lines []string, i int) int {
 // opt-in variable. The documented command go test ./... runs the test with no such variable, so the test does not
 // run from the documented command alone (review of PR #502, L4; review of PR #504, M1).
 func (p localProof) undocumentedEnvironment(readme string) []string {
-	set := map[string]bool{}
+	// A test sets a variable for the tests of its own module only: a child process that it runs, or the tests of the
+	// process. So a set counts only in the suite of the file that sets it (security review of PR #504, L2).
+	set := map[string]map[string]bool{}
+	names := map[string][]string{}
+	// namedSet is the text of a file that can set a variable through a name, such as marker+"=1" or
+	// t.Setenv(consoleSetting, ...), which is read when all the names are known.
+	type namedSet struct{ folder, text string }
+	var sets []namedSet
 	for _, name := range p.tree.paths() {
+		if path.Ext(name) != ".go" {
+			continue
+		}
+		data, _ := p.tree.File(name)
+		text := strings.Join(codeLines(name, data), "\n")
+		for _, match := range namesVariable.FindAllStringSubmatch(text, -1) {
+			names[match[1]] = append(names[match[1]], match[2])
+		}
 		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
-			data, _ := p.tree.File(name)
-			for _, match := range setsVariable.FindAllStringSubmatch(string(data), -1) {
-				set[match[1]+match[2]+match[3]] = true
+			suite, ok := p.suiteOf(name)
+			if !ok {
+				continue
+			}
+			if set[suite.folder] == nil {
+				set[suite.folder] = map[string]bool{}
+			}
+			for _, match := range setsVariable.FindAllStringSubmatch(text, -1) {
+				set[suite.folder][match[1]+match[2]+match[3]] = true
+			}
+			sets = append(sets, namedSet{suite.folder, text})
+		}
+	}
+	for _, named := range sets {
+		for _, match := range setsNamed.FindAllStringSubmatch(named.text, -1) {
+			for _, name := range names[match[1]+match[2]] {
+				set[named.folder][name] = true
 			}
 		}
 	}
@@ -452,19 +596,50 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 	if section == "" {
 		faults = append(faults, "README.md has no section "+testEnvironmentSection+" that names the variables of the tests")
 	}
-	for file, data := range p.packageFiles() {
-		lines := codeLines(file, data)
-		for i, line := range lines {
-			for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
-				name := match[1]
-				if set[name] || optIn(name) || namesWord(section, name) {
-					continue
+	files := p.packageFiles()
+	folders := map[string]map[string][]string{}
+	for file, data := range files {
+		if folders[path.Dir(file)] == nil {
+			folders[path.Dir(file)] = map[string][]string{}
+		}
+		folders[path.Dir(file)][file] = codeLines(file, data)
+	}
+	for _, lineSets := range folders {
+		wrappers, returners := readerFunctions(lineSets)
+		for file, lines := range lineSets {
+			suite, _ := p.suiteOf(file)
+			for i, line := range lines {
+				var reads []variableRead
+				for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
+					reads = append(reads, variableRead{name: match[1]})
 				}
-				condition := conditionLine(lines, i)
-				if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
-					continue
+				for _, match := range readsNamed.FindAllStringSubmatch(line, -1) {
+					for _, name := range names[match[1]] {
+						reads = append(reads, variableRead{name: name})
+					}
 				}
-				faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, name, testEnvironmentSection))
+				for wrapper := range wrappers {
+					for _, match := range regexp.MustCompile(`\b`+regexp.QuoteMeta(wrapper)+`\([^)\n]*"(STEGO_[A-Z0-9_]+)"`).FindAllStringSubmatch(line, -1) {
+						reads = append(reads, variableRead{name: match[1], stopsHere: true})
+					}
+				}
+				for returner, name := range returners {
+					if regexp.MustCompile(`\b` + regexp.QuoteMeta(returner) + `\(\)`).MatchString(line) {
+						reads = append(reads, variableRead{name: name})
+					}
+				}
+				for _, read := range reads {
+					if set[suite.folder][read.name] || optIn(read.name) || namesWord(section, read.name) {
+						continue
+					}
+					if !read.stopsHere {
+						condition := conditionLine(lines, i)
+						if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
+							continue
+						}
+					}
+					faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, read.name, testEnvironmentSection))
+				}
 			}
 		}
 	}
@@ -770,4 +945,80 @@ func TestLocalDevelopmentStandard(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
+}
+
+// TestLocalChecks gives the checks of R01 and R02 planted files, so that each form that a review found is held by
+// a test of the check, and not only by the tree at HEAD, which holds none of them (security review of PR #504).
+func TestLocalChecks(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R01-T04 The checks of R01 find a privileged container in a shell script, a cluster client held in a name or looked up, a kube configuration under HOME and the root folder of the host as a volume", func(t *testing.T) {
+		for _, c := range []struct {
+			source string
+			fault  bool
+		}{
+			{`exec.Command("sh", "-c", "docker run --rm --privileged busybox true")`, true},          // a plant of a test of a check
+			{`exec.Command("docker", "run", "--rm", "-v", "/:/host", "busybox", "true")`, true},      // a plant of a test of a check
+			{`exec.Command("sh", "-c", "podman run --rm -v /:/host busybox true")`, true},            // a plant of a test of a check
+			{"kubectl := \"kubectl\"\n\t_ = exec.Command(kubectl, \"get\", \"pods\")", true},         // a plant of a test of a check
+			{"const client = \"/usr/local/bin/oc\"\n\t_ = exec.Command(client, \"whoami\")", true},   // a plant of a test of a check
+			{`_, _ = exec.LookPath("kubectl")`, true},                                                // a plant of a test of a check
+			{`_, _ = os.ReadFile(os.Getenv("HOME") + "/.kube/config")`, true},                        // a plant of a test of a check
+			{`_, _ = os.ReadFile(filepath.Join(os.Getenv("HOME"), ".docker", "config.json"))`, true}, // a plant of a test of a check
+			{`exec.Command("sh", "-c", "cat $HOME/.kube/config")`, true},                             // a plant of a test of a check
+			{`exec.Command("docker", "run", "--rm", "-v", dir+":/work", "busybox", "true")`, false},  // a plant of a test of a check
+			{"program := \"go\"\n\t_ = exec.Command(program, \"version\")", false},                   // a plant of a test of a check
+		} {
+			data := []byte("package plant\n\nfunc TestPlant(t *testing.T) {\n\t" + c.source + "\n}\n")
+			var faults []string
+			for _, line := range codeLines("plant/plant_test.go", data) {
+				for _, fault := range workstationFaults {
+					if fault.pattern.MatchString(line) {
+						faults = append(faults, fault.why)
+					}
+				}
+			}
+			faults = append(faults, commandFaults("plant/plant_test.go", data)...)
+			if (len(faults) > 0) != c.fault {
+				t.Errorf("%s: the checks give %v, want a fault: %t", c.source, faults, c.fault)
+			}
+		}
+	})
+	t.Run("ST-STD-LOCAL-R02-T03 The check of R02 counts a set of a variable only in the module of the test that sets it, and finds a read through a constant, a wrapper, a helper and an unlisted copy variable", func(t *testing.T) {
+		skip := "\tif %s == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n"
+		plantFile := func(body string) []byte {
+			return []byte("package plant\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + body + "}\n")
+		}
+		files := map[string][]byte{
+			"go.mod":                []byte("module example.com/plant\n"),
+			"other/go.mod":          []byte("module example.com/other\n"),
+			"other/sets_test.go":    plantFile("\t_ = []string{\"STEGO_PLANT_OTHER=\" + \"x\", \"STEGO_PLANT_SAME=1\"}\n"),
+			"other/reads_test.go":   plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_SAME")`)),
+			"a/other_test.go":       plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_OTHER")`)),
+			"a/constant_test.go":    append(plantFile(fmt.Sprintf(skip, `os.Getenv(plantVariable)`)), []byte("\nconst plantVariable = \"STEGO_PLANT_CONSTANT\"\n")...),
+			"a/wrapper_test.go":     append(plantFile("\t_ = need(t, \"STEGO_PLANT_WRAPPED\")\n"), []byte("\nfunc need(t *testing.T, name string) string {\n\tvalue := os.Getenv(name)\n\tif value == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n\treturn value\n}\n")...),
+			"a/helper_test.go":      append(plantFile(fmt.Sprintf(skip, "plantDSN()")), []byte("\nfunc plantDSN() string {\n\treturn os.Getenv(\"STEGO_PLANT_HELPER\")\n}\n")...),
+			"a/copy_test.go":        plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DUMP")`)),
+			"a/documented_test.go":  plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DOCUMENTED")`)),
+			"a/child_test.go":       append(plantFile(fmt.Sprintf(skip, `os.Getenv(childVariable)`)+"\t_ = []string{childVariable + \"=1\"}\n"), []byte("\nconst childVariable = \"STEGO_PLANT_CHILD\"\n")...),
+			"a/listed_copy_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_CRUD_DUMP")`)),
+		}
+		tree := NewTree(files)
+		proof := localProof{files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
+		for name, data := range files {
+			if strings.HasSuffix(name, "_test.go") {
+				proof.files[name] = data
+			}
+		}
+		faults := proof.undocumentedEnvironment(testEnvironmentSection + "\n\n`STEGO_PLANT_DOCUMENTED`: a plant.\n")
+		var needed []string
+		for _, fault := range faults {
+			if _, name, ok := strings.Cut(fault, " needs "); ok {
+				needed = append(needed, strings.TrimSuffix(strings.Fields(name)[0], ","))
+			}
+		}
+		slices.Sort(needed)
+		want := []string{"STEGO_PLANT_CONSTANT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_WRAPPED"}
+		if !slices.Equal(needed, want) {
+			t.Errorf("the check finds %v, want %v: %v", needed, want, faults)
+		}
+	})
 }
