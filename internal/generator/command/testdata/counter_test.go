@@ -64,11 +64,11 @@ func TestCounterReset(t *testing.T) {
 		_, err = e.admin.ExecContext(e.ctx, `INSERT INTO holds (tenant_id, id, order_id, owner_id) VALUES ($1, $2, $3, 'u-6')`, desk.tenant.ID(), hold, order)
 		must(t, err)
 		// u-6 views the order and owns the hold; u-7 also owns the hold and may release on the order.
-		e.relate(desk, "order", order, "viewer", "u-6")
-		e.relate(desk, "hold", hold, "owner", "u-6")
-		e.relate(desk, "order", order, "viewer", "u-7")
-		e.relate(desk, "order", order, "releaser", "u-7")
-		e.relate(desk, "hold", hold, "owner", "u-7")
+		e.relate(desk, "order", order, "viewer", desk.subject())
+		e.relate(desk, "hold", hold, "owner", desk.subject())
+		e.relate(desk, "order", order, "viewer", payer.subject())
+		e.relate(desk, "order", order, "releaser", payer.subject())
+		e.relate(desk, "hold", hold, "owner", payer.subject())
 		checks := func() int {
 			t.Helper()
 			return e.count(`SELECT coalesce(sum(checks), 0) FROM attempt_counts WHERE counter = 'Order.pin' AND row_id = $1`, order)
@@ -95,8 +95,8 @@ func TestCounterReset(t *testing.T) {
 		if got := e.release(payer.token, hold, body("0000", true)); got.status != http.StatusUnprocessableEntity || !strings.Contains(string(got.body), "hold.pin_wrong") || checks() != 1 {
 			t.Fatalf("a wrong PIN of a locked order gave %d %s and %d checks, want 422 hold.pin_wrong and one", got.status, got.body, checks())
 		}
-		if got := e.release(payer.token, hold, body(right, true)); got.status != http.StatusOK {
-			t.Fatalf("the right PIN of a locked order gave %d %s, want 200", got.status, got.body)
+		if got := e.release(payer.token, hold, body(right, true)); got.status != http.StatusCreated {
+			t.Fatalf("the right PIN of a locked order gave %d %s, want 201", got.status, got.body)
 		}
 	})
 }
