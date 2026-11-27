@@ -427,8 +427,10 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 		checks = append(checks, []string{"run", "golang.org/x/vuln/cmd/govulncheck@v1.4.0", "./..."})
 	}
 	// The tests of the generated module run against the local PostgreSQL server of localtest. govulncheck reads the
-	// vulnerability database of vuln.go.dev, a hosted service, so it keeps the environment of the test and runs only
-	// where STEGO_REQUIRE_POSTGRES=1 is set, as in CI.
+	// vulnerability database of vuln.go.dev, a hosted service, so it runs only where STEGO_REQUIRE_POSTGRES=1 is set,
+	// as in CI. Its go run takes the environment of the fill of localtest (FillEnv): the checked module cache, the sum
+	// database sum.golang.org on, no private or unchecked module and GOFLAGS cleared, so it builds govulncheck only
+	// from modules that go.sum or the sum database checked, never from the shared cache (security review of PR #7, L2).
 	postgres := localtest.PostgresEnv(t)
 	for _, args := range checks {
 		// The module cache is filled once, before the time limit of the command starts.
@@ -438,7 +440,7 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 		cmd.Dir = project
 		cmd.Env = localtest.GoEnv(postgres...)
 		if args[0] == "run" {
-			cmd.Env = append(os.Environ(), "GOWORK=off")
+			cmd.Env = append(localtest.FillEnv(t), "GOFLAGS=")
 		}
 		out, err := cmd.CombinedOutput()
 		cancel()

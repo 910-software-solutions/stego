@@ -19,6 +19,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/jwtauth"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestGenerateSharedRuntime(t *testing.T) {
@@ -196,11 +197,11 @@ func ssoPackage(t *testing.T, tracing bool) (map[string]*ast.File, *gotypes.Info
 func localImporter(t *testing.T, fset *token.FileSet) gotypes.Importer {
 	t.Helper()
 	std := importer.ForCompiler(fset, "source", nil)
-	// go mod download gives the folder of the module at the version jwt-auth requires, from the module cache when it
-	// holds it, as the generated-module tests of this package fetch it.
+	// go mod download gives the folder of the module at the version jwt-auth requires, from the checked module cache
+	// of localtest, which holds it (testdata/modules pins it), with no other proxy (security review of PR #7, L3).
 	download := exec.Command("go", "mod", "download", "-json", "github.com/golang-jwt/jwt/v5@"+jwtVersion(t))
 	download.Dir = t.TempDir()
-	download.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	download.Env = localtest.GoEnv()
 	if err := os.WriteFile(filepath.Join(download.Dir, "go.mod"), []byte("module example.com/download\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
