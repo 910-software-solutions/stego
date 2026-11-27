@@ -856,3 +856,162 @@ func TestVerifyES256(t *testing.T) {
 		}
 	})
 }
+
+// idTokenClaims gives the claims of an ID token of the shape of tsidp, the OpenID Connect provider of Tailscale: aud
+// is an array of the one client ID, sub is userid:<n>, the token holds a tailnet claim and the nonce of the sign-in,
+// and no at_hash or c_hash (ST-SUP-Q218).
+func tsidpClaims() map[string]any {
+	claims := authntest.Claims(testIssuer, testAudience, "userid:7", time.Now())
+	claims["aud"] = []string{testAudience}
+	claims["nonce"] = "n-0S6_WzA2Mj"
+	claims["tailnet"] = "sawfish-balance.ts.net"
+	claims["tenant"] = "t1"
+	return claims
+}
+
+func TestIDTokenBearer(t *testing.T) {
+	key := authntest.NewKey(t, "k1")
+	accept := func(s *Settings) { s.AcceptIDToken = true }
+
+	t.Run("ST-SUP-RP13-LC03-T05 With no opt-in an ID token is refused; with the opt-in an ID token for the audience alone passes, and an access token passes as before", func(t *testing.T) {
+		off := staticVerifier(t, nil, key)
+		on := staticVerifier(t, accept, key)
+		token := authntest.Mint(t, authntest.Header("k1"), tsidpClaims(), key)
+		id, err := off.Verify(context.Background(), token)
+		expectRefused(t, id, err, errIDToken)
+
+		id = expectAccepted(t, on, token)
+		if tenant, ok := seal.TenantOf(id); id.UserID() != "userid:7" || !ok || tenant != "t1" {
+			t.Errorf("the ID token gave the subject %q and the tenant %q (%v), want userid:7 and t1", id.UserID(), tenant, ok)
+		}
+		// A Keycloak ID token: the payload typ ID, aud as one string, azp the audience, at_hash and no nonce.
+		keycloak := goodClaims()
+		keycloak["typ"], keycloak["azp"], keycloak["at_hash"] = "ID", testAudience, "77QmUPtjPfzWtF2AnpK9RQ"
+		expectAccepted(t, on, authntest.Mint(t, authntest.Header("k1"), keycloak, key))
+		id, err = off.Verify(context.Background(), authntest.Mint(t, authntest.Header("k1"), keycloak, key))
+		expectRefused(t, id, err, errIDToken)
+		for _, marker := range []string{"at_hash", "c_hash"} {
+			claims := goodClaims()
+			claims[marker] = "abc"
+			expectAccepted(t, on, authntest.Mint(t, authntest.Header("k1"), claims, key))
+		}
+		// The opt-in does not change an access token: one of two audiences with an azp of another client passes,
+		// with and without the opt-in.
+		access := goodClaims()
+		access["aud"], access["azp"], access["typ"] = []string{"account", testAudience}, "orders-web", "Bearer"
+		for _, v := range []*Verifier{off, on} {
+			expectAccepted(t, v, authntest.Mint(t, authntest.Header("k1"), access, key))
+		}
+	})
+
+	t.Run("ST-SUP-RP13-LC03-T06 With the opt-in an ID token of more audiences, of another client, of another kind, a logout token and an ID token that fails another check are refused", func(t *testing.T) {
+		on := staticVerifier(t, accept, key)
+		off := staticVerifier(t, nil, key)
+		expectAccepted(t, on, authntest.Mint(t, authntest.Header("k1"), tsidpClaims(), key))
+		withHeader := func(member string, value any) map[string]any {
+			h := authntest.Header("k1")
+			h[member] = value
+			return h
+		}
+		cases := []struct {
+			name   string
+			change func(map[string]any)
+			header map[string]any
+			signer any
+			want   error
+		}{
+			{"aud of two members", func(c map[string]any) { c["aud"] = []string{testAudience, "billing-api"} }, nil, key, errAudience},
+			{"aud of two members, the audience second", func(c map[string]any) { c["aud"] = []string{"billing-api", testAudience} }, nil, key, errAudience},
+			{"aud of another client", func(c map[string]any) { c["aud"] = []string{"billing-web"} }, nil, key, errAudience},
+			{"aud of another client as text", func(c map[string]any) { c["aud"] = "billing-web" }, nil, key, errAudience},
+			{"aud empty", func(c map[string]any) { c["aud"] = []string{} }, nil, key, errAudience},
+			{"azp of another client", func(c map[string]any) { c["azp"] = "billing-web" }, nil, key, errAudience},
+			{"azp not text", func(c map[string]any) { c["azp"] = []string{testAudience} }, nil, key, errAudience},
+			{"azp null", func(c map[string]any) { c["azp"] = nil }, nil, key, errAudience},
+			{"payload typ Refresh", func(c map[string]any) { c["typ"] = "Refresh" }, nil, key, errIDToken},
+			{"payload typ Logout", func(c map[string]any) { c["typ"] = "Logout" }, nil, key, errIDToken},
+			{"payload typ id", func(c map[string]any) { c["typ"] = "id" }, nil, key, errIDToken},
+			{"payload typ null", func(c map[string]any) { c["typ"] = nil }, nil, key, errIDToken},
+			{"events", func(c map[string]any) {
+				c["events"] = map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}
+			}, nil, key, errIDToken},
+			{"expired", func(c map[string]any) {
+				c["iat"] = time.Now().Add(-time.Hour).Unix()
+				c["exp"] = time.Now().Add(-10 * time.Minute).Unix()
+			}, nil, key, errExpiry},
+			{"another issuer", func(c map[string]any) { c["iss"] = "https://homelab-idp.other.ts.net" }, nil, key, errIssuer},
+			{"no subject", func(c map[string]any) { delete(c, "sub") }, nil, key, errSubject},
+			{"no tenant", func(c map[string]any) { delete(c, "tenant") }, nil, key, errTenant},
+			{"not yet valid", func(c map[string]any) { c["nbf"] = time.Now().Add(10 * time.Minute).Unix() }, nil, key, errNotBefore},
+			{"alg none", nil, withHeader("alg", "none"), nil, errFormat},
+			{"alg none over a valid signature", nil, withHeader("alg", "none"), "rs256", errAlgorithm},
+			{"HS256 with the public key as the secret", nil, withHeader("alg", "HS256"), key.PublicPEM(), errAlgorithm},
+			{"header typ JOSE", nil, withHeader("typ", "JOSE"), key, errType},
+			{"header jku", nil, withHeader("jku", "https://attacker.authn.test/keys"), key, errHeader},
+			{"another key", nil, nil, authntest.NewKey(t, "k1"), errSignature},
+			// The payload typ Bearer does not make a marked ID token an access token.
+			{"payload typ Bearer with a nonce, aud of two members", func(c map[string]any) {
+				c["typ"], c["aud"] = "Bearer", []string{testAudience, "billing-api"}
+			}, nil, key, errAudience},
+			// azp is checked for aud as text too.
+			{"aud as text, azp of another client", func(c map[string]any) {
+				c["aud"], c["azp"] = testAudience, "billing-web"
+			}, nil, key, errAudience},
+			// The payload typ ID alone marks an ID token: the ID token rules apply with no nonce, at_hash or c_hash.
+			{"payload typ ID alone, aud of two members", func(c map[string]any) {
+				delete(c, "nonce")
+				c["typ"], c["aud"] = "ID", []string{testAudience, "billing-api"}
+			}, nil, key, errAudience},
+			{"payload typ ID alone, azp of another client", func(c map[string]any) {
+				delete(c, "nonce")
+				c["typ"], c["azp"] = "ID", "billing-web"
+			}, nil, key, errAudience},
+			{"payload typ bearer in lower case", func(c map[string]any) { c["typ"] = "bearer" }, nil, key, errIDToken},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				claims := tsidpClaims()
+				if c.change != nil {
+					c.change(claims)
+				}
+				header := c.header
+				if header == nil {
+					header = authntest.Header("k1")
+				}
+				var token string
+				if c.signer == "rs256" {
+					token = rs256Under(t, header, claims, key)
+				} else {
+					token = authntest.Mint(t, header, claims, c.signer)
+				}
+				id, err := on.Verify(context.Background(), token)
+				expectRefused(t, id, err, c.want)
+			})
+		}
+		// With no opt-in, the payload typ Bearer does not make a token with a nonce an access token, and the payload
+		// typ bearer in lower case is no access token.
+		bearerNonce := tsidpClaims()
+		bearerNonce["typ"] = "Bearer"
+		lower := goodClaims()
+		lower["typ"] = "bearer"
+		for name, claims := range map[string]map[string]any{"payload typ Bearer with a nonce": bearerNonce, "payload typ bearer": lower} {
+			id, err := off.Verify(context.Background(), authntest.Mint(t, authntest.Header("k1"), claims, key))
+			if err == nil {
+				t.Errorf("the verifier with no opt-in accepted the token with %s", name)
+				continue
+			}
+			expectRefused(t, id, err, errIDToken)
+		}
+		// A logout token is refused with and without the opt-in, also when it holds no other ID token claim.
+		logout := goodClaims()
+		logout["events"] = map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}
+		for name, v := range map[string]*Verifier{"on": on, "off": off} {
+			id, err := v.Verify(context.Background(), authntest.Mint(t, authntest.Header("k1"), logout, key))
+			if err == nil {
+				t.Errorf("the verifier with the opt-in %s accepted a logout token", name)
+				continue
+			}
+			expectRefused(t, id, err, errIDToken)
+		}
+	})
+}

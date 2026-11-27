@@ -92,3 +92,31 @@ func TestGenerator(t *testing.T) {
 		}
 	})
 }
+
+func TestAcceptIDToken(t *testing.T) {
+	t.Run("ST-SUP-RC37-OC02-T03 The declaration opts in to an ID token as the bearer only with accept_id_token true", func(t *testing.T) {
+		g := &Generator{}
+		for name, c := range map[string]struct {
+			value any
+			want  bool
+		}{"no accept_id_token": {nil, false}, "accept_id_token false": {false, false}, "accept_id_token true": {true, true}} {
+			auth, err := g.RuntimeAuth(context(with("accept_id_token", c.value)))
+			if err != nil || auth.AcceptIDToken != c.want {
+				t.Errorf("%s gave the opt-in %v, %v, want %v", name, auth.AcceptIDToken, err, c.want)
+			}
+		}
+		// The other settings stay as they are under the opt-in.
+		auth, err := g.RuntimeAuth(context(with("accept_id_token", true)))
+		if err != nil || auth.Audience != "orders-api" || strings.Join(auth.Algorithms, ",") != "RS256,ES256" || auth.SubjectClaim != "sub" {
+			t.Fatalf("the settings under the opt-in are %+v, %v", auth, err)
+		}
+		for name, value := range map[string]any{"the text true": "true", "the text yes": "yes", "a number": 1, "a list": []any{true}} {
+			t.Run(name, func(t *testing.T) {
+				err := g.ValidateContext(context(with("accept_id_token", value)))
+				if err == nil || !strings.Contains(err.Error(), "accept_id_token") || !strings.Contains(err.Error(), Component) {
+					t.Fatalf("accept_id_token as %s gave %v, want a refusal that names accept_id_token and %s", name, err, Component)
+				}
+			})
+		}
+	})
+}

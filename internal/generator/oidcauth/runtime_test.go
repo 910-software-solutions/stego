@@ -13,7 +13,6 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/localtest"
 )
@@ -27,6 +26,9 @@ func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 // provider, the test reads the generated files, builds the service with the pinned Go, and runs the check of
 // testdata/oidc_test.go in its module, which starts the service against a local PostgreSQL server, a local SpiceDB
 // container and a local OpenID Connect provider (ST-STD-LOCAL).
+
+// formIDToken is the form of oidc-auth whose declaration states accept_id_token: true (ST-SUP-RC37-OC02-T04).
+const formIDToken = "oidc-auth-id-token"
 
 // shopModule is the module of the generated service, which the fills of the fixture import.
 const shopModule = "example.com/shop"
@@ -96,6 +98,11 @@ func newProject(t *testing.T, stego, provider string) *project {
 	text := p.read(service)
 	auth := "  auth-provider: oidc-auth\n  oidc-auth:\n    issuer: https://" + p.address + "/realms/shop\n    audience: orders-api\n    algorithms: [RS256, ES256]\n"
 	name := "oidc-shop"
+	if provider == formIDToken {
+		// The declaration opts in to an ID token as the bearer (ST-SUP-Q218).
+		auth += "    accept_id_token: true\n"
+		name = "idt-shop"
+	}
 	if provider == "rh-sso-auth" {
 		auth = "  auth-provider: rh-sso-auth\n  rh-sso-auth:\n    issuer: https://" + p.address + "/auth/realms/redhat-external\n    audience: orders-api\n"
 		name = "sso-shop"
@@ -268,34 +275,15 @@ func freePort(t *testing.T) string {
 	return fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
 }
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin it.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and gives
-// its endpoint and preshared key. It removes the container when the test ends.
+// startSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and
+// gives its endpoint and preshared key. localtest runs it without privilege and with limits, and removes it when the
+// test ends.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-oidc-spicedb-"+hex.EncodeToString(suffix), "oidc-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", spiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(strings.Split(string(out), "\n")[0]), key
-		}
-	}
-	t.Fatal("the SpiceDB container publishes no port")
-	return "", ""
+	key := "oidc-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
 
 // postgresDSN is the superuser URL of the local PostgreSQL server of localtest, which TestOIDCService takes.
@@ -398,5 +386,21 @@ func TestOIDCService(t *testing.T) {
 	oidc.checkRuns(binary, Component, "/realms/shop", endpoint, key,
 		"ST-SUP-RC37-OC01-T01 A provider is found through its discovery document, and a mismatched document is refused",
 		"ST-SUP-RC37-OC02-T01 A token for another audience or with another algorithm is refused",
-		"ST-SUP-RC37-OC03-T01 The subject and the tenant come only from the declared claims")
+		"ST-SUP-RC37-OC03-T01 The subject and the tenant come only from the declared claims",
+		"ST-SUP-RC37-OC02-T04 An ID token is refused with 401 when the declaration does not opt in")
+
+	idt := newProject(t, stego, formIDToken)
+	if output, err := idt.run("apply"); err != nil {
+		t.Fatalf("stego apply of the service with oidc-auth and accept_id_token: %v\n%s", err, output)
+	}
+	t.Run("ST-SUP-RC37-OC02-T04 The declared opt-in reaches the runtime verifier, and only there", func(t *testing.T) {
+		on, off := idt.generated()["internal/stegoruntime/runtime.go"], oidc.generated()["internal/stegoruntime/runtime.go"]
+		if !strings.Contains(on, "AcceptIDToken: true") || strings.Contains(off, "AcceptIDToken") {
+			t.Fatal("the runtime wiring of the opt-in does not state AcceptIDToken: true, or the wiring with no opt-in states it")
+		}
+	})
+	idt.t = t
+	binary = idt.build()
+	idt.checkRuns(binary, formIDToken, "/realms/shop", endpoint, key,
+		"ST-SUP-RC37-OC02-T04 An ID token with a nonce passes with 200 when the declaration states accept_id_token, and an ID token of two audiences is refused with 401")
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"path"
 	"regexp"
@@ -624,4 +625,231 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	t.Run("ST-PAT-LOCAL-TEST-R04-T08 Each container that a test of Supplying starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T08 Supplying's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
+}
+
+// innerGoScope is the folder whose packages innerGoFaults reads: the generator packages, whose tests build and run
+// generated modules with the checked module cache of localtest (security review of PR #7, L1 to L3).
+const innerGoScope = "internal/generator/"
+
+// innerGoFaults gives each inner go command of the test files of one package that does not take its environment
+// from localtest. files are the _test.go files of the package, outside testdata, by name. An inner go command is a
+// call of exec.Command or exec.CommandContext whose program is the string "go" or a call of a function whose name
+// ends in PinnedGo or pinnedGo. Its environment is each assignment of Env on the variable that holds the command,
+// after the call and before the variable is set again. Each such assignment must give an environment of localtest:
+// a call of localtest.GoEnv or localtest.FillEnv, a call of a function of the package that returns one, a variable
+// of the same function that holds one, or an append to the Env of the same command. A command with no Env takes the
+// environment of the test, with its GOMODCACHE, GOPROXY, GOFLAGS and GONOSUMDB, so it is a fault too. A parameter
+// that holds an environment is a fault: the scan does not follow the callers.
+func innerGoFaults(files map[string][]byte) []string {
+	fset := token.NewFileSet()
+	var parsed []*ast.File
+	var faults []string
+	for name, data := range files {
+		file, err := parser.ParseFile(fset, name, data, parser.SkipObjectResolution)
+		if err != nil {
+			faults = append(faults, name+" does not parse: "+err.Error())
+			continue
+		}
+		parsed = append(parsed, file)
+	}
+	givers := map[string]bool{}
+	gives := func(expr ast.Node) bool {
+		found := false
+		ast.Inspect(expr, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				if x, ok := fun.X.(*ast.Ident); ok && x.Name == "localtest" && (fun.Sel.Name == "GoEnv" || fun.Sel.Name == "FillEnv") {
+					found = true
+				}
+			case *ast.Ident:
+				found = found || givers[fun.Name]
+			}
+			return true
+		})
+		return found
+	}
+	// The functions of the package that return an environment of localtest, to a fixed point.
+	for changed := true; changed; {
+		changed = false
+		for _, file := range parsed {
+			for _, decl := range file.Decls {
+				function, ok := decl.(*ast.FuncDecl)
+				if !ok || function.Recv != nil || function.Body == nil || givers[function.Name.Name] {
+					continue
+				}
+				ast.Inspect(function.Body, func(node ast.Node) bool {
+					if ret, ok := node.(*ast.ReturnStmt); ok {
+						for _, result := range ret.Results {
+							if gives(result) && !givers[function.Name.Name] {
+								givers[function.Name.Name], changed = true, true
+							}
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	isGo := func(expr ast.Expr) bool {
+		switch program := expr.(type) {
+		case *ast.BasicLit:
+			return program.Kind == token.STRING && program.Value == `"go"`
+		case *ast.CallExpr:
+			if id, ok := program.Fun.(*ast.Ident); ok {
+				return strings.HasSuffix(id.Name, "PinnedGo") || strings.HasSuffix(id.Name, "pinnedGo")
+			}
+		}
+		return false
+	}
+	for _, file := range parsed {
+		ast.Inspect(file, func(node ast.Node) bool {
+			var body *ast.BlockStmt
+			switch function := node.(type) {
+			case *ast.FuncDecl:
+				body = function.Body
+			case *ast.FuncLit:
+				body = function.Body
+			}
+			if body == nil {
+				return true
+			}
+			// The assignments of the function, outside the function literals in it, which the scan reads on their own.
+			var assigns []*ast.AssignStmt
+			var calls []*ast.CallExpr
+			ast.Inspect(body, func(inner ast.Node) bool {
+				switch n := inner.(type) {
+				case *ast.FuncLit:
+					return false
+				case *ast.AssignStmt:
+					assigns = append(assigns, n)
+				case *ast.CallExpr:
+					calls = append(calls, n)
+				}
+				return true
+			})
+			held := map[string]bool{}
+			for _, assign := range assigns {
+				for i, left := range assign.Lhs {
+					if id, ok := left.(*ast.Ident); ok && i < len(assign.Rhs) && gives(assign.Rhs[i]) {
+						held[id.Name] = true
+					}
+				}
+			}
+			for _, call := range calls {
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Command" && selector.Sel.Name != "CommandContext" {
+					continue
+				}
+				if x, ok := selector.X.(*ast.Ident); !ok || x.Name != "exec" {
+					continue
+				}
+				args := call.Args
+				if selector.Sel.Name == "CommandContext" && len(args) > 0 {
+					args = args[1:]
+				}
+				if len(args) == 0 || !isGo(args[0]) {
+					continue
+				}
+				position := fset.Position(call.Pos())
+				where := fmt.Sprintf("%s:%d", position.Filename, position.Line)
+				variable, end := "", token.Pos(0)
+				for _, assign := range assigns {
+					for i, right := range assign.Rhs {
+						if right == call && i < len(assign.Lhs) {
+							if id, ok := assign.Lhs[i].(*ast.Ident); ok {
+								variable = id.Name
+							}
+						}
+					}
+				}
+				if variable != "" {
+					for _, assign := range assigns {
+						for _, left := range assign.Lhs {
+							if id, ok := left.(*ast.Ident); ok && id.Name == variable && assign.Pos() > call.End() && (end == 0 || assign.Pos() < end) {
+								end = assign.Pos()
+							}
+						}
+					}
+				}
+				var envs []ast.Expr
+				for _, assign := range assigns {
+					if assign.Pos() < call.End() || end != 0 && assign.Pos() >= end {
+						continue
+					}
+					for i, left := range assign.Lhs {
+						if target, ok := left.(*ast.SelectorExpr); ok && target.Sel.Name == "Env" && i < len(assign.Rhs) {
+							if id, ok := target.X.(*ast.Ident); ok && id.Name == variable {
+								envs = append(envs, assign.Rhs[i])
+							}
+						}
+					}
+				}
+				if len(envs) == 0 {
+					faults = append(faults, where+" runs an inner go command with the environment of the test, not of localtest")
+				}
+				for _, env := range envs {
+					if gives(env) {
+						continue
+					}
+					if id, ok := env.(*ast.Ident); ok && held[id.Name] {
+						continue
+					}
+					if appendCall, ok := env.(*ast.CallExpr); ok && len(appendCall.Args) > 0 {
+						if fun, ok := appendCall.Fun.(*ast.Ident); ok && fun.Name == "append" {
+							if first, ok := appendCall.Args[0].(*ast.SelectorExpr); ok && first.Sel.Name == "Env" {
+								if id, ok := first.X.(*ast.Ident); ok && id.Name == variable {
+									continue
+								}
+							}
+						}
+					}
+					var text strings.Builder
+					_ = printer.Fprint(&text, fset, env)
+					faults = append(faults, fmt.Sprintf("%s runs an inner go command with an environment that is not of localtest: %s", where, text.String()))
+				}
+			}
+			return true
+		})
+	}
+	return faults
+}
+
+// TestInnerGoCommandsTakeTheCheckedCache reads the test files of each generator package at HEAD whose TestMain calls
+// localtest.MainModules, and fails on each inner go command of them that does not take the environment of localtest.
+func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T12 Each inner go command of a generator test takes the checked module cache of localtest", func(t *testing.T) {
+		_, tree := readHead(t)
+		packages := map[string]map[string][]byte{}
+		for _, name := range tree.paths() {
+			if !strings.HasPrefix(name, innerGoScope) || !strings.HasSuffix(name, "_test.go") || strings.Contains(name, "/testdata/") {
+				continue
+			}
+			data, _ := tree.File(name)
+			if packages[path.Dir(name)] == nil {
+				packages[path.Dir(name)] = map[string][]byte{}
+			}
+			packages[path.Dir(name)][name] = data
+		}
+		var faults []string
+		checked := 0
+		for _, files := range packages {
+			main := false
+			for _, data := range files {
+				main = main || strings.Contains(strings.Join(codeLines("", data), "\n"), "localtest.MainModules(")
+			}
+			if !main {
+				continue
+			}
+			checked++
+			faults = append(faults, innerGoFaults(files)...)
+		}
+		if checked == 0 {
+			t.Fatal("no generator package at HEAD calls localtest.MainModules: the scan read nothing")
+		}
+		report(t, "ST-STD-LOCAL-R03", faults)
+	})
 }

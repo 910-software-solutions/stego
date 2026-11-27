@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func testTelemetryProcess(t *testing.T, project string) {
@@ -22,7 +24,9 @@ func testTelemetryProcess(t *testing.T, project string) {
 	t.Run("ST-SUP-RC04-OC30-T01 The built CLI keeps clean stdout and records one private command completion", func(t *testing.T) {
 		binary := filepath.Join(t.TempDir(), "cli")
 		build := exec.Command("go", "build", "-race", "-o", binary, "./out/cli/cmd")
-		build.Dir = project
+		// The build takes the checked module cache of localtest, as each go command of this package does (security
+		// review of PR #7, L1).
+		build.Dir, build.Env = project, localtest.GoEnv()
 		if data, err := build.CombinedOutput(); err != nil {
 			t.Fatalf("build telemetry CLI: %v %s", err, data)
 		}
