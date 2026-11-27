@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.277.0",
+    "archetype_version": "3.279.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -380,7 +380,7 @@
     {
       "id": "component:command",
       "name": "command",
-      "version": "1.31.0",
+      "version": "1.32.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared command in the transaction of the caller's tenant.",
@@ -403,7 +403,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "architecture"
         }
       }
@@ -917,7 +917,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "provides"
         }
       }
@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.277.0",
+          "version": "3.279.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1113,7 +1113,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.277.0",
+          "version": "3.279.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.277.0",
+          "version": "3.279.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1150,7 +1150,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.277.0",
+          "version": "3.279.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -4386,7 +4386,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -4405,7 +4405,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -4423,7 +4423,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -4441,7 +4441,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -4460,7 +4460,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -5819,7 +5819,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -5837,7 +5837,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -6607,7 +6607,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -6734,7 +6734,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -6861,7 +6861,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.31.0",
+          "version": "1.32.0",
           "field": "environment"
         }
       }
@@ -8661,7 +8661,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8676,7 +8676,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8691,7 +8691,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8706,7 +8706,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8721,7 +8721,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8736,7 +8736,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8751,7 +8751,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8766,7 +8766,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8781,7 +8781,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8796,7 +8796,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8811,7 +8811,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8826,7 +8826,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8841,7 +8841,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8856,7 +8856,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8871,7 +8871,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8886,7 +8886,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -8901,7 +8901,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12381,7 +12381,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12396,7 +12396,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12411,7 +12411,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12426,7 +12426,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12441,7 +12441,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -12456,7 +12456,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14481,7 +14481,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14496,7 +14496,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14511,7 +14511,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14526,7 +14526,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14826,7 +14826,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14841,7 +14841,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -14856,7 +14856,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -15156,7 +15156,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -15171,7 +15171,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
@@ -15186,7 +15186,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.31.0",
+              "version": "1.32.0",
               "field": "environment"
             }
           }
