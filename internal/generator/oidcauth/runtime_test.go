@@ -204,7 +204,7 @@ func (p *project) qualifyFills() {
 			p.write(filepath.Join(folder, "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
 		}
 	}
-	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK="}
 	_, _ = p.exec(signing, "test")
 	for _, entry := range entries {
 		if entry.IsDir() {

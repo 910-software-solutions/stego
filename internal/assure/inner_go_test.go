@@ -14,8 +14,14 @@ import (
 )
 
 // The proof that each inner go command of a generator test takes the checked module cache of localtest
-// (ST-STD-LOCAL-R03, security review of PR #7, L1 to L3 and N1). It is a scan of the syntax of the test files of one
-// package at a time, with no type check.
+// (ST-STD-LOCAL-R03, security review of PR #7, L1 to L3, N1 and F2). It is a scan of the syntax of the Go files of
+// one package at a time, with no type check: each package under internal/generator with a file that imports os/exec.
+// A package that runs a go command must have a TestMain that calls localtest.MainModules.
+//
+// The scan finds the forms that come by accident. It does not claim to find deliberate aliasing: a second slice that
+// shares the Env of a command, a second name for the *exec.Cmd, or a function that takes the *exec.Cmd and sets its
+// Env. The backstop for the effect is the fill of localtest, which hashes each module folder again, as go mod verify
+// does, and fails on a folder that has been modified (ST-STD-LOCAL-R03-T13).
 //
 // A command is a call of Command or CommandContext of the package os/exec, by any import name. It is in scope unless
 // its program is shown not to be go: a string, a constant, a local variable, a parameter (through each call of its
@@ -42,9 +48,9 @@ var innerGoSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSU
 	"GOENV": true, "GOFLAGS": true, "GOWORK": true, "GOTOOLCHAIN": true}
 
 // innerGoAllowed are the only entries of a go setting that may follow GoEnv: they change no module source and no
-// proxy. -mod=mod lets a command update go.mod from the checked cache; -modcacherw keeps the folders that a stego
-// command extracts writable, so that the test can remove its temporary folders.
-var innerGoAllowed = map[string]bool{"GOFLAGS=-mod=mod": true, "GOFLAGS=": true, "GOFLAGS=-modcacherw": true}
+// proxy. -mod=mod lets a command update go.mod from the checked cache. -modcacherw is refused: it makes the folders of
+// the long-lived checked cache writable (security review of PR #7, F1).
+var innerGoAllowed = map[string]bool{"GOFLAGS=-mod=mod": true, "GOFLAGS=": true}
 
 // goProgram is what the scan knows of the program of a command.
 type goProgram int
@@ -90,6 +96,8 @@ type goScan struct {
 	fields map[string][]goSite
 	faults []string
 	seen   map[string]bool
+	// commands is the number of inner go commands in scope.
+	commands int
 }
 
 func (g *goScan) text(node ast.Node) string {
@@ -612,6 +620,7 @@ func (g *goScan) commandFault(call *ast.CallExpr, sc *goScope, args []ast.Expr) 
 	if kind == programNotGo {
 		return
 	}
+	g.commands++
 	variable := ""
 	end := token.Pos(0)
 	for _, def := range sc.defs {
@@ -668,8 +677,10 @@ func (g *goScan) commandFault(call *ast.CallExpr, sc *goScope, args []ast.Expr) 
 	}
 }
 
-// innerGoFaults gives each inner go command of the test files of one package that does not take its environment
-// from localtest, and each exec.Cmd literal. files are the _test.go files of the package, outside testdata, by name.
+// innerGoFaults gives each inner go command of the Go files of one package that does not take its environment from
+// localtest, each exec.Cmd literal, each use of exec.Command or exec.CommandContext that is not a direct call (a
+// function value, which the scan cannot follow), and, when the package runs a go command, the lack of a TestMain that
+// calls localtest.MainModules. files are the .go files of the package, outside testdata, by name.
 func innerGoFaults(files map[string][]byte) []string {
 	g := &goScan{fset: token.NewFileSet(), funcs: map[string]*goScope{}, consts: map[string]ast.Expr{}, fields: map[string][]goSite{}, seen: map[string]bool{}}
 	names := make([]string, 0, len(files))
@@ -745,24 +756,52 @@ func innerGoFaults(files map[string][]byte) []string {
 			g.commandFault(call, sc, args)
 		}
 	}
+	mainModules := false
 	for _, file := range parsed {
 		exec := execName(file)
+		called := map[ast.Expr]bool{}
 		ast.Inspect(file, func(node ast.Node) bool {
-			if lit, ok := node.(*ast.CompositeLit); ok && exec != "" {
-				if pkg, name := qualified(lit.Type); pkg == exec && name == "Cmd" {
-					g.faults = append(g.faults, g.where(lit)+" builds an exec.Cmd by hand, which the scan cannot read")
+			if call, ok := node.(*ast.CallExpr); ok {
+				called[call.Fun] = true
+			}
+			return true
+		})
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.CompositeLit:
+				if pkg, name := qualified(n.Type); exec != "" && pkg == exec && name == "Cmd" {
+					g.faults = append(g.faults, g.where(n)+" builds an exec.Cmd by hand, which the scan cannot read")
+				}
+			case *ast.SelectorExpr:
+				if pkg, name := qualified(n); exec != "" && pkg == exec && (name == "Command" || name == "CommandContext") && !called[n] {
+					g.faults = append(g.faults, fmt.Sprintf("%s uses %s.%s as a value, which the scan cannot follow", g.where(n), exec, name))
+				}
+			case *ast.FuncDecl:
+				if n.Recv == nil && n.Name.Name == "TestMain" && n.Body != nil {
+					ast.Inspect(n.Body, func(inner ast.Node) bool {
+						if call, ok := inner.(*ast.CallExpr); ok {
+							if pkg, name := qualified(call.Fun); pkg == "localtest" && name == "MainModules" {
+								mainModules = true
+							}
+						}
+						return true
+					})
 				}
 			}
 			return true
 		})
 	}
+	if g.commands > 0 && !mainModules && len(names) > 0 {
+		g.faults = append(g.faults, fmt.Sprintf("%s runs %d inner go commands, but no TestMain of it calls localtest.MainModules, so a test can run one before the checked cache is filled and verified",
+			path.Dir(names[0]), g.commands))
+	}
 	slices.Sort(g.faults)
 	return slices.Compact(g.faults)
 }
 
-// innerGoPlants are the bypasses of the first form of this check (security review of PR #7, N1), each as a test
-// file of a package with one inner go command; the check must name a fault in each. clean is a package that it must
-// pass.
+// innerGoPlants are the bypasses of the earlier forms of this check (security review of PR #7, N1 and F2) and the
+// refused GOFLAGS=-modcacherw (F1), each as a test file of a package with one inner go command; the check must name
+// exactly one fault in each. innerGoClean is a package that it must pass.
 var innerGoPlants = map[string]string{
 	"helper with the pinned Go in a variable": `
 func (s *service) goTool(args ...string) ([]byte, error) {
@@ -869,6 +908,34 @@ func TestX(t *testing.T) {
 	cmd := &exec.Cmd{Path: "/usr/local/go/bin/go", Args: []string{"go", "build"}}
 	_ = cmd.Run()
 }`,
+	"GOFLAGS=-modcacherw given to GoEnv": `
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-modcacherw")
+	_ = cmd.Run()
+}`,
+	"GOFLAGS=-modcacherw in a held list given to a helper": `
+func goEnv(extra ...string) []string { return localtest.GoEnv(extra...) }
+func TestX(t *testing.T) {
+	signing := []string{"SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Env = goEnv(signing...)
+	_ = cmd.Run()
+}`,
+	"exec.Command as a function value": `
+func TestX(t *testing.T) {
+	mk := exec.Command
+	other := mk("go", "build")
+	other.Env = append(os.Environ(), "GOPROXY=direct")
+	_ = other.Run()
+}`,
+	"package with a go command and no TestMain that calls MainModules": `
+func TestMain(m *testing.M) { os.Exit(localtest.Main(m)) }
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv()
+	_ = cmd.Run()
+}`,
 	"closure with the program as its first argument": `
 func TestX(t *testing.T) {
 	run := func(args ...string) {
@@ -924,8 +991,12 @@ func TestX(t *testing.T) {
 	_ = again.Run()
 }`
 
-// plantPackage gives the planted test file body as a package of one file.
+// plantPackage gives the planted test file body as a package of one file, with a TestMain that calls
+// localtest.MainModules unless the body has a TestMain of its own, so that each plant shows its own fault.
 func plantPackage(body string) map[string][]byte {
+	if !strings.Contains(body, "func TestMain(") {
+		body = "\nfunc TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }\n" + body
+	}
 	imports := "import (\n\t\"context\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"runtime\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"github.com/910-software-solutions/stego/internal/localtest\"\n)\n"
 	if strings.Contains(body, "run.Command") {
 		imports = strings.Replace(imports, "\t\"os/exec\"\n", "\trun \"os/exec\"\n", 1)
@@ -933,14 +1004,14 @@ func plantPackage(body string) map[string][]byte {
 	return map[string][]byte{"internal/generator/plant/plant_test.go": []byte("package plant\n\n" + imports + body + "\n")}
 }
 
-// TestInnerGoCommandsTakeTheCheckedCache reads the test files of each generator package at HEAD whose TestMain calls
-// localtest.MainModules, and fails on each inner go command of them that does not take the environment of localtest.
+// TestInnerGoCommandsTakeTheCheckedCache reads the Go files of each generator package at HEAD that imports os/exec,
+// and fails on each inner go command of them that does not take the environment of localtest.
 // It first shows that the scan names a fault in each planted bypass and none in the clean package.
 func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R03-T12 Each inner go command of a generator test takes the checked module cache of localtest", func(t *testing.T) {
 		for name, body := range innerGoPlants {
-			if faults := innerGoFaults(plantPackage(body)); len(faults) == 0 {
-				t.Errorf("the scan names no fault in the plant %q", name)
+			if faults := innerGoFaults(plantPackage(body)); len(faults) != 1 {
+				t.Errorf("the scan names %d faults, not 1, in the plant %q: %v", len(faults), name, faults)
 			}
 		}
 		if faults := innerGoFaults(plantPackage(innerGoClean)); len(faults) > 0 {
@@ -949,7 +1020,7 @@ func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
 		_, tree := readHead(t)
 		packages := map[string]map[string][]byte{}
 		for _, name := range tree.paths() {
-			if !strings.HasPrefix(name, innerGoScope) || !strings.HasSuffix(name, "_test.go") || strings.Contains(name, "/testdata/") {
+			if !strings.HasPrefix(name, innerGoScope) || !strings.HasSuffix(name, ".go") || strings.Contains(name, "/testdata/") {
 				continue
 			}
 			data, _ := tree.File(name)
@@ -960,19 +1031,22 @@ func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
 		}
 		var faults []string
 		checked := 0
+		// Each package with a file that imports os/exec is read; innerGoFaults requires a TestMain that calls
+		// localtest.MainModules in each one that runs a go command.
 		for _, files := range packages {
-			main := false
-			for _, data := range files {
-				main = main || strings.Contains(strings.Join(codeLines("", data), "\n"), "localtest.MainModules(")
+			imports := false
+			for name, data := range files {
+				file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+				imports = imports || err != nil || execName(file) != ""
 			}
-			if !main {
+			if !imports {
 				continue
 			}
 			checked++
 			faults = append(faults, innerGoFaults(files)...)
 		}
 		if checked == 0 {
-			t.Fatal("no generator package at HEAD calls localtest.MainModules: the scan read nothing")
+			t.Fatal("no generator package at HEAD imports os/exec: the scan read nothing")
 		}
 		report(t, "ST-STD-LOCAL-R03", faults)
 	})
