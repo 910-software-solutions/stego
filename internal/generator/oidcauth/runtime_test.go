@@ -158,7 +158,7 @@ func (p *project) run(args ...string) (string, error) {
 func (p *project) exec(extra []string, args ...string) (string, error) {
 	cmd := exec.Command(p.stego, args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(goEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+shopModule), extra...)
+	cmd.Env = goEnv(append([]string{"STEGO_REGISTRY=" + filepath.Join(p.dir, "registry"), "STEGO_MODULE=" + shopModule}, extra...)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -204,7 +204,7 @@ func (p *project) qualifyFills() {
 			p.write(filepath.Join(folder, "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
 		}
 	}
-	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK="}
 	_, _ = p.exec(signing, "test")
 	for _, entry := range entries {
 		if entry.IsDir() {

@@ -47,6 +47,9 @@
 {"source_id":"ST-DECL-Q48","target_id":"ST-DECL-INV63"}
 {"source_id":"ST-DECL-Q48","target_id":"ST-GEN-INV33"}
 {"source_id":"ST-DECL-Q48","target_id":"ST-GEN-UC12-R04"}
+{"source_id":"ST-DECL-Q49","target_id":"ST-DECL-INV63"}
+{"source_id":"ST-DECL-Q49","target_id":"ST-DECL-Q48"}
+{"source_id":"ST-DECL-Q49","target_id":"ST-GEN-INV33"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-DS01"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-INV01"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-TD01"}

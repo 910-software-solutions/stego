@@ -997,7 +997,7 @@ func TestHeldBoundsCheck(t *testing.T) {
 			if !strings.Contains(text, "if float64(v.Seats) < 0 {") {
 				t.Fatalf("contract %t: the check does not hold the declared min 0:\n%s", contracted, text)
 			}
-			if got := strings.Contains(text, "if float64(v.Seats) > 2.147483647e+09 {\n\t\t\treturn \"seats\", \"more than max 2.147483647e+09\", false"); got == contracted {
+			if got := strings.Contains(text, "if float64(v.Seats) > 2.147483647e+09 {\n\t\t\treturn \"seats\", \"more than max 2147483647\", false"); got == contracted {
 				t.Fatalf("contract %t: the check refuses a value above 2147483647: %t, want it only until the contract:\n%s", contracted, got, text)
 			}
 		}

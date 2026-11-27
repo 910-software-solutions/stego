@@ -40,12 +40,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -53,6 +55,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -326,10 +329,12 @@ func lifeLimit() time.Duration {
 	return defaultLife
 }
 
-// started is one container that localtest started: its tool and its reaper.
+// started is one container that localtest started: its tool, its reaper, and a channel that is closed when the run
+// of the tool that creates it has ended.
 type started struct {
 	tool   string
 	reaper *reaper
+	ran    chan struct{}
 }
 
 // runContainer starts the reaper of the container name, with the time limit life, records the container, and runs
@@ -339,26 +344,45 @@ func runContainer(ctx context.Context, path, name string, life time.Duration, en
 	if err != nil {
 		return fmt.Errorf("start the reaper of the container: %w", err)
 	}
+	c := &started{tool: path, reaper: r, ran: make(chan struct{})}
 	mu.Lock()
-	running[name] = &started{tool: path, reaper: r}
+	running[name] = c
 	mu.Unlock()
 	_, err = commandEnv(ctx, env, path, args...)
+	close(c.ran)
 	return err
 }
 
 // reaperScript removes the container $2 with the tool $1 when the test binary ends, or when the time limit of $3
 // seconds ends. It reads one line from its standard input, a pipe whose write end only the test binary holds: the end
 // of the binary on any path, also a kill, closes the pipe and ends the read, so no PID is watched. The line done is a
-// clean exit, after which localtest removed the container itself. A timer in the background removes the container
-// at the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the
-// timer, so it leaves no process.
+// clean exit, after which localtest removed the container itself. After any other end, it removes the container, and
+// again every $4 seconds, $5 more times: a run of the tool that the binary started and that did not end before the
+// binary ended can create the container after the first removal. A timer in the background removes the container at
+// the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the timer,
+// so it leaves no process.
 const reaperScript = `( sleep "$3"; "$1" rm --force "$2" >/dev/null 2>&1 ) &
 read -r line
-[ "$line" = done ] || "$1" rm --force "$2" >/dev/null 2>&1
+if [ "$line" != done ]; then
+	n=0
+	while :; do
+		"$1" rm --force "$2" >/dev/null 2>&1
+		[ "$n" -ge "$5" ] && break
+		n=$((n + 1))
+		sleep "$4"
+	done
+fi
 trap '' TERM
 kill -TERM 0 2>/dev/null
 exit 0
 `
+
+// reaperEvery and reaperTimes are the removals of the reaper after an end that is not clean: every five seconds for
+// the start limit of a container.
+var (
+	reaperEvery = 5 * time.Second
+	reaperTimes = int(startLimit / (5 * time.Second))
+)
 
 // reaper is one reaper process: the write end of the pipe that it reads, and its process ID, which is also the ID of
 // its process group.
@@ -375,7 +399,8 @@ func newReaper(path, name string, life time.Duration) (*reaper, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)))
+	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)),
+		fmt.Sprintf("%d", max(int(reaperEvery.Seconds()), 1)), fmt.Sprintf("%d", reaperTimes))
 	cmd.Stdin = read
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -401,9 +426,11 @@ func remove() {
 	}
 }
 
-// removeContainer removes the container name, if localtest started it, and stops its reaper. A removal that fails
-// leaves the reaper, which removes the container when the binary ends. It is safe to call more than once, and with
-// an empty name.
+// removeContainer removes the container name, if localtest started it, and stops its reaper. It first waits, up to
+// removeWait, for the end of the run of the tool that creates the container: the SIGINT path of Main can come while a
+// test starts it, and a run that ends after the removal creates the container. A removal that fails, or that did not
+// wait for the end of the run, leaves the reaper, which removes the container again when the binary ends (security
+// review of PR #7, N4). It is safe to call more than once, and with an empty name.
 func removeContainer(name string) {
 	mu.Lock()
 	c := running[name]
@@ -412,15 +439,28 @@ func removeContainer(name string) {
 	if c == nil {
 		return
 	}
+	ended := true
+	select {
+	case <-c.ran:
+	case <-time.After(removeWait):
+		ended = false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if _, err := command(ctx, c.tool, "rm", "--force", name); err != nil {
 		fmt.Fprintf(os.Stderr, "localtest: remove the container %s: %v\n", name, err)
 		return
 	}
+	if !ended {
+		fmt.Fprintf(os.Stderr, "localtest: the run of the container %s did not end; its reaper removes it again when the tests end\n", name)
+		return
+	}
 	_, _ = c.reaper.stop.WriteString("done\n")
 	_ = c.reaper.stop.Close()
 }
+
+// removeWait is the time that removeContainer waits for the end of the run of a container: its start limit.
+var removeWait = startLimit
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
 // environment of the test with no work file, no toolchain switch, GOFLAGS cleared and the go env file not read
@@ -602,6 +642,8 @@ func downloadModules() {
 	// these folders never reaches, because the go command prunes the module graph. So the cache takes, for each module
 	// of the build list of a folder (go list -m all), each version of it in the module graph, and each version of it
 	// that the go.mod of such a version requires.
+	// dirs are the module folders that the fill extracted, each with the hash that the go command checked for it.
+	var dirs []fillDir
 	fail := func(folder string, err error, output []byte) {
 		modulesWhy = fmt.Sprintf("download the modules of %s: %v\n%s", folder, err, output)
 		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
@@ -615,11 +657,23 @@ func downloadModules() {
 		fail(root, err, out)
 		return
 	} else if versions := strings.Fields(string(out)); len(versions) > 0 {
-		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download"}, versions...)...)
+		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download", "-json"}, versions...)...)
 		download.Dir, download.Env = root, list.Env
-		if output, err := download.CombinedOutput(); err != nil {
-			fail(root, err, output)
+		var stderr bytes.Buffer
+		download.Stderr = &stderr
+		output, err := download.Output()
+		if err != nil {
+			fail(root, err, append(output, stderr.Bytes()...))
 			return
+		}
+		decoder := json.NewDecoder(bytes.NewReader(output))
+		for decoder.More() {
+			var module fillDir
+			if err := decoder.Decode(&module); err != nil {
+				fail(root, err, output)
+				return
+			}
+			dirs = append(dirs, module)
 		}
 	}
 	var checked []string
@@ -733,11 +787,12 @@ func downloadModules() {
 			}
 			decoder := json.NewDecoder(bytes.NewReader(found))
 			for decoder.More() {
-				var module struct{ Path, Version, Sum, GoModSum, GoMod string }
+				var module struct{ Path, Version, Sum, GoModSum, GoMod, Dir string }
 				if err := decoder.Decode(&module); err != nil {
 					fail(folder, err, found)
 					return
 				}
+				dirs = append(dirs, fillDir{Path: module.Path, Version: module.Version, Sum: module.Sum, Dir: module.Dir})
 				// The go command gives the hashes that it checked against go.sum or sum.golang.org before it wrote the
 				// module; they are the checked lines of a version that no go.sum of the repository names.
 				if module.Sum != "" {
@@ -762,6 +817,120 @@ func downloadModules() {
 			}
 		}
 	}
+	// The go command does not hash an extracted folder again when it finds it in the cache, so a file that a tool
+	// or a writable cache (-modcacherw) put into the folder of a checked module would build with no error. Each folder
+	// is hashed again, on each fill and on each reuse of the cache, as go mod verify does (security review of PR #7).
+	if err := verifyDirs(dirs, filepath.Join(moduleCache, verifiedFile)); err != nil {
+		fail(moduleCache, err, nil)
+	}
+}
+
+// fillDir is a module that the fill downloaded: its path, its version, the hash of its zip that the go command
+// checked against go.sum or sum.golang.org, and its extracted folder in the module cache.
+type fillDir struct{ Path, Version, Sum, Dir string }
+
+// verifiedDirs is the number of module folders that the last fill checked, and hashedDirs the number of them that it
+// hashed again, as their stamp changed.
+var verifiedDirs, hashedDirs int
+
+// verifiedFile is the file in the module cache of localtest that holds, for each module folder that a fill hashed with
+// the checked hash, a stamp of its files: their names, sizes, modes and modification times.
+const verifiedFile = "verified-dirs.json"
+
+// dirStamp gives the stamp of the files of the folder dir: a hash of the name, size, mode and modification time of
+// each entry. A file that is added, removed or written changes it.
+func dirStamp(dir string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, name)
+		fmt.Fprintf(h, "%q %d %o %d\n", rel, info.Size(), info.Mode(), info.ModTime().UnixNano())
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil)), err
+}
+
+// verifyDirs hashes each extracted module folder of dirs, as go mod verify does, and fails with each module whose
+// folder does not have the checked hash of its zip: "dir has been modified". A module with no folder or no hash, such
+// as a version of which only the go.mod was read, is not hashed. A folder whose stamp (dirStamp) and checked hash are
+// those that verifiedFile holds from an earlier hash is not hashed again: its files did not change since then. Only
+// a deliberate edit that also sets the size and the modification time of each file back gets past the stamp.
+//
+// stampsFile is the file of the stamps, verifiedFile in the module cache of localtest.
+func verifyDirs(dirs []fillDir, stampsFile string) error {
+	seen := map[string]bool{}
+	var todo []fillDir
+	for _, d := range dirs {
+		if d.Dir == "" || d.Sum == "" || seen[d.Dir] {
+			continue
+		}
+		seen[d.Dir] = true
+		todo = append(todo, d)
+	}
+	type record struct{ Sum, Stamp string }
+	known := map[string]record{}
+	if data, err := os.ReadFile(stampsFile); err == nil {
+		_ = json.Unmarshal(data, &known)
+	}
+	var (
+		wg       sync.WaitGroup
+		failedMu sync.Mutex
+		failed   []string
+		hashed   int
+		passed   = map[string]record{}
+	)
+	work := make(chan fillDir)
+	for range max(runtime.NumCPU(), 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range work {
+				stamp, err := dirStamp(d.Dir)
+				why := ""
+				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
+					failedMu.Lock()
+					passed[d.Dir] = record{d.Sum, stamp}
+					failedMu.Unlock()
+					continue
+				}
+				got, err := dirhash.HashDir(d.Dir, d.Path+"@"+d.Version, dirhash.Hash1)
+				switch {
+				case err != nil:
+					why = fmt.Sprintf("%s %s: hash its folder %s: %v", d.Path, d.Version, d.Dir, err)
+				case got != d.Sum:
+					why = fmt.Sprintf("%s %s: dir has been modified (%s): its hash is %s, not the checked %s", d.Path, d.Version, d.Dir, got, d.Sum)
+				}
+				failedMu.Lock()
+				hashed++
+				if why != "" {
+					failed = append(failed, why)
+				} else if stamp != "" {
+					passed[d.Dir] = record{d.Sum, stamp}
+				}
+				failedMu.Unlock()
+			}
+		}()
+	}
+	for _, d := range todo {
+		work <- d
+	}
+	close(work)
+	wg.Wait()
+	verifiedDirs, hashedDirs = len(todo), hashed
+	if data, err := json.Marshal(passed); err == nil {
+		_ = writeAtomic(stampsFile, data)
+	}
+	if len(failed) > 0 {
+		slices.Sort(failed)
+		return errors.New("the module cache of localtest holds changed module folders:\n" + strings.Join(failed, "\n"))
+	}
+	return nil
 }
 
 // fillEnvironment is the environment of the fill of the module cache of localtest. It reads modules through the

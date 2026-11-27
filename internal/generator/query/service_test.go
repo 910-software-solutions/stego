@@ -38,9 +38,6 @@ var serviceTests []byte
 //go:embed testdata/schema.zed
 var serviceSchema []byte
 
-// spiceDBImage is the pinned SpiceDB image of the authorization runtime's tests.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
 // pinnedGo is the Go command that builds the generated service: STEGO_TEST_PINNED_GO, else bin/go of the SDK that
 // runs the test.
 func pinnedGo() string {
@@ -139,7 +136,7 @@ func shopProject(t *testing.T) string {
 	}
 	write("go.sum", sums)
 	write("go.mod", []byte("module "+shopModule+"\n\ngo "+new(Generator).MinimumGoVersion()+
-		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.204.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
+		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.206.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeFolder+"\n"))
 	goCommand(t, project, nil, "mod", "tidy")
 	localtest.CheckSums(t, project)
 	goCommand(t, project, nil, "vet", "./...")

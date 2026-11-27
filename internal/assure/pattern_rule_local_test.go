@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
-	"go/printer"
 	"go/token"
 	"path"
 	"regexp"
@@ -75,9 +74,10 @@ func (p localProof) packageFiles() map[string][]byte {
 	return all
 }
 
-// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD.
-// A record is automated when its state is automated, or when its kind has no state (a contract test of the
-// product's own kind) and it names a file.
+// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD;
+// with no domain, those of the whole product, also of the records that sit under no domain. A record is automated
+// when its state is automated, or when its kind has no state (a contract test of the product's own kind) and it
+// names a file.
 func newLocalProof(t *testing.T, domain string) localProof {
 	t.Helper()
 	workspace := checkedWorkspace(t)
@@ -90,7 +90,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 	_, tree := readHead(t)
 	proof := localProof{domain: domain, files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
 	for _, record := range workspace.Records {
-		if record.Domain != domain || !testKinds[record.Kind] {
+		if domain != "" && record.Domain != domain || !testKinds[record.Kind] {
 			continue
 		}
 		file, _ := record.Fields["file"].(string)
@@ -104,7 +104,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 		}
 	}
 	if len(proof.tests) == 0 {
-		t.Fatalf("the spec names no automated test of %s", domain)
+		t.Fatalf("the spec names no automated test of %q", domain)
 	}
 	return proof
 }
@@ -119,14 +119,23 @@ func report(t *testing.T, rule string, faults []string) {
 	}
 }
 
-// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and neither is a line
-// that compiles a regular expression, where a check such as this one writes the text that it looks for. A test
-// that hides a fault in a regular expression is not seen; that is a known limit of a scan of text.
+// localTestsFile is the file of these checks.
+const localTestsFile = "internal/assure/pattern_rule_local_test.go"
+
+// ownCheck tells if the file is one of Assuring's own files of checks, which write the text that they look for in
+// regular expressions (review of PR #504, L3).
+func ownCheck(name string) bool {
+	return strings.HasPrefix(name, "internal/assure/") && strings.HasSuffix(name, "_test.go")
+}
+
+// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
+// files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
+// for.
 func codeLines(name string, data []byte) []string {
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || strings.Contains(line, "regexp.MustCompile(") || strings.Contains(line, "re.compile(") {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && strings.Contains(line, "regexp.MustCompile(") {
 			continue
 		}
 		lines = append(lines, line)
@@ -318,7 +327,148 @@ func (p localProof) oneCommandRunsEachSuite(t *testing.T) {
 			faults = append(faults, file+" belongs to no documented suite")
 		}
 	}
+	faults = append(faults, p.undocumentedEnvironment(string(readme))...)
 	report(t, "ST-STD-LOCAL-R02", faults)
+}
+
+// testEnvironmentSection is the heading of the section of README.md that names the variables of the tests. A
+// variable is documented only when this section names it as a whole word (review of PR #504, L1).
+const testEnvironmentSection = "### The environment of the tests"
+
+// documentedSection gives the text of the section of README.md that starts at the heading, up to the next heading
+// of the same or a higher level, or "" when README.md has no such heading.
+func documentedSection(readme, heading string) string {
+	lines := strings.Split(readme, "\n")
+	level := len(heading) - len(strings.TrimLeft(heading, "#"))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != heading {
+			continue
+		}
+		var section []string
+		for _, next := range lines[i+1:] {
+			if hashes := len(next) - len(strings.TrimLeft(next, "#")); hashes > 0 && hashes <= level && strings.HasPrefix(next[hashes:], " ") {
+				break
+			}
+			section = append(section, next)
+		}
+		return strings.Join(section, "\n")
+	}
+	return ""
+}
+
+// namesWord tells if the text holds the name as a whole word: not as a part of a longer name (review of PR #504, L1).
+func namesWord(text, name string) bool {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(name) + `($|[^A-Za-z0-9_])`).MatchString(text)
+}
+
+// A read of an environment variable of the product: each Getenv or LookupEnv of a STEGO_ variable, in any form
+// (review of PR #504, M1).
+var readsVariable = regexp.MustCompile(`(?:Getenv|LookupEnv)\("(STEGO_[A-Z0-9_]+)"\)`)
+
+// An assignment of the value of a read to names, with := or =; the names on its left side.
+var assignsRead = regexp.MustCompile(`^\s*(?:if\s+|var\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:?=[^=]`)
+
+// A failure or a skip of a test, or a bare return out of it, which a missing variable leads to within a few lines.
+var stopsTest = regexp.MustCompile(`(?m)\bt\.(Fatal|Fatalf|Skip|Skipf|SkipNow|FailNow)\(|^\s*return\s*$`)
+
+// A set of a variable by a test of the tree: Setenv, or an entry of the environment of a command it runs.
+var setsVariable = regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+|"([A-Z0-9_]+)=[^"]*"`)
+
+// optInVariables are the STEGO_ variables that a test reads only to do more than its proof, so that the documented
+// command proves the same without them. Each has its reason. A new variable that a test stops on fails the test
+// until README.md names it or this list holds it with a reason.
+var optInVariables = map[string]string{
+	"STEGO_UPDATE_GOLDEN":      "writes the golden files again in place of a comparison with them",
+	"STEGO_TEST_REACH_SCHEMAS": "changes the count of random schemas from its default; it stops the test only on a value that is not a count",
+	"STEGO_TEST_NO_CONTAINERS": "turns the failure of a test with no container engine into a skip; without it the test fails, as R02 asks",
+}
+
+// optInSuffixes are the endings of the names of opt-in variables that copy what a test made to a folder, for a
+// person or a CI job to read: the test proves the same without them.
+var optInSuffixes = []string{"_DUMP", "_ARTIFACTS"}
+
+// optIn tells if the variable is an opt-in one, by name or by the ending of its name.
+func optIn(name string) bool {
+	if _, held := optInVariables[name]; held {
+		return true
+	}
+	for _, suffix := range optInSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionLine gives the line that tests the value of the read on line i: line i when it is an if statement or
+// holds the condition itself; else the first if statement of the next ten lines that names, as a whole word, a name
+// that line i assigns the value to. It gives -1 when nothing tests the value.
+func conditionLine(lines []string, i int) int {
+	line := lines[i]
+	if strings.Contains(line, "if ") || strings.Contains(line, "==") || strings.Contains(line, "!=") || strings.Contains(line, "!ok") {
+		return i
+	}
+	match := assignsRead.FindStringSubmatch(line)
+	if match == nil {
+		return -1
+	}
+	var names []string
+	for _, name := range strings.Split(match[1], ",") {
+		if name = strings.TrimSpace(name); name != "_" && name != "" {
+			names = append(names, name)
+		}
+	}
+	for j := i + 1; j < min(i+11, len(lines)); j++ {
+		if !strings.Contains(lines[j], "if ") && !strings.Contains(lines[j], "switch ") {
+			continue
+		}
+		for _, name := range names {
+			if namesWord(lines[j], name) {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// undocumentedEnvironment gives each STEGO_ variable that a test file of the domain's packages needs and the test
+// environment section of README.md does not name: the test reads the variable, directly or through a name it
+// assigns the value to, and fails, skips or returns within a few lines of the condition on it; no test of the tree
+// sets it for the test (as a parent test sets the path of a binary for the child process it runs); and it is not an
+// opt-in variable. The documented command go test ./... runs the test with no such variable, so the test does not
+// run from the documented command alone (review of PR #502, L4; review of PR #504, M1).
+func (p localProof) undocumentedEnvironment(readme string) []string {
+	set := map[string]bool{}
+	for _, name := range p.tree.paths() {
+		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
+			data, _ := p.tree.File(name)
+			for _, match := range setsVariable.FindAllStringSubmatch(string(data), -1) {
+				set[match[1]+match[2]+match[3]] = true
+			}
+		}
+	}
+	section := documentedSection(readme, testEnvironmentSection)
+	var faults []string
+	if section == "" {
+		faults = append(faults, "README.md has no section "+testEnvironmentSection+" that names the variables of the tests")
+	}
+	for file, data := range p.packageFiles() {
+		lines := codeLines(file, data)
+		for i, line := range lines {
+			for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
+				name := match[1]
+				if set[name] || optIn(name) || namesWord(section, name) {
+					continue
+				}
+				condition := conditionLine(lines, i)
+				if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
+					continue
+				}
+				faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, name, testEnvironmentSection))
+			}
+		}
+	}
+	return faults
 }
 
 // The signs in the code of a test file that it reaches a system outside the product (ST-STD-LOCAL-R03): a request
@@ -512,8 +662,12 @@ var hostWrite = regexp.MustCompile(`(os\.(WriteFile|Create|Mkdir|MkdirAll|OpenFi
 // second proof".
 var sharedCluster = regexp.MustCompile(`(?i)[^.]*\b(jshell|shared cluster|OpenShift cluster)\b[^.]*`)
 
-// needsCluster tells if the test record says that it needs a shared cluster.
+// needsCluster tells if the test record says that it needs a shared cluster. A unit test of this file reads records
+// that name a cluster; it needs none itself (review of PR #504, L2).
 func (test localTest) needsCluster() bool {
+	if test.file == localTestsFile && test.fields["level"] == "unit" {
+		return false
+	}
 	for _, sentence := range sharedCluster.FindAllString(test.text(), -1) {
 		if !regexp.MustCompile(`(?i)\bMAY follow\b|\bsecond(,| and)? platform-level proof\b|\bas a second proof\b`).MatchString(sentence) {
 			return true
@@ -627,229 +781,11 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
 
-// innerGoScope is the folder whose packages innerGoFaults reads: the generator packages, whose tests build and run
-// generated modules with the checked module cache of localtest (security review of PR #7, L1 to L3).
-const innerGoScope = "internal/generator/"
-
-// innerGoFaults gives each inner go command of the test files of one package that does not take its environment
-// from localtest. files are the _test.go files of the package, outside testdata, by name. An inner go command is a
-// call of exec.Command or exec.CommandContext whose program is the string "go" or a call of a function whose name
-// ends in PinnedGo or pinnedGo. Its environment is each assignment of Env on the variable that holds the command,
-// after the call and before the variable is set again. Each such assignment must give an environment of localtest:
-// a call of localtest.GoEnv or localtest.FillEnv, a call of a function of the package that returns one, a variable
-// of the same function that holds one, or an append to the Env of the same command. A command with no Env takes the
-// environment of the test, with its GOMODCACHE, GOPROXY, GOFLAGS and GONOSUMDB, so it is a fault too. A parameter
-// that holds an environment is a fault: the scan does not follow the callers.
-func innerGoFaults(files map[string][]byte) []string {
-	fset := token.NewFileSet()
-	var parsed []*ast.File
-	var faults []string
-	for name, data := range files {
-		file, err := parser.ParseFile(fset, name, data, parser.SkipObjectResolution)
-		if err != nil {
-			faults = append(faults, name+" does not parse: "+err.Error())
-			continue
-		}
-		parsed = append(parsed, file)
-	}
-	givers := map[string]bool{}
-	gives := func(expr ast.Node) bool {
-		found := false
-		ast.Inspect(expr, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			switch fun := call.Fun.(type) {
-			case *ast.SelectorExpr:
-				if x, ok := fun.X.(*ast.Ident); ok && x.Name == "localtest" && (fun.Sel.Name == "GoEnv" || fun.Sel.Name == "FillEnv") {
-					found = true
-				}
-			case *ast.Ident:
-				found = found || givers[fun.Name]
-			}
-			return true
-		})
-		return found
-	}
-	// The functions of the package that return an environment of localtest, to a fixed point.
-	for changed := true; changed; {
-		changed = false
-		for _, file := range parsed {
-			for _, decl := range file.Decls {
-				function, ok := decl.(*ast.FuncDecl)
-				if !ok || function.Recv != nil || function.Body == nil || givers[function.Name.Name] {
-					continue
-				}
-				ast.Inspect(function.Body, func(node ast.Node) bool {
-					if ret, ok := node.(*ast.ReturnStmt); ok {
-						for _, result := range ret.Results {
-							if gives(result) && !givers[function.Name.Name] {
-								givers[function.Name.Name], changed = true, true
-							}
-						}
-					}
-					return true
-				})
-			}
-		}
-	}
-	isGo := func(expr ast.Expr) bool {
-		switch program := expr.(type) {
-		case *ast.BasicLit:
-			return program.Kind == token.STRING && program.Value == `"go"`
-		case *ast.CallExpr:
-			if id, ok := program.Fun.(*ast.Ident); ok {
-				return strings.HasSuffix(id.Name, "PinnedGo") || strings.HasSuffix(id.Name, "pinnedGo")
-			}
-		}
-		return false
-	}
-	for _, file := range parsed {
-		ast.Inspect(file, func(node ast.Node) bool {
-			var body *ast.BlockStmt
-			switch function := node.(type) {
-			case *ast.FuncDecl:
-				body = function.Body
-			case *ast.FuncLit:
-				body = function.Body
-			}
-			if body == nil {
-				return true
-			}
-			// The assignments of the function, outside the function literals in it, which the scan reads on their own.
-			var assigns []*ast.AssignStmt
-			var calls []*ast.CallExpr
-			ast.Inspect(body, func(inner ast.Node) bool {
-				switch n := inner.(type) {
-				case *ast.FuncLit:
-					return false
-				case *ast.AssignStmt:
-					assigns = append(assigns, n)
-				case *ast.CallExpr:
-					calls = append(calls, n)
-				}
-				return true
-			})
-			held := map[string]bool{}
-			for _, assign := range assigns {
-				for i, left := range assign.Lhs {
-					if id, ok := left.(*ast.Ident); ok && i < len(assign.Rhs) && gives(assign.Rhs[i]) {
-						held[id.Name] = true
-					}
-				}
-			}
-			for _, call := range calls {
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || selector.Sel.Name != "Command" && selector.Sel.Name != "CommandContext" {
-					continue
-				}
-				if x, ok := selector.X.(*ast.Ident); !ok || x.Name != "exec" {
-					continue
-				}
-				args := call.Args
-				if selector.Sel.Name == "CommandContext" && len(args) > 0 {
-					args = args[1:]
-				}
-				if len(args) == 0 || !isGo(args[0]) {
-					continue
-				}
-				position := fset.Position(call.Pos())
-				where := fmt.Sprintf("%s:%d", position.Filename, position.Line)
-				variable, end := "", token.Pos(0)
-				for _, assign := range assigns {
-					for i, right := range assign.Rhs {
-						if right == call && i < len(assign.Lhs) {
-							if id, ok := assign.Lhs[i].(*ast.Ident); ok {
-								variable = id.Name
-							}
-						}
-					}
-				}
-				if variable != "" {
-					for _, assign := range assigns {
-						for _, left := range assign.Lhs {
-							if id, ok := left.(*ast.Ident); ok && id.Name == variable && assign.Pos() > call.End() && (end == 0 || assign.Pos() < end) {
-								end = assign.Pos()
-							}
-						}
-					}
-				}
-				var envs []ast.Expr
-				for _, assign := range assigns {
-					if assign.Pos() < call.End() || end != 0 && assign.Pos() >= end {
-						continue
-					}
-					for i, left := range assign.Lhs {
-						if target, ok := left.(*ast.SelectorExpr); ok && target.Sel.Name == "Env" && i < len(assign.Rhs) {
-							if id, ok := target.X.(*ast.Ident); ok && id.Name == variable {
-								envs = append(envs, assign.Rhs[i])
-							}
-						}
-					}
-				}
-				if len(envs) == 0 {
-					faults = append(faults, where+" runs an inner go command with the environment of the test, not of localtest")
-				}
-				for _, env := range envs {
-					if gives(env) {
-						continue
-					}
-					if id, ok := env.(*ast.Ident); ok && held[id.Name] {
-						continue
-					}
-					if appendCall, ok := env.(*ast.CallExpr); ok && len(appendCall.Args) > 0 {
-						if fun, ok := appendCall.Fun.(*ast.Ident); ok && fun.Name == "append" {
-							if first, ok := appendCall.Args[0].(*ast.SelectorExpr); ok && first.Sel.Name == "Env" {
-								if id, ok := first.X.(*ast.Ident); ok && id.Name == variable {
-									continue
-								}
-							}
-						}
-					}
-					var text strings.Builder
-					_ = printer.Fprint(&text, fset, env)
-					faults = append(faults, fmt.Sprintf("%s runs an inner go command with an environment that is not of localtest: %s", where, text.String()))
-				}
-			}
-			return true
-		})
-	}
-	return faults
-}
-
-// TestInnerGoCommandsTakeTheCheckedCache reads the test files of each generator package at HEAD whose TestMain calls
-// localtest.MainModules, and fails on each inner go command of them that does not take the environment of localtest.
-func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
-	t.Run("ST-STD-LOCAL-R03-T12 Each inner go command of a generator test takes the checked module cache of localtest", func(t *testing.T) {
-		_, tree := readHead(t)
-		packages := map[string]map[string][]byte{}
-		for _, name := range tree.paths() {
-			if !strings.HasPrefix(name, innerGoScope) || !strings.HasSuffix(name, "_test.go") || strings.Contains(name, "/testdata/") {
-				continue
-			}
-			data, _ := tree.File(name)
-			if packages[path.Dir(name)] == nil {
-				packages[path.Dir(name)] = map[string][]byte{}
-			}
-			packages[path.Dir(name)][name] = data
-		}
-		var faults []string
-		checked := 0
-		for _, files := range packages {
-			main := false
-			for _, data := range files {
-				main = main || strings.Contains(strings.Join(codeLines("", data), "\n"), "localtest.MainModules(")
-			}
-			if !main {
-				continue
-			}
-			checked++
-			faults = append(faults, innerGoFaults(files)...)
-		}
-		if checked == 0 {
-			t.Fatal("no generator package at HEAD calls localtest.MainModules: the scan read nothing")
-		}
-		report(t, "ST-STD-LOCAL-R03", faults)
-	})
+// TestLocalDevelopmentStandard runs the checks of the pattern ST-PAT-LOCAL-TEST on every automated test of the
+// product at once, so a test that no domain owns, such as a test of a shared generator library, is also held.
+func TestLocalDevelopmentStandard(t *testing.T) {
+	proof := newLocalProof(t, "")
+	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
+	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
+	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
 }

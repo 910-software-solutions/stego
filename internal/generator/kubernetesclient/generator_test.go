@@ -183,10 +183,11 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 	}
 	cmd := exec.Command("go", append(arguments, "./...")...)
 	cmd.Dir = project
-	cmd.Env = localtest.GoEnv()
+	var rotation []string
 	if !telemetry {
-		cmd.Env = append(cmd.Env, "STEGO_KUBERNETES_LIVE_ROTATION=0")
+		rotation = append(rotation, "STEGO_KUBERNETES_LIVE_ROTATION=0")
 	}
+	cmd.Env = localtest.GoEnv(rotation...)
 	output, runErr := cmd.CombinedOutput()
 	if dir := os.Getenv("STEGO_KUBERNETES_ROTATION_ARTIFACTS"); dir != "" {
 		if !telemetry {

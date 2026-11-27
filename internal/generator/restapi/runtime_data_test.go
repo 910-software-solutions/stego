@@ -37,9 +37,10 @@ import (
 // The child process of ST-SUP-RC20-OC33-T02 (legacyMuxMarker) does not fill the cache: it runs only that test, which
 // runs no go command. The fill takes about ten seconds, which is the time limit of the child, so with the fill the
 // child was killed (signal: killed) before it could exit. A go command of the child still gets the cache through
-// localtest.GoEnv, which fills it on its first call.
+// localtest.GoEnv, which fills it on its first call. The child is known by the marker and by its -test.run argument
+// (legacyMuxRun) together.
 func TestMain(m *testing.M) {
-	if os.Getenv(legacyMuxMarker) == "1" {
+	if os.Getenv(legacyMuxMarker) == "1" && slices.Contains(os.Args[1:], legacyMuxRun) {
 		os.Exit(localtest.Main(m))
 	}
 	os.Exit(localtest.MainModules(m))
@@ -387,7 +388,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.204.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.206.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	localtest.CheckSums(t, p.dir)
 	return p
@@ -1243,12 +1244,53 @@ func TestNoMarkedValue(t *testing.T) {
 }
 `
 
+// integerBoundCheck is a test of the generated validation.go: the entry of a bound of an integer schema gives the
+// bound as an integer, and the entry of a bound of a number schema stays as the check gives it.
+const integerBoundCheck = `package api
+
+import (
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+func TestIntegerBound(t *testing.T) {
+	for _, c := range []struct {
+		schema *openapi3.Schema
+		value  float64
+		want   string
+	}{
+		{openapi3.NewInt64Schema().WithMin(0).WithMax(2147483647), 2147483648, "number must be at most 2147483647"},
+		{openapi3.NewInt64Schema().WithMin(-2147483648), -2147483649, "number must be at least -2147483648"},
+		{openapi3.NewInt64Schema().WithMin(0).WithMax(10000000), 10000001, "number must be at most 10000000"},
+		{openapi3.NewFloat64Schema().WithMax(1.5), 2, "number must be at most 1.5"},
+		{openapi3.NewFloat64Schema().WithMax(2147483647), 2147483648, "number must be at most 2.147483647e+09"},
+	} {
+		err := c.schema.VisitJSON(c.value)
+		if err == nil {
+			t.Fatalf("%v passed the schema %+v", c.value, c.schema)
+		}
+		got := parseValidationErrors(err)
+		if len(got) != 1 || got[0].Message != c.want {
+			t.Errorf("%v gives the entries %+v, want the message %q", c.value, got, c.want)
+		}
+	}
+}
+`
+
 func TestValidationBounds(t *testing.T) {
 	ctx := crudContext()
 	ctx.Conventions.RequestValidation = "openapi-schema"
 	p := newCrudProject(t, ctx, crudFiles(t, ctx))
 	p.write("out/api/cap_test.go", []byte(validationCapCheck))
 	p.write("out/api/marked_test.go", []byte(markedValueCheck))
+	p.write("out/api/bound_test.go", []byte(integerBoundCheck))
+	t.Run("ST-SUP-RC20-OC05-T08 The entry of a min or a max of an integer field gives the bound as an integer", func(t *testing.T) {
+		// Walkthrough 28, MSG-MAX: the 400 above the int32 range said number must be at most 2.147483647e+09.
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestIntegerBound$", "./out/api"); err != nil {
+			t.Fatalf("the check of the integer bounds failed: %v\n%s", err, output)
+		}
+	})
 	t.Run("ST-SUP-RC20-OC05-T05 A validation problem lists at most 50 failed members and one entry that counts the rest", func(t *testing.T) {
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestValidationCap$", "./out/api"); err != nil {
 			t.Fatalf("the check of the cap failed: %v\n%s", err, output)

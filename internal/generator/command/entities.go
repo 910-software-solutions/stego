@@ -659,11 +659,19 @@ func renderCheck(w *writer, e *entity) {
 			if d.HeldMax != nil {
 				maximum = d.HeldMax
 			}
+			// The reason gives the bound of an integer field as an integer, such as 2147483647, and not in the
+			// exponent form 2.147483647e+09 (walkthrough 28, MSG-MAX).
+			bound := func(v float64) string {
+				if base == "int32" || base == "int64" {
+					return strconv.FormatFloat(v, 'f', -1, 64)
+				}
+				return strconv.FormatFloat(v, 'g', -1, 64)
+			}
 			if minimum != nil {
-				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*minimum, 'g', -1, 64)), "less than min " + strconv.FormatFloat(*minimum, 'g', -1, 64)})
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*minimum, 'g', -1, 64)), "less than min " + bound(*minimum)})
 			}
 			if maximum != nil {
-				rs = append(rs, rule{fmt.Sprintf("float64(%s) > %s", value, strconv.FormatFloat(*maximum, 'g', -1, 64)), "more than max " + strconv.FormatFloat(*maximum, 'g', -1, 64)})
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) > %s", value, strconv.FormatFloat(*maximum, 'g', -1, 64)), "more than max " + bound(*maximum)})
 			}
 		}
 		if len(rs) > 0 {
