@@ -122,6 +122,7 @@ before the change, one item for each attribute that the change relaxes:
 | A default where there was none | `no default` | `no default` |
 | A required field made optional | `required` | `required` |
 | An enum made a string with no `max_length` | `type enum, values V1 V2 ...` | `type enum, values a b` |
+| A field taken out of the search | `searchable` | `searchable` |
 
 ```yaml
 schema_changes:
@@ -165,6 +166,46 @@ the table can write such a marker by hand, as it can change the table itself.
 A relax needs the runtime library v0.108.0 or later in the release before:
 `stego compat` refuses a relax on a base that pins an older one, and names the
 version to deploy first.
+
+### Drop the search index of a field
+
+The item `searchable` says that the field had its search index before the
+step, and is out of the search after it: it sets `searchable: false`, or its
+`max_length` is over 500 characters (see
+[searchable](fills.md#searchable)). The step's migration drops the search
+index `<table>_<column>_search` first, under the lock timeout of a step,
+then runs the `ALTER TABLE` of the other items. A relax with only the item
+`searchable` is the `DROP INDEX` alone. It reads no row and keeps each row.
+
+```yaml
+schema_changes:
+  - {id: note-body-relax, kind: relax, entity: Note, field: body, definition: searchable}
+  - {id: note-summary-relax, kind: relax, entity: Note, field: summary, definition: "max_length 400, searchable"}
+schema_history:
+  - {change: note-body-relax, phase: expand}
+  - {change: note-summary-relax, phase: expand}
+```
+
+`stego compat` names the relax to declare:
+
+- On a base whose release ran a postgres-adapter before 6.33.0, each public
+  string field of a listed entity with a `max_length` over 500 has its search
+  index, and the head needs a relax with the item `searchable` for it.
+- A new `searchable: false` on a searched field needs the relax too.
+- A relax that makes a `max_length` longer than 500 must also name the item
+  `searchable`. Without it, the step keeps the index, and a long value fails
+  its write.
+
+No schema change builds a search index. Thus `stego compat` refuses a head
+that puts a field of the base back into the search, such as a field whose
+`searchable: false` the head takes away.
+
+The schema check of a release before postgres-adapter 6.33.0 refuses the
+table with no search index of the field. Its pods that run go on, but a pod
+of the release before that starts after the step fails its schema check.
+During that rolling deploy, do not restart the pods of the release before,
+and do not roll back to it after the step. A rollback needs the index again,
+which fails when a value of the field is longer than about 2,700 bytes.
 
 ## Within steps
 

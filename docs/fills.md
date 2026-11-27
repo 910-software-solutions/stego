@@ -340,6 +340,7 @@ Each field of an entity is one item of `fields`:
 | `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
+| `searchable` | For a `string` only: `true` or `false`, whether a list searches and orders the field, so that its table has a search index on it. The default is `false` for a `max_length` over 500 and `true` for each other string. See below. |
 | `attempts` | For a compare-only secret only: `{limit: <1 to 100>, unlock_after: <1m to 24h>}`, the limit of wrong checks and, when you give it, the time after which a locked row opens again. See [Limit the wrong attempts](#limit-the-wrong-attempts). |
 
 An entity can also declare `events`, the fields that its change events carry.
@@ -408,6 +409,37 @@ writable: never` lets only the commands of the example change a balance.
 ```yaml
       - { name: balance, type: int64, min: 0, default: 0, writable: never }
 ```
+
+### searchable
+
+A list searches (`search`) and orders (`orderBy`) each public field of a
+text, number or bool type, and the table has a search index on each such
+field: `(tenant_id, field)`. A PostgreSQL index entry holds at most about
+2,700 bytes, and a character of UTF-8 takes up to 4 bytes. Thus a string
+field whose `max_length` is over 500 characters has no search index (from
+postgres-adapter 6.33.0 and rest-api 4.45.0): its value can be longer than
+2,000 bytes, and with an index a long value would fail its write with 500.
+A list does not search or order such a field. A `search` or an `orderBy`
+that names it gets 400 with a detail that names the field.
+
+- `searchable: false` takes any string field out of the search, the order
+  and the index, such as a code that no one searches.
+- `searchable: true` is valid only on a string field with a `max_length` of
+  at most 500. `stego validate` refuses it on a longer field and on a `pii`
+  or `secret` field, which a list never searches.
+- A string with no `max_length` keeps its search index. A value of it over
+  about 2,700 bytes still fails its write. Give such a field a `max_length`,
+  or `searchable: false`.
+
+<!-- excerpt -->
+```yaml
+      - { name: notes, type: string, optional: true, max_length: 4000 }
+      - { name: code, type: string, max_length: 40, searchable: false }
+```
+
+A running service whose release before postgres-adapter 6.33.0 built a
+search index on such a field drops it with a relax step: see [Relax
+steps](schema-changes.md#relax-steps).
 
 ## Secret fields
 
