@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func serviceContext() gen.Context {
@@ -163,7 +164,7 @@ func TestRenderedPolicy(t *testing.T){
 	}
 	command := exec.Command("go", "test", "-json", "-race", "-mod=readonly", "-timeout=20s", "./...")
 	command.Dir = dir
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	// One run of the generated module holds the checks of every record below.
 	output, err := command.CombinedOutput()
 	passed, ran := map[string]bool{}, map[string]bool{}

@@ -11,7 +11,11 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/configuration_test.go
 var runtimeTests []byte
@@ -143,7 +147,7 @@ func TestGeneratedConfiguration(t *testing.T) {
 			}
 			cmd := exec.Command("go", "test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=30s", "./...")
 			cmd.Dir = project
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=2")
+			cmd.Env = localtest.GoEnv("GOMAXPROCS=2")
 			output, err := cmd.CombinedOutput()
 			t.Log(string(output))
 			if err != nil {

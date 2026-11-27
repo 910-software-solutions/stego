@@ -13,8 +13,13 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/auditlog"
 	"github.com/910-software-solutions/stego/internal/generator/idempotency"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 // The tests of the generated outbox wiring on the runtime. They are copied into the generated package and run there
 // with the pinned Go SDK against the runtime module of this repository.
@@ -226,13 +231,12 @@ func (s *service) goTool(args ...string) ([]byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv(append([]string{"GOFLAGS=-mod=mod"}, localtest.PostgresEnv(s.t)...)...)
 	return cmd.CombinedOutput()
 }
 
 // run runs the test of the generated module whose subtest name starts with id, and fails when it fails, or when
-// that subtest did not pass: a missing result is not a pass. A skip passes only when STEGO_REQUIRE_POSTGRES is
-// not 1.
+// that subtest did not pass: a missing result is not a pass, and a skip is not a pass.
 func (s *service) run(id string) {
 	s.t.Helper()
 	pattern := "^Test[A-Za-z]+$/^" + id + "(_|$)"
@@ -242,12 +246,7 @@ func (s *service) run(id string) {
 	}
 	text := string(out)
 	passed := ownPass(text, `Test[A-Za-z]+`, id)
-	skipped := regexp.MustCompile(`--- SKIP: Test[A-Za-z]+/` + id + `_`).MatchString(text)
-	switch {
-	case passed:
-	case skipped && os.Getenv("STEGO_REQUIRE_POSTGRES") != "1":
-		s.t.Skipf("the generated test %s skipped: no PostgreSQL server", id)
-	default:
+	if !passed {
 		s.t.Fatalf("the generated test %s did not pass\n%s", id, out)
 	}
 	s.t.Log(text)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/grpcapplication"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 const overlayReference = `syntax="proto3";package sample;message Record{string name=1;int32 size=2;optional string note=3;}`
@@ -99,7 +100,7 @@ func TestOverlaysAcceptSelfPinnedReference(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-mod=mod", "./out/"+filepath.Dir(testPath))
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("overlay test failed: %v\n%s", err, output)
 	}
@@ -140,7 +141,7 @@ func TestOverlaysAcceptValidExtensions(t *testing.T) {
 	}
 	command := exec.Command("go", "test", "-mod=mod", "./out/grpcapi/pb/")
 	command.Dir = project
-	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Env = localtest.GoEnv()
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("overlay test failed: %v\n%s", err, output)
 	}

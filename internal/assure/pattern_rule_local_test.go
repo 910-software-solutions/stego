@@ -560,11 +560,17 @@ func (p localProof) startsPinnedServices(t *testing.T) {
 	sets := map[string]map[string]bool{} // folder -> variables that a file of the folder sets
 	setter := regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+`)
 	record := func(folder string, data []byte, name string) {
-		for _, match := range setter.FindAllStringSubmatch(strings.Join(codeLines(name, data), "\n"), -1) {
-			if sets[folder] == nil {
-				sets[folder] = map[string]bool{}
-			}
+		text := strings.Join(codeLines(name, data), "\n")
+		if sets[folder] == nil {
+			sets[folder] = map[string]bool{}
+		}
+		for _, match := range setter.FindAllStringSubmatch(text, -1) {
 			sets[folder][match[1]+match[2]] = true
+		}
+		// localtest.PostgresEnv (ST-SUP-TOOL16) starts the PostgreSQL server and gives STEGO_TEST_POSTGRES_DSN to
+		// the module that a test generates.
+		if strings.Contains(text, "localtest.PostgresEnv(") {
+			sets[folder]["STEGO_TEST_POSTGRES_DSN"] = true
 		}
 	}
 	for file, data := range files {

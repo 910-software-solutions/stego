@@ -10,7 +10,11 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/oteltracing"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 func TestGeneratedAuthenticationRuntime(t *testing.T) {
 	for _, telemetry := range []bool{false, true} {
@@ -93,15 +97,16 @@ func testGeneratedAuthenticationRuntime(t *testing.T, telemetry bool) {
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "./..."}} {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("generated authentication checks: %v\n%s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 	if os.Getenv("STEGO_BENCH_AUTH") == "1" {
 		command := exec.Command("go", "test", "-run", "^$", "-bench", "^Benchmark(Verify|GrantPolicy)$", "-benchtime=1s", "-benchmem", "./...")
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Env = localtest.GoEnv()
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("authentication benchmark: %v\n%s", err, output)

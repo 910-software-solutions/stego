@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/types"
+	"github.com/getkin/kin-openapi/openapi3"
 )
 
 // routesProto holds the messages of the command close-todo: a path member, an int64, an enum, a list, a map and a
@@ -434,4 +434,3 @@ func TestRouteDocumentSecretMembers(t *testing.T) {
 		}
 	})
 }
-

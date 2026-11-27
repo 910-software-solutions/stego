@@ -15,12 +15,16 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 var update = flag.Bool("update", false, "write the golden files of the emitted wiring")
 
@@ -625,37 +629,24 @@ func TestTenancy(t *testing.T) {
 	})
 }
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04): version 1.57.0 at its digest,
-// the image of the runtime's own SpiceDB tests.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB gives the gRPC endpoint of a local SpiceDB serve-testing container without privilege, which keeps
-// one in-memory datastore for each preshared key, and removes it when the test ends. STEGO_TEST_SPICEDB_ENDPOINT
-// names a running server in its place. It fails the test when docker is not on the PATH, as pgtest does: a missing
-// result is not a pass; only STEGO_TEST_NO_CONTAINERS=1 makes it skip.
+// startSpiceDB gives the gRPC endpoint of the local SpiceDB serve-testing container of localtest
+// (ST-STD-LOCAL-R04), which keeps one in-memory datastore for each preshared key. localtest runs it without privilege
+// and with limits, and removes it when the test ends. STEGO_TEST_SPICEDB_ENDPOINT names a running server in its
+// place. When neither podman nor docker is on PATH, localtest fails the test: a missing result is not a pass; only
+// STEGO_TEST_NO_CONTAINERS=1 makes it skip.
 func startSpiceDB(t *testing.T) string {
 	t.Helper()
 	if endpoint := os.Getenv("STEGO_TEST_SPICEDB_ENDPOINT"); endpoint != "" {
 		return endpoint
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		if os.Getenv("STEGO_TEST_NO_CONTAINERS") == "1" {
-			t.Skip("docker is not on the PATH, and STEGO_TEST_NO_CONTAINERS=1: these tests need a local SpiceDB container")
+	if os.Getenv("STEGO_TEST_NO_CONTAINERS") == "1" {
+		_, podman := exec.LookPath("podman")
+		_, docker := exec.LookPath("docker")
+		if podman != nil && docker != nil {
+			t.Skip("neither podman nor docker is on PATH, and STEGO_TEST_NO_CONTAINERS=1: these tests need a local SpiceDB container")
 		}
-		t.Fatal("docker is not on the PATH: these tests need a local SpiceDB container")
 	}
-	name := "stego-spicedbauthz-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::50051", spiceDBImage, "serve-testing").CombinedOutput()
-	if err != nil {
-		t.Fatalf("start the SpiceDB container: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	port, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-	if err != nil {
-		t.Fatalf("read the port of the SpiceDB container: %v", err)
-	}
-	return strings.TrimSpace(strings.Split(string(port), "\n")[0])
+	return localtest.SpiceDB(t, "serve-testing")
 }
 
 // The tests of the generated module. They are copied into the generated package and run there with the pinned Go
@@ -715,13 +706,12 @@ func (s *service) goTool(args ...string) ([]byte, error) {
 	}
 	cmd := exec.Command(name, args...)
 	cmd.Dir = s.dir
-	cmd.Env = append(append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local"), s.env...)
+	cmd.Env = localtest.GoEnv(append(append([]string{"GOFLAGS=-mod=mod"}, localtest.PostgresEnv(s.t)...), s.env...)...)
 	return cmd.CombinedOutput()
 }
 
 // run runs the test of the generated module whose subtest name starts with id, and fails when it fails, or when
-// that subtest did not pass: a missing result is not a pass. A skip passes only when STEGO_REQUIRE_POSTGRES is
-// not 1.
+// that subtest did not pass: a missing result is not a pass, and a skip is not a pass.
 func (s *service) run(id string) {
 	s.t.Helper()
 	pattern := "^Test[A-Za-z]+$/^" + id + "(_|$)"
@@ -731,12 +721,7 @@ func (s *service) run(id string) {
 	}
 	text := string(out)
 	passed := ownPass(text, `Test[A-Za-z]+`, id)
-	skipped := regexp.MustCompile(`--- SKIP: Test[A-Za-z]+/` + id + `_`).MatchString(text)
-	switch {
-	case passed:
-	case skipped && os.Getenv("STEGO_REQUIRE_POSTGRES") != "1":
-		s.t.Skipf("the generated test %s skipped: no PostgreSQL server", id)
-	default:
+	if !passed {
 		s.t.Fatalf("the generated test %s did not pass\n%s", id, out)
 	}
 	s.t.Log(text)
@@ -757,9 +742,7 @@ func TestGeneratedAuthzWiring(t *testing.T) {
 	if out, err := s.goTool("vet", "./..."); err != nil {
 		t.Fatalf("go vet of the generated module: %v\n%s", err, out)
 	}
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") != "" || os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-		s.env = append(s.env, "STEGO_TEST_SPICEDB_ENDPOINT="+startSpiceDB(t))
-	}
+	s.env = append(s.env, "STEGO_TEST_SPICEDB_ENDPOINT="+startSpiceDB(t))
 	for _, id := range []string{
 		"ST-SUP-RC29-OC05-T04",
 		"ST-SUP-RC29-OC06-T01", "ST-SUP-RC29-OC06-T02", "ST-SUP-RC29-OC06-T03", "ST-SUP-RC29-OC06-T06",

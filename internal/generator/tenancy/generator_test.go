@@ -15,8 +15,13 @@ import (
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/tenancy_test.go
 var tenancyTests []byte
@@ -166,12 +171,7 @@ type testEvent struct {
 // TestMigrations generates the service, applies its migrations to PostgreSQL in the generated module's own test,
 // and passes each test record that the generated test proves only when its subtest passed there.
 func TestMigrations(t *testing.T) {
-	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
-		if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-			t.Fatal("PostgreSQL fixture is required")
-		}
-		t.Skip("PostgreSQL fixture is not configured")
-	}
+	postgres := localtest.PostgresEnv(t)
 	project := t.TempDir()
 	storageCtx, tenancyCtx := contexts()
 	// Role names of their own, so a role that an earlier run left on the server cannot stand in for one that the
@@ -237,12 +237,13 @@ func TestMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir, tidy.Env = project, append(os.Environ(), "GOWORK=off")
+	tidy.Dir, tidy.Env = project, localtest.GoEnv()
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=120s", "./check")
-	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off")
+	run.Dir, run.Env = project, localtest.GoEnv(postgres...)
 	output, _ := run.CombinedOutput()
 	passed, ran := map[string]bool{}, map[string]bool{}
 	var log strings.Builder

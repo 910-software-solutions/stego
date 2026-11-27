@@ -15,8 +15,13 @@ import (
 	"testing"
 
 	"github.com/910-software-solutions/stego/internal/gen"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03), and
+// removes the PostgreSQL container that localtest started for the tests of the package, if any (ST-STD-LOCAL-R04, R05).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/database_test.go
 var databaseTests []byte
@@ -71,11 +76,12 @@ func TraceDatabase(ctx context.Context,call string)(context.Context,func(string)
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-count=1", "-timeout=60s", "./..."}} {
 		command := exec.Command("go", args...)
 		command.Dir = project
-		command.Env = append(os.Environ(), "GOWORK=off", "STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1")
+		command.Env = localtest.GoEnv(append(localtest.PostgresEnv(t), "STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=1")...)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("database driver: %v %s", err, output)
 		}
 	}
+	localtest.CheckSums(t, project)
 }
 
 func TestDatabasePeerValidation(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/domainprobe"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -686,7 +687,7 @@ func (p *project) goCommand(args ...string) (string, error) {
 	p.t.Helper()
 	cmd := exec.Command(pinnedGo(), args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local")
+	cmd.Env = localtest.GoEnv("GOFLAGS=-mod=mod")
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -738,6 +739,7 @@ func newProject(t *testing.T, ctx gen.Context, extra map[string][]byte) *project
 	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo "+new(Generator).MinimumGoVersion()+
 		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	return p
 }
 
@@ -1133,6 +1135,7 @@ func buildEntityFile(t *testing.T, source []byte) {
 		"\n\nrequire github.com/910-software-solutions/stego/registry/runtime v0.2.0\n\nreplace github.com/910-software-solutions/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.write("data/entities.go", source)
 	p.mustGo("mod", "tidy")
+	localtest.CheckSums(t, p.dir)
 	p.mustGo("vet", "./...")
 }
 

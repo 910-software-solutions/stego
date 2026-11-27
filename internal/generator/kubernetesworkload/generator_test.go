@@ -11,7 +11,11 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/httpapplication"
 	"github.com/910-software-solutions/stego/internal/generator/kubernetesclient"
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
+
+// TestMain fills the checked module cache of localtest first and runs no test without it (ST-STD-LOCAL-R03).
+func TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }
 
 //go:embed testdata/workload_test.go
 var runtimeTests []byte
@@ -76,13 +80,14 @@ func TestGeneratedWorkloadConstruction(t *testing.T) {
 	}
 	deps := exec.Command("go", "mod", "tidy")
 	deps.Dir = project
-	deps.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=2")
+	deps.Env = localtest.GoEnv("GOMAXPROCS=2")
 	if output, err := deps.CombinedOutput(); err != nil {
 		t.Fatalf("API test dependencies: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	cmd := exec.Command("go", "test", "-json", "-race", "-count=1", "-mod=readonly", "-timeout=60s", "./workload")
 	cmd.Dir = project
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOMAXPROCS=2")
+	cmd.Env = localtest.GoEnv("GOMAXPROCS=2")
 	output, err := cmd.CombinedOutput()
 	t.Log(string(output))
 	if err != nil {

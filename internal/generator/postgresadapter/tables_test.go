@@ -18,6 +18,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/generator/postgresadapter"
 	"github.com/910-software-solutions/stego/internal/generator/tenancy"
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/types"
 )
 
@@ -243,10 +244,11 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 		}
 	}
 	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir, tidy.Env = project, append(os.Environ(), "GOWORK=off")
+	tidy.Dir, tidy.Env = project, localtest.GoEnv()
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, output)
 	}
+	localtest.CheckSums(t, project)
 	// The marker digest that a release before ST-SUP-RC01-OC42 wrote for the boards service, which the generated
 	// test writes into a database to stand for one that such a release made.
 	boardsMarker, err := os.ReadFile(filepath.Join(project, "boards", "schema_generation.go"))
@@ -258,7 +260,7 @@ func tableModule(t *testing.T) (map[string]bool, tableOutput) {
 		t.Fatal("the boards service has no marker digest of a release before")
 	}
 	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=240s", "./check")
-	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off", "STEGO_TEST_MARKER_BEFORE="+string(before[1]))
+	run.Dir, run.Env = project, localtest.GoEnv(append(localtest.PostgresEnv(t), "STEGO_TEST_MARKER_BEFORE="+string(before[1]))...)
 	output, _ := run.CombinedOutput()
 	passed := map[string]bool{}
 	// The output of the module is collected in a local builder and kept as a string. A strings.Builder that holds
@@ -376,41 +378,19 @@ func golden(t *testing.T, name, got string) {
 }
 
 func TestTables(t *testing.T) {
-	var passed map[string]bool
-	var log tableOutput
-	database := os.Getenv("STEGO_TEST_POSTGRES_DSN") != ""
-	if database {
-		passed, log = tableModule(t)
-	}
+	// The checks run against the local PostgreSQL server of localtest; a server that cannot start fails them.
+	passed, log := tableModule(t)
 	onPostgres := func(t *testing.T, id string) {
 		t.Helper()
-		if !database {
-			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-				t.Fatal("PostgreSQL fixture is required")
-			}
-			t.Skip("PostgreSQL fixture is not configured")
-		}
 		passedThere(t, passed, log, id)
 	}
 	// The cases of testdata/table_steps_test.go run in the same generated module, under TestTableSteps.
 	onSteps := func(t *testing.T, id string) {
 		t.Helper()
-		if !database {
-			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-				t.Fatal("PostgreSQL fixture is required")
-			}
-			t.Skip("PostgreSQL fixture is not configured")
-		}
 		passedIn(t, passed, log, "TestTableSteps", id)
 	}
 	onRelax := func(t *testing.T, id string) {
 		t.Helper()
-		if !database {
-			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-				t.Fatal("PostgreSQL fixture is required")
-			}
-			t.Skip("PostgreSQL fixture is not configured")
-		}
 		passedIn(t, passed, log, "TestRelaxSteps", id)
 	}
 
@@ -591,12 +571,6 @@ func TestTables(t *testing.T) {
 	// The cases of testdata/drop_steps_test.go run in the same generated module, under TestDropSteps.
 	onDrop := func(t *testing.T, id string) {
 		t.Helper()
-		if !database {
-			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-				t.Fatal("PostgreSQL fixture is required")
-			}
-			t.Skip("PostgreSQL fixture is not configured")
-		}
 		passedIn(t, passed, log, "TestDropSteps", id)
 	}
 	t.Run("ST-SUP-RC01-OC34-T01 After a drop at expand the old column has a default and no NOT NULL", func(t *testing.T) {
@@ -614,12 +588,6 @@ func TestTables(t *testing.T) {
 	// The cases of testdata/seal_steps_test.go run in the same generated module, under TestSealSteps.
 	onSeal := func(t *testing.T, id string) {
 		t.Helper()
-		if !database {
-			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
-				t.Fatal("PostgreSQL fixture is required")
-			}
-			t.Skip("PostgreSQL fixture is not configured")
-		}
 		passedIn(t, passed, log, "TestSealSteps", id)
 	}
 	t.Run("ST-SUP-RC01-OC49-T02 A seal at expand keeps the release before working, the seal job seals each row, and a roll back to the release before loses no write", func(t *testing.T) {

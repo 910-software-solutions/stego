@@ -2,6 +2,7 @@ package localtest
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -216,6 +217,52 @@ func TestModuleCacheFailsClosed(t *testing.T) {
 					t.Fatalf("the tidy wrote the planted module into go.sum:\n%s", data)
 				}
 			})
+		}
+	})
+}
+
+func TestModuleFoldersAreHashedAgain(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T13 A file put into the folder of a checked module fails the fill of localtest", func(t *testing.T) {
+		// The fill of this test binary hashed the folders of the module cache of localtest. No other code of the binary
+		// calls verifyDirs before this line.
+		RequireModules(t)
+		if verifiedDirs == 0 {
+			t.Fatal("the fill of the module cache of localtest checked no module folder")
+		}
+		// A stand-in cache: the go command extracts example.com/lib v1.0.0 from a file proxy into a module cache of the
+		// test, as the fill does from the module proxy.
+		proxy, cache := t.TempDir(), t.TempDir()
+		plantedModule(t, proxy)
+		t.Cleanup(func() { _ = exec.Command("chmod", "-R", "u+w", cache).Run() })
+		download := exec.Command(goTool(), "mod", "download", "-json", "example.com/lib@v1.0.0")
+		download.Dir = generatedModule(t)
+		download.Env = append(os.Environ(), "GOMODCACHE="+cache, "GOPROXY=file://"+filepath.ToSlash(filepath.Join(proxy, "cache", "download")),
+			"GOSUMDB=off", "GONOSUMDB=", "GOPRIVATE=", "GOFLAGS=-mod=mod", "GOENV=off", "GOWORK=off", "GOTOOLCHAIN=local")
+		out, err := download.Output()
+		if err != nil {
+			t.Fatalf("go mod download: %v\n%s", err, out)
+		}
+		var module fillDir
+		if err := json.Unmarshal(out, &module); err != nil || module.Dir == "" || module.Sum == "" {
+			t.Fatalf("go mod download gave no folder and hash: %v\n%s", err, out)
+		}
+		stamps := filepath.Join(t.TempDir(), verifiedFile)
+		if err := verifyDirs([]fillDir{module}, stamps); err != nil || hashedDirs != 1 {
+			t.Fatalf("the unchanged folder fails or is not hashed (%d): %v", hashedDirs, err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err != nil || hashedDirs != 0 {
+			t.Fatalf("the unchanged folder with its stamp fails or is hashed again (%d): %v", hashedDirs, err)
+		}
+		// Another tool, or a run with -modcacherw, puts a file into the folder.
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(module.Dir, "zz_planted.go"), []byte("package lib\n\nfunc init() { println(\"ALTERED\") }\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err = verifyDirs([]fillDir{module}, stamps)
+		if err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("the changed folder is not refused: %v", err)
 		}
 	})
 }
