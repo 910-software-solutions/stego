@@ -1,6 +1,6 @@
 name: Proof run
 
-# Attest a proof run (ST-ASR-UC01). The tests jobs run the Go and Python suites at the commit in five parts at once,
+# Attest a proof run (ST-ASR-UC01). The tests jobs run the Go and Python suites at the commit in ten parts at once,
 # and in the suites job assure record writes an outcome for every automated test record in the spec at that commit.
 # The attest job runs no code of the repository: it names the commit as the subject, and GitHub's attestation action
 # signs the proof run with this workflow's keyless identity, the trusted signer of a proof run, and keeps it. Only
@@ -44,13 +44,21 @@ env:
   LATHE_REF: c9a591d85abc350f0d9854f6e7af11e4a1b5f777
 
 jobs:
-  # The Go and Python suites run in five parts at once, each on a runner of its own, so the proof run takes about as
-  # long as its slowest part, not the sum of all. A part holds a fixed set of Go packages: cmd/stego, the longest
-  # package, is in two parts by the names of its top-level tests: stego-build runs the tests whose names match
-  # STEGO_BUILD_TESTS (go test -run), and stego runs every other one (go test -skip with the same pattern), so each
-  # test runs in exactly one part; generators is the six generator packages with the longest tests; assure is Assuring's two modules
-  # and the Python suites; rest is every other package of the root module, from go list at the commit, so a new
-  # package always runs. Each part writes the go test -json output of its packages, and assure uses the Python
+  # The Go and Python suites run in ten parts at once, each on a runner of its own, so the proof run takes about as
+  # long as its slowest part, not the sum of all. A part holds a fixed set of Go packages. The three longest packages
+  # are each in parts by the names of their top-level tests, so each part stays well under the 20 minutes of a
+  # package on a slow runner (main a5343e3eb and f4bc3326b failed at 20 minutes with the packages in one part each):
+  # - cmd/stego: stego-build runs the tests whose names match STEGO_BUILD_TESTS, stego-scaffold those that match
+  #   STEGO_SCAFFOLD_TESTS (go test -run), and stego runs every other one (go test -skip with the two patterns);
+  # - internal/compiler: compiler-runtime runs the tests that match COMPILER_RUNTIME_TESTS, and compiler every
+  #   other one;
+  # - internal/assure: assure-local-a and assure-local-b run the tests that match ASSURE_LOCAL_A_TESTS and
+  #   ASSURE_LOCAL_B_TESTS, and assure every other one, with cmd/assure and the Python suites.
+  # The part that runs every other test skips exactly the patterns of the other parts of its package, so each test
+  # runs in exactly one part, and a new test always runs; the suites job also refuses a top-level test that two parts
+  # ran. A pattern has no slash, so it selects only by the name of a top-level test. generators is the six generator
+  # packages with the longest tests; rest is every other package of the root module, from go list at the commit, so
+  # a new package always runs. Each part writes the go test -json output of its packages, and assure uses the Python
   # output, as an artifact of this run. The parts run code of the change, as the suites job did: their outcomes
   # stay change grade.
   tests:
@@ -62,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [stego-build, stego, generators, rest, assure]
+        part: [stego-build, stego-scaffold, stego, compiler-runtime, compiler, generators, rest, assure-local-a, assure-local-b, assure]
     services:
       postgres:
         image: postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2 # 18.6-alpine
@@ -80,6 +88,10 @@ jobs:
       STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK: '1'
       PART: ${{ matrix.part }}
       STEGO_BUILD_TESTS: '^Test(Build|Image|Policy|Dependencies)'
+      STEGO_SCAFFOLD_TESTS: '^Test(SchemaEvolution|ArchetypeScaffolds|UserDocDeclarations|Capability)'
+      COMPILER_RUNTIME_TESTS: '^Test(RuntimeWiring|RuntimeExample|RevocationWiring)'
+      ASSURE_LOCAL_A_TESTS: '^Test(Supplying|Generating|Declaring|Delivering)FollowsTheLocalTestPattern$'
+      ASSURE_LOCAL_B_TESTS: '^Test(Building|Extending|Distributing|Assuring)FollowsTheLocalTestPattern$|^TestLocalDevelopmentStandard$'
       # A test of stego build that needs the pinned Go SDK fails, and does not skip, when the SDK of the run is not
       # the pinned one (security review of PR #8, F4).
       STEGO_REQUIRE_PINNED_GO: '1'
@@ -158,7 +170,8 @@ jobs:
           STEGO_REQUIRE_LATHE: '1'
           STEGO_TEST_POSTGRES_DSN: postgres://postgres:stego_test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres?sslmode=disable
         # go test ./... at the root does not reach Assuring's modules, internal/assure and cmd/assure: each has a
-        # go.mod of its own, and the assure part runs them, one after the other into one file. Each package gets
+        # go.mod of its own. The assure part runs them, one after the other into one file, and the assure-local
+        # parts run only the package internal/assure. Each package gets
         # 20 minutes, under the step's 25, so a timeout is a test outcome and not a cancelled step.
         # The part writes the import paths of the packages it runs to packages-<part>.txt, and the rest part also
         # writes every package of the root module to packages-root.txt, so the suites job can check that each
@@ -169,18 +182,28 @@ jobs:
           list="$RUNNER_TEMP/part/packages-$PART.txt"
           generators="internal/generator/browserbackend internal/generator/controller internal/generator/oteltracing internal/generator/keycloakprovider internal/generator/oidcauth internal/generator/kubernetesclient"
           case "$PART" in
-            stego-build | stego) go list -mod=readonly ./cmd/stego > "$list" ;;
+            stego-build | stego-scaffold | stego) go list -mod=readonly ./cmd/stego > "$list" ;;
+            compiler-runtime | compiler) go list -mod=readonly ./internal/compiler > "$list" ;;
             generators) go list -mod=readonly $(printf './%s ' $generators) > "$list" ;;
             rest)
               go list -mod=readonly ./... > "$RUNNER_TEMP/part/packages-root.txt"
-              grep -v -x -F -e github.com/910-software-solutions/stego/cmd/stego $(printf -- '-e github.com/910-software-solutions/stego/%s ' $generators) \
+              grep -v -x -F -e github.com/910-software-solutions/stego/cmd/stego -e github.com/910-software-solutions/stego/internal/compiler \
+                $(printf -- '-e github.com/910-software-solutions/stego/%s ' $generators) \
                 "$RUNNER_TEMP/part/packages-root.txt" > "$list" ;;
+            assure-local-a | assure-local-b)
+              go list -C internal/assure -mod=readonly . > "$list"
+              pattern="$ASSURE_LOCAL_A_TESTS"
+              if [ "$PART" = assure-local-b ]; then pattern="$ASSURE_LOCAL_B_TESTS"; fi
+              go test -C internal/assure -json -race -count=1 -mod=readonly -timeout=20m -run "$pattern" . > "$out" || true
+              exit 0 ;;
             assure)
               : > "$out"
               : > "$list"
               for module in internal/assure cmd/assure; do
+                select=()
+                if [ "$module" = internal/assure ]; then select=(-skip "$ASSURE_LOCAL_A_TESTS|$ASSURE_LOCAL_B_TESTS"); fi
                 go list -C "$module" -mod=readonly ./... >> "$list"
-                go test -C "$module" -json -race -count=1 -mod=readonly -timeout=20m ./... >> "$out" || true
+                go test -C "$module" -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" ./... >> "$out" || true
               done
               exit 0 ;;
             *) echo "::error::Unknown part $PART"; exit 1 ;;
@@ -188,7 +211,10 @@ jobs:
           select=()
           case "$PART" in
             stego-build) select=(-run "$STEGO_BUILD_TESTS") ;;
-            stego) select=(-skip "$STEGO_BUILD_TESTS") ;;
+            stego-scaffold) select=(-run "$STEGO_SCAFFOLD_TESTS") ;;
+            stego) select=(-skip "$STEGO_BUILD_TESTS|$STEGO_SCAFFOLD_TESTS") ;;
+            compiler-runtime) select=(-run "$COMPILER_RUNTIME_TESTS") ;;
+            compiler) select=(-skip "$COMPILER_RUNTIME_TESTS") ;;
           esac
           go test -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" $(cat "$list") > "$out" || true
       - name: Run the Python suites
@@ -210,7 +236,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # The suites job records the proof run from the five parts. It runs no code of the change: it builds assure record
+  # The suites job records the proof run from the ten parts. It runs no code of the change: it builds assure record
   # from the first parent of the run's commit (on a pull request, the base of the merge commit; on a push, the commit
   # before the one pushed), with a Go setup that restores no cache, and
   # runs it in a checkout of the commit on the outputs of the parts, the root module's parts first, then Assuring's
@@ -265,14 +291,17 @@ jobs:
           pattern: tests-*
           path: ${{ runner.temp }}/parts
       # A part that is missing, cut short or not whole fails the job, so nothing is attested: the folders must be
-      # exactly those of the five parts; each file must be there; each line of a go test output and the Python
-      # output must be JSON; each package of the root module must be in a part; and each package that a part lists
-      # must have its result (pass, fail or skip) in that part's output. bash runs it with pipefail.
+      # exactly those of the ten parts; each file must be there; each line of a go test output and the Python
+      # output must be JSON; each package of the root module must be in a part; each package that a part lists
+      # must have its result (pass, fail or skip) in that part's output; and no top-level test of a package may run
+      # in two parts. bash runs it with pipefail.
       - name: Join the outputs of the parts
         shell: bash
         run: |
           parts="$RUNNER_TEMP/parts"
-          expected="tests-assure tests-generators tests-rest tests-stego tests-stego-build"
+          all_parts="stego-build stego-scaffold stego compiler-runtime compiler generators rest assure-local-a assure-local-b assure"
+          root_parts="stego-build stego-scaffold stego compiler-runtime compiler generators rest"
+          expected="$(for part in $all_parts; do echo "tests-$part"; done | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')"
           found="$(cd "$parts" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
           if [ "$found" != "$expected " ]; then
             echo "::error::The parts are $found, not exactly $expected. Nothing is attested."
@@ -282,7 +311,7 @@ jobs:
             test -s "$parts/$file" || { echo "::error::The parts wrote no $file. Nothing is attested."; exit 1; }
           done
           jq -e . "$parts/tests-assure/python-tests.json" > /dev/null
-          for part in stego-build stego generators rest assure; do
+          for part in $all_parts; do
             for file in "go-test-$part.json" "packages-$part.txt"; do
               test -s "$parts/tests-$part/$file" || { echo "::error::The part $part wrote no $file. Nothing is attested."; exit 1; }
             done
@@ -298,14 +327,63 @@ jobs:
               exit 1
             fi
           done
-          unplaced="$(LC_ALL=C sort -u "$parts/tests-rest/packages-root.txt" | LC_ALL=C comm -23 - <(for part in stego-build stego generators rest; do cat "$parts/tests-$part/packages-$part.txt"; done | LC_ALL=C sort -u))"
+          unplaced="$(LC_ALL=C sort -u "$parts/tests-rest/packages-root.txt" | LC_ALL=C comm -23 - <(for part in $root_parts; do cat "$parts/tests-$part/packages-$part.txt"; done | LC_ALL=C sort -u))"
           if [ -n "$unplaced" ]; then
             echo "::error::No part ran: $unplaced. Nothing is attested."
             exit 1
           fi
-          for part in rest generators stego-build stego assure; do
+          twice="$(for part in $all_parts; do
+            jq -r 'select(.Action == "run" and .Test != null and (.Test | contains("/") | not)) | "\(.Package) \(.Test)"' \
+              "$parts/tests-$part/go-test-$part.json" | LC_ALL=C sort -u
+          done | LC_ALL=C sort | uniq -d)"
+          if [ -n "$twice" ]; then
+            echo "::error::Two parts ran: $twice. Nothing is attested."
+            exit 1
+          fi
+          for part in rest generators compiler-runtime compiler stego-build stego-scaffold stego assure-local-a assure-local-b assure; do
             cat "$parts/tests-$part/go-test-$part.json"
           done > "$RUNNER_TEMP/go-test.json"
+      # The times of the parts stay visible, so a slower test shows before it reaches the 20 minutes of a package:
+      # the job summary gives each part's packages with their times and the 15 longest top-level tests of each part,
+      # and the artifact test-times keeps the time of each top-level test (part, package, test, result, seconds). A
+      # package of a part that takes over 12 minutes gives a warning. The step reads only the joined outputs.
+      - name: Show the times of the parts
+        shell: bash
+        run: |
+          parts="$RUNNER_TEMP/parts"
+          mkdir -p "$RUNNER_TEMP/test-times"
+          times="$RUNNER_TEMP/test-times/test-times.tsv"
+          printf 'part\tpackage\ttest\tresult\tseconds\n' > "$times"
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          echo "## Times of the parts" >> "$summary"
+          for part in stego-build stego-scaffold stego compiler-runtime compiler generators rest assure-local-a assure-local-b assure; do
+            file="$parts/tests-$part/go-test-$part.json"
+            jq -r --arg part "$part" 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and (.Test == null or (.Test | contains("/") | not))) | [$part, .Package, (.Test // "(package)"), .Action, (.Elapsed // 0)] | @tsv' \
+              "$file" >> "$times"
+            {
+              echo "### $part"
+              echo
+              echo "| Package | Result | Seconds |"
+              echo "| --- | --- | ---: |"
+              jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | "| \(.Package) | \(.Action) | \(.Elapsed // 0) |"' "$file"
+              echo
+              echo "| Longest top-level test | Result | Seconds |"
+              echo "| --- | --- | ---: |"
+              jq -r 'select(.Test != null and (.Test | contains("/") | not) and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | [(.Elapsed // 0), .Test, .Action] | @tsv' "$file" |
+                LC_ALL=C sort -t "$(printf '\t')" -k1,1gr | head -n 15 | awk -F '\t' '{ printf "| %s | %s | %s |\n", $2, $3, $1 }'
+              echo
+            } >> "$summary"
+            jq -r 'select(.Test == null and (.Action == "pass" or .Action == "fail") and (.Elapsed // 0) > 720) | "\(.Package) \(.Elapsed)"' "$file" |
+              while read -r package seconds; do
+                echo "::warning::The part $part ran $package in $seconds seconds, over 12 of its 20 minutes."
+              done
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-times
+          path: ${{ runner.temp }}/test-times/test-times.tsv
+          retention-days: 14
+          if-no-files-found: error
       - name: Record the proof run
         run: >-
           mkdir -p "$RUNNER_TEMP/proof-run" &&

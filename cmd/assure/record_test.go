@@ -543,6 +543,11 @@ type workflowJob struct {
 	Env         map[string]string `yaml:"env"`
 	Permissions map[string]string `yaml:"permissions"`
 	Steps       []workflowStep    `yaml:"steps"`
+	Strategy    struct {
+		Matrix struct {
+			Part []string `yaml:"part"`
+		} `yaml:"matrix"`
+	} `yaml:"strategy"`
 }
 
 type workflowFile struct {
@@ -652,30 +657,65 @@ func runPredicateCheck(t *testing.T, commit, about string) error {
 	return nil
 }
 
+// partPackages are the parts of the tests jobs, each with the package it runs in the files of partFiles. The parts
+// of one package run top-level tests of other names.
+var partPackages = map[string]string{"rest": "root/a", "generators": "root/b", "stego-build": "root/stego",
+	"stego-scaffold": "root/stego", "stego": "root/stego", "compiler-runtime": "root/compiler", "compiler": "root/compiler",
+	"assure-local-a": "assure", "assure-local-b": "assure", "assure": "assure"}
+
 // partFiles is the artifact folders of the tests jobs, as the suites job downloads them: each part's go test -json
 // output and the packages it lists; the rest part also lists every package of the root module, and the assure
-// part writes the Python output. Each Go package passes and the Python test passes.
+// part writes the Python output. Each Go package passes and the Python test passes. Each part runs one top-level
+// test, TestX followed by the name of the part, and its subtest.
 func partFiles() map[string]string {
 	files := map[string]string{
-		"tests-rest/packages-root.txt":               "example.test/root/a\nexample.test/root/b\nexample.test/root/stego\n",
-		"tests-assure/python-tests.json":             `{"format": 1, "tests": [{"test": "t.T.test_x", "name": "test_x", "result": "passed"}]}` + "\n",
-		"tests-rest/packages-rest.txt":               "example.test/root/a\n",
-		"tests-generators/packages-generators.txt":   "example.test/root/b\n",
-		"tests-stego-build/packages-stego-build.txt": "example.test/root/stego\n",
-		"tests-stego/packages-stego.txt":             "example.test/root/stego\n",
-		"tests-assure/packages-assure.txt":           "example.test/assure\n",
+		"tests-rest/packages-root.txt":   "example.test/root/a\nexample.test/root/b\nexample.test/root/compiler\nexample.test/root/stego\n",
+		"tests-assure/python-tests.json": `{"format": 1, "tests": [{"test": "t.T.test_x", "name": "test_x", "result": "passed"}]}` + "\n",
 	}
-	for part, pkg := range map[string]string{"rest": "root/a", "generators": "root/b", "stego-build": "root/stego", "stego": "root/stego", "assure": "assure"} {
-		files["tests-"+part+"/go-test-"+part+".json"] = `{"Action":"run","Package":"example.test/` + pkg + `","Test":"TestX"}` + "\n" +
-			`{"Action":"pass","Package":"example.test/` + pkg + `","Test":"TestX","Elapsed":0.1}` + "\n" +
+	for part, pkg := range partPackages {
+		test := "TestX" + strings.ReplaceAll(part, "-", "")
+		files["tests-"+part+"/packages-"+part+".txt"] = "example.test/" + pkg + "\n"
+		files["tests-"+part+"/go-test-"+part+".json"] = `{"Action":"run","Package":"example.test/` + pkg + `","Test":"` + test + `"}` + "\n" +
+			`{"Action":"run","Package":"example.test/` + pkg + `","Test":"` + test + `/ST_X"}` + "\n" +
+			`{"Action":"pass","Package":"example.test/` + pkg + `","Test":"` + test + `/ST_X","Elapsed":0.05}` + "\n" +
+			`{"Action":"pass","Package":"example.test/` + pkg + `","Test":"` + test + `","Elapsed":0.1}` + "\n" +
 			`{"Action":"pass","Package":"example.test/` + pkg + `","Elapsed":0.2}` + "\n"
 	}
 	return files
 }
 
+// splitParts are the packages that the tests jobs run in parts by the names of their top-level tests: for each,
+// the part that runs every other test, the variables of the patterns of its other parts, and the select line of
+// each part in the script of the step.
+var splitParts = []struct {
+	rest     string
+	patterns []string
+	lines    []string
+}{
+	{"stego", []string{"STEGO_BUILD_TESTS", "STEGO_SCAFFOLD_TESTS"}, []string{
+		`stego-build) select=(-run "$STEGO_BUILD_TESTS")`,
+		`stego-scaffold) select=(-run "$STEGO_SCAFFOLD_TESTS")`,
+		`stego) select=(-skip "$STEGO_BUILD_TESTS|$STEGO_SCAFFOLD_TESTS")`}},
+	{"compiler", []string{"COMPILER_RUNTIME_TESTS"}, []string{
+		`compiler-runtime) select=(-run "$COMPILER_RUNTIME_TESTS")`,
+		`compiler) select=(-skip "$COMPILER_RUNTIME_TESTS")`}},
+	{"assure", []string{"ASSURE_LOCAL_A_TESTS", "ASSURE_LOCAL_B_TESTS"}, []string{
+		`pattern="$ASSURE_LOCAL_A_TESTS"`,
+		`if [ "$PART" = assure-local-b ]; then pattern="$ASSURE_LOCAL_B_TESTS"; fi`,
+		`-run "$pattern" .`,
+		`select=(-skip "$ASSURE_LOCAL_A_TESTS|$ASSURE_LOCAL_B_TESTS")`}},
+}
+
 // runSuitesStep runs the step of the suites job with the name in a runner's temporary folder that holds the
 // files, with bash and pipefail as GitHub Actions runs a step with shell: bash.
 func runSuitesStep(t *testing.T, runnerTemp, name string) error {
+	t.Helper()
+	_, err := runSuitesStepEnv(t, runnerTemp, name)
+	return err
+}
+
+// runSuitesStepEnv runs the step as runSuitesStep does, with the environment entries extra, and gives its output.
+func runSuitesStepEnv(t *testing.T, runnerTemp, name string, extra ...string) (string, error) {
 	t.Helper()
 	for _, step := range readWorkflow(t).Jobs["suites"].Steps {
 		if step.Name != name {
@@ -685,22 +725,70 @@ func runSuitesStep(t *testing.T, runnerTemp, name string) error {
 			t.Fatalf("the suites job runs %q with the shell %q, want bash, which sets pipefail", name, step.Shell)
 		}
 		command := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step.Run)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "RUNNER_TEMP=" + runnerTemp}
-		if out, err := command.CombinedOutput(); err != nil {
-			return fmt.Errorf("%v: %s", err, out)
+		command.Env = append([]string{"PATH=" + os.Getenv("PATH"), "RUNNER_TEMP=" + runnerTemp}, extra...)
+		out, err := command.CombinedOutput()
+		if err != nil {
+			return string(out), fmt.Errorf("%v: %s", err, out)
 		}
-		return nil
+		return string(out), nil
 	}
 	t.Fatalf("the suites job has no step %q", name)
-	return nil
+	return "", nil
 }
 
 func TestSuitesJob(t *testing.T) {
 	t.Parallel()
+	t.Run("ST-ASR-UC01-R01-T03 The suites job keeps the time of each package and top-level test of each part, and warns on a package over 12 minutes", func(t *testing.T) {
+		t.Parallel()
+		files := partFiles()
+		files["tests-compiler/go-test-compiler.json"] = `{"Action":"run","Package":"example.test/root/compiler","Test":"TestSlow"}` + "\n" +
+			`{"Action":"pass","Package":"example.test/root/compiler","Test":"TestSlow","Elapsed":721.5}` + "\n" +
+			`{"Action":"pass","Package":"example.test/root/compiler","Elapsed":722}` + "\n"
+		runnerTemp := t.TempDir()
+		for file, content := range files {
+			writeFile(t, filepath.Join(runnerTemp, "parts", file), content)
+		}
+		summary := filepath.Join(runnerTemp, "summary.md")
+		output, err := runSuitesStepEnv(t, runnerTemp, "Show the times of the parts", "GITHUB_STEP_SUMMARY="+summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		times, err := os.ReadFile(filepath.Join(runnerTemp, "test-times", "test-times.tsv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := strings.Split(strings.TrimSpace(string(times)), "\n")
+		want := []string{"part\tpackage\ttest\tresult\tseconds",
+			"compiler\texample.test/root/compiler\tTestSlow\tpass\t721.5",
+			"compiler\texample.test/root/compiler\t(package)\tpass\t722"}
+		for part, pkg := range partPackages {
+			if part == "compiler" {
+				continue
+			}
+			test := "TestX" + strings.ReplaceAll(part, "-", "")
+			want = append(want, part+"\texample.test/"+pkg+"\t"+test+"\tpass\t0.1", part+"\texample.test/"+pkg+"\t(package)\tpass\t0.2")
+		}
+		slices.Sort(rows[1:])
+		slices.Sort(want[1:])
+		if !slices.Equal(rows, want) {
+			t.Errorf("the test times are\n%s\nwant\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+		}
+		shown, err := os.ReadFile(summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(shown), "| TestSlow | pass | 721.5 |") || !strings.Contains(string(shown), "### assure-local-b") {
+			t.Errorf("the job summary does not show the times of each part:\n%s", shown)
+		}
+		if got := strings.Count(output, "::warning::"); got != 1 || !strings.Contains(output, "::warning::The part compiler ran example.test/root/compiler in 722 seconds") {
+			t.Errorf("the step gives %d warnings, want one for the package over 12 minutes:\n%s", got, output)
+		}
+	})
 	t.Run("ST-ASR-UC01-R01-T02 The suites job fails for a missing, extra, cut or incomplete part, and for a failed test or package of any name", func(t *testing.T) {
 		t.Parallel()
-		// Each top-level test of cmd/stego runs in exactly one of its two parts: the same pattern selects the
-		// tests of stego-build (go test -run) and leaves them out of stego (go test -skip).
+		// Each top-level test of a package that runs in parts runs in exactly one of them: the patterns that
+		// select the tests of the other parts (go test -run) are the patterns that the last part leaves out (go test
+		// -skip). A pattern with a slash would also select by the names of subtests.
 		tests := readWorkflow(t).Jobs["tests"]
 		var script string
 		for _, step := range tests.Steps {
@@ -708,9 +796,26 @@ func TestSuitesJob(t *testing.T) {
 				script += step.Run
 			}
 		}
-		if tests.Env["STEGO_BUILD_TESTS"] == "" || !strings.Contains(script, `stego-build) select=(-run "$STEGO_BUILD_TESTS")`) ||
-			!strings.Contains(script, `stego) select=(-skip "$STEGO_BUILD_TESTS")`) {
-			t.Fatal("the stego-build and stego parts do not split cmd/stego by the same pattern, with -run and -skip")
+		for _, split := range splitParts {
+			for _, name := range split.patterns {
+				if pattern := tests.Env[name]; pattern == "" || strings.Contains(pattern, "/") {
+					t.Errorf("the pattern %s of the parts of %s is %q, not a pattern with no slash", name, split.rest, pattern)
+				}
+			}
+			for _, line := range split.lines {
+				if !strings.Contains(script, line) {
+					t.Errorf("the parts of %s do not split it by the same patterns, with -run and -skip: no %s", split.rest, line)
+				}
+			}
+		}
+		matrix := strings.Join(tests.Strategy.Matrix.Part, " ")
+		for part := range partPackages {
+			if !slices.Contains(tests.Strategy.Matrix.Part, part) {
+				t.Errorf("the tests job has no part %s: its parts are %s", part, matrix)
+			}
+		}
+		if len(tests.Strategy.Matrix.Part) != len(partPackages) {
+			t.Errorf("the tests job has the parts %s, not the %d parts of the test", matrix, len(partPackages))
 		}
 		run := func(name string, change func(files map[string]string)) (joinErr, failErr error) {
 			files := partFiles()
@@ -740,7 +845,21 @@ func TestSuitesJob(t *testing.T) {
 				f["tests-rest/go-test-rest.json"] = `{"Action":"run","Package":"example.test/root/a","Test":"TestX"}` + "\n"
 			},
 			"a root package in no part": func(f map[string]string) { f["tests-rest/packages-root.txt"] += "example.test/root/new\n" },
-			"no Python output":          func(f map[string]string) { delete(f, "tests-assure/python-tests.json") },
+			"a top-level test in two parts": func(f map[string]string) {
+				f["tests-stego/go-test-stego.json"] += `{"Action":"run","Package":"example.test/root/stego","Test":"TestXstegobuild"}` + "\n" +
+					`{"Action":"pass","Package":"example.test/root/stego","Test":"TestXstegobuild","Elapsed":0.1}` + "\n"
+			},
+			"a top-level test in two parts of Assuring": func(f map[string]string) {
+				f["tests-assure/go-test-assure.json"] += `{"Action":"run","Package":"example.test/assure","Test":"TestXassurelocala"}` + "\n"
+			},
+			"a missing part of a split package": func(f map[string]string) {
+				delete(f, "tests-compiler-runtime/go-test-compiler-runtime.json")
+				delete(f, "tests-compiler-runtime/packages-compiler-runtime.txt")
+			},
+			"a part with no packages file": func(f map[string]string) {
+				delete(f, "tests-assure-local-b/packages-assure-local-b.txt")
+			},
+			"no Python output": func(f map[string]string) { delete(f, "tests-assure/python-tests.json") },
 		} {
 			if joinErr, _ := run(name, change); joinErr == nil {
 				t.Errorf("the suites job joins the parts with %s", name)
