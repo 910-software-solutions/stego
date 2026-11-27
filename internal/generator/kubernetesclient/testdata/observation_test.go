@@ -290,6 +290,11 @@ func reach(c *checked, roots ...string) ([]string, error) {
 				methods(u, nil)
 			}
 			callbacks(u.Underlying())
+		case *types.TypeParam:
+			// A value of a type parameter can be any type of its constraint, so each local type that satisfies the
+			// constraint is walked as the interface case walks its implementers (security review of the PR #10
+			// confirmation, F1).
+			callbacks(u.Constraint())
 		case *types.Pointer:
 			callbacks(u.Elem())
 		case *types.Slice:
@@ -713,6 +718,14 @@ func TestObservationHelpersMakeNoNetworkCall(t *testing.T) {
 			{"the method value Decode of a json.Decoder",
 				"package kubernetes\nimport (\"encoding/json\"; \"net\"; \"strings\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nfunc PlantedCheck() bool { decode := json.NewDecoder(strings.NewReader(\"1\")).Decode; var v plantedValue; return decode(&v) == nil }\n",
 				"UnmarshalJSON: uses net.Dial"},
+			// A generic helper: the value has the type of a type parameter (security review of the PR #10
+			// confirmation, F1).
+			{"a generic wrapper of json.Unmarshal",
+				"package kubernetes\nimport (\"encoding/json\"; \"net\")\ntype plantedValue struct{}\nfunc (*plantedValue) UnmarshalJSON([]byte) error { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; return err }\nfunc decodeInto[T any](v T) error { return json.Unmarshal([]byte(\"1\"), v) }\nfunc PlantedCheck() bool { return decodeInto(&plantedValue{}) == nil }\n",
+				"UnmarshalJSON: uses net.Dial"},
+			{"a generic wrapper of ReadFrom of a bytes.Buffer",
+				"package kubernetes\nimport (\"bytes\"; \"io\"; \"net\")\ntype plantedReader struct{}\nfunc (plantedReader) Read([]byte) (int, error) { conn, err := net.Dial(\"tcp\", \"192.0.2.1:80\"); if err == nil { _ = conn.Close() }; if err != nil { return 0, err }; return 0, io.EOF }\nfunc fill[R io.Reader](r R) error { var b bytes.Buffer; _, err := b.ReadFrom(r); return err }\nfunc PlantedCheck() bool { return fill(plantedReader{}) == nil }\n",
+				"Read: uses net.Dial"},
 			{"the control: a check that uses only an allowed package", "package kubernetes\nimport \"strings\"\nvar plantedPrefix = \"tenant-\"\nfunc PlantedCheck() bool { return strings.HasPrefix(\"tenant-1\", plantedPrefix) }\n", ""},
 		}
 		for _, plant := range plants {
