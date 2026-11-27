@@ -13,7 +13,6 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/localtest"
 )
@@ -276,34 +275,15 @@ func freePort(t *testing.T) string {
 	return fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
 }
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin it.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and gives
-// its endpoint and preshared key. It removes the container when the test ends.
+// startSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and
+// gives its endpoint and preshared key. localtest runs it without privilege and with limits, and removes it when the
+// test ends.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-oidc-spicedb-"+hex.EncodeToString(suffix), "oidc-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", spiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(strings.Split(string(out), "\n")[0]), key
-		}
-	}
-	t.Fatal("the SpiceDB container publishes no port")
-	return "", ""
+	key := "oidc-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
 
 // postgresDSN is the superuser URL of the local PostgreSQL server of localtest, which TestOIDCService takes.

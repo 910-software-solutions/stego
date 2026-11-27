@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/localtest"
@@ -630,37 +629,24 @@ func TestTenancy(t *testing.T) {
 	})
 }
 
-// spiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04): version 1.57.0 at its digest,
-// the image of the runtime's own SpiceDB tests.
-const spiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startSpiceDB gives the gRPC endpoint of a local SpiceDB serve-testing container without privilege, which keeps
-// one in-memory datastore for each preshared key, and removes it when the test ends. STEGO_TEST_SPICEDB_ENDPOINT
-// names a running server in its place. It fails the test when docker is not on the PATH, as pgtest does: a missing
-// result is not a pass; only STEGO_TEST_NO_CONTAINERS=1 makes it skip.
+// startSpiceDB gives the gRPC endpoint of the local SpiceDB serve-testing container of localtest
+// (ST-STD-LOCAL-R04), which keeps one in-memory datastore for each preshared key. localtest runs it without privilege
+// and with limits, and removes it when the test ends. STEGO_TEST_SPICEDB_ENDPOINT names a running server in its
+// place. When neither podman nor docker is on PATH, localtest fails the test: a missing result is not a pass; only
+// STEGO_TEST_NO_CONTAINERS=1 makes it skip.
 func startSpiceDB(t *testing.T) string {
 	t.Helper()
 	if endpoint := os.Getenv("STEGO_TEST_SPICEDB_ENDPOINT"); endpoint != "" {
 		return endpoint
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		if os.Getenv("STEGO_TEST_NO_CONTAINERS") == "1" {
-			t.Skip("docker is not on the PATH, and STEGO_TEST_NO_CONTAINERS=1: these tests need a local SpiceDB container")
+	if os.Getenv("STEGO_TEST_NO_CONTAINERS") == "1" {
+		_, podman := exec.LookPath("podman")
+		_, docker := exec.LookPath("docker")
+		if podman != nil && docker != nil {
+			t.Skip("neither podman nor docker is on PATH, and STEGO_TEST_NO_CONTAINERS=1: these tests need a local SpiceDB container")
 		}
-		t.Fatal("docker is not on the PATH: these tests need a local SpiceDB container")
 	}
-	name := "stego-spicedbauthz-" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::50051", spiceDBImage, "serve-testing").CombinedOutput()
-	if err != nil {
-		t.Fatalf("start the SpiceDB container: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	port, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-	if err != nil {
-		t.Fatalf("read the port of the SpiceDB container: %v", err)
-	}
-	return strings.TrimSpace(strings.Split(string(port), "\n")[0])
+	return localtest.SpiceDB(t, "serve-testing")
 }
 
 // The tests of the generated module. They are copied into the generated package and run there with the pinned Go

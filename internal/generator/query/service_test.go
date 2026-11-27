@@ -147,29 +147,16 @@ func shopProject(t *testing.T) string {
 	return project
 }
 
-// startSpiceDB starts the pinned SpiceDB image in serve-testing mode, without privilege, and gives its gRPC endpoint
-// and a preshared key. The container is removed when the test ends.
+// startSpiceDB starts the SpiceDB container of localtest (ST-STD-LOCAL-R04) in serve-testing mode and gives its gRPC
+// endpoint and a preshared key. localtest runs it without privilege and with limits, and removes it when the test
+// ends.
 func startSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: the service test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
 		t.Fatal(err)
 	}
-	name := "stego-query-spicedb-" + hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-p", "127.0.0.1::50051", spiceDBImage, "serve-testing")
-	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("start the SpiceDB container: %v: %s", err, out)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-	if err != nil {
-		t.Fatalf("read the port of the SpiceDB container: %v", err)
-	}
-	return strings.TrimSpace(strings.Split(string(out), "\n")[0]), "query-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve-testing"), "query-" + hex.EncodeToString(suffix)
 }
 
 // testEvent is one line of go test -json.

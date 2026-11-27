@@ -14,6 +14,14 @@
 // reaper of the runtime module's pgtest does. When neither podman nor docker is on PATH, each test that needs the
 // server fails with the reason: a missing result is not a pass.
 //
+// SpiceDB (ST-STD-LOCAL-R04): SpiceDB starts one container of SpiceDBImage for each test that calls it, with podman
+// first and docker next, as the PostgreSQL container does: as the image's own unprivileged user (65532), with no
+// capabilities and no new privileges, with 256 MiB of memory, one CPU and at most 512 processes, published on
+// 127.0.0.1 at a free port only. The image holds only the spicedb and grpc_health_probe programs, so it has no timeout
+// program for an entrypoint. Its time limit is the --timeout of podman, and for both tools the reaper, which removes
+// the container when the time limit ends. The cleanup of the test, Main and the reaper remove it (ST-STD-LOCAL-R05).
+// When neither podman nor docker is on PATH, the test fails with the reason.
+//
 // Modules (ST-STD-LOCAL-R03): localtest keeps a module cache of its own, apart from the GOMODCACHE of the developer,
 // which other tools and tests fill with modules that no sum database checked. It is the folder localtest-modules in
 // STEGO_TEST_RUNS when that variable names a folder, else in the user cache folder (os.UserCacheDir); never in the
@@ -60,6 +68,10 @@ import (
 // services of STEGO run.
 const PostgresImage = "docker.io/library/postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2"
 
+// SpiceDBImage is the pinned SpiceDB image of the local stand-in: version 1.57.0 at its digest, the image of the
+// runtime's own SpiceDB tests.
+const SpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
+
 const (
 	// PostgresVariable names an existing server, a superuser URL; when it is set, no container starts.
 	PostgresVariable = "STEGO_TEST_POSTGRES_DSN"
@@ -74,10 +86,9 @@ var (
 	dsn          string
 	failWhy      string
 
-	mu        sync.Mutex
-	tool      string
-	container string
-	stop      *reaper
+	mu sync.Mutex
+	// running holds each container that localtest started and did not remove yet, by its name.
+	running = map[string]*started{}
 
 	modulesOnce sync.Once
 	modulesWhy  string
@@ -88,7 +99,7 @@ var (
 // checkedSumsFile is the file in the module cache of localtest that holds the go.sum lines that its last fill checked.
 const checkedSumsFile = "checked-sums.txt"
 
-// Main runs the tests of m, removes the PostgreSQL container that a test started, if any, and gives the exit code
+// Main runs the tests of m, removes each container that a test started, if any, and gives the exit code
 // for os.Exit. It also removes it when the process gets SIGINT. It does not watch SIGTERM, which tests of a shutdown
 // send to their own process; the reaper and the time limit of the container cover a process that is killed.
 //
@@ -101,7 +112,7 @@ func Main(m *testing.M) int {
 		select {
 		case s := <-signals:
 			remove()
-			fmt.Fprintf(os.Stderr, "localtest: %v: the PostgreSQL container is removed\n", s)
+			fmt.Fprintf(os.Stderr, "localtest: %v: the containers are removed\n", s)
 			os.Exit(2)
 		case <-done:
 		}
@@ -159,12 +170,7 @@ func startPostgres() {
 		dsn = v
 		return
 	}
-	var found []string
-	for _, name := range []string{"podman", "docker"} {
-		if p, err := exec.LookPath(name); err == nil {
-			found = append(found, p)
-		}
-	}
+	found := containerTools()
 	if len(found) == 0 {
 		failWhy = "neither podman nor docker is on PATH, so the PostgreSQL container of the test cannot start; install one, or set " +
 			PostgresVariable + " to a local server"
@@ -174,29 +180,24 @@ func startPostgres() {
 	// controllers for the limits cannot, docker is tried next.
 	var errs []string
 	for _, path := range found {
-		got, err := runPostgres(path)
+		got, name, err := runPostgres(path)
 		if err == nil {
 			dsn = got
 			return
 		}
-		remove()
+		removeContainer(name)
 		errs = append(errs, err.Error())
 	}
 	failWhy = "start the PostgreSQL container: " + strings.Join(errs, "; then: ")
 }
 
 // runPostgres starts the container with the tool, waits until the server accepts TCP connections inside it, and
-// gives the superuser URL on the published port.
-func runPostgres(path string) (string, error) {
+// gives the superuser URL on the published port and the name of the container.
+func runPostgres(path string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startLimit)
 	defer cancel()
 	password := suffix() + suffix()
-	life := defaultLife
-	if f := flag.Lookup("test.timeout"); f != nil {
-		if d, err := time.ParseDuration(f.Value.String()); err == nil && d > 0 {
-			life = d + time.Minute
-		}
-	}
+	life := lifeLimit()
 	name := fmt.Sprintf("stego-localtest-pg-%d-%s", os.Getpid(), suffix())
 	// The image's user postgres (uid 70) owns its data on the tmpfs; the tmpfs folders are open to it with the
 	// sticky bit, as the image's own folders are.
@@ -213,23 +214,16 @@ func runPostgres(path string) (string, error) {
 		PostgresImage,
 		fmt.Sprintf("%ds", int(life.Seconds())), "docker-entrypoint.sh", "postgres",
 		"-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=300"}
-	r, err := newReaper(path, name)
-	if err != nil {
-		return "", fmt.Errorf("start the reaper of the container: %w", err)
-	}
-	mu.Lock()
-	tool, container, stop = path, name, r
-	mu.Unlock()
-	if _, err := commandEnv(ctx, append(os.Environ(), "POSTGRES_PASSWORD="+password), path, args...); err != nil {
-		return "", err
+	if err := runContainer(ctx, path, name, life, append(os.Environ(), "POSTGRES_PASSWORD="+password), args); err != nil {
+		return "", name, err
 	}
 	out, err := command(ctx, path, "port", name, "5432/tcp")
 	if err != nil {
-		return "", err
+		return "", name, err
 	}
 	host, port, err := net.SplitHostPort(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]))
 	if err != nil {
-		return "", fmt.Errorf("read the published port from %q: %w", out, err)
+		return "", name, fmt.Errorf("read the published port from %q: %w", out, err)
 	}
 	// The image's entrypoint first runs a server for initdb that listens only on its socket; a TCP connection
 	// inside the container reaches only the final server.
@@ -240,37 +234,162 @@ func runPostgres(path string) (string, error) {
 		select {
 		case <-ctx.Done():
 			logs, _ := command(context.Background(), path, "logs", "--tail", "40", name)
-			return "", fmt.Errorf("the server is not ready after %v; its last log lines:\n%s", startLimit, logs)
+			return "", name, fmt.Errorf("the server is not ready after %v; its last log lines:\n%s", startLimit, logs)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword("postgres", password), Host: net.JoinHostPort(host, port),
 		Path: "/postgres", RawQuery: "sslmode=disable"}
-	return u.String(), nil
+	return u.String(), name, nil
 }
 
-// reaperScript removes the container $2 with the tool $1 when the test binary ends. It reads one line from its
-// standard input, a pipe whose write end only the test binary holds: the end of the binary on any path, also a kill,
-// closes the pipe and ends the read, so no PID is watched. The line done is a clean exit, after which Main removed
-// the container itself: the reaper then ends at once.
-const reaperScript = `read -r line
-[ "$line" = done ] && exit 0
-"$1" rm --force "$2" >/dev/null 2>&1
+// SpiceDB starts a container of SpiceDBImage for the test and gives its gRPC endpoint, host:port on 127.0.0.1. args
+// are the arguments of the spicedb program: serve-testing, or serve with a preshared key and the memory datastore. The
+// cleanup of the test removes the container. SpiceDB fails the test with the reason when the container cannot start,
+// also when neither podman nor docker is on PATH: a missing result is not a pass.
+func SpiceDB(t testing.TB, args ...string) string {
+	t.Helper()
+	endpoint, name, err := startSpiceDB(args)
+	if name != "" {
+		t.Cleanup(func() { removeContainer(name) })
+	}
+	if err != nil {
+		t.Fatal("localtest: " + err.Error())
+	}
+	return endpoint
+}
+
+// startSpiceDB starts the SpiceDB container with podman, else with docker, and gives its endpoint and its name. On an
+// error, no container of it runs.
+func startSpiceDB(args []string) (string, string, error) {
+	found := containerTools()
+	if len(found) == 0 {
+		return "", "", errors.New("neither podman nor docker is on PATH, so the SpiceDB container of the test cannot start; install one")
+	}
+	var errs []string
+	for _, path := range found {
+		endpoint, name, err := runSpiceDB(path, args)
+		if err == nil {
+			return endpoint, name, nil
+		}
+		removeContainer(name)
+		errs = append(errs, err.Error())
+	}
+	return "", "", errors.New("start the SpiceDB container: " + strings.Join(errs, "; then: "))
+}
+
+// spiceDBArguments gives the arguments of the run of the SpiceDB container name with the tool path, with the time
+// limit life, for the arguments args of the spicedb program.
+func spiceDBArguments(path, name string, life time.Duration, args []string) []string {
+	run := []string{"run", "--detach", "--rm", "--name", name,
+		"--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--memory", "256m", "--cpus", "1", "--pids-limit", "512", "--stop-timeout", "1",
+		"--publish", "127.0.0.1::50051"}
+	// The image has no timeout program; podman ends the container itself at the time limit. For docker, the reaper
+	// holds the time limit.
+	if filepath.Base(path) == "podman" {
+		run = append(run, "--timeout", fmt.Sprintf("%d", int(life.Seconds())))
+	}
+	return append(append(run, SpiceDBImage), args...)
+}
+
+// runSpiceDB starts the SpiceDB container with the tool, and gives the endpoint that it publishes and its name.
+func runSpiceDB(path string, args []string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startLimit)
+	defer cancel()
+	life := lifeLimit()
+	name := fmt.Sprintf("stego-localtest-spicedb-%d-%s", os.Getpid(), suffix())
+	if err := runContainer(ctx, path, name, life, nil, spiceDBArguments(path, name, life, args)); err != nil {
+		return "", name, err
+	}
+	for {
+		out, err := command(ctx, path, "port", name, "50051/tcp")
+		if line := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]); err == nil && line != "" {
+			if _, _, err := net.SplitHostPort(line); err != nil {
+				return "", name, fmt.Errorf("read the published port from %q: %w", out, err)
+			}
+			return line, name, nil
+		}
+		select {
+		case <-ctx.Done():
+			logs, _ := command(context.Background(), path, "logs", "--tail", "40", name)
+			return "", name, fmt.Errorf("the SpiceDB container publishes no port after %v; its last log lines:\n%s", startLimit, logs)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// containerTools gives the paths of podman and docker on PATH, podman first.
+func containerTools() []string {
+	var found []string
+	for _, name := range []string{"podman", "docker"} {
+		if p, err := exec.LookPath(name); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// lifeLimit is the time limit of a container: the -test.timeout of the binary and one minute, else defaultLife.
+func lifeLimit() time.Duration {
+	if f := flag.Lookup("test.timeout"); f != nil {
+		if d, err := time.ParseDuration(f.Value.String()); err == nil && d > 0 {
+			return d + time.Minute
+		}
+	}
+	return defaultLife
+}
+
+// started is one container that localtest started: its tool and its reaper.
+type started struct {
+	tool   string
+	reaper *reaper
+}
+
+// runContainer starts the reaper of the container name, with the time limit life, records the container, and runs
+// the tool with args and the environment env (the environment of the test when env is nil).
+func runContainer(ctx context.Context, path, name string, life time.Duration, env, args []string) error {
+	r, err := newReaper(path, name, life)
+	if err != nil {
+		return fmt.Errorf("start the reaper of the container: %w", err)
+	}
+	mu.Lock()
+	running[name] = &started{tool: path, reaper: r}
+	mu.Unlock()
+	_, err = commandEnv(ctx, env, path, args...)
+	return err
+}
+
+// reaperScript removes the container $2 with the tool $1 when the test binary ends, or when the time limit of $3
+// seconds ends. It reads one line from its standard input, a pipe whose write end only the test binary holds: the end
+// of the binary on any path, also a kill, closes the pipe and ends the read, so no PID is watched. The line done is a
+// clean exit, after which localtest removed the container itself. A timer in the background removes the container
+// at the time limit, also while the binary runs. At the end, the reaper stops its process group, which holds the
+// timer, so it leaves no process.
+const reaperScript = `( sleep "$3"; "$1" rm --force "$2" >/dev/null 2>&1 ) &
+read -r line
+[ "$line" = done ] || "$1" rm --force "$2" >/dev/null 2>&1
+trap '' TERM
+kill -TERM 0 2>/dev/null
+exit 0
 `
 
-// reaper is one reaper process: the write end of the pipe that it reads.
+// reaper is one reaper process: the write end of the pipe that it reads, and its process ID, which is also the ID of
+// its process group.
 type reaper struct {
 	stop *os.File
+	pid  int
 }
 
-// newReaper starts the reaper of the container name of the tool path, in a process group of its own, so that a kill
-// of the group of the test binary, as an interrupt of the terminal sends, does not take it too.
-func newReaper(path, name string) (*reaper, error) {
+// newReaper starts the reaper of the container name of the tool path, with the time limit life, in a process group
+// of its own, so that a kill of the group of the test binary, as an interrupt of the terminal sends, does not take it
+// too.
+func newReaper(path, name string, life time.Duration) (*reaper, error) {
 	read, write, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name)
+	cmd := exec.Command("sh", "-c", reaperScript, "reaper", path, name, fmt.Sprintf("%d", max(int(life.Seconds()), 1)))
 	cmd.Stdin = read
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -280,29 +399,41 @@ func newReaper(path, name string) (*reaper, error) {
 	}
 	_ = read.Close()
 	go func() { _ = cmd.Wait() }()
-	return &reaper{stop: write}, nil
+	return &reaper{stop: write, pid: cmd.Process.Pid}, nil
 }
 
-// remove removes the container, if one started, and stops its reaper. A removal that fails leaves the reaper, which
-// removes the container when the binary ends. It is safe to call more than once.
+// remove removes each container that localtest started and did not remove yet. It is safe to call more than once.
 func remove() {
 	mu.Lock()
-	path, name, r := tool, container, stop
-	container, stop = "", nil
+	var names []string
+	for name := range running {
+		names = append(names, name)
+	}
 	mu.Unlock()
-	if name == "" {
+	for _, name := range names {
+		removeContainer(name)
+	}
+}
+
+// removeContainer removes the container name, if localtest started it, and stops its reaper. A removal that fails
+// leaves the reaper, which removes the container when the binary ends. It is safe to call more than once, and with
+// an empty name.
+func removeContainer(name string) {
+	mu.Lock()
+	c := running[name]
+	delete(running, name)
+	mu.Unlock()
+	if c == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if _, err := command(ctx, path, "rm", "--force", name); err != nil {
-		fmt.Fprintf(os.Stderr, "localtest: remove the PostgreSQL container %s: %v\n", name, err)
+	if _, err := command(ctx, c.tool, "rm", "--force", name); err != nil {
+		fmt.Fprintf(os.Stderr, "localtest: remove the container %s: %v\n", name, err)
 		return
 	}
-	if r != nil {
-		_, _ = r.stop.WriteString("done\n")
-		_ = r.stop.Close()
-	}
+	_, _ = c.reaper.stop.WriteString("done\n")
+	_ = c.reaper.stop.Close()
 }
 
 // GoEnv gives the environment of a go command in a generated module, and of a stego command that runs one: the
