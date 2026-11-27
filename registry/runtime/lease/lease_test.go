@@ -1017,8 +1017,14 @@ func holdReleaseAfterRenew(t *testing.T, during bool) {
 			t.Fatal(err)
 		}
 		close(gate.proceed)
+		// ctx ends only when the renew statement waits on the lock in the database. If ctx ends first, the renew
+		// does not go to the database, and the test is the case of a renew after the end of ctx.
+		waitLocked(t, d, renewStatement)
 		cancel()
-		// The renew answers with the end of ctx; only then does the lock go, so the renew never commits.
+		// The renew answers with the end of ctx; only then does the lock go. The client does not cancel the
+		// statement on the server, so the UPDATE of the renew can commit when the lock goes and give the row the
+		// next token, which the holder does not know (ST-SUP-RP09-LC06-T06). The release must also make that
+		// lease expire.
 		<-gate.returned
 		if err := lock.Rollback(); err != nil {
 			t.Fatal(err)
@@ -1032,12 +1038,33 @@ func holdReleaseAfterRenew(t *testing.T, during bool) {
 	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrLost) {
 		t.Fatalf("Hold returned %v, want the end of ctx and not a lost lease, as when ctx ends first", err)
 	}
+	if h.Token() != token {
+		t.Fatalf("the holder has token %d, want %d: the renew gave no answer", h.Token(), token)
+	}
+	// leaseRow gives the epoch for -infinity. In the case during, the renew can have committed on the server after
+	// its client stopped, so the row can hold the next token; the lease must be released with either token.
 	holder, after, expires := d.leaseRow(t, "stego.controller")
-	if holder != "h1" || after != token || !expires.Equal(time.Unix(0, 0)) {
-		t.Fatalf("after Hold the row has holder %s, token %d, expires_at %v; want h1, %d and released (-infinity)", holder, after, expires, token)
+	if holder != "h1" || (after != token && !(during && after == token+1)) || !expires.Equal(time.Unix(0, 0)) {
+		t.Fatalf("after Hold the row has holder %s, token %d, expires_at %v; want h1, %d (or %d in the case during) and released (-infinity)", holder, after, expires, token, token+1)
 	}
 	if _, err := newClient(t, d.other, "stego.controller", "h2", Settings{}).Acquire(context.Background()); err != nil {
 		t.Fatalf("the next holder cannot take the lease at once: %v", err)
+	}
+}
+
+// waitLocked reads pg_stat_activity again and again until a session of the test database runs the statement query
+// and waits on a lock. It does not sleep and has no deadline: each read is one round trip to the database.
+func waitLocked(t *testing.T, d *database, query string) {
+	t.Helper()
+	for {
+		var waiting bool
+		err := d.other.QueryRowContext(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query=$1)", query).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
 	}
 }
 
