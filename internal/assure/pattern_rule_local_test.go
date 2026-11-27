@@ -1068,6 +1068,78 @@ func TestLocalDevelopmentStandard(t *testing.T) {
 // TestLocalChecks gives the checks of R01 and R02 planted files, so that each form that a review found is held by
 // a test of the check, and not only by the tree at HEAD, which holds none of them (security review of PR #504).
 func TestLocalChecks(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R04-T05 The checks of R03 and R04 give the exact faults of a planted proof, with files named by many tests, testdata folders under one host, an unpinned image and a fixed service", func(t *testing.T) {
+		// Security review of PR #16, L1: the real tree has no fault of R03 or R04, so a cache of the checks that drops
+		// a fault passed each test. Each plant is written in two pieces, so the scan of this file does not read it.
+		reads := func(variables ...string) []byte {
+			var b strings.Builder
+			b.WriteString("package y\n\nfunc r(t *testing.T) {\n")
+			for _, variable := range variables {
+				b.WriteString("\tv := os.Getenv(\"" + variable + "\")\n\tif v == \"\" {\n\t\tt.Skip(\"no\")\n\t}\n")
+			}
+			b.WriteString("}\n")
+			return []byte(b.String())
+		}
+		files := map[string][]byte{
+			// R03: one file that two tests name, with a request to a hosted service.
+			"a/shared_test.go": []byte("package a\n\nfunc f() { _, _ = http.Get(\"https://git" + "hub.com/x\") }\n"),
+			"a/clean_test.go":  []byte("package a\n\nfunc g() {}\n"),
+			// R04: an image that no digest pins, and a service at a fixed local port.
+			"a/image_test.go": []byte("package a\n\nconst postgresImage = \"postgres:" + "17\"\n\nfunc c() {\n\t_ = exec.Command(\"docker\", \"run\", postgresImage)\n\t_, _ = sql.Open(\"pgx\", \"postgres://local" + "host:5432/x\")\n}\n"),
+			// R04: the host folder b, whose test file no record names, sets PLANT_HOSTED_DSN for the modules under its
+			// testdata folders; PLANT_UNSET_ENDPOINT is set nowhere.
+			"b/host_test.go":                         []byte("package b\n\nfunc h(t *testing.T) { t.Setenv(\"PLANT_HOSTED_DSN\", \"x\") }\n"),
+			"b/testdata/svc/one_test.go":             reads("PLANT_HOSTED_DSN", "PLANT_UNSET_ENDPOINT"),
+			"b/testdata/svc/two_test.go":             reads("PLANT_HOSTED_DSN"),
+			"b/testdata/other/three_test.go":         reads("PLANT_HOSTED_DSN", "PLANT_UNSET_ENDPOINT"),
+			"b/testdata/svc/testdata/deep/x_test.go": reads("PLANT_HOSTED_DSN", "PLANT_UNSET_ENDPOINT"),
+			// A testdata folder whose own test file sets a variable that the host does not.
+			"c/testdata/m/set_test.go":  []byte("package m\n\nfunc s(t *testing.T) { t.Setenv(\"PLANT_LOCAL_ADDR\", \"x\") }\n"),
+			"c/testdata/m/read_test.go": reads("PLANT_LOCAL_ADDR"),
+		}
+		tree := NewTree(files)
+		proof := localProof{domain: "PLANT", files: map[string][]byte{}, tree: tree}
+		for i, test := range []struct {
+			parent, file string
+			external     bool
+		}{
+			{"P1", "a/shared_test.go", false}, {"P1", "a/shared_test.go", false}, {"P2", "a/shared_test.go", false},
+			{"P2", "a/clean_test.go", false}, {"P1", "a/clean_test.go", false},
+			{"P1", "a/clean_test.go", true}, {"P3", "a/clean_test.go", true}, {"P4", "a/absent_test.go", false},
+			{"P5", "a/image_test.go", false}, {"P6", "b/testdata/svc/one_test.go", false}, {"P6", "b/testdata/other/three_test.go", false},
+			{"P6", "b/testdata/svc/testdata/deep/x_test.go", false}, {"P7", "c/testdata/m/read_test.go", false},
+		} {
+			fields := map[string]any{}
+			if test.external {
+				fields["external"] = true
+			}
+			proof.tests = append(proof.tests, localTest{id: fmt.Sprintf("T%d", i), parent: test.parent, file: test.file, fields: fields})
+			if data, ok := files[test.file]; ok {
+				proof.files[test.file] = data
+			}
+		}
+		request := `a/shared_test.go sends a request to a hosted service: func f() { _, _ = http.Get("https://git` + `hub.com/x") }`
+		want3 := []string{"P3 is proved only by tests that reach an outside system: T6", "T0 is not external, but " + request,
+			"T1 is not external, but " + request, "T2 is not external, but " + request}
+		got3 := slices.Clone(proof.standInFaults())
+		slices.Sort(got3)
+		if !slices.Equal(got3, want3) {
+			t.Errorf("the faults of R03 are\n%s\nwant\n%s", strings.Join(got3, "\n"), strings.Join(want3, "\n"))
+		}
+		unset := func(file string) string {
+			return file + " needs a service that runs already: it reads PLANT_UNSET_ENDPOINT and fails or skips without it, and no file of its package starts the service"
+		}
+		want4 := []string{
+			"a/image_test.go expects a service that runs already at a fixed address: " + `_, _ = sql.Open("pgx", "postgres://local` + `host:5432/x")`,
+			"a/image_test.go starts the image postgres:" + "17, which no whole sha256 digest pins",
+			unset("b/testdata/other/three_test.go"), unset("b/testdata/svc/one_test.go"), unset("b/testdata/svc/testdata/deep/x_test.go"),
+		}
+		got4 := slices.Clone(proof.pinnedServiceFaults())
+		slices.Sort(got4)
+		if !slices.Equal(got4, want4) {
+			t.Errorf("the faults of R04 are\n%s\nwant\n%s", strings.Join(got4, "\n"), strings.Join(want4, "\n"))
+		}
+	})
 	t.Run("ST-STD-LOCAL-R01-T04 The checks of R01 find a privileged container in a shell script, a cluster client held in a name or looked up, a kube configuration under HOME and the root folder of the host as a volume", func(t *testing.T) {
 		for _, c := range []struct {
 			source string
