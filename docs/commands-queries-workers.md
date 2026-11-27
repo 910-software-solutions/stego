@@ -1682,6 +1682,20 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+In one command, the fill cannot do this yet. When a fill creates a row and
+then a row that refers to it, with the loaded value that the first `Create`
+returned, the runtime decides the reference at SpiceDB. SpiceDB does not
+hold the tuples of the new row before the relay writes them after the
+commit, so the decision is a deny: `Create` gives `command.ErrNotFound`,
+the command answers 404 `not_found`, and the transaction commits nothing
+(ST-SUP-RP10-LC05-T26). Today, create the row in one call and the rows that
+refer to it in a second call that sends `Authz-Revocation-After`, and make
+each call idempotent. The open question ST-SUP-Q219 is about a declared
+opt-in, `creates_with_children`, which decides such a reference with no
+call of SpiceDB when the schema proves that the create of the row gives the
+caller the permission of the reference (ST-SUP-RP10-LC59, ST-DECL-INV108).
+It is not built.
+
 ### Act at once on a row that another user created
 
 A second user of the same tenant can also act at once on a new row, such as
