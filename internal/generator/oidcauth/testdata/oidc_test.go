@@ -94,7 +94,6 @@ type service struct {
 	base     string
 	env      []string
 	binary   string
-	started  time.Time
 	log      *strings.Builder
 }
 
@@ -169,7 +168,6 @@ func start(t *testing.T) *service {
 	process := exec.Command(binary)
 	process.Env = append(append(os.Environ(), s.env...), "PORT="+port)
 	process.Stdout, process.Stderr = s.log, s.log
-	s.started = time.Now()
 	must(t, process.Start())
 	exited := make(chan struct{})
 	go func() { _ = process.Wait(); close(exited) }()
@@ -373,10 +371,15 @@ func (s *service) refusals(good map[string]any) {
 	foreign := s.claims("u1", "org-1")
 	foreign["aud"] = "billing-api"
 	unknown := authntest.NewKey(t, "k9")
+	if s.accepted(s.token("RS256", "k9", good, unknown)) {
+		t.Error("a token of an unknown key was accepted")
+	}
+	// A token of an unknown key loads the key document again and starts the cooldown of the key set. The cooldown
+	// thus starts before this time, and not at the start of the service, which is earlier (followup of PR #4).
+	cooldown := time.Now()
 	for name, token := range map[string]string{
 		"a token of another issuer":    s.token("RS256", "r1", other, s.rsa),
 		"an expired token":             s.token("RS256", "r1", expired, s.rsa),
-		"a token of an unknown key":    s.token("RS256", "k9", good, unknown),
 		"a token for another audience": s.token("RS256", "r1", foreign, s.rsa),
 		"a PS256 token":                s.token("PS256", "r1", good, s.rsa),
 		"an alg none token":            s.token("none", "r1", good, nil),
@@ -389,7 +392,7 @@ func (s *service) refusals(good map[string]any) {
 	// key document again, and not the discovery document.
 	rotated := authntest.NewKey(t, "r2")
 	s.provider.Publish(s.rsa, s.es, rotated)
-	time.Sleep(time.Until(s.started.Add(31 * time.Second)))
+	time.Sleep(time.Until(cooldown.Add(31 * time.Second)))
 	if !s.accepted(s.token("RS256", "r2", good, rotated)) || s.provider.Discoveries() != 1 {
 		t.Errorf("the token of the rotated key was refused, or the discovery document was read again (%d fetches)", s.provider.Discoveries())
 	}
