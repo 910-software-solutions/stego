@@ -874,23 +874,41 @@ func TestBaseEventFields(t *testing.T) {
 	t.Parallel()
 	const kinds = "deposit, withdrawal"
 	base := []byte(eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount]}\n"))
+	// A widening of amount from int32 to int64 by the retype of schema-changes.md (walkthrough 29, W-EVT): after
+	// its contract step the field takes values above the range of int32, which a consumer of version 1 cannot read.
+	narrow := eventBase(kinds, "int32", "    events: {fields: [wallet_id, kind, amount]}\n")
+	widened := func(events string) string {
+		return eventBase(kinds, "int64", events) + `schema_changes:
+  - {id: transaction-amount-retype, kind: retype, entity: Transaction, field: amount,
+     from: int32, definition: "int32",
+     conversion: integer_to_int64, inverse_conversion: int64_to_integer}
+schema_history:
+  - {change: transaction-amount-retype, phase: expand}
+`
+	}
 	cases := []struct {
-		name, head string
-		field      string
-		refused    bool
+		name, base, head string
+		field            string
+		refused          bool
 	}{
-		{"the same head", string(base), "", false},
-		{"a head that adds the field note", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount, note]}\n"), "", false},
-		{"a head without amount", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind]}\n"), "amount", true},
-		{"a head with amount retyped", eventBase(kinds, "string", "    events: {fields: [wallet_id, kind, amount]}\n"), "amount", true},
-		{"a head with a value of kind removed", eventBase("deposit", "int64", "    events: {fields: [wallet_id, kind, amount]}\n"), "kind", true},
-		{"a head with no events", eventBase(kinds, "int64", ""), "", true},
-		{"a head with events at version 0", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount], version: 0}\n"), "", true},
-		{"a head without amount at version 2", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind], version: 2}\n"), "", false},
+		{"the same head", "", string(base), "", false},
+		{"a head that adds the field note", "", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount, note]}\n"), "", false},
+		{"a head without amount", "", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind]}\n"), "amount", true},
+		{"a head with amount retyped", "", eventBase(kinds, "string", "    events: {fields: [wallet_id, kind, amount]}\n"), "amount", true},
+		{"a head with a value of kind removed", "", eventBase("deposit", "int64", "    events: {fields: [wallet_id, kind, amount]}\n"), "kind", true},
+		{"a head with no events", "", eventBase(kinds, "int64", ""), "", true},
+		{"a head with events at version 0", "", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount], version: 0}\n"), "", true},
+		{"a head without amount at version 2", "", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind], version: 2}\n"), "", false},
+		{"a head with amount widened from int32 to int64", narrow, widened("    events: {fields: [wallet_id, kind, amount]}\n"), "amount", true},
+		{"a head with amount widened from int32 to int64 at version 2", narrow, widened("    events: {fields: [wallet_id, kind, amount], version: 2}\n"), "", false},
 	}
 	for _, c := range cases {
 		t.Run("ST-GEN-INV39-T "+c.name, func(t *testing.T) {
-			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			from := base
+			if c.base != "" {
+				from = []byte(c.base)
+			}
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: from, Record: recordFor(from)}, parseHead(t, c.head))
 			if err != nil {
 				t.Fatal(err)
 			}

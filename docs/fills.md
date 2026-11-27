@@ -775,7 +775,13 @@ func New() commands.UnlockPinFill {
   read permission `view`. Thus a support agent who has only `unlock_pin`,
   as in the schema above, can reset a wallet that it cannot view. A caller
   who does not have `unlock_pin` on that row, and an ID of no row, get 404.
-  This is the decision ST-SUP-Q211 (a).
+  This is the decision ST-SUP-Q211 (a). The reset guards also apply: a
+  caller who holds the permission of a command that writes the wallet, such
+  as an owner or a tenant admin who holds `operate`, gets 404 `denied` for
+  the reset, also when it holds `unlock_pin`. The answer does not tell the
+  caller why, as it does not tell a caller with no permission. Thus give the
+  reset to a support role that does not operate the wallets (walkthrough 29,
+  PIN-GUARD).
 - The helper with no `ByID` takes a wallet that the fill read through the
   handle, such as with `wallets.Get`. The read decides `view`, so its caller
   needs `view` and `unlock_pin` on the row. A caller with no `view` gets 404

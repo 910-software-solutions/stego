@@ -1078,6 +1078,20 @@ that holds it (walkthrough 27, W-OLD). Thus move each typed client, such
 as a Go SDK and a TypeScript client, to the release of the expand step
 before you release the contract step.
 
+A field that `events.fields` of its entity names is also a field of the
+change events, and their consumers read its type as a contract. Thus
+`stego compat`, and step 3 of the upgrade, refuse this retype at the same
+`events.version` (ST-GEN-INV39). The rule does not accept the widening as
+a change with no break: after the contract step the field takes values
+above the range of `int32`, and a consumer that holds the field as an
+`int32` cannot read them. Raise `events.version` by one in the release of
+the expand step, such as from 1 to 2. Each event of that release gives the
+new version as `data_version`. A consumer of the version before keeps
+reading the field, because its JSON type stays a number, until a value
+above 2147483647 is written (walkthrough 29, W-EVT). Move each consumer to
+the new version, and make it hold the field as an `int64`, before you
+release the contract step.
+
 Do not add `max: 2147483647` to the field at the contract step to keep
 the old clients working. The checks refuse it (ST-GEN-INV33): the max
 changes the stored shape of the field, and no schema step declares that

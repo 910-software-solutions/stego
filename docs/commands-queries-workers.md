@@ -605,11 +605,14 @@ shows.
 
 A command over gRPC gives each answer that is not a success as a gRPC
 status. The message of the status is the fixed code or the problem type
-alone (walkthrough 28, GRPC-CODES):
+alone (walkthrough 28, GRPC-CODES). The server checks the token before the
+command, so the two answers with no verified identity have a message of
+their own (walkthrough 29, GRPC-UNAUTH):
 
 | Answer | HTTP | gRPC status | Message |
 |---|---|---|---|
-| No verified identity | 401 | `Unauthenticated` | `unauthenticated` |
+| No `authorization` metadata, or a value that is not one `Bearer` token | 401 | `Unauthenticated` | `authentication is required` |
+| A token that the service cannot verify | 401 | `Unauthenticated` | `invalid access token` |
 | No idempotency key, where the command requires one | 400 | `InvalidArgument` | `idempotency-key-missing` |
 | A key that is not one structured string of 1 to 255 characters | 400 | `InvalidArgument` | `idempotency-key-invalid` |
 | The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
