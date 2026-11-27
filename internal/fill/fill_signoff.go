@@ -35,11 +35,12 @@ func (s *FillSignOff) check() error {
 	return nil
 }
 
-// WriteSignOff writes the sign-off into the fill manifest at path, in place
-// of the sign-off it held, and leaves the rest of the manifest as it was.
-func WriteSignOff(path string, signOff FillSignOff) error {
+// WriteSignOff writes the sign-off into the manifest of the fill name in the
+// folder fills, in place of the sign-off it held, and leaves the rest of the
+// manifest as it was. It refuses a name outside the fill-name form.
+func WriteSignOff(fills, name string, signOff FillSignOff) error {
 	if err := signOff.check(); err != nil {
 		return err
 	}
-	return writeSection(path, "sign_off", signOff)
+	return writeSection(fills, name, "sign_off", signOff)
 }

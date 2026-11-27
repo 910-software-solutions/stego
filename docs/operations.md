@@ -701,9 +701,13 @@ Wait until both rollouts complete before you start the next phase.
    ring no longer holds. The run logs the first three such rows with their
    column and row, and then one count for the column and the tenant.
 3. Remove the old key only when both of these are true:
-   - each column logged `left=0` in one complete run that started after both
-     rollouts of phase 2 completed. A run that started earlier can miss
-     values that an old pod wrote;
+   - each column logged `left=0` in one complete run of runtime v0.207.0 or
+     later that started after both rollouts of phase 2 completed. A run that
+     started earlier can miss values that an old pod wrote. A run of a runtime
+     before v0.207.0 passed over the active tenants alone, so its `left=0`
+     does not count the values of a retired tenant, which stay on the old key
+     (decision ST-SUP-Q219 (a)). After an upgrade from such a runtime, wait for
+     one complete run of the new runtime before you remove a key;
    - the idempotency retention of the service (24 hours when the declaration
      gives none) has passed since phase 2. An idempotency key of that time
      holds a fingerprint of the old key, and a retry with that key needs the

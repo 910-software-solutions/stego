@@ -104,7 +104,7 @@ func TestFillGate(t *testing.T) {
 		}
 		p.replace(t, "fills/twin-fill/fill.yaml", "name: qualified-fill", "name: twin-fill")
 		p.unproved(t, "no-key")
-		if err := fill.WriteSignOff(p.path("fills/twin-fill/fill.yaml"), *p.manifest(t, "qualified-fill").SignOff); err != nil {
+		if err := fill.WriteSignOff(p.path("fills"), "twin-fill", *p.manifest(t, "qualified-fill").SignOff); err != nil {
 			t.Fatal(err)
 		}
 		p.bind(t, slotBinding{"twin-fill", "before_create", "org-users"})
@@ -123,7 +123,7 @@ func TestFillGate(t *testing.T) {
 		signOff := *p.manifest(t, "qualified-fill").SignOff
 		p.replace(t, "fills/qualified-fill/policy.go", "// Evaluate allows the request.", "// Evaluate allows the request, as it did.")
 		p.unproved(t, "no-key")
-		if err := fill.WriteSignOff(p.path("fills/qualified-fill/fill.yaml"), signOff); err != nil {
+		if err := fill.WriteSignOff(p.path("fills"), "qualified-fill", signOff); err != nil {
 			t.Fatal(err)
 		}
 		line := statusOf(t, p.must(t, "no-key", "fill", "status"), "qualified-fill")

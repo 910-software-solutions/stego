@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 func TestDependencyFailuresPreserveProjectFiles(t *testing.T) {
@@ -338,7 +340,9 @@ func runDependencyCommand(ctx context.Context, directory, modPath string, args .
 	args = append(append([]string{}, args[:2]...), append([]string{"-modfile=" + modPath}, args[2:]...)...)
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = directory
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS= ")
+	// The module tools take the checked module cache of localtest, with no work file and GOFLAGS cleared, as each
+	// inner go command of the tests does (ST-STD-LOCAL-R03; fix of PR #7).
+	cmd.Env = localtest.GoEnv()
 	cmd.WaitDelay = time.Second
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output

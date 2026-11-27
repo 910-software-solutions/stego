@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/localtest"
@@ -264,7 +263,7 @@ func (p *wiringProject) stegoExec(extra []string, args ...string) (string, error
 	p.t.Helper()
 	cmd := exec.Command(p.binary, args...)
 	cmd.Dir = p.dir
-	cmd.Env = append(localtest.GoEnv(wiringPath(), "STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule), extra...)
+	cmd.Env = localtest.GoEnv(append([]string{wiringPath(), "STEGO_REGISTRY=" + filepath.Join(p.dir, "registry"), "STEGO_MODULE=" + wiringModule}, extra...)...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -626,35 +625,15 @@ func TestRuntimeDataPath(t *testing.T) {
 	})
 }
 
-// wiringSpiceDBImage is the pinned SpiceDB image of the local stand-in (ST-STD-LOCAL-R04), as the runtime's tests pin
-// it.
-const wiringSpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
-
-// startWiringSpiceDB starts a local SpiceDB container without privilege, with an in-memory datastore and limits, and
-// gives its endpoint and preshared key. It removes the container when the test ends.
+// startWiringSpiceDB starts a local SpiceDB container of localtest (ST-STD-LOCAL-R04), with an in-memory datastore, and gives its
+// endpoint and preshared key. localtest runs it without privilege, with limits, a time limit and a reaper, and removes
+// it when the test ends (security review of PR #7, N2).
 func startWiringSpiceDB(t *testing.T) (string, string) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Fatal("docker is not on the PATH: this test needs a local SpiceDB container")
-	}
 	suffix := make([]byte, 4)
 	_, _ = rand.Read(suffix)
-	name, key := "stego-wiring-spicedb-"+hex.EncodeToString(suffix), "wiring-"+hex.EncodeToString(suffix)
-	run := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--memory", "256m", "--cpus", "1",
-		"--security-opt", "no-new-privileges", "--cap-drop", "ALL", "--stop-timeout", "1",
-		"-p", "127.0.0.1::50051", wiringSpiceDBImage, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory")
-	if output, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("docker run SpiceDB: %v\n%s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
-		if err == nil && len(out) > 0 {
-			return strings.TrimSpace(strings.Split(string(out), "\n")[0]), key
-		}
-	}
-	t.Fatal("the SpiceDB container publishes no port")
-	return "", ""
+	key := "wiring-" + hex.EncodeToString(suffix)
+	return localtest.SpiceDB(t, "serve", "--grpc-preshared-key", key, "--datastore-engine", "memory"), key
 }
 
 // wiringCheckIDs are the checks of the generated service that TestRuntimeWiring runs, each with the ID of the test
