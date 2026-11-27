@@ -123,6 +123,11 @@ func environment(root, sdk string, offline bool) []string {
 	for key, name := range map[string]string{"HOME": "home", "GOPATH": "gopath", "GOMODCACHE": "modules", "GOCACHE": "cache", "TMPDIR": "tmp"} {
 		values[key] = filepath.Join(root, name)
 	}
+	// The local stand-ins of a test binary (UseTestModuleSources) take the place of proxy.golang.org and
+	// sum.golang.org in the commands that run; a real run has none. The records name the fixed settings.
+	if sources := testSources(); sources != nil {
+		values["GOPROXY"], values["GOSUMDB"] = sources.proxy, sources.sumDB
+	}
 	if offline {
 		values["GOPROXY"] = "off"
 	}

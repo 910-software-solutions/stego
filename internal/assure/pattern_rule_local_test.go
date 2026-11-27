@@ -732,9 +732,10 @@ var outsideFaults = []struct {
 }
 
 // localModuleProxy is the text that shows that a test file runs its module fetches with no hosted proxy: GOPROXY off,
-// a file proxy that the test writes, or the environment of localtest.GoEnv (ST-SUP-TOOL16), which sets GOPROXY off
-// over the module cache that it fills once per test binary.
-var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(|localtest\.GoEnv\(`)
+// a file proxy that the test writes, a proxy that the test serves on loopback (GOPROXY= and the URL of an httptest
+// server), or the environment of localtest.GoEnv (ST-SUP-TOOL16), which sets GOPROXY off over the module cache that
+// it fills once per test binary.
+var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(|localtest\.GoEnv\(|"GOPROXY="\s*\+\s*\w+\.URL\b`)
 
 // reachesOutside gives each sign that the test file reaches a system outside the product, with no local module proxy
 // in the file for a module fetch.
@@ -961,6 +962,8 @@ func TestBuildingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-BLD")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T02 Building's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T02 Each test file of Building belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T02 Each obligation of Building that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T02 Each container that a test of Building starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T02 Building's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T02 Each obligation of Building with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -969,6 +972,7 @@ func TestDeclaringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DECL")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T03 Declaring's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T03 Each test file of Declaring belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T03 Each container that a test of Declaring starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T03 Each obligation of Declaring that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T03 Declaring's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T03 Each obligation of Declaring with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -978,6 +982,7 @@ func TestDistributingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DIS")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T04 Distributing's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T04 Each test file of Distributing belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T04 Each container that a test of Distributing starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T04 Each obligation of Distributing that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T04 Distributing's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T04 Each obligation of Distributing with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -987,6 +992,7 @@ func TestDeliveringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DLV")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T05 Delivering's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T05 Each test file of Delivering belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T05 Each container that a test of Delivering starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T05 Each obligation of Delivering that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T05 Delivering's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T05 Each obligation of Delivering with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -996,6 +1002,8 @@ func TestExtendingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-EXT")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T06 Extending's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T06 Each test file of Extending belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T06 Each obligation of Extending that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T06 Each container that a test of Extending starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T06 Extending's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T06 Each obligation of Extending with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -1004,6 +1012,8 @@ func TestGeneratingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-GEN")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T07 Generating's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T07 Each test file of Generating belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T07 Each obligation of Generating that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T07 Each container that a test of Generating starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T07 Generating's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T07 Each obligation of Generating with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -1012,6 +1022,8 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-SUP")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T08 Supplying's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T08 Each test file of Supplying belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T08 Each obligation of Supplying that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T08 Each container that a test of Supplying starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T08 Supplying's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
