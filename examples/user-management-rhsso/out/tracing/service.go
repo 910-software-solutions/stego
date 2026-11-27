@@ -85,12 +85,14 @@ type accessWindow struct {
 	dropped uint64
 }
 type localRecord struct {
-	Stage           string    `json:"startup.stage,omitempty"`
-	DatabaseCall    string    `json:"stego.db.call,omitempty"`
-	HTTPMethod      string    `json:"http.request.method,omitempty"`
-	HTTPRoute       string    `json:"http.route,omitempty"`
-	HTTPStatus      int       `json:"http.response.status_code,omitempty"`
-	ErrorType       string    `json:"error.type,omitempty"`
+	Stage        string `json:"startup.stage,omitempty"`
+	DatabaseCall string `json:"stego.db.call,omitempty"`
+	HTTPMethod   string `json:"http.request.method,omitempty"`
+	HTTPRoute    string `json:"http.route,omitempty"`
+	HTTPStatus   int    `json:"http.response.status_code,omitempty"`
+	ErrorType    string `json:"error.type,omitempty"`
+	// ErrorCode is the fixed error code of a refused or failed request, never a value.
+	ErrorCode       string    `json:"stego.error_code,omitempty"`
 	RPCMethod       string    `json:"rpc.method,omitempty"`
 	RPCStatus       string    `json:"rpc.response.status_code,omitempty"`
 	Time            time.Time `json:"timestamp"`
@@ -214,6 +216,7 @@ func (record localRecord) appendLine(b []byte) []byte {
 		b = strconv.AppendInt(b, int64(record.HTTPStatus), 10)
 	}
 	str("error.type", record.ErrorType)
+	str("stego.error_code", record.ErrorCode)
 	str("rpc.method", record.RPCMethod)
 	str("rpc.response.status_code", record.RPCStatus)
 	str("stego.startup.stage", record.Stage)
