@@ -40,12 +40,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -54,6 +56,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -653,6 +656,8 @@ func downloadModules() {
 	// these folders never reaches, because the go command prunes the module graph. So the cache takes, for each module
 	// of the build list of a folder (go list -m all), each version of it in the module graph, and each version of it
 	// that the go.mod of such a version requires.
+	// dirs are the module folders that the fill extracted, each with the hash that the go command checked for it.
+	var dirs []fillDir
 	fail := func(folder string, err error, output []byte) {
 		modulesWhy = fmt.Sprintf("download the modules of %s: %v\n%s", folder, err, output)
 		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
@@ -666,11 +671,23 @@ func downloadModules() {
 		fail(root, err, out)
 		return
 	} else if versions := strings.Fields(string(out)); len(versions) > 0 {
-		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download"}, versions...)...)
+		download := exec.CommandContext(ctx, goTool, append([]string{"mod", "download", "-json"}, versions...)...)
 		download.Dir, download.Env = root, list.Env
-		if output, err := download.CombinedOutput(); err != nil {
-			fail(root, err, output)
+		var stderr bytes.Buffer
+		download.Stderr = &stderr
+		output, err := download.Output()
+		if err != nil {
+			fail(root, err, append(output, stderr.Bytes()...))
 			return
+		}
+		decoder := json.NewDecoder(bytes.NewReader(output))
+		for decoder.More() {
+			var module fillDir
+			if err := decoder.Decode(&module); err != nil {
+				fail(root, err, output)
+				return
+			}
+			dirs = append(dirs, module)
 		}
 	}
 	var checked []string
@@ -784,11 +801,12 @@ func downloadModules() {
 			}
 			decoder := json.NewDecoder(bytes.NewReader(found))
 			for decoder.More() {
-				var module struct{ Path, Version, Sum, GoModSum, GoMod string }
+				var module struct{ Path, Version, Sum, GoModSum, GoMod, Dir string }
 				if err := decoder.Decode(&module); err != nil {
 					fail(folder, err, found)
 					return
 				}
+				dirs = append(dirs, fillDir{Path: module.Path, Version: module.Version, Sum: module.Sum, Dir: module.Dir})
 				// The go command gives the hashes that it checked against go.sum or sum.golang.org before it wrote the
 				// module; they are the checked lines of a version that no go.sum of the repository names.
 				if module.Sum != "" {
@@ -813,6 +831,120 @@ func downloadModules() {
 			}
 		}
 	}
+	// The go command does not hash an extracted folder again when it finds it in the cache, so a file that a tool
+	// or a writable cache (-modcacherw) put into the folder of a checked module would build with no error. Each folder
+	// is hashed again, on each fill and on each reuse of the cache, as go mod verify does (security review of PR #7).
+	if err := verifyDirs(dirs, filepath.Join(moduleCache, verifiedFile)); err != nil {
+		fail(moduleCache, err, nil)
+	}
+}
+
+// fillDir is a module that the fill downloaded: its path, its version, the hash of its zip that the go command
+// checked against go.sum or sum.golang.org, and its extracted folder in the module cache.
+type fillDir struct{ Path, Version, Sum, Dir string }
+
+// verifiedDirs is the number of module folders that the last fill checked, and hashedDirs the number of them that it
+// hashed again, as their stamp changed.
+var verifiedDirs, hashedDirs int
+
+// verifiedFile is the file in the module cache of localtest that holds, for each module folder that a fill hashed with
+// the checked hash, a stamp of its files: their names, sizes, modes and modification times.
+const verifiedFile = "verified-dirs.json"
+
+// dirStamp gives the stamp of the files of the folder dir: a hash of the name, size, mode and modification time of
+// each entry. A file that is added, removed or written changes it.
+func dirStamp(dir string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, name)
+		fmt.Fprintf(h, "%q %d %o %d\n", rel, info.Size(), info.Mode(), info.ModTime().UnixNano())
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil)), err
+}
+
+// verifyDirs hashes each extracted module folder of dirs, as go mod verify does, and fails with each module whose
+// folder does not have the checked hash of its zip: "dir has been modified". A module with no folder or no hash, such
+// as a version of which only the go.mod was read, is not hashed. A folder whose stamp (dirStamp) and checked hash are
+// those that verifiedFile holds from an earlier hash is not hashed again: its files did not change since then. Only
+// a deliberate edit that also sets the size and the modification time of each file back gets past the stamp.
+//
+// stampsFile is the file of the stamps, verifiedFile in the module cache of localtest.
+func verifyDirs(dirs []fillDir, stampsFile string) error {
+	seen := map[string]bool{}
+	var todo []fillDir
+	for _, d := range dirs {
+		if d.Dir == "" || d.Sum == "" || seen[d.Dir] {
+			continue
+		}
+		seen[d.Dir] = true
+		todo = append(todo, d)
+	}
+	type record struct{ Sum, Stamp string }
+	known := map[string]record{}
+	if data, err := os.ReadFile(stampsFile); err == nil {
+		_ = json.Unmarshal(data, &known)
+	}
+	var (
+		wg       sync.WaitGroup
+		failedMu sync.Mutex
+		failed   []string
+		hashed   int
+		passed   = map[string]record{}
+	)
+	work := make(chan fillDir)
+	for range max(runtime.NumCPU(), 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for d := range work {
+				stamp, err := dirStamp(d.Dir)
+				why := ""
+				if err == nil && known[d.Dir] == (record{d.Sum, stamp}) {
+					failedMu.Lock()
+					passed[d.Dir] = record{d.Sum, stamp}
+					failedMu.Unlock()
+					continue
+				}
+				got, err := dirhash.HashDir(d.Dir, d.Path+"@"+d.Version, dirhash.Hash1)
+				switch {
+				case err != nil:
+					why = fmt.Sprintf("%s %s: hash its folder %s: %v", d.Path, d.Version, d.Dir, err)
+				case got != d.Sum:
+					why = fmt.Sprintf("%s %s: dir has been modified (%s): its hash is %s, not the checked %s", d.Path, d.Version, d.Dir, got, d.Sum)
+				}
+				failedMu.Lock()
+				hashed++
+				if why != "" {
+					failed = append(failed, why)
+				} else if stamp != "" {
+					passed[d.Dir] = record{d.Sum, stamp}
+				}
+				failedMu.Unlock()
+			}
+		}()
+	}
+	for _, d := range todo {
+		work <- d
+	}
+	close(work)
+	wg.Wait()
+	verifiedDirs, hashedDirs = len(todo), hashed
+	if data, err := json.Marshal(passed); err == nil {
+		_ = writeAtomic(stampsFile, data)
+	}
+	if len(failed) > 0 {
+		slices.Sort(failed)
+		return errors.New("the module cache of localtest holds changed module folders:\n" + strings.Join(failed, "\n"))
+	}
+	return nil
 }
 
 // fillEnvironment is the environment of the fill of the module cache of localtest. It reads modules through the
