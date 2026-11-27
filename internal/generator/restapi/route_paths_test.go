@@ -133,9 +133,13 @@ func TestScopedCollectionRoutesKeepParameterNames(t *testing.T) {
 	}
 }
 
+// legacyMuxMarker is set to 1 in the environment of the child process of ST-SUP-RC20-OC33-T02, which runs with
+// GODEBUG=httpmuxgo121=1. TestMain does not fill the module cache of localtest for that child.
+const legacyMuxMarker = "STEGO_TEST_LEGACY_MUX"
+
 func TestRouteValidationRejectsLegacyMuxMode(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC33-T02 Route validation requires the current HTTP pattern rules", func(t *testing.T) {
-		const marker = "STEGO_TEST_LEGACY_MUX"
+		const marker = legacyMuxMarker
 		if os.Getenv(marker) == "1" {
 			files, wiring, err := (&Generator{}).Generate(basicContext())
 			if err == nil || len(files) != 0 || wiring != nil || !strings.Contains(err.Error(), "HTTP pattern semantics") {
