@@ -80,6 +80,9 @@ jobs:
       STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK: '1'
       PART: ${{ matrix.part }}
       STEGO_BUILD_TESTS: '^Test(Build|Image|Policy|Dependencies)'
+      # A test of stego build that needs the pinned Go SDK fails, and does not skip, when the SDK of the run is not
+      # the pinned one (security review of PR #8, F4).
+      STEGO_REQUIRE_PINNED_GO: '1'
     defaults:
       run:
         working-directory: stego

@@ -25,6 +25,7 @@
 {"source_id":"ST-BLD-TOOL07","target_id":"ST-STD-TRUST-R04"}
 {"source_id":"ST-BLD-TOOL08","target_id":"ST-STD-LOCAL-R03"}
 {"source_id":"ST-BLD-TOOL09","target_id":"ST-STD-TRUST-R04"}
+{"source_id":"ST-BLD-TOOL10","target_id":"ST-STD-LOCAL-R03"}
 {"source_id":"ST-DECL-SP02-PR","target_id":"ST-STD-TXN-R04"}
 {"source_id":"ST-DECL-SP03-PR","target_id":"ST-STD-TXN-R04"}
 {"source_id":"ST-DECL-SP04-PR","target_id":"ST-STD-TXN-R07"}

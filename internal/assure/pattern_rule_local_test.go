@@ -130,17 +130,68 @@ func ownCheck(name string) bool {
 
 // codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
 // files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
-// for.
+// for. Only a line that holds a string literal of the pattern of a call of regexp.MustCompile, as the parser finds
+// it, is not read: the text regexp.MustCompile( in a comment or in another string hides nothing (security review of
+// PR #10, L3).
 func codeLines(name string, data []byte) []string {
+	patterns := map[int]bool{}
+	if ownCheck(name) {
+		patterns = patternLines(name, data)
+	}
 	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for i, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && strings.Contains(line, "regexp.MustCompile(") {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || patterns[i+1] {
 			continue
 		}
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// patternLines gives the numbers of the lines of a Go file that hold a string literal in the arguments of a call of
+// regexp.MustCompile. A file that does not parse gives none, so each of its lines is read.
+func patternLines(name string, data []byte) map[int]bool {
+	lines := map[int]bool{}
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, name, data, parser.SkipObjectResolution)
+	if err != nil {
+		return lines
+	}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if pkg, isIdent := selectorPackage(selector); !ok || !isIdent || pkg != "regexp" || selector.Sel.Name != "MustCompile" {
+			return true
+		}
+		for _, argument := range call.Args {
+			ast.Inspect(argument, func(node ast.Node) bool {
+				if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					for line := fset.Position(lit.Pos()).Line; line <= fset.Position(lit.End()).Line; line++ {
+						lines[line] = true
+					}
+				}
+				return true
+			})
+		}
+		return true
+	})
+	return lines
+}
+
+// selectorPackage gives the name on the left of a selector, such as regexp of regexp.MustCompile.
+func selectorPackage(selector *ast.SelectorExpr) (string, bool) {
+	if selector == nil {
+		return "", false
+	}
+	id, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return id.Name, true
 }
 
 // The things a test that runs on a workstation must not need (ST-STD-LOCAL-R01): a privileged container, the
@@ -151,14 +202,17 @@ var workstationFaults = []struct {
 	pattern *regexp.Regexp
 	why     string
 }{
-	{regexp.MustCompile(`"--privileged(=[^"]*)?"|\bPrivileged:\s*true\b`), "starts a privileged container"},
+	{regexp.MustCompile(`"--privileged(=[^"]*)?"|\bPrivileged:\s*true\b|\b(docker|podman)\s+(container\s+)?(run|create)\b[^"\n]*\s--privileged\b`), "starts a privileged container"},
+	// The root folder of the host given to a container as a volume, as an argument or in a shell script (security
+	// review of PR #504).
+	{regexp.MustCompile(`"(-v|--volume|--mount)",\s*"(type=bind,\s*source=)?/:|"(-v|--volume)=/:|\s(-v|--volume)[\s=]+/:/`), "gives a container the root folder of the host"},
 	{regexp.MustCompile(`"--(network|net|pid|ipc|uts|userns|cgroupns)(=|",\s*")"?host"|\b(NetworkMode|PidMode|IpcMode|UTSMode|UsernsMode):\s*"host"`), "starts a container in a namespace of the host"},
 	{regexp.MustCompile(`"--cap-add|\bCapAdd:`), "adds a capability to a container"},
 	{regexp.MustCompile(`"--device|\bDevices:`), "gives a container a device of the host"},
 	{regexp.MustCompile(`docker\.sock|podman\.sock`), "gives a container the socket of the container engine"},
 	{regexp.MustCompile(`(seccomp|apparmor)[=:]unconfined`), "starts a container with no seccomp or AppArmor profile"},
 	{regexp.MustCompile(`(Getenv|LookupEnv|environ\.get|environ\[)\(?\s*["'](KUBECONFIG|GH_TOKEN|GITHUB_TOKEN|DOCKER_CONFIG|REGISTRY_AUTH_FILE|AWS_ACCESS_KEY_ID|GOOGLE_APPLICATION_CREDENTIALS)["']`), "reads a cluster configuration or a credential of a hosted service from the environment"},
-	{regexp.MustCompile(`(UserHomeDir\(\)|Path\.home\(\)|expanduser\()[^\n]*(\.kube|\.docker|\.config/gh|\.netrc)`), "reads a cluster configuration or a credential from the user's home folder"},
+	{regexp.MustCompile(`(UserHomeDir\(\)|Getenv\("HOME"\)|LookupEnv\("HOME"\)|Path\.home\(\)|expanduser\(|\$HOME|"~/)[^\n]*(\.kube|\.docker|\.config/gh|\.netrc)`), "reads a cluster configuration or a credential from the user's home folder"},
 	{regexp.MustCompile(`subprocess\.\w+\(\s*\[\s*["'](\S*/)?(kubectl|oc|helm|argocd|gh|kind)["']`), "runs the client of a cluster or of a hosted service"},
 }
 
@@ -166,7 +220,8 @@ var workstationFaults = []struct {
 var clusterClients = map[string]bool{"kubectl": true, "oc": true, "helm": true, "argocd": true, "gh": true, "kind": true}
 
 // commandFaults parses a Go test file and gives each call of exec.Command or exec.CommandContext that runs a client
-// of a cluster or of a hosted service: as the program, by any path, or as the first word of a shell's -c script.
+// of a cluster or of a hosted service: as the program, by any path, also through a constant or a variable of the
+// file that holds its name, or as the first word of a shell's -c script; and each exec.LookPath of such a client.
 func commandFaults(file string, data []byte) []string {
 	if path.Ext(file) != ".go" {
 		return nil
@@ -176,7 +231,22 @@ func commandFaults(file string, data []byte) []string {
 		return []string{file + " does not parse: " + err.Error()}
 	}
 	var faults []string
-	literal := func(expr ast.Expr) (string, bool) {
+	// named holds the string literals that the file gives a name to, in a constant, a variable or an assignment, so
+	// that a program held in a name is read too (security review of PR #504).
+	named := map[string][]string{}
+	var literal func(ast.Expr) (string, bool)
+	literal = func(expr ast.Expr) (string, bool) {
+		if id, ok := expr.(*ast.Ident); ok {
+			for _, text := range named[id.Name] {
+				if clusterClients[path.Base(text)] {
+					return text, true
+				}
+			}
+			if texts := named[id.Name]; len(texts) > 0 {
+				return texts[0], true
+			}
+			return "", false
+		}
 		lit, ok := expr.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return "", false
@@ -185,11 +255,45 @@ func commandFaults(file string, data []byte) []string {
 		return text, err == nil
 	}
 	ast.Inspect(parsed, func(node ast.Node) bool {
+		bind := func(names []*ast.Ident, values []ast.Expr) {
+			for i, name := range names {
+				if i < len(values) {
+					if lit, ok := values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if text, err := strconv.Unquote(lit.Value); err == nil {
+							named[name.Name] = append(named[name.Name], text)
+						}
+					}
+				}
+			}
+		}
+		switch n := node.(type) {
+		case *ast.ValueSpec:
+			bind(n.Names, n.Values)
+		case *ast.AssignStmt:
+			var names []*ast.Ident
+			for _, lhs := range n.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok {
+					names = append(names, id)
+				} else {
+					names = append(names, &ast.Ident{})
+				}
+			}
+			bind(names, n.Rhs)
+		}
+		return true
+	})
+	ast.Inspect(parsed, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if ok && selector.Sel.Name == "LookPath" && len(call.Args) == 1 {
+			if program, ok := literal(call.Args[0]); ok && clusterClients[path.Base(program)] {
+				faults = append(faults, fmt.Sprintf("%s looks up the client %s of a cluster or of a hosted service", file, program))
+			}
+			return true
+		}
 		if !ok || selector.Sel.Name != "Command" && selector.Sel.Name != "CommandContext" {
 			return true
 		}
@@ -383,21 +487,101 @@ var optInVariables = map[string]string{
 	"STEGO_TEST_NO_CONTAINERS": "turns the failure of a test with no container engine into a skip; without it the test fails, as R02 asks",
 }
 
-// optInSuffixes are the endings of the names of opt-in variables that copy what a test made to a folder, for a
-// person or a CI job to read: the test proves the same without them.
-var optInSuffixes = []string{"_DUMP", "_ARTIFACTS"}
+// copyVariables are the opt-in variables that copy what a test made to a folder, for a person or a CI job to read:
+// the test proves the same without them. Each is named, so a new variable with such an ending that a test stops on
+// is not let through by its name alone (security review of PR #504, N3).
+var copyVariables = []string{"STEGO_ALLOCATION_ARTIFACTS", "STEGO_ALLOCATION_ENDPOINT_ARTIFACTS", "STEGO_BROWSER_LOGOUT_ARTIFACTS",
+	"STEGO_COMMAND_DUMP", "STEGO_CRUD_DUMP", "STEGO_DEPLOYMENT_ARTIFACTS", "STEGO_KEYCLOAK_PROVIDER_ARTIFACTS",
+	"STEGO_KUBERNETES_ROTATION_ARTIFACTS", "STEGO_PINNED_POLICY_ARTIFACTS"}
 
-// optIn tells if the variable is an opt-in one, by name or by the ending of its name.
+// optIn tells if the variable is an opt-in one.
 func optIn(name string) bool {
-	if _, held := optInVariables[name]; held {
-		return true
+	_, held := optInVariables[name]
+	return held || slices.Contains(copyVariables, name)
+}
+
+// A name that a Go file gives to the name of a STEGO_ variable, in a constant, a variable or an assignment.
+var namesVariable = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:string\s*)?:?=\s*"(STEGO_[A-Z0-9_]+)"`)
+
+// A set of a variable through a name: an entry of the environment of a command, name+"=...", or a Setenv of the name.
+var setsNamed = regexp.MustCompile(`(?:\b([A-Za-z_][A-Za-z0-9_]*)\.)?\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"=|Setenv\(\s*(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,`)
+
+// A read of a variable through a name, also of another package, such as Getenv(DSNVariable) or
+// Getenv(pgtest.DSNVariable).
+var readsNamed = regexp.MustCompile(`(?:Getenv|LookupEnv)\((?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+// An import of a package of this repository, with its name when the file gives one.
+var repositoryImport = regexp.MustCompile(`(?m)^\s*(?:import\s+)?(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"github\.com/910-software-solutions/stego/([^"]+)"`)
+
+// variableNames are the names that the Go files of the tree give to STEGO_ variables, by the folder of the file,
+// which is its package: a name is resolved in the package of the file that uses it, or, qualified, in the package
+// that the file imports under the qualifier, never by its bare name across the tree (security review of PR #10, L2).
+type variableNames map[string]map[string][]string
+
+// resolve gives the variables that the name, with the qualifier or none, names in the file.
+func (n variableNames) resolve(file, text, qualifier, name string) []string {
+	if qualifier == "" {
+		return n[path.Dir(file)][name]
 	}
-	for _, suffix := range optInSuffixes {
-		if strings.HasSuffix(name, suffix) {
-			return true
+	for _, match := range repositoryImport.FindAllStringSubmatch(text, -1) {
+		if match[1] == qualifier || match[1] == "" && path.Base(match[2]) == qualifier {
+			return n[match[2]][name]
 		}
 	}
-	return false
+	return nil
+}
+
+// A function of a Go file whose body reads the variable that its string parameter names, and one that returns the
+// read of a STEGO_ variable: their calls read the variable too.
+var (
+	readerFunction   = regexp.MustCompile(`(?m)^func\s+([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)[^{\n]*\{`)
+	returnsRead      = regexp.MustCompile(`^\s*return\s+(?:os\.)?(?:Getenv|LookupEnv)\("(STEGO_[A-Z0-9_]+)"\)`)
+	stringParameters = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*\s+string\b`)
+)
+
+// variableReads gives, for each line of the code lines of a file, the STEGO_ variables that the line reads: a read
+// by its literal name; a read through a name that a Go file of the tree gives to the variable (names); a call of a
+// function of the same folder that reads the variable that its parameter names, with the name as a literal, and
+// which stops the test itself (wrappers, whose call is its own condition); and a call of a function of the same
+// folder that returns the read of the variable (returners), such as dsn() for Getenv("STEGO_X") (security review of
+// PR #504, N3). stopsHere tells, for each read, whether the line itself stops the test, as a wrapper does.
+type variableRead struct {
+	name      string
+	stopsHere bool
+}
+
+// readerFunctions finds the wrappers and the returners of the code lines of the files of one folder.
+func readerFunctions(files map[string][]string) (wrappers map[string]bool, returners map[string]string) {
+	wrappers, returners = map[string]bool{}, map[string]string{}
+	for _, lines := range files {
+		for i, line := range lines {
+			match := readerFunction.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			end := i + 1
+			for end < len(lines) && !strings.HasPrefix(lines[end], "}") {
+				end++
+			}
+			body := strings.Join(lines[i+1:min(end, len(lines))], "\n")
+			if end == i+1 {
+				body = line
+			}
+			for _, parameter := range stringParameters.FindAllStringSubmatch(match[2], -1) {
+				for _, name := range strings.Split(strings.TrimSuffix(strings.TrimSpace(parameter[0]), "string"), ",") {
+					if name = strings.TrimSpace(name); name != "" && regexp.MustCompile(`(?:Getenv|LookupEnv)\(`+regexp.QuoteMeta(name)+`\)`).MatchString(body) && stopsTest.MatchString(body) {
+						wrappers[match[1]] = true
+					}
+				}
+			}
+			for _, bodyLine := range strings.Split(body, "\n") {
+				if read := returnsRead.FindStringSubmatch(bodyLine); read != nil {
+					returners[match[1]] = read[1]
+				}
+			}
+		}
+	}
+	return wrappers, returners
 }
 
 // conditionLine gives the line that tests the value of the read on line i: line i when it is an if statement or
@@ -438,12 +622,44 @@ func conditionLine(lines []string, i int) int {
 // opt-in variable. The documented command go test ./... runs the test with no such variable, so the test does not
 // run from the documented command alone (review of PR #502, L4; review of PR #504, M1).
 func (p localProof) undocumentedEnvironment(readme string) []string {
-	set := map[string]bool{}
+	// A test sets a variable for the tests of its own module only: a child process that it runs, or the tests of the
+	// process. So a set counts only in the suite of the file that sets it (security review of PR #504, L2).
+	set := map[string]map[string]bool{}
+	names := variableNames{}
+	// namedSet is the text of a file that can set a variable through a name, such as marker+"=1" or
+	// t.Setenv(consoleSetting, ...), which is read when all the names are known.
+	type namedSet struct{ folder, file, text string }
+	var sets []namedSet
 	for _, name := range p.tree.paths() {
+		if path.Ext(name) != ".go" {
+			continue
+		}
+		data, _ := p.tree.File(name)
+		text := strings.Join(codeLines(name, data), "\n")
+		for _, match := range namesVariable.FindAllStringSubmatch(text, -1) {
+			if names[path.Dir(name)] == nil {
+				names[path.Dir(name)] = map[string][]string{}
+			}
+			names[path.Dir(name)][match[1]] = append(names[path.Dir(name)][match[1]], match[2])
+		}
 		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
-			data, _ := p.tree.File(name)
-			for _, match := range setsVariable.FindAllStringSubmatch(string(data), -1) {
-				set[match[1]+match[2]+match[3]] = true
+			suite, ok := p.suiteOf(name)
+			if !ok {
+				continue
+			}
+			if set[suite.folder] == nil {
+				set[suite.folder] = map[string]bool{}
+			}
+			for _, match := range setsVariable.FindAllStringSubmatch(text, -1) {
+				set[suite.folder][match[1]+match[2]+match[3]] = true
+			}
+			sets = append(sets, namedSet{suite.folder, name, text})
+		}
+	}
+	for _, named := range sets {
+		for _, match := range setsNamed.FindAllStringSubmatch(named.text, -1) {
+			for _, name := range names.resolve(named.file, named.text, match[1]+match[3], match[2]+match[4]) {
+				set[named.folder][name] = true
 			}
 		}
 	}
@@ -452,19 +668,50 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 	if section == "" {
 		faults = append(faults, "README.md has no section "+testEnvironmentSection+" that names the variables of the tests")
 	}
-	for file, data := range p.packageFiles() {
-		lines := codeLines(file, data)
-		for i, line := range lines {
-			for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
-				name := match[1]
-				if set[name] || optIn(name) || namesWord(section, name) {
-					continue
+	files := p.packageFiles()
+	folders := map[string]map[string][]string{}
+	for file, data := range files {
+		if folders[path.Dir(file)] == nil {
+			folders[path.Dir(file)] = map[string][]string{}
+		}
+		folders[path.Dir(file)][file] = codeLines(file, data)
+	}
+	for _, lineSets := range folders {
+		wrappers, returners := readerFunctions(lineSets)
+		for file, lines := range lineSets {
+			suite, _ := p.suiteOf(file)
+			for i, line := range lines {
+				var reads []variableRead
+				for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
+					reads = append(reads, variableRead{name: match[1]})
 				}
-				condition := conditionLine(lines, i)
-				if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
-					continue
+				for _, match := range readsNamed.FindAllStringSubmatch(line, -1) {
+					for _, name := range names.resolve(file, strings.Join(lines, "\n"), match[1], match[2]) {
+						reads = append(reads, variableRead{name: name})
+					}
 				}
-				faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, name, testEnvironmentSection))
+				for wrapper := range wrappers {
+					for _, match := range regexp.MustCompile(`\b`+regexp.QuoteMeta(wrapper)+`\([^)\n]*"(STEGO_[A-Z0-9_]+)"`).FindAllStringSubmatch(line, -1) {
+						reads = append(reads, variableRead{name: match[1], stopsHere: true})
+					}
+				}
+				for returner, name := range returners {
+					if regexp.MustCompile(`\b` + regexp.QuoteMeta(returner) + `\(\)`).MatchString(line) {
+						reads = append(reads, variableRead{name: name})
+					}
+				}
+				for _, read := range reads {
+					if set[suite.folder][read.name] || optIn(read.name) || namesWord(section, read.name) {
+						continue
+					}
+					if !read.stopsHere {
+						condition := conditionLine(lines, i)
+						if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
+							continue
+						}
+					}
+					faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, read.name, testEnvironmentSection))
+				}
 			}
 		}
 	}
@@ -485,9 +732,10 @@ var outsideFaults = []struct {
 }
 
 // localModuleProxy is the text that shows that a test file runs its module fetches with no hosted proxy: GOPROXY off,
-// a file proxy that the test writes, or the environment of localtest.GoEnv (ST-SUP-TOOL16), which sets GOPROXY off
-// over the module cache that it fills once per test binary.
-var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(|localtest\.GoEnv\(`)
+// a file proxy that the test writes, a proxy that the test serves on loopback (GOPROXY= and the URL of an httptest
+// server), or the environment of localtest.GoEnv (ST-SUP-TOOL16), which sets GOPROXY off over the module cache that
+// it fills once per test binary.
+var localModuleProxy = regexp.MustCompile(`"GOPROXY=off"|"GOPROXY",\s*"off"|GOPROXY=file://|"file://"\s*\+|runtimeProxy\(|localtest\.GoEnv\(|"GOPROXY="\s*\+\s*\w+\.URL\b`)
 
 // reachesOutside gives each sign that the test file reaches a system outside the product, with no local module proxy
 // in the file for a module fetch.
@@ -714,6 +962,8 @@ func TestBuildingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-BLD")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T02 Building's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T02 Each test file of Building belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T02 Each obligation of Building that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T02 Each container that a test of Building starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T02 Building's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T02 Each obligation of Building with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -722,6 +972,7 @@ func TestDeclaringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DECL")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T03 Declaring's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T03 Each test file of Declaring belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T03 Each container that a test of Declaring starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T03 Each obligation of Declaring that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T03 Declaring's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T03 Each obligation of Declaring with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -731,6 +982,7 @@ func TestDistributingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DIS")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T04 Distributing's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T04 Each test file of Distributing belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T04 Each container that a test of Distributing starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T04 Each obligation of Distributing that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T04 Distributing's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T04 Each obligation of Distributing with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -740,6 +992,7 @@ func TestDeliveringFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-DLV")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T05 Delivering's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T05 Each test file of Delivering belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T05 Each container that a test of Delivering starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R03-T05 Each obligation of Delivering that an external test proves has a local test", proof.hasLocalStandIn)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T05 Delivering's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T05 Each obligation of Delivering with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
@@ -749,6 +1002,8 @@ func TestExtendingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-EXT")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T06 Extending's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T06 Each test file of Extending belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T06 Each obligation of Extending that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T06 Each container that a test of Extending starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T06 Extending's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T06 Each obligation of Extending with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -757,6 +1012,8 @@ func TestGeneratingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-GEN")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T07 Generating's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T07 Each test file of Generating belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T07 Each obligation of Generating that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T07 Each container that a test of Generating starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T07 Generating's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T07 Each obligation of Generating with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -765,6 +1022,8 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	proof := newLocalProof(t, "ST-SUP")
 	t.Run("ST-PAT-LOCAL-TEST-R01-T08 Supplying's tests need no privileged container, cluster or hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-PAT-LOCAL-TEST-R02-T08 Each test file of Supplying belongs to one documented suite", proof.oneCommandRunsEachSuite)
+	t.Run("ST-PAT-LOCAL-TEST-R03-T08 Each obligation of Supplying that an external test proves has a local test", proof.hasLocalStandIn)
+	t.Run("ST-PAT-LOCAL-TEST-R04-T08 Each container that a test of Supplying starts is pinned by digest", proof.startsPinnedServices)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T08 Supplying's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
 }
@@ -776,4 +1035,101 @@ func TestLocalDevelopmentStandard(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
 	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
+}
+
+// TestLocalChecks gives the checks of R01 and R02 planted files, so that each form that a review found is held by
+// a test of the check, and not only by the tree at HEAD, which holds none of them (security review of PR #504).
+func TestLocalChecks(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R01-T04 The checks of R01 find a privileged container in a shell script, a cluster client held in a name or looked up, a kube configuration under HOME and the root folder of the host as a volume", func(t *testing.T) {
+		for _, c := range []struct {
+			source string
+			fault  bool
+		}{
+			// Each plant that a check of a line finds is written in two pieces, so that the scan of this file does not
+			// read it as a fault (security review of PR #10, L3).
+			{`exec.Command("sh", "-c", "docker run --rm --privi` + `leged busybox true")`, true},
+			{`exec.Command("docker", "run", "--rm", "-v", "/` + `:/host", "busybox", "true")`, true},
+			{`exec.Command("sh", "-c", "podman run --rm -v /:` + `/host busybox true")`, true},
+			{"kubectl := \"kubectl\"\n\t_ = exec.Command(kubectl, \"get\", \"pods\")", true},
+			{"const client = \"/usr/local/bin/oc\"\n\t_ = exec.Command(client, \"whoami\")", true},
+			{`_, _ = exec.LookPath("kubectl")`, true},
+			{`_, _ = os.ReadFile(os.Getenv("HOME") + "/.ku` + `be/config")`, true},
+			{`_, _ = os.ReadFile(filepath.Join(os.Getenv("HOME"), ".dock` + `er", "config.json"))`, true},
+			{`exec.Command("sh", "-c", "cat $HOME/.ku` + `be/config")`, true},
+			{`exec.Command("docker", "run", "--rm", "-v", dir+":/work", "busybox", "true")`, false},
+			{"program := \"go\"\n\t_ = exec.Command(program, \"version\")", false},
+		} {
+			data := []byte("package plant\n\nfunc TestPlant(t *testing.T) {\n\t" + c.source + "\n}\n")
+			var faults []string
+			for _, line := range codeLines("plant/plant_test.go", data) {
+				for _, fault := range workstationFaults {
+					if fault.pattern.MatchString(line) {
+						faults = append(faults, fault.why)
+					}
+				}
+			}
+			faults = append(faults, commandFaults("plant/plant_test.go", data)...)
+			if (len(faults) > 0) != c.fault {
+				t.Errorf("%s: the checks give %v, want a fault: %t", c.source, faults, c.fault)
+			}
+		}
+		// In Assuring's own files of checks, only the pattern of a call of regexp.MustCompile is not read: a line that
+		// names it in a comment, or ends with any mark, is read (security review of PR #10, L3).
+		own := []byte("package assure\n\nimport \"regexp\"\n\nvar checked = regexp.MustCompile(`--cap-` + `add`)\n\nvar _ = []string{\"--cap-" + "add\"} // regexp.MustCompile(\nvar _ = []string{\"--cap-" + "add\", \"x\"} // a plant of a test of a check\n")
+		var found []string
+		for _, line := range codeLines("internal/assure/plant_test.go", own) {
+			for _, fault := range workstationFaults {
+				if fault.pattern.MatchString(line) {
+					found = append(found, strings.TrimSpace(line))
+				}
+			}
+		}
+		if len(found) != 2 || strings.Contains(strings.Join(found, "\n"), "var checked") {
+			t.Errorf("the checks of an own file of checks find %q, want the two marked lines and not the pattern of regexp.MustCompile", found)
+		}
+	})
+	t.Run("ST-STD-LOCAL-R02-T03 The check of R02 counts a set of a variable only in the module of the test that sets it, and finds a read through a constant, a wrapper, a helper and an unlisted copy variable", func(t *testing.T) {
+		skip := "\tif %s == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n"
+		plantFile := func(body string) []byte {
+			return []byte("package plant\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + body + "}\n")
+		}
+		files := map[string][]byte{
+			"go.mod":               []byte("module example.com/plant\n"),
+			"other/go.mod":         []byte("module example.com/other\n"),
+			"other/sets_test.go":   plantFile("\t_ = []string{\"STEGO_PLANT_OTHER=\" + \"x\", \"STEGO_PLANT_SAME=1\"}\n"),
+			"other/reads_test.go":  plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_SAME")`)),
+			"a/other_test.go":      plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_OTHER")`)),
+			"a/constant_test.go":   append(plantFile(fmt.Sprintf(skip, `os.Getenv(plantVariable)`)), []byte("\nconst plantVariable = \"STEGO_PLANT_CONSTANT\"\n")...),
+			"a/wrapper_test.go":    append(plantFile("\t_ = need(t, \"STEGO_PLANT_WRAPPED\")\n"), []byte("\nfunc need(t *testing.T, name string) string {\n\tvalue := os.Getenv(name)\n\tif value == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n\treturn value\n}\n")...),
+			"a/helper_test.go":     append(plantFile(fmt.Sprintf(skip, "plantDSN()")), []byte("\nfunc plantDSN() string {\n\treturn os.Getenv(\"STEGO_PLANT_HELPER\")\n}\n")...),
+			"a/copy_test.go":       plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DUMP")`)),
+			"a/documented_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_DOCUMENTED")`)),
+			// Security review of PR #10, L2: a name of another package that holds a STEGO_ variable, and a name of the
+			// same text that a test of this module sets with a value other than a STEGO_ variable.
+			"other/names.go":        []byte("package other\n\nfunc names() string {\n\tkey := \"STEGO_PLANT_COLLIDE\"\n\treturn key\n}\n"),
+			"a/unrelated_test.go":   plantFile("\tkey := \"HOME\"\n\t_ = []string{key + \"=/x\"}\n"),
+			"a/collide_test.go":     plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_COLLIDE")`)),
+			"a/child_test.go":       append(plantFile(fmt.Sprintf(skip, `os.Getenv(childVariable)`)+"\t_ = []string{childVariable + \"=1\"}\n"), []byte("\nconst childVariable = \"STEGO_PLANT_CHILD\"\n")...),
+			"a/listed_copy_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_CRUD_DUMP")`)),
+		}
+		tree := NewTree(files)
+		proof := localProof{files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
+		for name, data := range files {
+			if strings.HasSuffix(name, "_test.go") {
+				proof.files[name] = data
+			}
+		}
+		faults := proof.undocumentedEnvironment(testEnvironmentSection + "\n\n`STEGO_PLANT_DOCUMENTED`: a plant.\n")
+		var needed []string
+		for _, fault := range faults {
+			if _, name, ok := strings.Cut(fault, " needs "); ok {
+				needed = append(needed, strings.TrimSuffix(strings.Fields(name)[0], ","))
+			}
+		}
+		slices.Sort(needed)
+		want := []string{"STEGO_PLANT_COLLIDE", "STEGO_PLANT_CONSTANT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_WRAPPED"}
+		if !slices.Equal(needed, want) {
+			t.Errorf("the check finds %v, want %v: %v", needed, want, faults)
+		}
+	})
 }
