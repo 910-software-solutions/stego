@@ -289,10 +289,10 @@ func orderTuple(t *testing.T, id, relation, customerID string) authz.Tuple {
 	return authz.Tuple{Resource: r, Relation: relation, Subject: authz.Subject{Type: "customer", ID: subject}}
 }
 
-// TestReferenceToNewRow records the behaviour that ST-SUP-Q219 is about (erp-demo G8): a create of a row that
+// TestReferenceToNewRow records the behaviour that ST-SUP-Q221 is about (erp-demo G8): a create of a row that
 // refers to a row that the same transaction created decides the reference at the provider, which does not hold the
 // relations of the new row yet, because the relay writes them only after the commit. The decision is a deny, and
-// the call is not found. When the change of ST-SUP-Q219 is built, this test changes with its record.
+// the call is not found. When the change of ST-SUP-Q221 is built, this test changes with its record.
 func TestReferenceToNewRow(t *testing.T) {
 	t.Run("ST-SUP-RP10-LC05-T26 A reference to a row that the same transaction created is decided at the provider and is not found", func(t *testing.T) {
 		e := newEnv(t)
@@ -331,7 +331,7 @@ func TestReferenceToNewRow(t *testing.T) {
 		before := e.tuples()
 		e.decision.taken()
 		if err := run("k-lc05-t26-a", parentAndChild); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("the create of a row that refers to a row of the same transaction gave %v, want not found (ST-SUP-Q219)", err)
+			t.Fatalf("the create of a row that refers to a row of the same transaction gave %v, want not found (ST-SUP-Q221)", err)
 		}
 		var decided []string
 		for _, d := range e.decision.taken() {
@@ -355,7 +355,7 @@ func TestReferenceToNewRow(t *testing.T) {
 			_, err = repo(t, h, nodes).Create(ctx, node{ID: "n2", ParentID: "n1"}, root)
 			return err
 		}); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("the create of a child node under a node of the same transaction gave %v, want not found (ST-SUP-Q219)", err)
+			t.Fatalf("the create of a child node under a node of the same transaction gave %v, want not found (ST-SUP-Q221)", err)
 		}
 		if e.count(`SELECT count(*) FROM nodes WHERE id IN ('n1', 'n2')`) != 0 || len(e.tuples()) != len(before) {
 			t.Fatal("the call that was not found left a row or a tuple")
