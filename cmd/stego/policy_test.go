@@ -85,7 +85,7 @@ func (f *onceFixture) get(t *testing.T, make func() (skip string, err error)) {
 		}
 	})
 	if f.skip != "" {
-		t.Skip(f.skip)
+		skipNotPinned(t, f.skip)
 	}
 	if f.failure != "" {
 		t.Fatal(f.failure)

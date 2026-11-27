@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -75,9 +78,7 @@ func standInDownload(t *testing.T, goSum string) error {
 	source, revision := standInSource(t, goSum)
 	_, err := appbuild.Download(context.Background(), appbuild.DownloadOptions{Source: source, Revision: revision, Module: ".",
 		Target: "cmd/tiny", Go: pinnedGo(t), Output: filepath.Join(t.TempDir(), "cache")})
-	if err != nil && strings.Contains(err.Error(), "is not the pinned official release") {
-		t.Skipf("the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: %v", err)
-	}
+	skipUnlessPinned(t, err)
 	return err
 }
 
@@ -130,6 +131,19 @@ func TestLocalModuleStandIns(t *testing.T) {
 			t.Fatalf("the same download against the key that signed the answers failed: %v", err)
 		}
 	})
+}
+
+// outcomeRecorder is a testing.TB whose Fatal and Skip end only the goroutine of the call and keep which one ran.
+type outcomeRecorder struct {
+	testing.TB
+	outcome, message string
+}
+
+func (r *outcomeRecorder) Fatal(args ...any) { r.end("fatal", fmt.Sprint(args...)) }
+func (r *outcomeRecorder) Skip(args ...any)  { r.end("skip", fmt.Sprint(args...)) }
+func (r *outcomeRecorder) end(outcome, message string) {
+	r.outcome, r.message = outcome, message
+	runtime.Goexit()
 }
 
 // callsChecked tells if the expression is a call of checkedModules.
@@ -187,6 +201,22 @@ func TestStandInsTakeTheCheckedCache(t *testing.T) {
 		}
 		if err := proxytest.CheckSource(pinnedGo(t), source); err != nil {
 			t.Fatalf("proxytest refuses checkedModules: %v", err)
+		}
+	})
+	t.Run("ST-STD-LOCAL-R03-T18 With STEGO_REQUIRE_PINNED_GO=1, a Go SDK that is not the pinned one fails a test of stego build and does not skip it", func(t *testing.T) {
+		notPinned := errors.New("the Go SDK /usr/bin/go is not the pinned official release")
+		for _, c := range []struct{ value, want string }{{"", "skip"}, {"0", "skip"}, {"1", "fatal"}} {
+			t.Setenv(requirePinnedVariable, c.value)
+			r := &outcomeRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				skipUnlessPinned(r, notPinned)
+			}()
+			<-done
+			if r.outcome != c.want || !strings.Contains(r.message, "is not the pinned official release") {
+				t.Errorf("%s=%q: the test gave %q (%s), want %s", requirePinnedVariable, c.value, r.outcome, r.message, c.want)
+			}
 		}
 	})
 }

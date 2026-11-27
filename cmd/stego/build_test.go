@@ -46,11 +46,26 @@ func pinnedGo(t *testing.T) string {
 	return filepath.Join(runtime.GOROOT(), "bin", "go")
 }
 
-func skipUnlessPinned(t *testing.T, err error) {
+func skipUnlessPinned(t testing.TB, err error) {
 	t.Helper()
 	if err != nil && strings.Contains(err.Error(), "is not the pinned official release") {
-		t.Skipf("the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: %v", err)
+		skipNotPinned(t, fmt.Sprintf("the Go SDK of this run is not the pinned one; set STEGO_TEST_PINNED_GO: %v", err))
 	}
+}
+
+// requirePinnedVariable set to 1 makes a test that needs the pinned Go SDK fail, and not skip, when the SDK of the
+// run is not the pinned one, so a run that must prove the downloads and builds of stego build cannot pass with them
+// skipped (security review of PR #8, F4). CI sets it.
+const requirePinnedVariable = "STEGO_REQUIRE_PINNED_GO"
+
+// skipNotPinned skips the test for the reason, a Go SDK that is not the pinned one, or fails it when
+// requirePinnedVariable is 1.
+func skipNotPinned(t testing.TB, reason string) {
+	t.Helper()
+	if os.Getenv(requirePinnedVariable) == "1" {
+		t.Fatal(reason + " (" + requirePinnedVariable + "=1: a test that needs the pinned Go SDK must run)")
+	}
+	t.Skip(reason)
 }
 
 func git(t testing.TB, directory string, args ...string) string {
@@ -958,7 +973,7 @@ func TestBuildIsReproducibleAndRecordsEveryInput(t *testing.T) {
 	ready := func(t *testing.T) {
 		t.Helper()
 		if notPinned != "" {
-			t.Skip(notPinned)
+			skipNotPinned(t, notPinned)
 		}
 		if setupErr != nil {
 			t.Fatal(setupErr)
