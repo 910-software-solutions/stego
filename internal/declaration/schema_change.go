@@ -574,11 +574,13 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 
 // openOnField gives the open schema changes that hold a field for ST-DECL-INV60: an add, as a relax, finishes at
 // its expand step, as it has no contract step (decision on ST-DECL-Q17 (a), orchestrator under the owner's
-// delegation, 2026-11-14), so a later change of the field that an add added is not refused for ever.
+// delegation, 2026-11-14), so a later change of the field that an add added is not refused for ever. A relax with
+// the item searchable is open until its contract step drops the search index (security review of PR #22, M2), but
+// it holds one column, so it holds no field here either.
 func openOnField(service *types.ServiceDeclaration) []types.SchemaChange {
 	var open []types.SchemaChange
 	for _, change := range openSchemaChanges(service) {
-		if change.Kind != "add" {
+		if change.Kind != "add" && change.Kind != "relax" {
 			open = append(open, change)
 		}
 	}
