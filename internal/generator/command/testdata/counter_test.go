@@ -80,6 +80,11 @@ func TestCounterReset(t *testing.T) {
 			}
 			return `{"orderId":"` + order + `","pin":"` + pin + `","locked":` + lock + `}`
 		}
+		// The positive control: the same read with no lock and no PIN check passes, so the 500 below comes from the
+		// check of the PIN, not from the read (security review of PR #12, L2).
+		if got := e.release(desk.token, hold, body("", false)); got.status != http.StatusCreated || checks() != 0 {
+			t.Fatalf("a release of an order read with no lock and no PIN check gave %d %s and %d checks, want 201 and none", got.status, got.body, checks())
+		}
 		// The right PIN of an order read with no lock: 500 internal, and no charge.
 		if got := e.release(desk.token, hold, body(right, false)); got.status != http.StatusInternalServerError || !strings.Contains(string(got.body), "internal") || checks() != 0 {
 			t.Fatalf("a check of the PIN of an order read with no lock gave %d %s and %d checks, want 500 internal and none", got.status, got.body, checks())

@@ -237,6 +237,11 @@ func New() commands.ReleaseHoldFill {
 		if err != nil {
 			return nil, err
 		}
+		// No PIN: the fill checks nothing, so an order read with no lock passes. The check of the counter uses it to
+		// show that the 500 of a PIN check comes from the check, not from the read (security review of PR #12, L2).
+		if request.Pin == "" {
+			return &commands.ReleaseHoldResponse{}, nil
+		}
 		if !order.Value().Pin.Matches(request.Pin) {
 			return nil, commands.ReleaseHoldPinWrong
 		}
