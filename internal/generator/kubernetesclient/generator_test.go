@@ -173,7 +173,9 @@ func testGeneratedKubernetesClient(t *testing.T, telemetry bool, selected string
 		}
 		localtest.CheckSums(t, project)
 	}
-	budget := "30s"
+	// The generated tests take 20 to 35 seconds with their build on CI, and ran out of 30 seconds once on a busy
+	// runner (PR #27, run 46049560626). Two minutes keeps the run bounded, well under the 20 minutes of the package.
+	budget := "2m"
 	if telemetry && os.Getenv("STEGO_KUBERNETES_LIVE_ROTATION") == "1" {
 		budget = "15m"
 	}
