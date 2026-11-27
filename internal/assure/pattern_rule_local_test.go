@@ -74,9 +74,10 @@ func (p localProof) packageFiles() map[string][]byte {
 	return all
 }
 
-// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD.
-// A record is automated when its state is automated, or when its kind has no state (a contract test of the
-// product's own kind) and it names a file.
+// newLocalProof reads the test records of the domain from the pinned Lathe and their files from the tree at HEAD;
+// with no domain, those of the whole product, also of the records that sit under no domain. A record is automated
+// when its state is automated, or when its kind has no state (a contract test of the product's own kind) and it
+// names a file.
 func newLocalProof(t *testing.T, domain string) localProof {
 	t.Helper()
 	workspace := checkedWorkspace(t)
@@ -89,7 +90,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 	_, tree := readHead(t)
 	proof := localProof{domain: domain, files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
 	for _, record := range workspace.Records {
-		if record.Domain != domain || !testKinds[record.Kind] {
+		if domain != "" && record.Domain != domain || !testKinds[record.Kind] {
 			continue
 		}
 		file, _ := record.Fields["file"].(string)
@@ -103,7 +104,7 @@ func newLocalProof(t *testing.T, domain string) localProof {
 		}
 	}
 	if len(proof.tests) == 0 {
-		t.Fatalf("the spec names no automated test of %s", domain)
+		t.Fatalf("the spec names no automated test of %q", domain)
 	}
 	return proof
 }
@@ -118,14 +119,23 @@ func report(t *testing.T, rule string, faults []string) {
 	}
 }
 
-// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and neither is a line
-// that compiles a regular expression, where a check such as this one writes the text that it looks for. A test
-// that hides a fault in a regular expression is not seen; that is a known limit of a scan of text.
+// localTestsFile is the file of these checks.
+const localTestsFile = "internal/assure/pattern_rule_local_test.go"
+
+// ownCheck tells if the file is one of Assuring's own files of checks, which write the text that they look for in
+// regular expressions (review of PR #504, L3).
+func ownCheck(name string) bool {
+	return strings.HasPrefix(name, "internal/assure/") && strings.HasSuffix(name, "_test.go")
+}
+
+// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
+// files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
+// for.
 func codeLines(name string, data []byte) []string {
 	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || strings.Contains(line, "regexp.MustCompile(") || strings.Contains(line, "re.compile(") {
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || ownCheck(name) && strings.Contains(line, "regexp.MustCompile(") {
 			continue
 		}
 		lines = append(lines, line)
@@ -317,7 +327,148 @@ func (p localProof) oneCommandRunsEachSuite(t *testing.T) {
 			faults = append(faults, file+" belongs to no documented suite")
 		}
 	}
+	faults = append(faults, p.undocumentedEnvironment(string(readme))...)
 	report(t, "ST-STD-LOCAL-R02", faults)
+}
+
+// testEnvironmentSection is the heading of the section of README.md that names the variables of the tests. A
+// variable is documented only when this section names it as a whole word (review of PR #504, L1).
+const testEnvironmentSection = "### The environment of the tests"
+
+// documentedSection gives the text of the section of README.md that starts at the heading, up to the next heading
+// of the same or a higher level, or "" when README.md has no such heading.
+func documentedSection(readme, heading string) string {
+	lines := strings.Split(readme, "\n")
+	level := len(heading) - len(strings.TrimLeft(heading, "#"))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != heading {
+			continue
+		}
+		var section []string
+		for _, next := range lines[i+1:] {
+			if hashes := len(next) - len(strings.TrimLeft(next, "#")); hashes > 0 && hashes <= level && strings.HasPrefix(next[hashes:], " ") {
+				break
+			}
+			section = append(section, next)
+		}
+		return strings.Join(section, "\n")
+	}
+	return ""
+}
+
+// namesWord tells if the text holds the name as a whole word: not as a part of a longer name (review of PR #504, L1).
+func namesWord(text, name string) bool {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(name) + `($|[^A-Za-z0-9_])`).MatchString(text)
+}
+
+// A read of an environment variable of the product: each Getenv or LookupEnv of a STEGO_ variable, in any form
+// (review of PR #504, M1).
+var readsVariable = regexp.MustCompile(`(?:Getenv|LookupEnv)\("(STEGO_[A-Z0-9_]+)"\)`)
+
+// An assignment of the value of a read to names, with := or =; the names on its left side.
+var assignsRead = regexp.MustCompile(`^\s*(?:if\s+|var\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*:?=[^=]`)
+
+// A failure or a skip of a test, or a bare return out of it, which a missing variable leads to within a few lines.
+var stopsTest = regexp.MustCompile(`(?m)\bt\.(Fatal|Fatalf|Skip|Skipf|SkipNow|FailNow)\(|^\s*return\s*$`)
+
+// A set of a variable by a test of the tree: Setenv, or an entry of the environment of a command it runs.
+var setsVariable = regexp.MustCompile(`Setenv\("([A-Z0-9_]+)"|"([A-Z0-9_]+)="\s*\+|"([A-Z0-9_]+)=[^"]*"`)
+
+// optInVariables are the STEGO_ variables that a test reads only to do more than its proof, so that the documented
+// command proves the same without them. Each has its reason. A new variable that a test stops on fails the test
+// until README.md names it or this list holds it with a reason.
+var optInVariables = map[string]string{
+	"STEGO_UPDATE_GOLDEN":      "writes the golden files again in place of a comparison with them",
+	"STEGO_TEST_REACH_SCHEMAS": "changes the count of random schemas from its default; it stops the test only on a value that is not a count",
+	"STEGO_TEST_NO_CONTAINERS": "turns the failure of a test with no container engine into a skip; without it the test fails, as R02 asks",
+}
+
+// optInSuffixes are the endings of the names of opt-in variables that copy what a test made to a folder, for a
+// person or a CI job to read: the test proves the same without them.
+var optInSuffixes = []string{"_DUMP", "_ARTIFACTS"}
+
+// optIn tells if the variable is an opt-in one, by name or by the ending of its name.
+func optIn(name string) bool {
+	if _, held := optInVariables[name]; held {
+		return true
+	}
+	for _, suffix := range optInSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionLine gives the line that tests the value of the read on line i: line i when it is an if statement or
+// holds the condition itself; else the first if statement of the next ten lines that names, as a whole word, a name
+// that line i assigns the value to. It gives -1 when nothing tests the value.
+func conditionLine(lines []string, i int) int {
+	line := lines[i]
+	if strings.Contains(line, "if ") || strings.Contains(line, "==") || strings.Contains(line, "!=") || strings.Contains(line, "!ok") {
+		return i
+	}
+	match := assignsRead.FindStringSubmatch(line)
+	if match == nil {
+		return -1
+	}
+	var names []string
+	for _, name := range strings.Split(match[1], ",") {
+		if name = strings.TrimSpace(name); name != "_" && name != "" {
+			names = append(names, name)
+		}
+	}
+	for j := i + 1; j < min(i+11, len(lines)); j++ {
+		if !strings.Contains(lines[j], "if ") && !strings.Contains(lines[j], "switch ") {
+			continue
+		}
+		for _, name := range names {
+			if namesWord(lines[j], name) {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// undocumentedEnvironment gives each STEGO_ variable that a test file of the domain's packages needs and the test
+// environment section of README.md does not name: the test reads the variable, directly or through a name it
+// assigns the value to, and fails, skips or returns within a few lines of the condition on it; no test of the tree
+// sets it for the test (as a parent test sets the path of a binary for the child process it runs); and it is not an
+// opt-in variable. The documented command go test ./... runs the test with no such variable, so the test does not
+// run from the documented command alone (review of PR #502, L4; review of PR #504, M1).
+func (p localProof) undocumentedEnvironment(readme string) []string {
+	set := map[string]bool{}
+	for _, name := range p.tree.paths() {
+		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
+			data, _ := p.tree.File(name)
+			for _, match := range setsVariable.FindAllStringSubmatch(string(data), -1) {
+				set[match[1]+match[2]+match[3]] = true
+			}
+		}
+	}
+	section := documentedSection(readme, testEnvironmentSection)
+	var faults []string
+	if section == "" {
+		faults = append(faults, "README.md has no section "+testEnvironmentSection+" that names the variables of the tests")
+	}
+	for file, data := range p.packageFiles() {
+		lines := codeLines(file, data)
+		for i, line := range lines {
+			for _, match := range readsVariable.FindAllStringSubmatch(line, -1) {
+				name := match[1]
+				if set[name] || optIn(name) || namesWord(section, name) {
+					continue
+				}
+				condition := conditionLine(lines, i)
+				if condition < 0 || !stopsTest.MatchString(strings.Join(lines[condition:min(condition+4, len(lines))], "\n")) {
+					continue
+				}
+				faults = append(faults, fmt.Sprintf("%s needs %s, which the section %s of README.md does not name", file, name, testEnvironmentSection))
+			}
+		}
+	}
+	return faults
 }
 
 // The signs in the code of a test file that it reaches a system outside the product (ST-STD-LOCAL-R03): a request
@@ -504,8 +655,12 @@ var hostWrite = regexp.MustCompile(`(os\.(WriteFile|Create|Mkdir|MkdirAll|OpenFi
 // second proof".
 var sharedCluster = regexp.MustCompile(`(?i)[^.]*\b(jshell|shared cluster|OpenShift cluster)\b[^.]*`)
 
-// needsCluster tells if the test record says that it needs a shared cluster.
+// needsCluster tells if the test record says that it needs a shared cluster. A unit test of this file reads records
+// that name a cluster; it needs none itself (review of PR #504, L2).
 func (test localTest) needsCluster() bool {
+	if test.file == localTestsFile && test.fields["level"] == "unit" {
+		return false
+	}
 	for _, sentence := range sharedCluster.FindAllString(test.text(), -1) {
 		if !regexp.MustCompile(`(?i)\bMAY follow\b|\bsecond(,| and)? platform-level proof\b|\bas a second proof\b`).MatchString(sentence) {
 			return true
@@ -606,4 +761,13 @@ func TestSupplyingFollowsTheLocalTestPattern(t *testing.T) {
 	t.Run("ST-PAT-LOCAL-TEST-R02-T08 Each test file of Supplying belongs to one documented suite", proof.oneCommandRunsEachSuite)
 	t.Run("ST-PAT-LOCAL-TEST-R05-T08 Supplying's tests leave no container or file outside a temporary folder", proof.leavesNoState)
 	t.Run("ST-PAT-LOCAL-TEST-R06-T08 Each obligation of Supplying with a cluster or volume test has a workstation test", proof.neverOnlyClusterProof)
+}
+
+// TestLocalDevelopmentStandard runs the checks of the pattern ST-PAT-LOCAL-TEST on every automated test of the
+// product at once, so a test that no domain owns, such as a test of a shared generator library, is also held.
+func TestLocalDevelopmentStandard(t *testing.T) {
+	proof := newLocalProof(t, "")
+	t.Run("ST-STD-LOCAL-R01-T02 No automated test of the product needs a privileged container, a cluster or a hosted credential", proof.runsOnAWorkstation)
+	t.Run("ST-STD-LOCAL-R05-T03 No test of the product leaves a container or a file outside a temporary folder", proof.leavesNoState)
+	t.Run("ST-STD-LOCAL-R06-T02 Each obligation with a cluster or volume test also has a test that runs on a workstation", proof.neverOnlyClusterProof)
 }
