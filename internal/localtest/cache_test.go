@@ -3,11 +3,13 @@ package localtest
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The proofs that the module cache of localtest takes only checked modules (ST-STD-LOCAL-R03): an inner go command of
@@ -253,6 +255,90 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 		if err := verifyDirs([]fillDir{module}, stamps); err != nil || hashedDirs != 0 {
 			t.Fatalf("the unchanged folder with its stamp fails or is hashed again (%d): %v", hashedDirs, err)
 		}
+		// A file rewritten with the same size and a new modification time changes the stamp, so the folder is hashed
+		// again and refused (security review of PR #7, I1). The folder and the file get their modes back, so only the
+		// modification time tells the change.
+		folder, err := os.Stat(module.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(module.Dir, "lib.go")
+		original, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		changed := []byte(strings.Replace(string(original), "package lib", "package lix", 1))
+		if len(changed) != len(original) || string(changed) == string(original) {
+			t.Fatal("the rewrite of lib.go does not keep its size")
+		}
+		if err := os.WriteFile(source, changed, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(source, before.ModTime().Add(time.Hour), before.ModTime().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(module.Dir, folder.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
+			t.Fatalf("a same-size rewrite with a new modification time is not refused: %v", err)
+		}
+		if err := os.Chmod(module.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(source, before.ModTime(), before.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err != nil {
+			t.Fatalf("the folder put back as it was is refused: %v", err)
+		}
+		// lib.go put back as a link to a copy of the same bytes outside the folder: the hash, which follows the link, is
+		// the checked one, but a later change of the copy would not change the stamp. The go command extracts no link,
+		// so the folder is refused (security review of PR #7, I2).
+		copied := filepath.Join(t.TempDir(), "lib.go")
+		if err := os.WriteFile(copied, original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(copied, source); err != nil {
+			t.Fatal(err)
+		}
+		if err := verifyDirs([]fillDir{module}, stamps); err == nil || !strings.Contains(err.Error(), "lib.go, which is not a regular file or a folder") {
+			t.Fatalf("a link in the folder is not refused: %v", err)
+		}
+		if err := os.Remove(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(source, original, before.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
 		// Another tool, or a run with -modcacherw, puts a file into the folder.
 		if err := os.Chmod(module.Dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -263,6 +349,41 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 		err = verifyDirs([]fillDir{module}, stamps)
 		if err == nil || !strings.Contains(err.Error(), "example.com/lib v1.0.0: dir has been modified") {
 			t.Fatalf("the changed folder is not refused: %v", err)
+		}
+	})
+}
+
+func TestFirstFill(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R05-T10 The first fill of the module cache of localtest names the folder, its size and STEGO_TEST_RUNS, and is refused with less than two times its size free", func(t *testing.T) {
+		// Owner disk note, 2026-11-27: the cache of about 3 GB went to the user cache folder with no word.
+		folder := filepath.Join(t.TempDir(), "runs", "localtest-modules")
+		var asked string
+		free := func(available uint64) func(string) (uint64, error) {
+			return func(path string) (uint64, error) {
+				asked = path
+				return available, nil
+			}
+		}
+		var out strings.Builder
+		if err := firstFill(folder, &out, free(2*cacheSize)); err != nil {
+			t.Fatalf("the fill with two times the size free is refused: %v", err)
+		}
+		notice := out.String()
+		if strings.Count(notice, "\n") != 1 || !strings.Contains(notice, folder) || !strings.Contains(notice, "about 3 GB") || !strings.Contains(notice, "STEGO_TEST_RUNS") || !strings.Contains(notice, "remove the folder") {
+			t.Errorf("the notice is %q, want one line with the folder, about 3 GB, STEGO_TEST_RUNS and how to remove it", notice)
+		}
+		if asked != filepath.Dir(filepath.Dir(folder)) {
+			t.Errorf("the free space was read at %s, want the nearest folder that exists, %s", asked, filepath.Dir(filepath.Dir(folder)))
+		}
+		out.Reset()
+		err := firstFill(folder, &out, free(2*cacheSize-1))
+		if err == nil || !strings.Contains(err.Error(), folder) || !strings.Contains(err.Error(), "less than 6 GB") || !strings.Contains(err.Error(), "STEGO_TEST_RUNS") {
+			t.Errorf("the fill with less than two times the size free gave %v, want a refusal that names the folder, 6 GB and STEGO_TEST_RUNS", err)
+		}
+		// A free space that cannot be read refuses the fill too (security review of PR #13, missing test).
+		err = firstFill(folder, &out, func(string) (uint64, error) { return 1 << 40, errors.New("statfs: input/output error") })
+		if err == nil || !strings.Contains(err.Error(), "find the free space") || !strings.Contains(err.Error(), "input/output error") {
+			t.Errorf("the fill whose free space cannot be read gave %v, want a refusal with the cause", err)
 		}
 	})
 }
