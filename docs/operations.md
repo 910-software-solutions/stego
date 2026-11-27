@@ -116,7 +116,7 @@ v0.202.0 (rest-crud 3.269.0, rpc-service and browser-service 1.269.0):
 The tenant gate of a service that declares provisioning reads the tenant
 list before each command or query. When the database cannot serve it, such as
 a pool that cannot connect for SQLSTATE 53300, the call gets 503 or
-`Unavailable` before any command runs. From the next runtime release the gate
+`Unavailable` before any command runs. From runtime v0.210.0 the gate
 writes the same line, with `stego.action` `tenant-gate` and `stego.step`
 `http` or `grpc`. Before, it wrote no line, so the page on class 53 did not
 fire (walkthrough 29, SQL53-LOG).
