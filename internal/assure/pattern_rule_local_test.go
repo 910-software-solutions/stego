@@ -128,70 +128,110 @@ func ownCheck(name string) bool {
 	return strings.HasPrefix(name, "internal/assure/") && strings.HasSuffix(name, "_test.go")
 }
 
-// codeLines gives the lines of a test file that are code: a Go or Python comment line is not, and in Assuring's own
-// files of checks neither is a line that compiles a regular expression, where a check writes the text that it looks
-// for. Only a line that holds a string literal of the pattern of a call of regexp.MustCompile, as the parser finds
-// it, is not read: the text regexp.MustCompile( in a comment or in another string hides nothing (security review of
-// PR #10, L3).
+// codeLines gives the lines of a test file that are code: a Go or Python comment line is not. In Assuring's own files
+// of checks, where a check writes the text that it looks for in a regular expression, the bytes of each string
+// literal of the pattern of a call of regexp.MustCompile are blanked, as the parser finds them, and the rest of their
+// lines is read: the text regexp.MustCompile( in a comment or in another string hides nothing (security review of PR
+// #10, L3), and neither does code on the line of the pattern or in the arguments of a call whose arguments are not
+// only string literals (security review of the PR #10 confirmation, F3).
 func codeLines(name string, data []byte) []string {
-	patterns := map[int]bool{}
-	if ownCheck(name) {
-		patterns = patternLines(name, data)
-	}
-	var lines []string
-	for i, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") || patterns[i+1] {
-			continue
-		}
-		lines = append(lines, line)
-	}
+	lines, _ := codeLinesAt(name, data)
 	return lines
 }
 
-// patternLines gives the numbers of the lines of a Go file that hold a string literal in the arguments of a call of
-// regexp.MustCompile. A file that does not parse gives none, so each of its lines is read.
-func patternLines(name string, data []byte) map[int]bool {
-	lines := map[int]bool{}
-	fset := token.NewFileSet()
-	parsed, err := parser.ParseFile(fset, name, data, parser.SkipObjectResolution)
-	if err != nil {
-		return lines
+// codeLinesAt is codeLines with the number of each line in the file, from 1.
+func codeLinesAt(name string, data []byte) ([]string, []int) {
+	if ownCheck(name) {
+		data = blankPatterns(name, data)
 	}
+	var lines []string
+	var numbers []int
+	for i, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		lines = append(lines, line)
+		numbers = append(numbers, i+1)
+	}
+	return lines, numbers
+}
+
+// blankPatterns gives the Go file data with each byte of each string literal of the pattern of a call of
+// regexp.MustCompile replaced by a space, and its line breaks kept. A call counts only when regexp names the file's
+// import of the package regexp, not a local name, and when each of its arguments is a string literal or a + chain of
+// string literals. A file that does not parse is given as it is, so each of its lines is read.
+func blankPatterns(name string, data []byte) []byte {
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, name, data, 0)
+	if err != nil {
+		return data
+	}
+	importName := ""
+	for _, spec := range parsed.Imports {
+		if path, err := strconv.Unquote(spec.Path.Value); err == nil && path == "regexp" {
+			importName = "regexp"
+			if spec.Name != nil {
+				importName = spec.Name.Name
+			}
+		}
+	}
+	if importName == "" || importName == "_" || importName == "." {
+		return data
+	}
+	out := append([]byte(nil), data...)
 	ast.Inspect(parsed, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if pkg, isIdent := selectorPackage(selector); !ok || !isIdent || pkg != "regexp" || selector.Sel.Name != "MustCompile" {
+		if !ok || selector.Sel.Name != "MustCompile" {
 			return true
 		}
+		// The parser resolves a local name: an identifier with an object is not the import.
+		pkg, isIdent := selector.X.(*ast.Ident)
+		if !isIdent || pkg.Name != importName || pkg.Obj != nil {
+			return true
+		}
+		var literals []*ast.BasicLit
 		for _, argument := range call.Args {
-			ast.Inspect(argument, func(node ast.Node) bool {
-				if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-					for line := fset.Position(lit.Pos()).Line; line <= fset.Position(lit.End()).Line; line++ {
-						lines[line] = true
-					}
-				}
+			found, only := stringLiterals(argument)
+			if !only {
 				return true
-			})
+			}
+			literals = append(literals, found...)
+		}
+		for _, lit := range literals {
+			for i := fset.Position(lit.Pos()).Offset; i < fset.Position(lit.End()).Offset && i < len(out); i++ {
+				if out[i] != '\n' {
+					out[i] = ' '
+				}
+			}
 		}
 		return true
 	})
-	return lines
+	return out
 }
 
-// selectorPackage gives the name on the left of a selector, such as regexp of regexp.MustCompile.
-func selectorPackage(selector *ast.SelectorExpr) (string, bool) {
-	if selector == nil {
-		return "", false
+// stringLiterals gives the string literals of expr when it is a string literal, a + chain of them or one in
+// brackets, and false for any other expression.
+func stringLiterals(expr ast.Expr) ([]*ast.BasicLit, bool) {
+	switch e := ast.Unparen(expr).(type) {
+	case *ast.BasicLit:
+		return []*ast.BasicLit{e}, e.Kind == token.STRING
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			return nil, false
+		}
+		left, ok := stringLiterals(e.X)
+		if !ok {
+			return nil, false
+		}
+		right, ok := stringLiterals(e.Y)
+		return append(left, right...), ok
 	}
-	id, ok := selector.X.(*ast.Ident)
-	if !ok {
-		return "", false
-	}
-	return id.Name, true
+	return nil, false
 }
 
 // The things a test that runs on a workstation must not need (ST-STD-LOCAL-R01): a privileged container, the
@@ -500,9 +540,6 @@ func optIn(name string) bool {
 	return held || slices.Contains(copyVariables, name)
 }
 
-// A name that a Go file gives to the name of a STEGO_ variable, in a constant, a variable or an assignment.
-var namesVariable = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:string\s*)?:?=\s*"(STEGO_[A-Z0-9_]+)"`)
-
 // A set of a variable through a name: an entry of the environment of a command, name+"=...", or a Setenv of the name.
 var setsNamed = regexp.MustCompile(`(?:\b([A-Za-z_][A-Za-z0-9_]*)\.)?\b([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*"=|Setenv\(\s*(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*,`)
 
@@ -510,25 +547,193 @@ var setsNamed = regexp.MustCompile(`(?:\b([A-Za-z_][A-Za-z0-9_]*)\.)?\b([A-Za-z_
 // Getenv(pgtest.DSNVariable).
 var readsNamed = regexp.MustCompile(`(?:Getenv|LookupEnv)\((?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\)`)
 
-// An import of a package of this repository, with its name when the file gives one.
-var repositoryImport = regexp.MustCompile(`(?m)^\s*(?:import\s+)?(?:([A-Za-z_][A-Za-z0-9_]*)\s+)?"github\.com/910-software-solutions/stego/([^"]+)"`)
+// goNames resolves a name that holds a STEGO_ variable as the Go scope of the file that uses it does, from the parse of
+// each Go file of the tree (security review of PR #10, L2; of its confirmation, F2): a name that a function defines,
+// as a variable, a constant or a parameter, holds in that function only, so a name of the same text in another function
+// of the package is another name; else a constant or a variable of the package of the file, the folder; else one of a
+// package that the file imports with a dot. A qualified name resolves through the import of the file whose name, or
+// whose package name when it gives none, is the qualifier, also a package whose name is not the last element of its
+// path. A name has the STEGO_ variables of the string literals that its definitions and assignments give it.
+type goNames struct {
+	// pkg are the package-level names of each folder.
+	pkg map[string]map[string][]string
+	// pkgName is the package name of the Go files of each folder.
+	pkgName map[string]string
+	// scopes are the function scopes of each file.
+	scopes map[string][]nameScope
+	// imports are the imports of the repository of each file.
+	imports map[string][]fileImport
+}
 
-// variableNames are the names that the Go files of the tree give to STEGO_ variables, by the folder of the file,
-// which is its package: a name is resolved in the package of the file that uses it, or, qualified, in the package
-// that the file imports under the qualifier, never by its bare name across the tree (security review of PR #10, L2).
-type variableNames map[string]map[string][]string
+// nameScope is one function of a file: its lines, and the names that it defines with their STEGO_ variables.
+type nameScope struct {
+	from, to int
+	names    map[string][]string
+}
 
-// resolve gives the variables that the name, with the qualifier or none, names in the file.
-func (n variableNames) resolve(file, text, qualifier, name string) []string {
-	if qualifier == "" {
-		return n[path.Dir(file)][name]
+// fileImport is one import of a package of this repository: its folder, and its name as the file gives it.
+type fileImport struct{ name, dir string }
+
+// repositoryPrefix starts the import path of each package of this repository.
+const repositoryPrefix = "github.com/910-software-solutions/stego/"
+
+// add reads the Go file. A file that does not parse adds nothing.
+func (g *goNames) add(name string, data []byte) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, name, data, 0)
+	if err != nil {
+		return
 	}
-	for _, match := range repositoryImport.FindAllStringSubmatch(text, -1) {
-		if match[1] == qualifier || match[1] == "" && path.Base(match[2]) == qualifier {
-			return n[match[2]][name]
+	dir := path.Dir(name)
+	if g.pkg == nil {
+		g.pkg, g.pkgName, g.scopes, g.imports = map[string]map[string][]string{}, map[string]string{}, map[string][]nameScope{}, map[string][]fileImport{}
+	}
+	if g.pkg[dir] == nil {
+		g.pkg[dir] = map[string][]string{}
+	}
+	if !strings.HasSuffix(file.Name.Name, "_test") {
+		g.pkgName[dir] = file.Name.Name
+	}
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || !strings.HasPrefix(importPath, repositoryPrefix) {
+			continue
+		}
+		imported := fileImport{dir: strings.TrimPrefix(importPath, repositoryPrefix)}
+		if spec.Name != nil {
+			imported.name = spec.Name.Name
+		}
+		g.imports[name] = append(g.imports[name], imported)
+	}
+	line := func(pos token.Pos) int { return fset.Position(pos).Line }
+	var scopes []nameScope
+	scopeOf := func(pos token.Pos) *nameScope {
+		var inner *nameScope
+		for i := range scopes {
+			if l := line(pos); scopes[i].from <= l && l <= scopes[i].to && (inner == nil || scopes[i].to-scopes[i].from < inner.to-inner.from) {
+				inner = &scopes[i]
+			}
+		}
+		return inner
+	}
+	// The function scopes first, each with its parameters, so that a definition finds its scope.
+	ast.Inspect(file, func(node ast.Node) bool {
+		var kind *ast.FuncType
+		var body *ast.BlockStmt
+		switch fn := node.(type) {
+		case *ast.FuncDecl:
+			kind, body = fn.Type, fn.Body
+		case *ast.FuncLit:
+			kind, body = fn.Type, fn.Body
+		}
+		if body == nil {
+			return true
+		}
+		scope := nameScope{from: line(kind.Pos()), to: line(body.End()), names: map[string][]string{}}
+		for _, list := range []*ast.FieldList{kind.Params, kind.Results} {
+			if list == nil {
+				continue
+			}
+			for _, field := range list.List {
+				for _, id := range field.Names {
+					scope.names[id.Name] = nil
+				}
+			}
+		}
+		scopes = append(scopes, scope)
+		return true
+	})
+	define := func(id *ast.Ident, value ast.Expr, declared bool) {
+		if id == nil || id.Name == "_" {
+			return
+		}
+		variable := ""
+		if lit, ok := value.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			if text, err := strconv.Unquote(lit.Value); err == nil && strings.HasPrefix(text, "STEGO_") {
+				variable = text
+			}
+		}
+		// The scope of the name is the scope of its declaration: the parse resolves a name of the file, and a name
+		// that it does not resolve is of the package.
+		at := id.Pos()
+		if !declared {
+			if id.Obj == nil {
+				at = token.NoPos
+			} else if decl, ok := id.Obj.Decl.(ast.Node); ok {
+				at = decl.Pos()
+			}
+		}
+		var names map[string][]string
+		if scope := scopeOf(at); at != token.NoPos && scope != nil {
+			names = scope.names
+		} else {
+			names = g.pkg[dir]
+		}
+		if _, held := names[id.Name]; !held {
+			names[id.Name] = nil
+		}
+		if variable != "" {
+			names[id.Name] = append(names[id.Name], variable)
 		}
 	}
-	return nil
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.AssignStmt:
+			for i, left := range n.Lhs {
+				id, _ := left.(*ast.Ident)
+				var value ast.Expr
+				if len(n.Rhs) == len(n.Lhs) {
+					value = n.Rhs[i]
+				}
+				define(id, value, n.Tok == token.DEFINE)
+			}
+		case *ast.ValueSpec:
+			for i, id := range n.Names {
+				var value ast.Expr
+				if i < len(n.Values) {
+					value = n.Values[i]
+				}
+				define(id, value, true)
+			}
+		}
+		return true
+	})
+	g.scopes[name] = scopes
+}
+
+// resolve gives the variables that the name, with the qualifier or none, names on the line of the file.
+func (g *goNames) resolve(file string, lineNumber int, qualifier, name string) []string {
+	if qualifier != "" {
+		for _, imported := range g.imports[file] {
+			pkgName, known := g.pkgName[imported.dir]
+			if !known {
+				pkgName = path.Base(imported.dir)
+			}
+			if imported.name == qualifier || imported.name == "" && pkgName == qualifier {
+				return g.pkg[imported.dir][name]
+			}
+		}
+		return nil
+	}
+	var inner *nameScope
+	for i, scope := range g.scopes[file] {
+		if _, defined := scope.names[name]; defined && scope.from <= lineNumber && lineNumber <= scope.to && (inner == nil || scope.to-scope.from < inner.to-inner.from) {
+			inner = &g.scopes[file][i]
+		}
+	}
+	if inner != nil {
+		return inner.names[name]
+	}
+	if variables, ok := g.pkg[path.Dir(file)][name]; ok {
+		return variables
+	}
+	var variables []string
+	for _, imported := range g.imports[file] {
+		if imported.name == "." {
+			variables = append(variables, g.pkg[imported.dir][name]...)
+		}
+	}
+	return variables
 }
 
 // A function of a Go file whose body reads the variable that its string parameter names, and one that returns the
@@ -625,23 +830,23 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 	// A test sets a variable for the tests of its own module only: a child process that it runs, or the tests of the
 	// process. So a set counts only in the suite of the file that sets it (security review of PR #504, L2).
 	set := map[string]map[string]bool{}
-	names := variableNames{}
-	// namedSet is the text of a file that can set a variable through a name, such as marker+"=1" or
+	names := &goNames{}
+	// namedSet is the code of a file that can set a variable through a name, such as marker+"=1" or
 	// t.Setenv(consoleSetting, ...), which is read when all the names are known.
-	type namedSet struct{ folder, file, text string }
+	type namedSet struct {
+		folder, file string
+		lines        []string
+		numbers      []int
+	}
 	var sets []namedSet
 	for _, name := range p.tree.paths() {
 		if path.Ext(name) != ".go" {
 			continue
 		}
 		data, _ := p.tree.File(name)
-		text := strings.Join(codeLines(name, data), "\n")
-		for _, match := range namesVariable.FindAllStringSubmatch(text, -1) {
-			if names[path.Dir(name)] == nil {
-				names[path.Dir(name)] = map[string][]string{}
-			}
-			names[path.Dir(name)][match[1]] = append(names[path.Dir(name)][match[1]], match[2])
-		}
+		names.add(name, data)
+		lines, numbers := codeLinesAt(name, data)
+		text := strings.Join(lines, "\n")
 		if strings.HasSuffix(name, "_test.go") || strings.HasPrefix(name, "registry/runtime/internal/pgtest/") || strings.HasPrefix(name, "registry/runtime/kafkatest/") {
 			suite, ok := p.suiteOf(name)
 			if !ok {
@@ -653,13 +858,15 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 			for _, match := range setsVariable.FindAllStringSubmatch(text, -1) {
 				set[suite.folder][match[1]+match[2]+match[3]] = true
 			}
-			sets = append(sets, namedSet{suite.folder, name, text})
+			sets = append(sets, namedSet{suite.folder, name, lines, numbers})
 		}
 	}
 	for _, named := range sets {
-		for _, match := range setsNamed.FindAllStringSubmatch(named.text, -1) {
-			for _, name := range names.resolve(named.file, named.text, match[1]+match[3], match[2]+match[4]) {
-				set[named.folder][name] = true
+		for i, line := range named.lines {
+			for _, match := range setsNamed.FindAllStringSubmatch(line, -1) {
+				for _, name := range names.resolve(named.file, named.numbers[i], match[1]+match[3], match[2]+match[4]) {
+					set[named.folder][name] = true
+				}
 			}
 		}
 	}
@@ -670,11 +877,12 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 	}
 	files := p.packageFiles()
 	folders := map[string]map[string][]string{}
+	lineNumbers := map[string][]int{}
 	for file, data := range files {
 		if folders[path.Dir(file)] == nil {
 			folders[path.Dir(file)] = map[string][]string{}
 		}
-		folders[path.Dir(file)][file] = codeLines(file, data)
+		folders[path.Dir(file)][file], lineNumbers[file] = codeLinesAt(file, data)
 	}
 	for _, lineSets := range folders {
 		wrappers, returners := readerFunctions(lineSets)
@@ -686,7 +894,7 @@ func (p localProof) undocumentedEnvironment(readme string) []string {
 					reads = append(reads, variableRead{name: match[1]})
 				}
 				for _, match := range readsNamed.FindAllStringSubmatch(line, -1) {
-					for _, name := range names.resolve(file, strings.Join(lines, "\n"), match[1], match[2]) {
+					for _, name := range names.resolve(file, lineNumbers[file][i], match[1], match[2]) {
 						reads = append(reads, variableRead{name: name})
 					}
 				}
@@ -1115,6 +1323,39 @@ func TestLocalChecks(t *testing.T) {
 		if len(found) != 2 || strings.Contains(strings.Join(found, "\n"), "var checked") {
 			t.Errorf("the checks of an own file of checks find %q, want the two marked lines and not the pattern of regexp.MustCompile", found)
 		}
+		// Only the bytes of a pattern of literals are blanked: code on its line or in the arguments of a call of
+		// MustCompile whose arguments are not only literals is read, and so is a call through a local name regexp
+		// (security review of the PR #10 confirmation, F3).
+		privileged := "--privi" + "leged"
+		for name, body := range map[string]string{
+			"code on the line of a pattern":       "\t_ = regexp.MustCompile(`x`); _ = exec.Command(\"docker\", \"run\", \"" + privileged + "\", \"busybox\")\n",
+			"a call in the argument":              "\t_ = regexp.MustCompile(run(exec.Command(\"docker\", \"run\", \"" + privileged + "\", \"busybox\")))\n",
+			"a call in an argument of many lines": "\t_ = regexp.MustCompile(run(\n\t\texec.Command(\"docker\", \"run\", \"" + privileged + "\", \"busybox\"),\n\t))\n",
+			"a local name regexp":                 "\tregexp := fake{}\n\tregexp.MustCompile(\"docker run " + privileged + " busybox\")\n",
+			"a read of HOME in the argument":      "\t_ = regexp.MustCompile(os.Getenv(\"HOME\") + \"/.ku" + "be/config\")\n",
+		} {
+			data := []byte("package assure\n\nimport (\n\t\"os\"\n\t\"os/exec\"\n\t\"regexp\"\n\t\"testing\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + body + "}\n")
+			var faults []string
+			for _, line := range codeLines("internal/assure/plant_test.go", data) {
+				for _, fault := range workstationFaults {
+					if fault.pattern.MatchString(line) {
+						faults = append(faults, fault.why)
+					}
+				}
+			}
+			if len(faults) == 0 {
+				t.Errorf("%s: the checks of an own file of checks find no fault, want the line of the plant read", name)
+			}
+		}
+		// A pattern of literals across lines, with its import under another name, is blanked whole.
+		renamed := []byte("package assure\n\nimport re \"regexp\"\n\nvar checked = re.MustCompile(`a\n" + privileged + " docker run` +\n\t\"--cap-\" + \"add\")\n")
+		for _, line := range codeLines("internal/assure/plant_test.go", renamed) {
+			for _, fault := range workstationFaults {
+				if fault.pattern.MatchString(line) {
+					t.Errorf("the pattern of re.MustCompile is read: %q", line)
+				}
+			}
+		}
 	})
 	t.Run("ST-STD-LOCAL-R02-T03 The check of R02 counts a set of a variable only in the module of the test that sets it, and finds a read through a constant, a wrapper, a helper and an unlisted copy variable", func(t *testing.T) {
 		skip := "\tif %s == \"\" {\n\t\tt.Skip(\"not set\")\n\t}\n"
@@ -1139,6 +1380,15 @@ func TestLocalChecks(t *testing.T) {
 			"a/collide_test.go":     plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_COLLIDE")`)),
 			"a/child_test.go":       append(plantFile(fmt.Sprintf(skip, `os.Getenv(childVariable)`)+"\t_ = []string{childVariable + \"=1\"}\n"), []byte("\nconst childVariable = \"STEGO_PLANT_CHILD\"\n")...),
 			"a/listed_copy_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_CRUD_DUMP")`)),
+			// Security review of the PR #10 confirmation, F2: a name of the same text in another function of the same
+			// package, a read through a dot import, and a qualifier that is the package name, not the last element of
+			// the import path.
+			"a/pkgcollide.go":      []byte("package plant\n\nfunc names() string {\n\tkey := \"STEGO_PLANT_PKGCOLLIDE\"\n\treturn key\n}\n"),
+			"a/pkgcollide_test.go": plantFile(fmt.Sprintf(skip, `os.Getenv("STEGO_PLANT_PKGCOLLIDE")`)),
+			"lib/pgx/vars.go":      []byte("package pgx\n\nconst Dot = \"STEGO_PLANT_DOT\"\n"),
+			"lib/v2/vars.go":       []byte("package pgxv2\n\nconst Name = \"STEGO_PLANT_RENAMED\"\n"),
+			"a/dot_test.go":        []byte("package plant\n\nimport (\n\t\"os\"\n\t\"testing\"\n\n\t. \"" + repositoryPrefix + "lib/pgx\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + fmt.Sprintf(skip, `os.Getenv(Dot)`) + "}\n"),
+			"a/renamed_test.go":    []byte("package plant\n\nimport (\n\t\"os\"\n\t\"testing\"\n\n\t\"" + repositoryPrefix + "lib/v2\"\n)\n\nfunc TestPlant(t *testing.T) {\n" + fmt.Sprintf(skip, `os.Getenv(pgxv2.Name)`) + "}\n"),
 		}
 		tree := NewTree(files)
 		proof := localProof{files: map[string][]byte{}, tree: tree, suites: localSuites(tree)}
@@ -1155,7 +1405,7 @@ func TestLocalChecks(t *testing.T) {
 			}
 		}
 		slices.Sort(needed)
-		want := []string{"STEGO_PLANT_COLLIDE", "STEGO_PLANT_CONSTANT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_WRAPPED"}
+		want := []string{"STEGO_PLANT_COLLIDE", "STEGO_PLANT_CONSTANT", "STEGO_PLANT_DOT", "STEGO_PLANT_DUMP", "STEGO_PLANT_HELPER", "STEGO_PLANT_OTHER", "STEGO_PLANT_PKGCOLLIDE", "STEGO_PLANT_RENAMED", "STEGO_PLANT_WRAPPED"}
 		if !slices.Equal(needed, want) {
 			t.Errorf("the check finds %v, want %v: %v", needed, want, faults)
 		}
