@@ -329,13 +329,27 @@ func TestReadAuditTypes(t *testing.T) {
 				t.Errorf("NewEntity took a pii entity with %s", name)
 			}
 		}
-		if _, err := auditValue("roles", "jsonish", []byte(`"ann#11@x.example"`)); err == nil || strings.Contains(err.Error(), "#11") {
-			t.Errorf("auditValue of an unknown type gave %v, want an error with no value", err)
+		// Each error is compared with its full fixed text: a []byte value that leaks with %v is decimal bytes, which
+		// hold no #, so a check for a part of the value does not find the leak (sec-35 L1).
+		for _, c := range []struct {
+			column string
+			typ    ColumnType
+			value  any
+			want   string
+		}{
+			{"roles", "jsonish", []byte(`"ann#11@x.example"`), `query: the column roles has the type "jsonish", which is not a column type`},
+			{"roles", "jsonish", "ann#11@x.example", `query: the column roles has the type "jsonish", which is not a column type`},
+			{"email", ColumnText, []byte("ann#11@x.example"), "query: the column email holds a value that is not of its declared type text"},
+			{"email", ColumnInt, "ann#11@x.example", "query: the column email holds a value that is not of its declared type int"},
+		} {
+			if got, err := auditValue(c.column, c.typ, c.value); got != nil || err == nil || err.Error() != c.want {
+				t.Errorf("auditValue(%s, %s) of a %T gave %v, %v, want the error %q", c.column, c.typ, c.value, got, err, c.want)
+			}
 		}
 		// A row of a column with no declared type gives no state, also when NewEntity did not see the column.
 		row := Row{columns: []string{"id", "email"}, values: []any{"p-1", "ann#11@x.example"}}
 		if state, err := row.auditState(map[string]ColumnType{"id": ColumnText}); err == nil || state != nil ||
-			strings.Contains(err.Error(), "#11") {
+			err.Error() != "query: the column email has no declared type" {
 			t.Errorf("auditState of a column with no declared type gave %v, %v, want an error with no value", state, err)
 		}
 		e := newEnv(t)
@@ -353,6 +367,36 @@ func TestReadAuditTypes(t *testing.T) {
 		}
 		if n := e.count(t, "SELECT count(*) FROM "+audit.EventsTable+" WHERE action = 'read'"); n != 0 {
 			t.Fatalf("the failed read wrote %d read rows, want none", n)
+		}
+		// A fill that does not return the error of its Get or List still gives no result: the failed conversion
+		// fails the read by itself (sec-35 L2).
+		for _, get := range []bool{true, false} {
+			name := "person-detail"
+			q := mustQuery(t, name, people)
+			if !get {
+				name = "person-list"
+				q = mustListQuery(t, name, people, "view")
+			}
+			got, err := Run(context.Background(), rt, q, bound(t, "t1", "user:u-7", q.Name()), struct{}{},
+				func(ctx context.Context, _ struct{}, h *Handle[noProbe]) ([]Person, error) {
+					repo, err := Repo(h, people)
+					if err != nil {
+						return nil, err
+					}
+					if get {
+						_, _ = repo.Get(ctx, "p-1")
+					} else {
+						_, _ = repo.List(ctx, ListRequest{Limit: 10})
+					}
+					return []Person{{ID: "made-up"}}, nil
+				})
+			if got != nil || !errors.Is(err, errAudit) || strings.Contains(err.Error(), "#11") {
+				t.Fatalf("%s with a fill that drops the read error gave %+v, %v, want no result and a read audit error with no value",
+					name, got, err)
+			}
+		}
+		if n := e.count(t, "SELECT count(*) FROM "+audit.EventsTable+" WHERE action = 'read'"); n != 0 {
+			t.Fatalf("the failed reads wrote %d read rows, want none", n)
 		}
 	})
 }

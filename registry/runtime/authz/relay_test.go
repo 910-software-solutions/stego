@@ -872,20 +872,6 @@ func TestRevocationFloor(t *testing.T) {
 		suffix := uuid.NewString()[:8]
 		return "g-" + suffix, "d-" + suffix
 	}
-	// afterBoundary waits until the quantization boundary after the setup writes has passed, so that checks up to
-	// the next boundary read the state at it, and returns the time of the next boundary.
-	afterBoundary := func(t *testing.T) time.Time {
-		t.Helper()
-		next := time.Now().Truncate(quantum).Add(quantum)
-		time.Sleep(time.Until(next) + quantum/5)
-		return next.Add(quantum)
-	}
-	inWindow := func(t *testing.T, end time.Time) {
-		t.Helper()
-		if time.Now().After(end.Add(-quantum / 10)) {
-			t.Fatalf("the case took longer than the quantization interval %s, so its stale read proves nothing", quantum)
-		}
-	}
 	insert := func(t *testing.T, env *pgEnv, tenantID, documentID string, token Token) {
 		t.Helper()
 		if _, err := env.admin.ExecContext(ctx, "INSERT INTO "+env.schema+".documents (tenant_id, id, authz_token) VALUES ($1, $2, $3)",
