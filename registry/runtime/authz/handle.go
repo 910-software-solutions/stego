@@ -130,11 +130,11 @@ func init() {
 			c.clocks = clocks
 			return true
 		case *SchemaGate:
-			if clocks.Gate == nil {
+			if clocks.Retention == nil {
 				return false
 			}
 			c.mu.Lock()
-			c.now = clocks.Gate
+			c.now = clocks.Retention.Now
 			c.mu.Unlock()
 			return true
 		}

@@ -31,8 +31,6 @@ type Clocks struct {
 	// Decision bounds each call of the decision provider with the decision time limit. It is apart from Wait, so a
 	// test of the waits sees only their bounds.
 	Decision WaitClock
-	// Gate is the clock of the digest bound of a schema gate; only SetGate gives it, with a *authz.SchemaGate.
-	Gate func() time.Time
 }
 
 // set is the setter that the authz package registers when it starts.
@@ -53,11 +51,17 @@ func Set(cfg any, clocks Clocks) bool {
 	return set(cfg, clocks)
 }
 
+// nowFunc is a Clock that a function gives.
+type nowFunc func() time.Time
+
+func (f nowFunc) Now() time.Time { return f() }
+
 // SetGate gives gate, a *authz.SchemaGate, the clock now of its digest bound (ST-SUP-RP10-LC59), and reports false
-// for any other value. It goes through the one setter that the authz package registers.
+// for any other value. It goes through the one setter that the authz package registers, which takes the clock of a
+// gate from Retention.
 func SetGate(gate any, now func() time.Time) bool {
 	if set == nil || gate == nil || now == nil {
 		return false
 	}
-	return set(gate, Clocks{Gate: now})
+	return set(gate, Clocks{Retention: nowFunc(now)})
 }
