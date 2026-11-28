@@ -151,7 +151,9 @@ func TestRouteValidationRejectsLegacyMuxMode(t *testing.T) {
 			}
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// The child is a new process of the test binary; a busy runner can take more than 10 seconds to start it and
+		// run it, so it gets two minutes (still bounded).
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, os.Args[0], legacyMuxRun, "-test.count=1")
 		for _, entry := range os.Environ() {
