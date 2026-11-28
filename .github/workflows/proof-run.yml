@@ -172,8 +172,11 @@ jobs:
         # go test ./... at the root does not reach Assuring's modules, internal/assure and cmd/assure: each has a
         # go.mod of its own. The assure part runs them, one after the other into one file, and the assure-local
         # parts run the packages of internal/assure (./...), the same packages that the assure part's -skip applies
-        # to, so a test of a subpackage whose name matches an assure-local pattern also runs. Each package gets
-        # 20 minutes, under the step's 25, so a timeout is a test outcome and not a cancelled step.
+        # to, so a test of a subpackage whose name matches an assure-local pattern also runs. Each go test run gets
+        # 20 minutes, under the step's 25, so a timeout is a test outcome and not a cancelled step. The assure part
+        # runs its two modules one after the other in the same step, so each module gets 11 minutes: the two runs
+        # together end before the step's 25 minutes, with 3 minutes for the go list and go test -list runs, which
+        # use the test builds in the build cache. A cancelled step writes no artifact, and the join then fails.
         # The part writes the import paths of the packages it runs to packages-<part>.txt, and the rest part also
         # writes every package of the root module to packages-root.txt, so the suites job can check that each
         # package of the root module is in a part and that each package of a part has its result.
@@ -210,7 +213,7 @@ jobs:
                 select=()
                 if [ "$module" = internal/assure ]; then select=(-skip "$ASSURE_LOCAL_A_TESTS|$ASSURE_LOCAL_B_TESTS"); fi
                 go list -C "$module" -mod=readonly ./... >> "$list"
-                go test -C "$module" -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" ./... >> "$out" || true
+                go test -C "$module" -json -race -count=1 -mod=readonly -timeout=11m "${select[@]}" ./... >> "$out" || true
                 go test -C "$module" -json -race -vet=off -mod=readonly -list '.*' ./... >> "$RUNNER_TEMP/part/list-$PART.json" || true
               done
               exit 0 ;;
@@ -224,7 +227,7 @@ jobs:
             compiler-runtime) select=(-run "$COMPILER_RUNTIME_TESTS") ;;
             compiler) select=(-skip "$COMPILER_RUNTIME_TESTS") ;;
           esac
-          go test -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" $(cat "$list") > "$out" || true
+          go test -json -race -count=1 -mod=readonly -timeout=11m "${select[@]}" $(cat "$list") > "$out" || true
           case "$PART" in
             stego | compiler) go test -json -race -vet=off -mod=readonly -list '.*' $(cat "$list") > "$RUNNER_TEMP/part/list-$PART.json" || true ;;
           esac
