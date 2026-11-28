@@ -11,11 +11,11 @@ require (
 
 require golang.org/x/mod v0.41.0
 
-require golang.org/x/net v0.60.0
+require golang.org/x/net v0.62.0
 
 require (
 	github.com/bufbuild/protocompile v0.14.1
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -84,13 +84,13 @@ require (
 	github.com/speakeasy-api/jsonpath v0.6.3 // indirect
 	github.com/speakeasy-api/openapi v1.24.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/tools v0.50.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 )
 
 require (
-	github.com/authzed/spicedb v1.57.0
+	github.com/authzed/spicedb v1.57.1
 	github.com/google/go-containerregistry v0.22.1
 	sigs.k8s.io/kustomize/api v0.21.1
 	sigs.k8s.io/kustomize/kyaml v0.21.1

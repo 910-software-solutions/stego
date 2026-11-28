@@ -152,6 +152,8 @@ type worker struct {
 	// stagers maps each command or worker that stages for the consumed destination to its own declared permission
 	// (ST-SUP-RP10-LC17).
 	stagers map[string]string
+	// witnesses are the witnesses of a worker that declares creates_with_children (ST-DECL-INV108).
+	witnesses []declaration.ChildWitness
 	// lists are the declared lists of the worker, which the contract emits from the entity of the release
 	// (ST-SUP-RC35-OC15).
 	lists []*workerList
@@ -230,6 +232,13 @@ func plan(ctx gen.Context) (*model, error) {
 	}
 	if err := m.planStagers(); err != nil {
 		return nil, err
+	}
+	for _, w := range m.workers {
+		if w.decl.CreatesWithChildren {
+			if w.witnesses, err = command.ChildWitnesses(m.ctx, w.decl.Name); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := m.checkChangeEvents(); err != nil {
 		return nil, err
@@ -840,6 +849,9 @@ func renderWorker(w *writer, m *model, wk *worker) {
 			w.f("%q: %q", name, wk.stagers[name])
 		}
 		w.f("},\n")
+	}
+	if len(wk.witnesses) > 0 {
+		w.f("%s", command.WitnessesSpec(wk.witnesses))
 	}
 	if m.probeImport != "" {
 		w.f("\tProbe: probes.New%sProbe,\n", wk.goName)

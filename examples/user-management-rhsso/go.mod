@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
@@ -22,12 +22,13 @@ require (
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
-	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
+	github.com/planetscale/vtprotobuf v0.6.1-0.20240917153116-6f2963f01587 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/twmb/franz-go v1.22.2 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.15.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
+	go.uber.org/goleak v1.3.1-0.20260602155401-5f791e3ef83b // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect

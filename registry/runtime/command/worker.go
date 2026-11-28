@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,10 @@ type WorkerSpec[P any] struct {
 	// entity of the release (ST-SUP-RC35-OC15). The worker's handle takes only these lists, so its fill gives no SQL
 	// text (ST-SUP-RP10-LC38). Each is a list of an entity in Writes.
 	Lists []AnyList
+	// CreatesWithChildren is the declared creates_with_children of the worker (ST-DECL-INV108), and Witnesses the
+	// witnesses that checking proved, as CommandSpec states (ST-SUP-RP10-LC59).
+	CreatesWithChildren bool
+	Witnesses           []Witness
 }
 
 // Worker is one checked worker declaration.
@@ -75,6 +80,8 @@ type Worker[P any] struct {
 	own          map[authz.Relation]bool
 	changeEvents map[string]ChangeEvents
 	lists        map[AnyList]listCopy
+	// witnesses is the frozen witness table of a worker that declares creates_with_children (ST-SUP-RP10-LC59).
+	witnesses witnessTable
 }
 
 // NewWorker checks the declaration of one worker.
@@ -109,9 +116,21 @@ func NewWorker[P any](spec WorkerSpec[P]) (*Worker[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	var stagers []string
+	for _, permission := range spec.Stagers {
+		if permission != "" && !slices.Contains(stagers, permission) {
+			stagers = append(stagers, permission)
+		}
+	}
+	witnesses, err := freezeWitnesses(bindMode{owner: spec.Name, workerPermission: spec.Permission, consumer: spec.Interval == 0, stagers: stagers},
+		spec.CreatesWithChildren, spec.Witnesses, spec.Writes)
+	if err != nil {
+		return nil, err
+	}
+	spec.Witnesses = nil
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Worker[P]{spec: spec, principal: principal, writes: writes, reads: reads, destinations: destinations, bound: bound, own: own,
-		changeEvents: changeEvents, lists: lists}, nil
+		changeEvents: changeEvents, lists: lists, witnesses: witnesses}, nil
 }
 
 // checkReads gives the read-only entities that the worker owner reads, and refuses a nil entity, an entity of reads
@@ -211,6 +230,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	}()
 	s := newState(ctx, rt, tx, t, w.principal, modeWorker, w.spec.Name, w.writes, w.destinations)
 	s.reads = w.reads
+	s.witnesses = w.witnesses
 	s.changeEvents = w.changeEvents
 	// A list value RunTime takes the due tick time (ST-SUP-RC35-OC15).
 	s.lists, s.runTime = w.lists, due
@@ -506,6 +526,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	recheckSeals(ctx, rt, w.writes)
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
 	s.reads = w.reads
+	s.witnesses = w.witnesses
 	s.changeEvents = w.changeEvents
 	// A list value RunTime takes the time at the start of the run on the runtime's clock (ST-SUP-RC35-OC15).
 	s.lists, s.runTime = w.lists, rt.clock().Now()
