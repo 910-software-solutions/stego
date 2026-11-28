@@ -1276,8 +1276,10 @@ func TestCreatedRows(t *testing.T) {
 			}
 			_, err = repo(t, h, c.prices).Create(ctx, priceRow{ID: "h16c", CostItemID: "p0"}, old)
 			return err
-		}); err == nil || !slices.Contains(c.decided(false), "edit cost_item:p0") && !errors.Is(err, ErrInternal) {
-			t.Fatalf("a reference by the value read before the delete gave %v, want no proof by the record of the new p0", err)
+		}); !errors.Is(err, ErrNotFound) || !slices.Contains(c.decided(false), "edit cost_item:p0") {
+			// The provider decides the reference, and the decision of the test denies it: not found, as for a
+			// reference to a row that the caller may not edit (security review sec-30c, I-2).
+			t.Fatalf("a reference by the value read before the delete gave %v (decided %v), want not found from edit on cost_item:p0 at the provider and no proof by the record of the new p0", err, c.decided(false))
 		}
 		c.none("k-lc59-t16-again", len(before), "h16c")
 		if c.count(`SELECT count(*) FROM cost_items WHERE id = 'p0' AND group_id = ''`) != 1 || c.count(`SELECT count(*) FROM price_histories WHERE id = 'h0' AND price = '1'`) != 1 {
