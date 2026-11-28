@@ -798,7 +798,7 @@ func (p localProof) standInFaults() []string {
 }
 
 // An image that a test names: a reference with a tag or a digest, with or without a registry host and a repository
-// path, such as postgres:17, authzed/spicedb:v1.57.0 or docker.io/library/postgres@sha256:<digest>.
+// path, such as postgres:17, authzed/spicedb:v1.57.1 or docker.io/library/postgres@sha256:<digest>.
 var imageReference = regexp.MustCompile(`"((?:[a-z0-9.-]+\.[a-z]{2,}(?::[0-9]+)?/)?[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]*)?)"`)
 
 // A container that a test starts: a docker or podman run, or a start through the harness of the runtime module.

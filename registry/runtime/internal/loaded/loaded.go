@@ -24,6 +24,7 @@ type Ref struct {
 	Version      int64
 	Token        string
 	Lock         uint8
+	Write        uint64
 }
 
 // Value is the loaded value of one row of the entity type T.

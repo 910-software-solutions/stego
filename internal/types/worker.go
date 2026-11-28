@@ -29,6 +29,8 @@ type Worker struct {
 	// Lists are the declared lists that the fill reads through: the generator emits their statements from the entity
 	// of the release, so a fill gives no SQL text (ST-DECL-INV94, ST-SUP-RC35-OC15).
 	Lists []WorkerList `yaml:"lists,omitempty"`
+	// CreatesWithChildren opts the worker in as Command.CreatesWithChildren states (ST-DECL-INV108).
+	CreatesWithChildren bool `yaml:"creates_with_children,omitempty"`
 }
 
 // WorkerList is one declared list of a worker or a command (ST-DECL-INV94): its name, unique in the worker or the

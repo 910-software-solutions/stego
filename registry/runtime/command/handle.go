@@ -353,6 +353,10 @@ type Reference[T any] struct {
 	// that may be NULL (ST-SUP-RC01-OC46), or empty. A write that it refuses (SQLSTATE 23514) is ErrInvalid naming the
 	// reference, as a write that Key refuses is.
 	Check string
+	// Required is true for a reference that the declaration requires. The generator gives it in a service that
+	// declares creates_with_children: only a required reference can be the witness of a decision (ST-DECL-INV108,
+	// ST-SUP-RP10-LC59), and a bind refuses a witness through a reference that is not marked required.
+	Required bool
 }
 
 // Referrer is the composite foreign key of a reference of another entity to this one that is held within a field
@@ -595,6 +599,7 @@ type Declared interface {
 	relations() []authz.Relation
 	runtimeRelations() []authz.Relation
 	recheckSeal(ctx context.Context, db *sql.DB)
+	witnessEntity() witnessEntity
 }
 
 func (e *Entity[T]) entityName() string { return e.spec.Name }
@@ -1073,6 +1078,8 @@ type rowRef struct {
 	id           string
 	token        string
 	lock         lockMode
+	// write is the write token of a value that a write of this handle returned, or zero (ST-SUP-RP10-LC59).
+	write uint64
 	// value is the loaded value itself, which a within check reads (ST-SUP-RP10-LC37).
 	value Ref
 }
@@ -1084,13 +1091,19 @@ func refOf(r Ref) rowRef {
 	}
 	st, _ := ref.Owner.(*state)
 	return rowRef{st: st, entity: ref.EntityName, entityRef: ref.Entity, resourceType: ref.ResourceType, id: ref.ID,
-		token: ref.Token, lock: lockMode(ref.Lock), value: r}
+		token: ref.Token, lock: lockMode(ref.Lock), write: ref.Write, value: r}
 }
 
-// newLoaded makes the loaded value of one row that the handle state s read or wrote.
+// newLoaded makes the loaded value of one row that the handle state s read.
 func newLoaded[T any](value T, meta Meta, e *Entity[T], s *state, lock lockMode) Loaded[T] {
+	return newWritten(value, meta, e, s, lock, 0)
+}
+
+// newWritten makes the loaded value of one row that the write of the handle state s with the write token write
+// wrote (ST-SUP-RP10-LC59).
+func newWritten[T any](value T, meta Meta, e *Entity[T], s *state, lock lockMode, write uint64) Loaded[T] {
 	return loaded.New(value, e.spec.Clone, loaded.Ref{Owner: s, Entity: e, EntityName: e.spec.Name, ResourceType: e.spec.ResourceType,
-		ID: meta.ID, Version: meta.Version, Token: meta.Token, Lock: uint8(lock)})
+		ID: meta.ID, Version: meta.Version, Token: meta.Token, Lock: uint8(lock), Write: write})
 }
 
 // isChild reports whether the entity is a child: it has a Parent and no resource type, so it takes its authorization
@@ -1766,7 +1779,16 @@ type state struct {
 	changes      map[string]int
 	events       []audit.Event
 	// written holds the version of each row that a write of this attempt left; a deleted row holds -1.
-	written     map[rowKey]int64
+	written map[rowKey]int64
+	// witnesses is the frozen witness table of a command or a worker that declares creates_with_children, and nil
+	// for one that does not (ST-SUP-RP10-LC59). writeSeq is the write token of the last write of the state; created
+	// holds the created-by-Create record of each row that a Create of this attempt wrote, by entity and ID, and
+	// createTokens the token of each of these creates. The records are not written and not decided.
+	witnesses    witnessTable
+	writeSeq     uint64
+	created      map[rowKey]*createdRecord
+	createTokens map[uint64]bool
+
 	deadline    time.Time
 	lockTimeout time.Duration
 	request     Request
@@ -2555,6 +2577,8 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
+	// records are the witness records of the create, for its created-by-Create record (ST-SUP-RP10-LC59).
+	var records []witnessRecord
 	if s.mode != modeCommand && e.spec.ResourceType != "" && len(rows) == 0 {
 		// A value that sets a reference to an entity with a resource type has a parent, which must be given and
 		// decided: a create with no loaded parent for it is refused, so no row is written under a parent that no
@@ -2573,12 +2597,22 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 		if err := s.decideWrite(ctx, authz.TenantType, e.spec.Name, s.tenant.ID(), ""); err != nil {
 			return nil, err
 		}
+		for _, a := range s.allowsOf("", authz.TenantType) {
+			records = append(records, witnessRecord{subject: a.subject, permission: a.permission, resourceType: authz.TenantType,
+				resourceID: s.tenant.ID(), relation: authz.TenantRelation})
+		}
 	}
 	// A create decides on each row that the new row refers to, and an optional reference that is not set is not
-	// decided (ST-SUP-RP10-LC05, ST-SUP-RP10-LC17).
+	// decided (ST-SUP-RP10-LC05, ST-SUP-RP10-LC17). A reference to a row that a Create of this attempt wrote is decided
+	// by the record of that create when the declaration opts in and the schema proves it (ST-SUP-RP10-LC59).
 	for i, p := range rows {
-		if err := s.decideReference(ctx, refs[i], p); err != nil {
+		allows, err := s.decideCreateReference(ctx, e.spec.Name, refs[i], p)
+		if err != nil {
 			return nil, err
+		}
+		for _, a := range allows {
+			records = append(records, witnessRecord{subject: a.subject, permission: a.permission, resourceType: p.resourceType,
+				resourceID: p.id, field: refs[i].field, relation: refs[i].relation})
 		}
 	}
 	// A reference held within a field is compared with its loaded referenced row before the row statement
@@ -2621,8 +2655,18 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 		return nil, err
 	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
+	token := s.nextWrite()
+	if s.witnesses != nil {
+		// Each caller relationship tuple that the create enqueued is a witness record of the row (ST-SUP-RP10-LC59).
+		for _, rel := range e.spec.Relationships {
+			if rel.Field == nil {
+				records = append(records, witnessRecord{relationship: true, subject: s.principal.Subject().String(), relation: rel.Relation})
+			}
+		}
+		s.recordCreated(e.spec.Name, meta.ID, token, refs, records)
+	}
 	// The row is new in this transaction, which holds it as strongly as a lock FOR UPDATE.
-	return newLoaded(stored, meta, e, s, lockDelete), nil
+	return newWritten(stored, meta, e, s, lockDelete, token), nil
 }
 
 // Update writes value over the row of from, a loaded value of this handle, only while the row still has from's
@@ -2699,7 +2743,9 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		return nil, err
 	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
-	return newLoaded(stored, meta, e, s, max(from2.lock, lockUpdate)), nil
+	// A later write of a created row closes its created-by-Create record (ST-SUP-RP10-LC59).
+	s.closeCreated(e.spec.Name, meta.ID)
+	return newWritten(stored, meta, e, s, max(from2.lock, lockUpdate), s.nextWrite()), nil
 }
 
 // Delete removes the row of from, a loaded value of this handle, only while the row still has from's version, as
@@ -2758,6 +2804,8 @@ func (r *Repository[T]) Delete(ctx context.Context, from Loaded[T], parent ...Re
 		return err
 	}
 	s.written[rowKey{e.spec.Name, from2.meta.ID}] = -1
+	s.closeCreated(e.spec.Name, from2.meta.ID)
+	s.nextWrite()
 	return nil
 }
 

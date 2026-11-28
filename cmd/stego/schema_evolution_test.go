@@ -23,7 +23,7 @@ import (
 const evolutionFixture = "testdata/schema_evolution"
 
 // evolutionSpiceDBImage is the pinned SpiceDB image of the harness.
-const evolutionSpiceDBImage = "authzed/spicedb:v1.57.0@sha256:a170d372c9f6b921bb6849064df6ca3566dd5b174882c1a2c4300c2ae1d60efd"
+const evolutionSpiceDBImage = "authzed/spicedb:v1.57.1@sha256:9ea6df2d3cca23ed63aa7205639cf6babaaf1dc9a264ffb1f50c6455658fd6ba"
 
 // evolution is ST-GEN-TD04: a git repository with the commits of examples/user-management at each release, the
 // service binary of each release, and the folder of the last release, where the check runs.

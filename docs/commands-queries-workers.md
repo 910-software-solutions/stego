@@ -1691,22 +1691,30 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
-In one command, the fill cannot do this yet. When a fill creates a row and
+With no opt-in, one command cannot do this. When a fill creates a row and
 then a row that refers to it, with the loaded value that the first `Create`
 returned, the runtime decides the reference at SpiceDB. SpiceDB does not
 hold the tuples of the new row before the relay writes them after the
 commit, so the decision is a deny: `Create` gives `command.ErrNotFound`,
 the command answers 404 `not_found`, and the transaction commits nothing
-(ST-SUP-RP10-LC05-T26). Today, create the row in one call and the rows that
+(ST-SUP-RP10-LC05-T26). Then create the row in one call and the rows that
 refer to it in a second call that sends `Authz-Revocation-After`, and make
 each call idempotent.
 
-ST-SUP-Q221 decided a declared opt-in, `creates_with_children: true` on a
-command or a worker (ST-SUP-RP10-LC59, ST-DECL-INV108). It is not built.
-With it, the `Create` of a row that refers to a row that a `Create` of the
-same attempt wrote is decided with no call of SpiceDB, only when validate
-proved from the schema that the decisions and tuples of the first create
-give the permission of the reference:
+From runtime v0.209.0 (rest-crud 3.279.0, rpc-service and browser-service
+1.279.0), a command or a worker can declare `creates_with_children: true`
+(ST-SUP-Q221, ST-SUP-RP10-LC59, ST-DECL-INV108), beside its `writes`, such
+as a command `add-cost-item` with `writes: [Org, CostItem, PriceHistory]`,
+`resource_type: org` and `permission: catalog_edit`.
+
+Then the `Create` of a row that refers to a row that a `Create` of the same
+attempt wrote is decided with no call of SpiceDB, only when validate proved
+from the schema that the decisions and tuples of the first create give the
+permission of the reference. The fill does not change: it gives the loaded
+value that the first `Create` returned, as before. Use that value only: a
+value of a later `Update` or a `Get` of the row is decided at SpiceDB, and the
+value of a `Create` whose row a later `Update` or `Delete` changed is an
+internal error.
 
 - **The union-subset rule.** Holding D proves X when D is a term of X's
   union, directly or through more unions only; arrows are followed when
@@ -2048,8 +2056,8 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   code.
 - The failure record of the migration Job names the fault, the object and
   the remedy of the steps `open`, `authorization_schema`,
-  `authorization_schema_again` and `authorization_schema_served`
-  (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
+  `authorization_schema_again`, `authorization_schema_served` and
+  `authorization_schema_read_back` (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
   refused key source of a start names its fault (`authn.Keys*Fault`).
 - A unique violation of an index that the entity does not declare names the
   declared fields of its key when the name of the index is

@@ -39,6 +39,7 @@
 {"id":"ST-DECL-INV105-RL","title":"declaration.validateEvents","invariant_id":"ST-DECL-INV105","file":"internal/declaration/events.go"}
 {"id":"ST-DECL-INV106-RL","title":"declaration.validateCollectionReferences","invariant_id":"ST-DECL-INV106","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV107-RL","title":"declaration.validateSharedResourceTypes","invariant_id":"ST-DECL-INV107","file":"internal/declaration/authz.go"}
+{"id":"ST-DECL-INV108-RL","title":"declaration.CreatesWithChildrenFaults","invariant_id":"ST-DECL-INV108","file":"internal/declaration/creates_with_children.go"}
 {"id":"ST-DECL-INV109-RL","title":"declaration.validateSearchable","invariant_id":"ST-DECL-INV109","file":"internal/declaration/searchable.go"}
 {"id":"ST-DECL-INV13-RL","title":"declaration.validateFieldDefaults","invariant_id":"ST-DECL-INV13","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV15-RL","title":"declaration.AcceptanceOutlivesSunset","invariant_id":"ST-DECL-INV15","file":"internal/declaration/acceptance.go"}

@@ -49,9 +49,12 @@
 # 24, U-R).
 # Version 1.31.0 gives the min and the max of an integer field in the reason of its check as an integer, such as
 # more than max 2147483647, and not as 2.147483647e+09 (walkthrough 28, MSG-MAX).
+# Version 1.32.0 gives a command that declares creates_with_children the witnesses that checking proved, which the
+# runtime freezes when it binds the handle, and, in a service that declares it, each reference its field and whether it
+# is required (ST-DECL-INV108, ST-SUP-RP10-LC59, decision ST-SUP-Q221 (b)).
 kind: component
 name: command
-version: 1.31.0
+version: 1.32.0
 stage: ga
 output_namespace: commands
 
