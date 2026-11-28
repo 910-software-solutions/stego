@@ -353,6 +353,62 @@ func TestModuleFoldersAreHashedAgain(t *testing.T) {
 	})
 }
 
+func TestPinnedGoRoot(t *testing.T) {
+	t.Run("ST-STD-LOCAL-R03-T20 A GOROOT whose go.env turns a check off reaches neither the fill nor an inner go command of localtest", func(t *testing.T) {
+		// PR #8 builder (decided 2026-11-27): the go command reads GOROOT/go.env also with GOENV=off, and takes from it
+		// each setting that the environment leaves empty, such as GONOSUMDB= of the fill.
+		RequireModules(t)
+		if goRoot == "" {
+			t.Fatal("the fill of localtest pinned no GOROOT")
+		}
+		planted := t.TempDir()
+		entries, err := os.ReadDir(goRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.Name() != "go.env" {
+				if err := os.Symlink(filepath.Join(goRoot, entry.Name()), filepath.Join(planted, entry.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := os.WriteFile(filepath.Join(planted, "go.env"), []byte("GONOSUMDB=*\nGOPRIVATE=*\nGOINSECURE=*\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GOROOT", planted)
+		for name, c := range map[string]struct {
+			env  []string
+			want map[string]string
+		}{
+			"the fill":            {fillEnvironment(), fillSettings},
+			"an inner go command": {GoEnv(), innerGoSettings},
+		} {
+			for _, entry := range c.env {
+				if entry == "GOROOT="+planted {
+					t.Errorf("%s keeps the GOROOT of the environment", name)
+				}
+			}
+			if err := checkEffective(goTool(), c.env, c.want); err != nil {
+				t.Errorf("%s with the planted GOROOT in the environment: %v", name, err)
+			}
+			// The same environment with the planted GOROOT last is refused, naming the setting or the GOROOT.
+			if err := checkEffective(goTool(), append(append([]string(nil), c.env...), "GOROOT="+planted), c.want); err == nil || !strings.Contains(err.Error(), "GOROOT") && !strings.Contains(err.Error(), "=\"*\"") {
+				t.Errorf("%s with the planted GOROOT last gave %v, want a refusal", name, err)
+			}
+		}
+		// The settings alone: with no pinned GOROOT, the go.env of the planted GOROOT sets each setting that the
+		// environment leaves empty, and the check of the settings in effect refuses it.
+		saved := goRoot
+		goRoot = ""
+		defer func() { goRoot = saved }()
+		env := append(GoEnvWith(moduleCache, cacheProxy+",off"), "GONOSUMDB=", "GOROOT="+planted)
+		if err := checkEffective(goTool(), env, innerGoSettings); err == nil || !strings.Contains(err.Error(), `="*", not ""`) {
+			t.Errorf("an inner go command that takes settings from the planted go.env gave %v, want a refusal that names one", err)
+		}
+	})
+}
+
 func TestUnlistedModuleFoldersAreHashed(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R03-T19 A changed folder of a checked module that the fill did not list fails the fill of localtest", func(t *testing.T) {
 		// A stand-in cache: the go command extracts example.com/lib v1.0.0 from a file proxy into a module cache of the

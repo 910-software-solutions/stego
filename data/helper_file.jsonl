@@ -11,6 +11,7 @@
 {"record_id":"ST-EXT-CMD01-H","file":"cmd/stego/scaffold.go"}
 {"record_id":"ST-EXT-CMD02-H","file":"internal/fill/evidence.go"}
 {"record_id":"ST-EXT-INV05-RL","file":"internal/fill/closure.go"}
+{"record_id":"ST-EXT-INV05-RL","file":"internal/fill/testdata/notatest/main.go"}
 {"record_id":"ST-GEN-CMD01-H","file":"internal/compiler/apply_hook.go"}
 {"record_id":"ST-GEN-CMD01-H","file":"internal/compiler/filesystem.go"}
 {"record_id":"ST-GEN-CMD01-H","file":"internal/compiler/schema_steps.go"}

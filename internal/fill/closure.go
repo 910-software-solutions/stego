@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/910-software-solutions/stego/internal/compiler"
@@ -452,6 +454,12 @@ func moduleSources(runtimeProxy string) []string {
 	if os.Getenv("GOPROXY") == "off" {
 		proxy = "off"
 	}
+	testModuleProxy.Lock()
+	if testModuleProxy.url != "" {
+		// A test binary: the checked module cache of localtest, and no fall back to the network.
+		proxy = testModuleProxy.url + ",off"
+	}
+	testModuleProxy.Unlock()
 	if runtimeProxy != "" {
 		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
 	}
@@ -463,6 +471,40 @@ func moduleSources(runtimeProxy string) []string {
 		env = append(env, key+"="+value)
 	}
 	return env
+}
+
+// testModuleProxy is the module proxy that a test binary gives moduleSources in place of proxy.golang.org
+// (UseTestModuleSources). It is empty outside a test binary.
+var testModuleProxy struct {
+	sync.Mutex
+	url string
+}
+
+// UseTestModuleSources makes the go commands of the fill checks of this test binary take their modules from the
+// module proxy proxyURL, a file URL such as the download folder of the checked module cache of localtest, with no
+// fall back to proxy.golang.org; the sum database stays sum.golang.org. It gives the function that restores the
+// sources. It panics outside a test binary, so stego itself never takes another source (decision on the sec-510c
+// side note, 2026-11-27; the form of appbuild.UseTestModuleSources). It refuses a URL that is not a file URL with a
+// path, and a second call before the first restores.
+func UseTestModuleSources(proxyURL string) (restore func(), err error) {
+	if !testing.Testing() {
+		panic("fill: UseTestModuleSources is only for the checked module cache of a test binary")
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Scheme != "file" || parsed.Path == "" || parsed.Host != "" || parsed.User != nil || parsed.RawQuery != "" || strings.Contains(proxyURL, ",") || strings.Contains(proxyURL, "|") {
+		return nil, fmt.Errorf("fill: the test module proxy %q is not a file URL of a folder", proxyURL)
+	}
+	testModuleProxy.Lock()
+	defer testModuleProxy.Unlock()
+	if testModuleProxy.url != "" {
+		return nil, errors.New("fill: another test holds the test module sources")
+	}
+	testModuleProxy.url = proxyURL
+	return func() {
+		testModuleProxy.Lock()
+		defer testModuleProxy.Unlock()
+		testModuleProxy.url = ""
+	}, nil
 }
 
 // StageOverlay writes each planned file of the check (compiler.FillCheck.Planned) and the file that go -overlay reads,

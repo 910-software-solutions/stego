@@ -143,6 +143,12 @@ func CheckSource(goTool string, from Source) error {
 	if err := checkSettings("the environment of the source sets", settings); err != nil {
 		return err
 	}
+	// A GOTOOLCHAIN other than local makes goTool run another go program, from PATH or the module cache, for go env and
+	// each later command, so the settings that it gives would not be those of goTool (security review of PR #8,
+	// confirmation 2, N2). The check runs before any command.
+	if got := lastSetting(from.Env, "GOTOOLCHAIN"); got != "local" {
+		return fmt.Errorf("the environment of the source sets GOTOOLCHAIN=%q, not local, so another go program could run in place of %s", got, goTool)
+	}
 	// The settings in effect, as the go command of the source takes them.
 	effective, err := goEnv(goTool, from.Env)
 	if err != nil {
@@ -154,6 +160,9 @@ func CheckSource(goTool string, from Source) error {
 	}
 	if err := checkSettings("the go command of the source takes", effective); err != nil {
 		return err
+	}
+	if got := effective["GOTOOLCHAIN"]; got != "local" {
+		return fmt.Errorf("the go command of the source takes GOTOOLCHAIN=%q, not local", got)
 	}
 	if got, _ := filepath.Abs(effective["GOMODCACHE"]); got != cache {
 		return fmt.Errorf("the go command of the source takes the module cache %q, not %q", effective["GOMODCACHE"], cache)
@@ -210,10 +219,10 @@ func checkSettings(how string, settings map[string]string) error {
 }
 
 // goEnv gives the settings that the go command goTool takes in effect with the environment env: GOROOT, GOMODCACHE,
-// GOPATH and checkedSettings. A setting that the go command does not know, such as GONOSUMCHECK, is the last entry of
+// GOPATH, GOTOOLCHAIN and checkedSettings. A setting that the go command does not know, such as GONOSUMCHECK, is the last entry of
 // env.
 func goEnv(goTool string, env []string) (map[string]string, error) {
-	command := exec.Command(goTool, append([]string{"env", "-json", "GOROOT", "GOMODCACHE", "GOPATH"}, checkedSettings...)...)
+	command := exec.Command(goTool, append([]string{"env", "-json", "GOROOT", "GOMODCACHE", "GOPATH", "GOTOOLCHAIN"}, checkedSettings...)...)
 	command.Env = env
 	command.Dir = os.TempDir()
 	var stderr bytes.Buffer

@@ -97,6 +97,9 @@ var (
 	modulesWhy  string
 	// moduleCache is the module cache of localtest, and cacheProxy its download folder, as a file URL.
 	moduleCache, cacheProxy string
+	// goRoot is the GOROOT of the pinned go command, which the fill and each inner go command take, so a go.env of
+	// another GOROOT cannot set a setting that the environment leaves empty (pinnedRoot).
+	goRoot string
 )
 
 // checkedSumsFile is the file in the module cache of localtest that holds the go.sum lines that its last fill checked.
@@ -478,6 +481,11 @@ func GoEnv(extra ...string) []string {
 	if modulesWhy != "" || moduleCache == "" {
 		cache, proxy = emptyCache(), "off"
 	}
+	return append(GoEnvWith(cache, proxy), extra...)
+}
+
+// GoEnvWith is the environment of GoEnv with the module cache cache and the module proxy proxy, and no fill.
+func GoEnvWith(cache, proxy string) []string {
 	env := []string{}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -489,7 +497,77 @@ func GoEnv(extra ...string) []string {
 	env = append(env, "GOMODCACHE="+cache, "GOPROXY="+proxy, "GOSUMDB=off", "GONOSUMDB=none", "GONOSUMCHECK=",
 		"GOPRIVATE=", "GONOPROXY=none", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off",
 		"GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
-	return append(env, extra...)
+	if goRoot != "" {
+		env = append(env, "GOROOT="+goRoot)
+	}
+	return env
+}
+
+// fillSettings and innerGoSettings are the settings that the go command must take in effect for the fill and for an
+// inner go command: go env -json gives GOENV as "" when it is off.
+var (
+	fillSettings = map[string]string{"GOENV": "", "GOSUMDB": "sum.golang.org", "GONOSUMDB": "", "GOPRIVATE": "", "GOINSECURE": "",
+		"GOFLAGS": "", "GOTOOLCHAIN": "local", "GOWORK": "off"}
+	innerGoSettings = map[string]string{"GOENV": "", "GOSUMDB": "off", "GONOSUMDB": "none", "GOPRIVATE": "", "GOINSECURE": "",
+		"GONOPROXY": "none", "GOFLAGS": "", "GOTOOLCHAIN": "local", "GOWORK": "off", "GOVCS": "*:off"}
+)
+
+// pinnedRoot gives the GOROOT of the go command goTool itself: the GOROOT that it takes with no GOROOT entry in the
+// environment of the test.
+func pinnedRoot(goTool string) (string, error) {
+	var env []string
+	for _, entry := range os.Environ() {
+		if key, _, _ := strings.Cut(entry, "="); key != "GOROOT" {
+			env = append(env, entry)
+		}
+	}
+	command := exec.Command(goTool, "env", "GOROOT")
+	command.Env = env
+	out, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("find the GOROOT of %s: %v", goTool, err)
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return "", fmt.Errorf("%s gives no GOROOT", goTool)
+	}
+	return root, nil
+}
+
+// checkEffective refuses the environment env when the go command goTool does not take each setting of want in effect,
+// or takes a GOROOT other than goRoot. The go command reads GOROOT/go.env also with GOENV=off, and takes from it each
+// setting that env leaves empty, so a setting of env alone is not enough (PR #8 builder, decided 2026-11-27).
+func checkEffective(goTool string, env []string, want map[string]string) error {
+	keys := []string{"GOROOT"}
+	for key := range want {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	command := exec.Command(goTool, append([]string{"env", "-json"}, keys...)...)
+	command.Env = env
+	command.Dir = os.TempDir()
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	out, err := command.Output()
+	if err != nil {
+		return fmt.Errorf("read the settings in effect with %s: %v: %s", goTool, err, stderr.Bytes())
+	}
+	got := map[string]string{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		return err
+	}
+	if goRoot != "" && got["GOROOT"] != goRoot {
+		return fmt.Errorf("the go command takes the GOROOT %s, not the GOROOT %s of the pinned go command", got["GOROOT"], goRoot)
+	}
+	for _, key := range keys {
+		if key == "GOROOT" {
+			continue
+		}
+		if got[key] != want[key] {
+			return fmt.Errorf("the go command takes %s=%q, not %q, so a check of a module can be off", key, got[key], want[key])
+		}
+	}
+	return nil
 }
 
 // emptyCache gives an empty module cache of this process, made once in the temporary folder, for the go commands of
@@ -514,7 +592,7 @@ var (
 // innerSettings are the go settings that GoEnv sets, which it takes from no other source.
 var innerSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSUMDB": true, "GONOSUMDB": true, "GONOSUMCHECK": true,
 	"GOPRIVATE": true, "GONOPROXY": true, "GOINSECURE": true, "GOVCS": true, "GOAUTH": true, "GIT_TERMINAL_PROMPT": true,
-	"GOENV": true, "GOFLAGS": true, "GOWORK": true, "GOTOOLCHAIN": true}
+	"GOENV": true, "GOFLAGS": true, "GOWORK": true, "GOTOOLCHAIN": true, "GOROOT": true}
 
 // CheckSums fails the test when the go.sum of the generated module in dir holds a line that is not checked: no go.sum
 // of testdata/modules, testdata/modules-other, the root module or registry/runtime holds it, and the fill of the
@@ -721,6 +799,13 @@ func downloadModules() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	pinned, err := pinnedRoot(goTool)
+	if err != nil {
+		modulesWhy = err.Error()
+		fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
+		return
+	}
+	goRoot = pinned
 	folder, err := cacheFolder(goTool)
 	if err != nil {
 		modulesWhy = err.Error()
@@ -730,6 +815,22 @@ func downloadModules() {
 	moduleCache = folder
 	cacheProxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(filepath.Join(moduleCache, "cache", "download"))}).String()
 	fillEnv := fillEnvironment()
+	// The settings in effect, as the go command takes them, also from a go.env: each check of the fill and of the
+	// inner go commands must hold.
+	for _, c := range []struct {
+		name string
+		env  []string
+		want map[string]string
+	}{
+		{"the fill", fillEnv, fillSettings},
+		{"an inner go command", GoEnvWith(moduleCache, cacheProxy+",off"), innerGoSettings},
+	} {
+		if err := checkEffective(goTool, c.env, c.want); err != nil {
+			modulesWhy = c.name + ": " + err.Error()
+			fmt.Fprintln(os.Stderr, "localtest: "+modulesWhy)
+			return
+		}
+	}
 	// testdata/modules pins the runtime library's modules and each module that a generator requires; testdata/
 	// modules-other pins the modules that a test writes into a generated module at another version.
 	//
@@ -1089,7 +1190,7 @@ func fillEnvironment() []string {
 	// GOPATH/pkg/sumdb, and never into the GOPATH of the developer (security review of PR #8).
 	return append(fillEnv, "GOPATH="+filepath.Join(filepath.Dir(moduleCache), "localtest-gopath"), "GOMODCACHE="+moduleCache, "GOPROXY="+proxy, "GOSUMDB=sum.golang.org", "GONOSUMDB=", "GONOSUMCHECK=",
 		"GOPRIVATE=", "GONOPROXY=", "GOINSECURE=", "GOVCS=*:off", "GOAUTH=off", "GIT_TERMINAL_PROMPT=0", "GOENV=off", "GOWORK=off",
-		"GOTOOLCHAIN=local")
+		"GOTOOLCHAIN=local", "GOROOT="+goRoot)
 }
 
 // runtimePins gives the go.sum lines of each runtime pin of the archetypes of the shipped registry in root: the zip

@@ -353,6 +353,10 @@ func TestStartServesOnlyCheckedModules(t *testing.T) {
 			"GOROOT/go.env GOPRIVATE":  {with(good.Cache, "GOROOT="+plantedRoot("GOPRIVATE=*\n")), "takes GOPRIVATE=*"},
 			"GOROOT/go.env GOINSECURE": {with(good.Cache, "GOROOT="+plantedRoot("GOINSECURE=*\n")), "takes GOINSECURE=*"},
 			"another GOROOT":           {with(good.Cache, "GOROOT="+plantedRoot("GOSUMDB=sum.golang.org\n")), "not the GOROOT"},
+			// Another go program in place of the go command of the test (security review of PR #8, confirmation 2, N2).
+			"GOTOOLCHAIN of a version": {with(good.Cache, "GOTOOLCHAIN=go1.26.11"), "GOTOOLCHAIN=\"go1.26.11\", not local"},
+			"GOTOOLCHAIN path":         {with(good.Cache, "GOTOOLCHAIN=path"), "GOTOOLCHAIN=\"path\", not local"},
+			"no GOTOOLCHAIN":           {with(good.Cache, "GOTOOLCHAIN="), "GOTOOLCHAIN=\"\", not local"},
 			// GOPROXY=off: when the check is gone, the go command still writes nothing into the GOPATH of the test.
 			"the GOPATH of the test": {with(good.Cache, "GOPATH="+ambientGOPATH, "GOPROXY=off"), "the GOPATH " + ambientGOPATH + " of the test"},
 		} {
