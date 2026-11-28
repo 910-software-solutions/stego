@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/module"
+	"golang.org/x/mod/sumdb/dirhash"
 )
 
 // These tests run stego deps in process, as a service author does, against a
@@ -351,6 +352,8 @@ func walkthroughProject(t *testing.T) {
 	fixture := filepath.Join(filepath.Dir(source), "testdata", "walkthrough5")
 	t.Chdir(serviceFolder(t))
 	walkthroughSettings(t)
+	// The go commands that stego runs in process take the checked module cache of localtest (ST-STD-LOCAL-R03).
+	offlineModules(t)
 	mustRun(t, runInit, "--archetype", "rest-crud")
 	for name, target := range map[string]string{"schema.zed": "authz/schema.zed", "inventory.proto": "proto/inventory.proto", "service.yaml": "service.yaml"} {
 		data, err := os.ReadFile(filepath.Join(fixture, name))
@@ -441,14 +444,13 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 		mustRun(t, runApply)
 		// A go build before stego deps asks for the go.sum entry of the runtime's go.mod, as the fifth walkthrough
 		// found. With it, go list loads the module graph, which needs more than the go.mod of the first apply holds.
-		// The download reads the runtime pin from the registry's runtime folder, so the test needs no published tag.
-		download := exec.Command("go", "mod", "download", "github.com/910-software-solutions/stego/registry/runtime")
-		download.Env = append(os.Environ(), "GOPROXY="+runtimeProxy(t)+",off", "GONOSUMDB=github.com/910-software-solutions/stego/registry/runtime", "GOFLAGS=-mod=mod")
-		if output, err := download.CombinedOutput(); err != nil {
-			t.Fatalf("go mod download: %v\n%s", err, output)
-		}
+		// The test writes the go.sum lines that a go mod download of the runtime pin writes, from the registry's
+		// runtime folder, so the test needs no published tag and no go command with a proxy other than the checked
+		// module cache of localtest (ST-STD-LOCAL-R03).
+		runtimeSums(t)
 		module, sums := moduleFiles(t)
 		list := exec.Command("go", "list", "-mod=readonly", "-e", "-deps", "./fills/...")
+		list.Env = localtest.GoEnv()
 		if output, err := list.CombinedOutput(); err == nil || !strings.Contains(string(output), "updates to go.mod needed") {
 			t.Fatalf("the fixture does not show the state of the walkthrough, which the test needs: %v\n%s", err, output)
 		}
@@ -481,35 +483,31 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 	})
 }
 
-// runtimeProxy writes a module proxy folder that serves the archetype rest-crud's runtime pin from the shipped
-// registry's runtime folder, as stego deps stages it, and gives its file URL.
-func runtimeProxy(t *testing.T) string {
+// runtimeSums adds to go.sum the lines of the runtime pin of rest-crud that go mod download writes when it reads the
+// pin from the registry's runtime folder: the zip hash that the archetype states and the hash of the go.mod of the
+// folder.
+func runtimeSums(t *testing.T) {
 	t.Helper()
 	reg, err := registry.LoadDirectories(shippedRegistry(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pin := reg.Archetype("rest-crud").Runtime
-	escaped, err := module.EscapePath(pin.Module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy := t.TempDir()
-	versions := filepath.Join(proxy, filepath.FromSlash(escaped), "@v")
-	if err := os.MkdirAll(versions, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := registry.WriteRuntimeArchive(reg.RuntimeFolder(), pin.Module, pin.Version, filepath.Join(versions, pin.Version+".zip")); err != nil {
-		t.Fatal(err)
-	}
 	modData, err := os.ReadFile(filepath.Join(reg.RuntimeFolder(), "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, data := range map[string]string{pin.Version + ".mod": string(modData), pin.Version + ".info": fmt.Sprintf("{\"Version\":%q}\n", pin.Version), "list": pin.Version + "\n"} {
-		if err := os.WriteFile(filepath.Join(versions, name), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
+	modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(modData)), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sums := moduleFiles(t)
+	for _, line := range []string{pin.Module + " " + pin.Version + " " + pin.Sum, pin.Module + " " + pin.Version + "/go.mod " + modSum} {
+		if !strings.Contains(sums, line+"\n") {
+			sums += line + "\n"
 		}
 	}
-	return "file://" + filepath.ToSlash(proxy)
+	if err := os.WriteFile("go.sum", []byte(sums), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 // These tests start from ST-GEN-TD03 and stop stego apply at a named point of
@@ -36,7 +38,7 @@ func stegoHookBinary(t *testing.T) string {
 		hookPath = filepath.Join(fixtureRoot, "bin", "stego-hook")
 		build := exec.Command(pinnedGo(t), "build", "-mod=readonly", "-trimpath", "-tags", "stegotesthook", "-o", hookPath, "./cmd/stego")
 		build.Dir = filepath.Join(fixtureRoot, "stego-source")
-		build.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+		build.Env = localtest.GoEnv()
 		if output, err := build.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("build the test build of stego: %v\n%s", err, output)
 		}
@@ -52,7 +54,7 @@ func (s *smallService) stopApply(t *testing.T, point string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, stegoHookBinary(t), "apply")
-	command.Dir, command.Env = s.service, append(slices.Clone(s.env), "STEGO_TEST_STOP_APPLY="+point)
+	command.Dir, command.Env = s.service, serviceEnv(s, "STEGO_TEST_STOP_APPLY="+point)
 	output, err := command.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
@@ -355,7 +357,7 @@ func TestApplySavesWholeOrNothing(t *testing.T) {
 		log := filepath.Join(t.TempDir(), "apply.log")
 		s.write(t, "service.yaml", tagDeclaration)
 		command := exec.Command(stegoHookBinary(t), "apply")
-		command.Dir, command.Env = s.service, append(slices.Clone(s.env), "STEGO_TEST_APPLY_LOG="+log)
+		command.Dir, command.Env = s.service, serviceEnv(s, "STEGO_TEST_APPLY_LOG="+log)
 		if output, err := command.CombinedOutput(); err != nil {
 			t.Fatalf("apply: %v\n%s", err, output)
 		}

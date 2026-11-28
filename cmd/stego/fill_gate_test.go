@@ -478,7 +478,7 @@ func TestAddServiceRuleFlow(t *testing.T) {
 		}
 		vet := exec.Command(pinnedGo(t), "vet", "./fills/admin-policy/...")
 		vet.Dir = p.dir
-		vet.Env = p.keys.env(p.keys.homes["no-key"])
+		vet.Env = keyEnv(p.keys, p.keys.homes["no-key"])
 		if out, err := vet.CombinedOutput(); err != nil {
 			t.Fatalf("go vet of the scaffold: %v\n%s", err, out)
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -186,12 +187,12 @@ func TestCapabilityFillQualification(t *testing.T) {
 		}
 		before := p.read(t, "fills/place-order/fill.yaml")
 		for _, run := range []struct {
-			extra []string
+			goEnv string
 			args  []string
-		}{{[]string{"GOENV=" + goEnv}, []string{"test"}}, {nil, []string{"test", "--", "-count=0"}}} {
-			stdout, stderr, err := p.stegoWith(t, "no-key", run.extra, run.args...)
+		}{{goEnv, []string{"test"}}, {"", []string{"test", "--", "-count=0"}}} {
+			stdout, stderr, err := stegoWithGoEnvFile(t, p, run.goEnv, run.args...)
 			if err == nil || !bytes.Equal(before, p.read(t, "fills/place-order/fill.yaml")) {
-				t.Fatalf("stego test %v with %v passed a failing test or wrote evidence: %v\n%s\n%s", run.args, run.extra, err, stdout, stderr)
+				t.Fatalf("stego test %v with the go env file %q passed a failing test or wrote evidence: %v\n%s\n%s", run.args, run.goEnv, err, stdout, stderr)
 			}
 		}
 		if err := os.Remove(p.path("fills/place-order/fail_test.go")); err != nil {
@@ -450,4 +451,26 @@ func TestBuildRefusesUnqualifiedFill(t *testing.T) {
 			t.Fatalf("stego build did not refuse the fill signed against an older contract: %v", err)
 		}
 	})
+}
+
+// stegoWithGoEnvFile runs the stego binary in the project as the holder of no key, as stegoWith does, with the go env
+// file goEnv as GOENV when it is not "": a file of the person that a go command reads unless GOENV is off. It is the
+// one run of stego whose environment sets a go setting after localtest.GoEnv, which innerGoExempt of
+// internal/assure names: stego sets GOENV=off for each go command that it runs (internal/fill moduleSources), and
+// the test shows that it does.
+func stegoWithGoEnvFile(t *testing.T, p *fillProject, goEnv string, args ...string) (string, string, error) {
+	t.Helper()
+	env := keyEnv(p.keys, p.keys.homes["no-key"])
+	if p.registry != "" {
+		env = append(env, "STEGO_REGISTRY="+p.registry)
+	}
+	if goEnv != "" {
+		env = append(env, "GOENV="+goEnv)
+	}
+	command := exec.Command(stegoBinary(t), args...)
+	command.Dir, command.Env = p.dir, env
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	return stdout.String(), stderr.String(), err
 }

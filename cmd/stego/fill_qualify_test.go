@@ -154,20 +154,23 @@ func testFillKeys(t *testing.T) *fillKeys {
 			}
 			for _, pair := range config {
 				cmd := exec.Command("git", "config", "--global", pair[0], pair[1])
-				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"))
 				if out, err := cmd.CombinedOutput(); err != nil {
 					return "", fmt.Errorf("git config: %v\n%s", err, out)
 				}
 			}
 			k.homes[name] = home
 		}
-		out, err := exec.Command(pinnedGo(t), "env", "GOMODCACHE", "GOCACHE", "GOPATH").Output()
+		goSettings := exec.Command(pinnedGo(t), "env", "GOCACHE", "GOPATH")
+		goSettings.Env = localtest.GoEnv()
+		out, err := goSettings.Output()
 		if err != nil {
 			return "", err
 		}
 		values := strings.Split(strings.TrimSpace(string(out)), "\n")
-		// The module cache is the one of localtest, whose modules are checked, not the shared one.
-		k.goEnv = []string{"GOMODCACHE=" + localtest.ModuleCache(t), "GOCACHE=" + values[1], "GOPATH=" + values[2]}
+		// The module cache is the one of localtest, whose modules are checked, not the shared one: keyEnv takes it from
+		// localtest.GoEnv. GOCACHE and GOPATH stay those of the test run when HOME is a key's own home.
+		k.goEnv = []string{"GOCACHE=" + values[0], "GOPATH=" + values[1]}
 		// The fill fixture is a rest-crud project of the GORM store path until the store path is removed
 		// (ST-SUP-RC20-OC39).
 		k.registry = filepath.Join(fixtureRoot, "fill-store-registry")
@@ -179,27 +182,21 @@ func testFillKeys(t *testing.T) *fillKeys {
 	return &fillKeySet
 }
 
-// env gives the environment of a run of stego as the holder of one key of
-// ST-EXT-TD02, or of no key: its own HOME, the test keyring, no ssh-agent,
-// the built-in registry and the Go settings of the test run.
-func (k *fillKeys) env(home string) []string {
-	// localtest.GoEnv fills the module cache once.
-	var env []string
-	for _, entry := range localtest.GoEnv() {
-		name, _, _ := strings.Cut(entry, "=")
-		switch name {
-		case "HOME", "GNUPGHOME", "SSH_AUTH_SOCK", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "GOFLAGS", "GOWORK", "GOTOOLCHAIN", "GOMODCACHE", "GOCACHE", "GOPATH",
-			"STEGO_REGISTRY", "STEGO_MODULE", "STEGO_GO_VERSION", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM":
-			continue
-		}
-		env = append(env, entry)
-	}
-	env = append(env, k.goEnv...)
-	return append(env, "HOME="+home, "GNUPGHOME="+k.gnupgHome, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+// keyEnv gives the environment of a run of stego, or of go, as the holder of one key of ST-EXT-TD02, or of no key:
+// the environment of localtest.GoEnv, so each go command takes the checked module cache of localtest, with its own
+// HOME and Git configuration, the test keyring, no ssh-agent, the registry of the fill fixture, then the entries
+// extra.
+func keyEnv(k *fillKeys, home string, extra ...string) []string {
+	entries := append(append([]string{}, k.goEnv...), "HOME="+home, "GNUPGHOME="+k.gnupgHome,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		// An empty SSH_AUTH_SOCK is no ssh-agent, as an unset one is; the global Git configuration is the one that
+		// git config --global wrote into the home.
+		"SSH_AUTH_SOCK=", "GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"), "GIT_CONFIG_NOSYSTEM=1",
 		// GOPROXY=off, which the fill check of stego keeps (internal/fill moduleSources): each module comes from the
 		// module cache that localtest filled, and none from a hosted proxy (ST-STD-LOCAL-R03).
-		"GOWORK=off", "GOTOOLCHAIN=local", "GOFLAGS=-mod=mod", "GOPROXY=off", "GIT_CONFIG_NOSYSTEM=1",
+		"GOFLAGS=-mod=mod", "GOPROXY=off",
 		"STEGO_REGISTRY="+k.registry, "STEGO_MODULE=example.com/fills", "STEGO_GO_VERSION=1.26.11")
+	return localtest.GoEnv(append(entries, extra...)...)
 }
 
 // fillProject is one copy of the project of ST-EXT-TD01.
@@ -229,11 +226,11 @@ func (p *fillProject) stegoWith(t *testing.T, key string, extra []string, args .
 	if !ok {
 		t.Fatalf("no home for the key %q", key)
 	}
-	command.Env = p.keys.env(home)
+	var registry []string
 	if p.registry != "" {
-		command.Env = append(command.Env, "STEGO_REGISTRY="+p.registry)
+		registry = []string{"STEGO_REGISTRY=" + p.registry}
 	}
-	command.Env = append(command.Env, extra...)
+	command.Env = keyEnv(p.keys, home, append(registry, extra...)...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -754,7 +751,7 @@ func TestFillQualification(t *testing.T) {
 			}
 			for _, pair := range [][2]string{{"gpg.format", "openpgp"}, {"user.signingkey", p.keys.keyringGPG}, {"gpg.program", program}} {
 				cmd := exec.Command("git", "config", "--global", pair[0], pair[1])
-				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+				cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"))
 				if out, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("git config: %v\n%s", err, out)
 				}
@@ -988,7 +985,7 @@ func TestFillQualification(t *testing.T) {
 		manifest := p.read(t, "fills/unsigned-fill/fill.yaml")
 		command := exec.Command(stegoBinary(t), "fill", "sign", "unsigned-fill")
 		command.Dir = p.dir
-		command.Env = append(p.keys.env(home), "GNUPGHOME="+gnupg)
+		command.Env = keyEnv(p.keys, home, "GNUPGHOME="+gnupg)
 		out, err := command.CombinedOutput()
 		if err == nil || !strings.Contains(string(out), "no signing key is set up") {
 			t.Fatalf("fill sign did not refuse with no signing key: %v\n%s", err, out)

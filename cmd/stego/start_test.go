@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 
+	"github.com/910-software-solutions/stego/internal/localtest"
 	"github.com/910-software-solutions/stego/internal/registry"
 )
 
@@ -472,7 +473,7 @@ func namedProject(t *testing.T) string {
 
 // moduleOf is the module path that a test project of the archetype takes, through STEGO_MODULE.
 func moduleOf(archetype string) []string {
-	return []string{"STEGO_MODULE=example.com/" + archetype, "GOWORK=off"}
+	return []string{"STEGO_MODULE=example.com/" + archetype}
 }
 
 // initialized makes a project folder with namedProject and runs stego init in it.
@@ -517,7 +518,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 			}
 			build := exec.Command("go", "build", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "service"), "./out")
 			build.Dir = project
-			build.Env = append(os.Environ(), "GOWORK=off")
+			build.Env = localtest.GoEnv()
 			if output, err := build.CombinedOutput(); err != nil {
 				t.Errorf("%s: go build ./out: %v\n%s", archetype, err, output)
 			}
@@ -526,7 +527,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 
 	t.Run("ST-DECL-UC01-R01-T04 Init writes the go.mod of the module, and each later command reads the module from it", func(t *testing.T) {
 		// cleared leaves the module and the Go version to the command line and go.mod.
-		cleared := []string{"STEGO_MODULE=", "STEGO_GO_VERSION=", "GOWORK=off"}
+		cleared := []string{"STEGO_MODULE=", "STEGO_GO_VERSION="}
 		read := func(t *testing.T, name string) string {
 			t.Helper()
 			data, err := os.ReadFile(name)
@@ -564,9 +565,10 @@ func TestArchetypeScaffolds(t *testing.T) {
 			t.Errorf("stego validate with another STEGO_MODULE: exit %d, want a refusal that names both modules: %s", run.code, output)
 		}
 		// With no --module, init takes STEGO_MODULE, and with neither the default.
-		for env, want := range map[string]string{"STEGO_MODULE=example.com/from-env": "example.com/from-env", "STEGO_MODULE=": "github.com/example/service"} {
+		for module, want := range map[string]string{"example.com/from-env": "example.com/from-env", "": "github.com/example/service"} {
+			env := "STEGO_MODULE=" + module
 			project := namedProject(t)
-			run := stegoIn(t, project, append(slices.Clone(cleared), env), "init", "--archetype", "rest-crud")
+			run := stegoIn(t, project, append(slices.Clone(cleared), "STEGO_MODULE="+module), "init", "--archetype", "rest-crud")
 			if run.code != 0 {
 				t.Fatalf("%s: stego init: exit %d: %s", env, run.code, run.stderr)
 			}
@@ -868,7 +870,7 @@ func signExampleFill(t *testing.T, project, archetype string, environment []stri
 	}
 	keys := testFillKeys(t)
 	putFile(t, project, "SIGNERS", keys.signers)
-	signing := append(append(slices.Clone(environment), keys.goEnv...), "GOFLAGS=-modcacherw",
+	signing := append(append(append([]string{}, environment...), keys.goEnv...),
 		"HOME="+keys.homes["listed-ssh"], "XDG_CONFIG_HOME="+filepath.Join(keys.homes["listed-ssh"], ".config"))
 	for _, command := range [][]string{{"test"}, {"fill", "sign", "get-greeting"}} {
 		if run := stegoIn(t, project, signing, command...); run.code != 0 {

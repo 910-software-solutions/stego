@@ -238,7 +238,7 @@ func TestScopedAccessWarning(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := strings.TrimSpace(string(top))
-		env := []string{"STEGO_REGISTRY=" + filepath.Join(root, "registry"), "GOWORK=off", "GOTOOLCHAIN=local",
+		env := []string{"STEGO_REGISTRY=" + filepath.Join(root, "registry"),
 			"PATH=" + filepath.Dir(pinnedGo(t)) + string(os.PathListSeparator) + os.Getenv("PATH")}
 		project := copyFolder(t, filepath.Join(root, "examples", "user-management"))
 		// warnings gives the lines of the warning scoped-access in the output of the command.

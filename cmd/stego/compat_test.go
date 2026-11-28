@@ -182,7 +182,7 @@ func TestCompat(t *testing.T) {
 		}
 		// With a registry that does not resolve, compat notes a fixed cause class and never the error text, which can
 		// hold a URL with credentials (security review of PR #482, L2).
-		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
+		s.entries = append(append([]string{}, s.entries...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
 		output, code = s.compat(t, "--base", "HEAD")
 		note := regexp.MustCompile(`(?m)^note: compat did not generate the head \(cause: (registry|generation)\).*$`).FindString(output)
 		if code != 0 || note == "" || strings.Contains(note, "s3cr3t-token") || strings.Contains(note, "nowhere") {
@@ -285,7 +285,7 @@ func TestCompat(t *testing.T) {
 	t.Run("ST-GEN-UC14-R01-T01 A base that cannot be read whole is refused, and the caller's Git variables do not move the check", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)
-		s.env = append(s.env, "GIT_DIR="+filepath.Join(s.parent, "no-such-repository"), "GIT_OBJECT_DIRECTORY="+filepath.Join(s.parent, "no-such-objects"))
+		s.entries = append(append([]string{}, s.entries...), "GIT_DIR="+filepath.Join(s.parent, "no-such-repository"), "GIT_OBJECT_DIRECTORY="+filepath.Join(s.parent, "no-such-objects"))
 		if output, code := s.compat(t, "--base", "HEAD"); code != 0 {
 			t.Fatalf("with GIT_DIR and GIT_OBJECT_DIRECTORY set: exit %d, want 0:\n%s", code, output)
 		}
@@ -429,7 +429,7 @@ func TestCompat(t *testing.T) {
 			t.Fatalf("compat of the head with a fill value gave exit %d, want 0:\n%s", code, output)
 		}
 		// When the checks of validate cannot run, compat says that it checked only the compatibility with the base.
-		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
+		s.entries = append(append([]string{}, s.entries...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "user:s3cr3t-token@nowhere"))
 		output, code = s.compat(t, "--base", "HEAD")
 		note := regexp.MustCompile(`(?m)^note: compat did not run the declaration checks of stego validate.*$`).FindString(output)
 		if code != 0 || !strings.Contains(output, "holds only the compatibility with the base; run stego validate") ||
@@ -453,7 +453,7 @@ func TestCompat(t *testing.T) {
 			t.Fatalf("compat --json with a fill manifest that does not parse gave exit %d, want %d", code, compatUsage)
 		}
 		// The registry stays the one soft cause: the same head with a registry that does not resolve gives the note.
-		s.env = append(append([]string(nil), s.env...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "absent"))
+		s.entries = append(append([]string{}, s.entries...), "STEGO_REGISTRY="+filepath.Join(t.TempDir(), "absent"))
 		output, code = s.compat(t, "--base", "HEAD")
 		if code != 0 || !strings.Contains(output, "(cause: registry)") || !strings.Contains(output, "holds only the compatibility with the base") {
 			t.Fatalf("compat with a registry that does not resolve gave exit %d, want 0 and the note of the registry:\n%s", code, output)

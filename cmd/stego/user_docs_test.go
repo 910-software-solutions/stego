@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -140,7 +139,7 @@ func qualifyDocFills(t *testing.T, project string, environment []string, where s
 	}
 	keys := testFillKeys(t)
 	putFile(t, project, "SIGNERS", keys.signers)
-	signing := append(append(slices.Clone(environment), keys.goEnv...), "GOFLAGS=-modcacherw",
+	signing := append(append(append([]string{}, environment...), keys.goEnv...),
 		"HOME="+keys.homes["listed-ssh"], "XDG_CONFIG_HOME="+filepath.Join(keys.homes["listed-ssh"], ".config"))
 	commands := [][]string{{"test"}}
 	for _, entry := range entries {

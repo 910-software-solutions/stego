@@ -15,7 +15,7 @@ import (
 
 // The proof that each inner go command of a generator test takes the checked module cache of localtest
 // (ST-STD-LOCAL-R03, security review of PR #7, L1 to L3, N1 and F2). It is a scan of the syntax of the Go files of
-// one package at a time, with no type check: each package under internal/generator with a file that imports os/exec.
+// one package at a time, with no type check: each package of innerGoScopes with a file that imports os/exec.
 // A package that runs a go command must have a TestMain that calls localtest.MainModules.
 //
 // The scan finds the forms that come by accident. It does not claim to find deliberate aliasing: a second slice that
@@ -32,16 +32,39 @@ import (
 //
 // The environment of a command in scope is each assignment of Env on the variable that holds it, after the call and
 // before the variable is set again. There must be one, and each must be, as its outermost expression, a call of
-// localtest.GoEnv or localtest.FillEnv, a call of a function of the package that returns one, or a variable or a
-// parameter whose every value is one. An append to it is a fault. Each entry that a call of GoEnv adds must be read:
-// a string, a concatenation that starts with a string, localtest.PostgresEnv, nil, or a variable, field or parameter
-// whose every value is one; and it must not set a go setting that GoEnv sets (innerGoSettings), except an entry of
-// innerGoAllowed.
+// localtest.GoEnv or localtest.FillEnv, a call of a function of the package that returns one, or a variable, a
+// parameter or a field whose every value is one (a field by its name: each value that the package gives a field of
+// that name). An append to it is a fault. Each entry that a call of GoEnv adds must be read: a string, a
+// concatenation that starts with a string, localtest.PostgresEnv, nil, a call of a function of the package that gives
+// one, or a variable, field or parameter whose every value is one; and it must not set a go setting that GoEnv sets
+// (innerGoSettings), except an entry of innerGoAllowed and the GOWORK entry of localtest.RuntimeWorkspace, whose work
+// file it checks.
+//
+// In cmd/stego only the test files are read for commands (innerGoTestScopes): its production files run the go of the
+// person who runs stego.
 
 // innerGoScopes are the folders whose packages innerGoFaults reads: the generator packages and the compiler, whose
 // tests build and run generated modules with the checked module cache of localtest (the compiler since the fix of
-// PR #7).
-var innerGoScopes = []string{"internal/generator/", "internal/compiler/"}
+// PR #7), and cmd/stego, whose tests build stego and run it and go on generated projects (sec-8 F3).
+var innerGoScopes = []string{"internal/generator/", "internal/compiler/", "cmd/stego/"}
+
+// innerGoTestScopes are the folders of innerGoScopes in which only the commands of the test files (*_test.go) are
+// checked. The other files of the package are still read, for the functions, constants and fields that a test uses.
+// The production files of cmd/stego (main.go, fill_sign.go) run the go, gpg and ssh-keygen of the person who runs
+// stego, with the environment of that person, which is correct for them: they are not inner commands of a test.
+var innerGoTestScopes = []string{"cmd/stego/"}
+
+// innerGoInScope tells if the scan reads the file of the tree: a Go file of a folder of innerGoScopes, outside
+// testdata.
+func innerGoInScope(name string) bool {
+	return slices.ContainsFunc(innerGoScopes, func(scope string) bool { return strings.HasPrefix(name, scope) }) && strings.HasSuffix(name, ".go") && !strings.Contains(name, "/testdata/")
+}
+
+// innerGoTestOnly tells if the file is a production file of a folder of innerGoTestScopes, whose commands the scan
+// does not check.
+func innerGoTestOnly(name string) bool {
+	return !strings.HasSuffix(name, "_test.go") && slices.ContainsFunc(innerGoTestScopes, func(scope string) bool { return strings.HasPrefix(name, scope) })
+}
 
 // innerGoSettings are the go settings that localtest.GoEnv sets, which no entry after it may set again.
 var innerGoSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSUMDB": true, "GONOSUMDB": true, "GONOSUMCHECK": true,
@@ -50,14 +73,18 @@ var innerGoSettings = map[string]bool{"GOMODCACHE": true, "GOPROXY": true, "GOSU
 
 // innerGoAllowed are the only entries of a go setting that may follow GoEnv: they change no module source and no
 // proxy. -mod=mod lets a command update go.mod from the checked cache. -modcacherw is refused: it makes the folders of
-// the long-lived checked cache writable (security review of PR #7, F1).
-var innerGoAllowed = map[string]bool{"GOFLAGS=-mod=mod": true, "GOFLAGS=": true}
+// the long-lived checked cache writable (security review of PR #7, F1). GOPROXY=off takes the proxy of the checked
+// cache away and adds none: a run of stego needs it, as the fill check of stego takes the hosted proxy unless
+// GOPROXY is off (internal/fill moduleSources, sec-8 F3).
+var innerGoAllowed = map[string]bool{"GOFLAGS=-mod=mod": true, "GOFLAGS=": true, "GOPROXY=off": true}
 
 // innerGoExempt are the functions, by their file and name, whose command runs a program that the scan cannot read and
 // that is not go, each with its reason. Only a command whose program the scan does not know is exempt; a go command
 // of such a function is still checked.
 var innerGoExempt = map[string]string{
 	"internal/compiler/architecture_view_browser_test.go startBrowser": "it runs the Chrome or Chromium that STEGO_BROWSER or the browser lookup names, never go",
+	// sec-8 F3: the one run of the stego binary in cmd/stego whose environment may set a go setting after GoEnv.
+	"cmd/stego/capability_fill_test.go stegoWithGoEnvFile": "it runs the stego binary, never go, with the go env file of a person (GOENV) that filters the tests out, to show that stego test sets GOENV=off for the go commands that it runs",
 }
 
 // goProgram is what the scan knows of the program of a command.
@@ -85,8 +112,10 @@ type goScope struct {
 	defs     []goDef
 	calls    []*ast.CallExpr
 	results  []ast.Expr
-	file     *ast.File
-	bound    *goSite
+	// returns are the results of each return statement, in order.
+	returns [][]ast.Expr
+	file    *ast.File
+	bound   *goSite
 }
 
 // goSite is one call of a function, in the scope that makes it.
@@ -205,6 +234,7 @@ func (g *goScan) newScope(file *ast.File, kind *ast.FuncType, body *ast.BlockStm
 			sc.calls = append(sc.calls, n)
 		case *ast.ReturnStmt:
 			sc.results = append(sc.results, n.Results...)
+			sc.returns = append(sc.returns, n.Results)
 		case *ast.CompositeLit:
 			// A field set in a composite literal, such as &service{env: ...}.
 			for _, elt := range n.Elts {
@@ -281,6 +311,10 @@ func (g *goScan) values(name string, sc *goScope) ([]goValue, bool, bool) {
 				case len(def.rhs) == 1 && i == 0:
 					// p, err := exec.LookPath("go"): the first value of the call.
 					found = append(found, goValue{def.rhs[0], s})
+				case len(def.rhs) == 1 && g.resultValues(def.rhs[0], i, s) != nil:
+					// project, env := applied(t): the value at the place i of each return of a function of the package
+					// (sec-8 F3).
+					found = append(found, g.resultValues(def.rhs[0], i, s)...)
 				case len(def.rhs) == 0:
 				default:
 					found = append(found, goValue{nil, s})
@@ -321,6 +355,37 @@ func (g *goScan) values(name string, sc *goScope) ([]goValue, bool, bool) {
 		return []goValue{{value, nil}}, true, false
 	}
 	return nil, false, false
+}
+
+// resultValues gives the value at the place i of each return statement of the function that expr calls in the scope
+// sc: a function of the package, or a function literal held in a variable of the same name in a scope that holds sc.
+// It is nil when expr is not such a call or a return statement does not give that place.
+func (g *goScan) resultValues(expr ast.Expr, i int, sc *goScope) []goValue {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	f := g.funcs[id.Name]
+	for _, other := range g.scopes {
+		if f == nil && other.parent != nil && !other.method && other.name == id.Name && within(sc, other.parent) {
+			f = other
+		}
+	}
+	if f == nil || len(f.returns) == 0 {
+		return nil
+	}
+	var found []goValue
+	for _, results := range f.returns {
+		if i >= len(results) {
+			return nil
+		}
+		found = append(found, goValue{results[i], f})
+	}
+	return found
 }
 
 // program reads what the program expression is.
@@ -464,6 +529,18 @@ func (g *goScan) envFault(expr ast.Expr, sc *goScope, depth int) string {
 			}
 			return ""
 		}
+	case *ast.SelectorExpr:
+		// A field, such as the environment of a fixture (s.env of cmd/stego, sec-8 F3): each value that the package
+		// gives a field of the name, of any type, in an assignment or a composite literal, must be one.
+		sets := g.fields[v.Sel.Name]
+		if len(sets) > 0 {
+			for _, set := range sets {
+				if why := g.envFault(set.call.Fun, set.scope, depth+1); why != "" {
+					return why
+				}
+			}
+			return ""
+		}
 	}
 	return "an environment that is not of localtest as its outermost expression: " + g.text(expr)
 }
@@ -509,6 +586,22 @@ func (g *goScan) sliceFault(expr ast.Expr, sc *goScope, depth int) string {
 		if pkg == "localtest" && name == "PostgresEnv" {
 			return ""
 		}
+		// A copy of a slice holds its entries (sec-8 F3).
+		if pkg == "slices" && name == "Clone" && len(v.Args) == 1 {
+			return g.sliceFault(v.Args[0], sc, depth+1)
+		}
+		// A call of a function of the package whose every result is a slice that the scan reads, such as moduleOf of
+		// cmd/stego (sec-8 F3).
+		if id, ok := v.Fun.(*ast.Ident); ok {
+			if f := g.funcs[id.Name]; f != nil && len(f.results) > 0 {
+				for _, r := range f.results {
+					if why := g.sliceFault(r, f, depth+1); why != "" {
+						return why
+					}
+				}
+				return ""
+			}
+		}
 		if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "append" && len(v.Args) > 0 {
 			if why := g.sliceFault(v.Args[0], sc, depth+1); why != "" {
 				return why
@@ -541,8 +634,13 @@ func (g *goScan) sliceFault(expr ast.Expr, sc *goScope, depth int) string {
 			return ""
 		}
 	case *ast.SelectorExpr:
-		// A field: each value that the package gives it.
+		// A field: each value that the package gives it. A field is read once, so a value that holds the field
+		// itself, such as s.entries = append(slices.Clone(s.entries), ...), ends the read (sec-8 F3).
 		sets := g.fields[v.Sel.Name]
+		if g.seen["field "+v.Sel.Name] && len(sets) > 0 {
+			return ""
+		}
+		g.seen["field "+v.Sel.Name] = true
 		if len(sets) > 0 {
 			for _, set := range sets {
 				if why := g.sliceFault(set.call.Fun, set.scope, depth+1); why != "" {
@@ -659,6 +757,11 @@ func (g *goScan) entryFault(expr ast.Expr, sc *goScope, depth int) string {
 		}
 		return ""
 	case *ast.CallExpr:
+		// localtest.RuntimeWorkspace gives the one GOWORK entry that may follow GoEnv: a work file that it checks uses
+		// only the module folder and registry/runtime (sec-8 F3).
+		if pkg, name := qualified(v.Fun); pkg == "localtest" && name == "RuntimeWorkspace" {
+			return ""
+		}
 		// A call of a function of the package whose every result is an entry that the scan reads, such as
 		// wiringPath() for "PATH=" + ... (fix of PR #7, internal/compiler).
 		if id, ok := v.Fun.(*ast.Ident); ok {
@@ -813,7 +916,7 @@ func innerGoFaults(files map[string][]byte) []string {
 	}
 	for _, sc := range slices.Clone(g.scopes) {
 		exec := execName(sc.file)
-		if exec == "" {
+		if exec == "" || innerGoTestOnly(g.fset.Position(sc.file.Pos()).Filename) {
 			continue
 		}
 		for _, call := range sc.calls {
@@ -849,6 +952,9 @@ func innerGoFaults(files map[string][]byte) []string {
 	mainModules := false
 	for _, file := range parsed {
 		exec := execName(file)
+		if innerGoTestOnly(g.fset.Position(file.Pos()).Filename) {
+			exec = ""
+		}
 		called := map[ast.Expr]bool{}
 		ast.Inspect(file, func(node ast.Node) bool {
 			if call, ok := node.(*ast.CallExpr); ok {
@@ -1170,6 +1276,169 @@ func TestX(t *testing.T) {
 	_ = again.Run()
 }`
 
+// innerGoStegoFile is the planted test file of cmd/stego, and innerGoStegoMain its planted production file.
+const (
+	innerGoStegoFile = "cmd/stego/plant_test.go"
+	innerGoStegoMain = "cmd/stego/main.go"
+	innerGoStegoFill = "cmd/stego/capability_fill_test.go"
+)
+
+// innerGoStegoPlants are packages of cmd/stego, by file name and body, in which the check must name exactly one fault
+// (sec-8 F3): a test file of cmd/stego is read, and each form that the fix reads (a field, a function that gives the
+// entries, slices.Clone, a result of a call, the work file of localtest.RuntimeWorkspace, GOPROXY=off and the
+// exemption of stegoWithGoEnvFile) still finds the bypass in it.
+var innerGoStegoPlants = map[string]map[string]string{
+	"a go command with the environment of the test in a test file of cmd/stego": {innerGoStegoFile: `
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	_ = cmd.Run()
+}`},
+	"a go command of a production file and one of a test file": {innerGoStegoMain: `
+func run() {
+	cmd := exec.Command("go", "build")
+	cmd.Env = os.Environ()
+	_ = cmd.Run()
+}`, innerGoStegoFile: `
+func TestX(t *testing.T) {
+	_ = exec.Command("go", "build").Run()
+}`},
+	"a fixture field set from os.Environ": {innerGoStegoFile: `
+type fixture struct{ env []string }
+func TestX(t *testing.T) {
+	f := &fixture{env: localtest.GoEnv()}
+	f.env = append(os.Environ(), "STEGO_X=1")
+	cmd := exec.Command(stegoBinary(t), "apply")
+	cmd.Env = f.env
+	_ = cmd.Run()
+}`},
+	"a field that holds itself and a go setting": {innerGoStegoFile: `
+type fixture struct{ entries []string }
+func fixtureEnv(f *fixture) []string { return localtest.GoEnv(slices.Clone(f.entries)...) }
+func TestX(t *testing.T) {
+	f := &fixture{entries: []string{"HOME=/h"}}
+	f.entries = append(slices.Clone(f.entries), "GOPROXY=direct")
+	cmd := exec.Command("go", "build")
+	cmd.Env = fixtureEnv(f)
+	_ = cmd.Run()
+}`},
+	"a go setting that a function gives as the entries of GoEnv": {innerGoStegoFile: `
+func moduleOf(name string) []string { return []string{"STEGO_MODULE=example.com/" + name, "GOMODCACHE=/shared"} }
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(moduleOf("x")...)
+	_ = cmd.Run()
+}`},
+	"a go setting in a copy given to GoEnv": {innerGoStegoFile: `
+func TestX(t *testing.T) {
+	cleared := []string{"STEGO_MODULE=", "GONOSUMDB=*"}
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(slices.Clone(cleared)...)
+	_ = cmd.Run()
+}`},
+	"a go setting in the second result of a function": {innerGoStegoFile: `
+func applied(t *testing.T) (string, []string) { return t.TempDir(), []string{"GOINSECURE=*"} }
+func TestX(t *testing.T) {
+	dir, env := applied(t)
+	cmd := exec.Command("go", "build")
+	cmd.Dir, cmd.Env = dir, localtest.GoEnv(env...)
+	_ = cmd.Run()
+}`},
+	"a go setting in the second result of a function literal": {innerGoStegoFile: `
+func TestX(t *testing.T) {
+	edited := func(t *testing.T) (string, []string) { return t.TempDir(), []string{"GOPRIVATE=*"} }
+	dir, env := edited(t)
+	cmd := exec.Command("go", "build")
+	cmd.Dir, cmd.Env = dir, localtest.GoEnv(env...)
+	_ = cmd.Run()
+}`},
+	"a work file that localtest did not check": {innerGoStegoFile: `
+func TestX(t *testing.T) {
+	work := filepath.Join(t.TempDir(), "runtime.work")
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv("GOWORK=" + work)
+	_ = cmd.Run()
+}`},
+	"a work file of another function of localtest": {innerGoStegoFile: `
+func TestX(t *testing.T) {
+	cmd := exec.Command("go", "build")
+	cmd.Env = localtest.GoEnv(localtest.OtherWorkspace(t, t.TempDir()))
+	_ = cmd.Run()
+}`},
+	"a go command in the exempt stegoWithGoEnvFile": {innerGoStegoFill: `
+func stegoWithGoEnvFile(t *testing.T, goEnv string) {
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Env = localtest.GoEnv("GOENV=" + goEnv)
+	_ = cmd.Run()
+}`},
+	"a run of stego with a go setting in another function of the exempt file": {innerGoStegoFill: `
+func stegoWithGoEnvFile(t *testing.T, goEnv string) {
+	cmd := exec.Command(stegoBinary(t), "test")
+	cmd.Env = localtest.GoEnv("GOENV=" + goEnv)
+	_ = cmd.Run()
+}
+func otherRun(t *testing.T, goEnv string) {
+	cmd := exec.Command(stegoBinary(t), "test")
+	cmd.Env = localtest.GoEnv("GOENV=" + goEnv)
+	_ = cmd.Run()
+}`},
+}
+
+// innerGoStegoClean is a package of cmd/stego that the check must pass: each form that the tests of cmd/stego use, a
+// go command of a production file, which runs the go of the person, and the exempt stegoWithGoEnvFile.
+var innerGoStegoClean = map[string]string{innerGoStegoMain: `
+func run() {
+	cmd := exec.Command("go", "build")
+	cmd.Env = append(os.Environ(), "GOFLAGS=-modcacherw")
+	_ = cmd.Run()
+	_ = (&exec.Cmd{Path: "go"}).Run()
+}`, innerGoStegoFile: `
+type service struct{ entries []string }
+type fixture struct{ env []string }
+func stegoEnv(extra ...string) []string { return localtest.GoEnv(append([]string{"GOPROXY=off"}, extra...)...) }
+func serviceEnv(s *service, extra ...string) []string {
+	return stegoEnv(append(append([]string{}, s.entries...), extra...)...)
+}
+func moduleOf(name string) []string { return []string{"STEGO_MODULE=example.com/" + name} }
+func applied(t *testing.T) (string, []string) { return t.TempDir(), moduleOf("x") }
+func TestX(t *testing.T) {
+	s := &service{entries: []string{"HOME=/h"}}
+	s.entries = append(slices.Clone(s.entries), "PATH=/bin")
+	run := exec.Command(stegoBinary(t), "plan")
+	run.Env = serviceEnv(s, "STEGO_X=1")
+	_ = run.Run()
+	f := &fixture{env: localtest.GoEnv("HOME=/h")}
+	build := exec.Command("go", "build")
+	build.Env = f.env
+	_ = build.Run()
+	dir, env := applied(t)
+	edited := func(t *testing.T) (string, []string) { return dir, env }
+	_, more := edited(t)
+	vet := exec.Command("go", "vet")
+	vet.Dir, vet.Env = dir, localtest.GoEnv(append(slices.Clone(env), more...)...)
+	_ = vet.Run()
+	work := exec.Command("go", "build")
+	work.Env = localtest.GoEnv(localtest.RuntimeWorkspace(t, dir))
+	_ = work.Run()
+}`, innerGoStegoFill: `
+func stegoWithGoEnvFile(t *testing.T, goEnv string) {
+	cmd := exec.Command(stegoBinary(t), "test")
+	cmd.Env = localtest.GoEnv("GOENV=" + goEnv)
+	_ = cmd.Run()
+}`}
+
+// stegoPlant gives the planted files as a package of cmd/stego, each file as plantFile gives it. A syntax scan reads
+// the TestMain of each file.
+func stegoPlant(bodies map[string]string) map[string][]byte {
+	files := map[string][]byte{}
+	for name, body := range bodies {
+		for file, data := range plantFile(name, "main", body) {
+			files[file] = data
+		}
+	}
+	return files
+}
+
 // plantPackage gives the planted test file body as a package of one file, with a TestMain that calls
 // localtest.MainModules unless the body has a TestMain of its own, so that each plant shows its own fault.
 func plantPackage(body string) map[string][]byte {
@@ -1181,7 +1450,7 @@ func plantFile(name, pkg, body string) map[string][]byte {
 	if !strings.Contains(body, "func TestMain(") {
 		body = "\nfunc TestMain(m *testing.M) { os.Exit(localtest.MainModules(m)) }\n" + body
 	}
-	imports := "import (\n\t\"context\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"runtime\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"github.com/910-software-solutions/stego/internal/localtest\"\n)\n"
+	imports := "import (\n\t\"context\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"runtime\"\n\t\"slices\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"github.com/910-software-solutions/stego/internal/localtest\"\n)\n"
 	if strings.Contains(body, "run.Command") {
 		imports = strings.Replace(imports, "\t\"os/exec\"\n", "\trun \"os/exec\"\n", 1)
 	}
@@ -1209,10 +1478,25 @@ func TestInnerGoCommandsTakeTheCheckedCache(t *testing.T) {
 		if faults := innerGoFaults(plantPackage(innerGoClean)); len(faults) > 0 {
 			t.Errorf("the scan names faults in the clean package:\n%s", strings.Join(faults, "\n"))
 		}
+		// cmd/stego (sec-8 F3): its test and production files are read, its testdata is not, and only the commands of
+		// its test files are checked.
+		for name, read := range map[string]bool{innerGoStegoFile: true, innerGoStegoMain: true, "cmd/stego/testdata/walkthrough5/x_test.go": false, "cmd/stegox/a_test.go": false} {
+			if innerGoInScope(name) != read {
+				t.Errorf("the scan reads %s: %v, want %v", name, !read, read)
+			}
+		}
+		for name, bodies := range innerGoStegoPlants {
+			if faults := innerGoFaults(stegoPlant(bodies)); len(faults) != 1 {
+				t.Errorf("the scan names %d faults, not 1, in the plant %q of cmd/stego: %v", len(faults), name, faults)
+			}
+		}
+		if faults := innerGoFaults(stegoPlant(innerGoStegoClean)); len(faults) > 0 {
+			t.Errorf("the scan names faults in the clean package of cmd/stego:\n%s", strings.Join(faults, "\n"))
+		}
 		_, tree := readHead(t)
 		packages := map[string]map[string][]byte{}
 		for _, name := range tree.paths() {
-			if !slices.ContainsFunc(innerGoScopes, func(scope string) bool { return strings.HasPrefix(name, scope) }) || !strings.HasSuffix(name, ".go") || strings.Contains(name, "/testdata/") {
+			if !innerGoInScope(name) {
 				continue
 			}
 			data, _ := tree.File(name)

@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/910-software-solutions/stego/internal/localtest"
 )
 
 const rpcProto = `syntax="proto3";package sample.v1;message Request{string text=1;}message Response{string text=1;}service Records{rpc Echo(Request)returns(Response);rpc Watch(Request)returns(stream Response);}`
@@ -76,6 +78,7 @@ func TestRPCProcessCommandsWithoutStorage(t *testing.T) {
 		}
 	}
 	build := exec.Command("go", "build", "-mod=readonly", "./...")
+	build.Env = localtest.GoEnv()
 	if data, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("standalone project build: %v\n%s", err, data)
 	}

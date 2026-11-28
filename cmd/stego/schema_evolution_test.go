@@ -29,8 +29,17 @@ const evolutionSpiceDBImage = "authzed/spicedb:v1.57.1@sha256:9ea6df2d3cca23ed63
 // service binary of each release, and the folder of the last release, where the check runs.
 type evolution struct {
 	repo, bin string
-	env       []string
-	plans     map[string]string
+	// entries are the environment entries of a command in the repository, after those of localtest.GoEnv
+	// (evolutionEnv).
+	entries []string
+	plans   map[string]string
+}
+
+// evolutionEnv gives the environment of a command in the repository of the evolution: the environment of
+// localtest.GoEnv, so each go command takes the checked module cache of localtest, then the entries of the evolution
+// and the entries extra.
+func evolutionEnv(e *evolution, extra ...string) []string {
+	return localtest.GoEnv(append(append([]string{}, e.entries...), extra...)...)
 }
 
 // The declaration of v1 of ST-GEN-TD04, by the edit of the declaration of the example: the field OrgSetting.rank.
@@ -88,9 +97,9 @@ func newEvolution(t *testing.T) *evolution {
 	e := &evolution{repo: filepath.Join(parent, "user-management"), bin: filepath.Join(parent, "bin"), plans: map[string]string{}}
 	home := filepath.Join(parent, ".home")
 	// The module cache is the one of localtest (GoEnv), so no build downloads into the temporary home.
-	e.env = append(localtest.GoEnv(), "HOME="+home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GOWORK=off", "GOTOOLCHAIN=local",
-		"STEGO_REGISTRY="+filepath.Join(root, "registry"), "PATH="+filepath.Dir(pinnedGo(t))+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"GIT_AUTHOR_NAME=td04", "GIT_AUTHOR_EMAIL=td04@example.test", "GIT_COMMITTER_NAME=td04", "GIT_COMMITTER_EMAIL=td04@example.test")
+	e.entries = []string{"HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"STEGO_REGISTRY=" + filepath.Join(root, "registry"), "PATH=" + filepath.Dir(pinnedGo(t)) + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GIT_AUTHOR_NAME=td04", "GIT_AUTHOR_EMAIL=td04@example.test", "GIT_COMMITTER_NAME=td04", "GIT_COMMITTER_EMAIL=td04@example.test"}
 	if output, err := exec.Command("cp", "-a", filepath.Join(root, "examples", "user-management"), e.repo).CombinedOutput(); err != nil {
 		t.Fatalf("copy the example: %v\n%s", err, output)
 	}
@@ -270,7 +279,7 @@ var (
 func (e *evolution) git(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
-	cmd.Dir, cmd.Env = e.repo, e.env
+	cmd.Dir, cmd.Env = e.repo, evolutionEnv(e)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
@@ -282,7 +291,7 @@ func (e *evolution) git(t *testing.T, args ...string) string {
 func (e *evolution) stego(t *testing.T, stego string, args ...string) (string, string) {
 	t.Helper()
 	cmd := exec.Command(stego, args...)
-	cmd.Dir, cmd.Env = e.repo, e.env
+	cmd.Dir, cmd.Env = e.repo, evolutionEnv(e)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), err.Error()
@@ -311,7 +320,7 @@ func (e *evolution) buildWith(goBin, tag, root string) error {
 		return err
 	}
 	archive := exec.Command("sh", "-c", `git archive "$1" | tar -x -C "$2"`, "sh", tag, dir)
-	archive.Dir, archive.Env = e.repo, e.env
+	archive.Dir, archive.Env = e.repo, evolutionEnv(e)
 	if output, err := archive.CombinedOutput(); err != nil {
 		return fmt.Errorf("check out %s: %v\n%s", tag, err, output)
 	}
@@ -321,7 +330,7 @@ func (e *evolution) buildWith(goBin, tag, root string) error {
 		{"build", "-o", filepath.Join(e.bin, tag), "./out"},
 	} {
 		cmd := exec.Command(goBin, args...)
-		cmd.Dir, cmd.Env = dir, e.env
+		cmd.Dir, cmd.Env = dir, evolutionEnv(e)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("go %s for %s: %v\n%s", strings.Join(args, " "), tag, err, output)
 		}
@@ -425,9 +434,9 @@ func TestSchemaEvolution(t *testing.T) {
 	}
 	run := exec.Command(pinnedGo(t), append(args, "./out/evolutioncheck")...)
 	run.Dir = dir
-	run.Env = append(append(e.env, postgres...), "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_TD04_SEED="+seed,
+	run.Env = evolutionEnv(e, append(postgres, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_TD04_SEED="+seed,
 		"STEGO_TD04_V1="+filepath.Join(e.bin, "v1"), "STEGO_TD04_V2="+filepath.Join(e.bin, "v2"), "STEGO_TD04_V3="+filepath.Join(e.bin, "v3"),
-		"STEGO_TD04_V1R="+filepath.Join(e.bin, "v1r"))
+		"STEGO_TD04_V1R="+filepath.Join(e.bin, "v1r"))...)
 	var output bytes.Buffer
 	run.Stdout, run.Stderr = &output, &output
 	runErr := run.Run()
