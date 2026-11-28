@@ -146,6 +146,11 @@ type Parts struct {
 	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
 	// ST-SUP-RC27-OC11).
 	Provisioning *Provisioning
+	// SchemaText is the authorization schema text of the release, the text that its migration job writes
+	// (Migration.Schema). New computes its canonical digest once, and the command runtimes decide a reference to a row
+	// that a Create of the same attempt wrote by the record of that create only while SpiceDB serves a schema of that
+	// digest (authz.SchemaGate, ST-SUP-RP10-LC59). Empty never proves, so every reference is decided at the provider.
+	SchemaText string
 }
 
 func (p Parts) check() error {
@@ -347,6 +352,14 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		Logger: svc.telemetry.LoggerProvider()}
 	// The counter of the charges of counted checks that cannot commit (ST-SUP-RP10-LC54; security review of PR #482, I4).
 	config.Meter = svc.telemetry.MeterProvider()
+	// The pod computes the canonical digest of the schema of its own release once, at start, and a reference to a
+	// row of the same call is decided by its create only while SpiceDB serves a schema of that digest
+	// (ST-SUP-RP10-LC59).
+	if p.SchemaText != "" {
+		if config.SchemaGate, err = authz.NewSchemaGate(p.SchemaText, svc.provider, svc.authz.DecisionTimeout()); err != nil {
+			return nil, fmt.Errorf("service: the authorization schema of the release: %w", err)
+		}
+	}
 	if err := ringNeeded(p, s.Ring); err != nil {
 		return nil, err
 	}

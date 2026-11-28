@@ -91,6 +91,10 @@ type runtimeWiringData struct {
 	Algorithms           []string
 	// AcceptIDToken is the declared opt-in of the auth provider to an ID token as the bearer (ST-SUP-Q218).
 	AcceptIDToken bool
+	// CreatesWithChildren is true when a command or a worker declares creates_with_children: the parts give the
+	// runtime the schema text of the release, whose digest each pod computes at start, and the migration job reads
+	// the schema back (ST-SUP-RP10-LC59). A service with no opt-in keeps its generated wiring.
+	CreatesWithChildren bool
 	// AuthComponent is the auth provider of the declaration, such as jwt-auth or oidc-auth, which the start stage of
 	// a refused verifier setting names (ST-SUP-RP14-LC05).
 	AuthComponent string
@@ -184,6 +188,12 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	if slices.Contains(in.Names, restAPIComponent) && len(svc.Collections) > 0 {
 		data.API = pkg(restAPIComponent)
+	}
+	for _, c := range svc.Commands {
+		data.CreatesWithChildren = data.CreatesWithChildren || c.CreatesWithChildren
+	}
+	for _, w := range svc.Workers {
+		data.CreatesWithChildren = data.CreatesWithChildren || w.CreatesWithChildren
 	}
 	if len(svc.Commands) > 0 {
 		data.Commands = pkg(commandComponent, "handlers")

@@ -234,6 +234,11 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 		// The relations of the authorization schema: a relation service of the type tenant makes Provision relate the
 		// tenant resource to the service-level resource of the tenant (ST-SUP-RC27-OC18).
 		Relations: svcauthz.Relations,
+{{- if .CreatesWithChildren}}
+		// The schema text of the release, whose canonical digest the pod computes at start: a reference to a row of the
+		// same call is decided by its create only while SpiceDB serves a schema of that digest (ST-SUP-RP10-LC59).
+		SchemaText: svcauthz.Schema,
+{{- end}}
 		// The grants of the runtime role that the migration job gives, which the manifest checks on the entity
 		// tables (ST-SUP-RP14-LC06).
 		Grants: grants,
@@ -693,6 +698,10 @@ func Migrate(ctx context.Context) error {
 		Ledger:      func(ctx context.Context, conn *sql.Conn) error { return svcstorage.Migrate(ctx, conn) },
 		Outbox:      queueText, Audit: auditText, Authorization: authzText,
 		WriteSchema: func(ctx context.Context, conn grpc.ClientConnInterface) error { return svcauthz.WriteSchema(ctx, conn) },
+{{- if .CreatesWithChildren}}
+		// The job reads the schema back and fails when SpiceDB serves another one (ST-SUP-RP10-LC59).
+		Schema: svcauthz.Schema,
+{{- end}}
 		Definitions: svcauthz.Definitions,
 		Grants:      grants, TenantSchema: tenantSchema,
 		Service:     Service, Backfills: backfills, Parts: &declaredParts,

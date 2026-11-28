@@ -24,4 +24,7 @@ type Query struct {
 	// Method is the protobuf method, as package.Service/Method, a unary method or a server stream, that serves the
 	// query over gRPC.
 	Method string `yaml:"method,omitempty"`
+	// CreatesWithChildren is read only so that checking can refuse it: a query writes no row, so it may not declare
+	// it (ST-DECL-INV108).
+	CreatesWithChildren bool `yaml:"creates_with_children,omitempty"`
 }

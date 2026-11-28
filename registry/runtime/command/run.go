@@ -127,6 +127,10 @@ type Config struct {
 	// Ring is the key ring of the secret fields (ST-SUP-RP10-LC44): it seals each readable secret that a write
 	// stores and opens each one that a read of the handle scans. Nil refuses an entity with a readable secret.
 	Ring *sealed.Ring
+	// SchemaGate tells whether SpiceDB serves the schema of this release now: a reference to a row that a Create of
+	// the same attempt wrote is decided by the record of that create only while it holds (ST-SUP-RP10-LC59). Nil
+	// never holds, so every reference is decided at the provider.
+	SchemaGate *authz.SchemaGate
 }
 
 // TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
@@ -175,6 +179,9 @@ type Runtime struct {
 	chargePoolWarned atomic.Bool
 	chargeBegun      func(tenantID string)
 	beforeCommit     func(ctx context.Context, tx *sql.Tx) error
+	// witnessRecordHook, when set by a test, changes the witness records of each created-by-Create record before the
+	// handle keeps it (ST-SUP-RP10-LC59-T15).
+	witnessRecordHook func(entity string, records []witnessRecord) []witnessRecord
 	// rerun, when set by a test, gets the random wait before each rerun and the time left after it.
 	rerun func(n int, wait, left time.Duration)
 	// step, when set by a test, runs right after lock_timeout is set before a statement of the wrapper, the enqueue,
@@ -358,6 +365,12 @@ type CommandSpec[P any] struct {
 	// entities of Resets, and so may check their fields: ResetAttempts refuses a caller who holds one of them on the
 	// row (security review of PR #489, second review, M2b).
 	ResetGuards []string
+	// CreatesWithChildren is the declared creates_with_children of the command (ST-DECL-INV108), and Witnesses the
+	// witnesses of each decision of each reference among its written entities that checking proved: a reference of a
+	// new row to a row that a Create of the same attempt wrote is decided by the record of that create when one of
+	// them matches it (ST-SUP-RP10-LC59). NewCommand copies them, so a later change of the spec changes nothing.
+	CreatesWithChildren bool
+	Witnesses           []Witness
 }
 
 // Resource is the generated declaration of the resource of a command (ST-SUP-RP10-LC31): its resource type at the
@@ -392,6 +405,8 @@ type Command[P any] struct {
 	lists map[AnyList]listCopy
 	// resets are the counters whose attempts the fill may reset (ST-DECL-INV104).
 	resets map[string]bool
+	// witnesses is the frozen witness table of a command that declares creates_with_children (ST-SUP-RP10-LC59).
+	witnesses witnessTable
 }
 
 // NewCommand checks the declaration of one command.
@@ -428,9 +443,15 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	for r := range resets {
 		resetCounters.Store(r, true)
 	}
+	witnesses, err := freezeWitnesses(bindMode{owner: spec.Name, command: true, commandPermission: spec.Permission},
+		spec.CreatesWithChildren, spec.Witnesses, spec.Writes)
+	if err != nil {
+		return nil, err
+	}
+	spec.Witnesses = nil
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own,
-		changeEvents: changeEvents, lists: lists, resets: resets}, nil
+		changeEvents: changeEvents, lists: lists, resets: resets, witnesses: witnesses}, nil
 }
 
 // boundRelations gives the relations of an authorization handle: the declared ones, which the fill may write, and
@@ -686,6 +707,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	}()
 	s := newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
 	s.request = req
+	s.witnesses = cmd.witnesses
 	s.charges = paid
 	s.changeEvents = cmd.changeEvents
 	// The handle takes only the declared lists, and a list value RunTime takes the start of the attempt on the

@@ -121,6 +121,9 @@ type entity struct {
 	// tenant is true when the schema gives the entity's resource type the relation tenant of the subject type
 	// tenant, which the runtime writes on each create (ST-SUP-RP10-LC05, ST-SUP-Q132).
 	tenant bool
+	// witnessFields is true in a service that declares creates_with_children: each reference gives its field and
+	// whether it is required, which the runtime checks the witnesses of a bind against (ST-SUP-RP10-LC59).
+	witnessFields bool
 }
 
 // relationship is one declared relationship: the relation, the subject type, the field that holds the subject or
@@ -143,6 +146,8 @@ type reference struct {
 	relation, permission string
 	// within is the field that the row and the referenced row must have equal, or empty (ST-DECL-INV93).
 	within string
+	// required is true for a reference that the declaration requires (ST-DECL-INV108).
+	required bool
 }
 
 // entityField is one declared field of an entity.
@@ -180,6 +185,9 @@ var goTypes = map[types.FieldType]string{
 type Relations struct {
 	names  map[string][]string
 	tenant map[string]bool
+	// children is true when a command or a worker of the service declares creates_with_children: each reference
+	// then gives the runtime its declared field and whether it is required (ST-SUP-RP10-LC59).
+	children bool
 }
 
 // Of gives the names of the relations that the schema declares on the resource type.
@@ -212,7 +220,7 @@ func SchemaRelations(ctx gen.Context) (Relations, error) {
 	if err != nil {
 		return Relations{}, fmt.Errorf("command: the schema %q does not compile: %w", setting.SchemaPath, err)
 	}
-	relations := Relations{names: map[string][]string{}, tenant: map[string]bool{}}
+	relations := Relations{names: map[string][]string{}, tenant: map[string]bool{}, children: optsIn(ctx)}
 	for _, e := range ctx.Entities {
 		if e.ResourceType != "" {
 			relations.names[e.ResourceType] = schema.Relations(e.ResourceType)
@@ -251,7 +259,8 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		return nil, fmt.Errorf("the entity is of kind %s; a command writes only data entities", e.Kind)
 	}
 	p := &entity{decl: e, goName: e.Name, table: tableName(e.Name), resourceType: e.ResourceType,
-		schemaRelations: relations.Of(e.ResourceType), tenant: e.ResourceType != "" && relations.Tenant(e.ResourceType)}
+		schemaRelations: relations.Of(e.ResourceType), tenant: e.ResourceType != "" && relations.Tenant(e.ResourceType),
+		witnessFields: relations.children}
 	if !sqlName.MatchString(p.table) || !token.IsIdentifier(e.Name) || !token.IsExported(e.Name) {
 		return nil, fmt.Errorf("the entity name %s does not give a plain table name and an exported Go name", e.Name)
 	}
@@ -369,7 +378,7 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 			relation = ""
 		}
 		p.references = append(p.references, reference{field: f, entity: to.Name, resourceType: to.ResourceType,
-			relation: relation, permission: declared.Permission, within: declared.WithinField()})
+			relation: relation, permission: declared.Permission, within: declared.WithinField(), required: !f.decl.Optional})
 	}
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		other := byName[name]
@@ -1042,6 +1051,16 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 				// violation answers 400 as the key's does (ST-SUP-RC01-OC46).
 				w.f(", Field: %q, Within: %q, Key: %q, Check: %q", r.field.decl.Name, r.within, postgresadapter.WithinKeyName(e.decl.Name, r.field.decl.ColumnName()),
 					postgresadapter.WithinCheckName(e.decl.Name, r.field.decl.ColumnName()))
+			}
+			if e.witnessFields {
+				// The field and whether it is required, which the witnesses of creates_with_children name
+				// (ST-SUP-RP10-LC59).
+				if r.within == "" {
+					w.f(", Field: %q", r.field.decl.Name)
+				}
+				if r.required {
+					w.f(", Required: true")
+				}
 			}
 			w.f("},\n")
 		}
