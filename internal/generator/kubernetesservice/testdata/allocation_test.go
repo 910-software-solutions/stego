@@ -686,3 +686,76 @@ func mergeNetworkFields(current, patch map[string]any) {
 		}
 	}
 }
+
+func TestAllocationEnsureWritesTheDeclaredProfile(t *testing.T) {
+	t.Run("ST-SUP-RC26-OC01-T01 Ensure for a declared profile writes that profile's namespace, quota, accounts, bindings and network rules", func(t *testing.T) {
+		a, s := fixture(t)
+		// The declaration of allocationContext, with two managed accounts and one network rule added in the configuration.
+		a.config.Profiles[0].ServiceAccounts = []string{"gateway", "reader"}
+		a.config.Profiles[0].NetworkIsolation = true
+		a.config.Profiles[0].NetworkPeers = []networkPeer{{Direction: "ingress", Namespace: "control", PodLabel: "app", PodValue: "widget", Protocol: "TCP", Port: 8443}}
+		p := a.config.Profiles[0]
+		const name = "tenant-12345678"
+		if err := a.Ensure(context.Background(), "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		namespace, ok := s.objects["/api/v1/namespaces/"+name]
+		if !ok || !strings.HasPrefix(kube.String(namespace, "metadata", "name"), "tenant-") {
+			t.Fatal("no namespace with the profile prefix")
+		}
+		if kube.String(namespace, "metadata", "labels", "example.test/owner") != "owner-1" || kube.String(namespace, "metadata", "labels", ProfileLabel) != "tenant" {
+			t.Fatal("namespace lacks the owner or the profile")
+		}
+		quota := s.objects["/api/v1/namespaces/"+name+"/resourcequotas/stego-allocation"]
+		hard, _ := kube.Nested(quota, "spec", "hard").(map[string]any)
+		want := map[string]string{"pods": "1", "limits.cpu": "1", "limits.memory": "256Mi", "limits.ephemeral-storage": "128Mi", "requests.storage": "1Gi"}
+		if len(hard) != len(want) {
+			t.Fatalf("quota %v, want %v", hard, want)
+		}
+		for key, value := range want {
+			if hard[key] != value {
+				t.Fatalf("quota %v, want %v", hard, want)
+			}
+		}
+		for _, alias := range []string{"gateway", "reader"} {
+			account := s.objects["/api/v1/namespaces/"+name+"/serviceaccounts/"+a.serviceAccountName(p, "owner-1", alias)]
+			if account == nil || account["automountServiceAccountToken"] != false {
+				t.Fatalf("managed account %s missing or mounts its token", alias)
+			}
+		}
+		subject := func(binding kube.Object) (string, string, string) {
+			subjects, _ := binding["subjects"].([]any)
+			if len(subjects) != 1 {
+				return "", "", ""
+			}
+			entry, _ := subjects[0].(map[string]any)
+			return kube.String(binding, "roleRef", "name"), kube.String(entry, "name"), kube.String(entry, "namespace")
+		}
+		data := s.objects["/apis/rbac.authorization.k8s.io/v1/namespaces/"+name+"/rolebindings/stego-"+a.marker+"-0"]
+		if role, account, ns := subject(data); role != "control.widget-queue.data" || account != "widget-data" || ns != "control" {
+			t.Fatalf("data binding is %s to %s/%s", role, ns, account)
+		}
+		review := s.objects["/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/control.widget-queue."+name+".1"]
+		if role, account, ns := subject(review); role != "control.widget-queue.review" || account != a.serviceAccountName(p, "owner-1", "gateway") || ns != name {
+			t.Fatalf("review binding is %s to %s/%s", role, ns, account)
+		}
+		policy := s.objects["/apis/networking.k8s.io/v1/namespaces/"+name+"/networkpolicies/stego-allocation"]
+		ingress, _ := kube.Nested(policy, "spec", "ingress").([]any)
+		if len(ingress) != 1 {
+			t.Fatalf("network rules %v", kube.Nested(policy, "spec"))
+		}
+		rule, _ := ingress[0].(map[string]any)
+		from, _ := rule["from"].([]any)
+		ports, _ := rule["ports"].([]any)
+		if len(from) != 1 || len(ports) != 1 {
+			t.Fatalf("network rule %v", rule)
+		}
+		target, _ := from[0].(map[string]any)
+		port, _ := ports[0].(map[string]any)
+		if kube.String(target, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "control" || kube.String(target, "podSelector", "matchLabels", "app") != "widget" || port["protocol"] != "TCP" || fmt.Sprint(port["port"]) != "8443" {
+			t.Fatalf("network rule %v", rule)
+		}
+	})
+}

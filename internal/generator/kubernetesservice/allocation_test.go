@@ -6,6 +6,12 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -374,4 +380,122 @@ func TestAllocationCanDenyPodsAndStorage(t *testing.T) {
 	if !found {
 		t.Fatal("generated allocation lost zero resource bounds")
 	}
+}
+
+// allocationPackage type-checks the emitted allocation package and the Kubernetes client package it imports.
+func allocationPackage(t *testing.T) (*types.Package, string) {
+	t.Helper()
+	c := allocationContext()
+	files, err := allocationFiles(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.OutputNamespace = "kubernetes"
+	kubeFiles, _, err := new(kubernetesclient.Generator).Generate(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubePath := c.ModuleName + "/" + c.OutDirName + "/kubernetes"
+	fset := token.NewFileSet()
+	parse := func(files []gen.File, dir string) []*ast.File {
+		var result []*ast.File
+		for _, f := range files {
+			if filepath.Dir(f.Path) != dir || !strings.HasSuffix(f.Path, ".go") || strings.HasSuffix(f.Path, "_test.go") {
+				continue
+			}
+			parsed, err := parser.ParseFile(fset, f.Path, f.Bytes(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result = append(result, parsed)
+		}
+		if len(result) == 0 {
+			t.Fatalf("no Go file in %s", dir)
+		}
+		return result
+	}
+	std := importer.Default()
+	// The client package imports packages of other generators. Their types do not matter here: the check keeps
+	// going past them, and the allocation package below must still type-check without an error.
+	kube, _ := (&types.Config{Importer: std, Error: func(error) {}}).Check(kubePath, fset, parse(kubeFiles, "kubernetes"), nil)
+	if kube == nil || kube.Scope().Lookup("Client") == nil || kube.Scope().Lookup("Object") == nil {
+		t.Fatal("the Kubernetes client package has no Client or Object")
+	}
+	imports := importerFunc(func(path string) (*types.Package, error) {
+		if path == kubePath {
+			return kube, nil
+		}
+		return std.Import(path)
+	})
+	allocation, err := (&types.Config{Importer: imports}).Check("allocation", fset, parse(files, "deploy/allocation"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return allocation, kubePath
+}
+
+type importerFunc func(string) (*types.Package, error)
+
+func (f importerFunc) Import(path string) (*types.Package, error) { return f(path) }
+
+func TestAllocationCallerInputs(t *testing.T) {
+	t.Run("ST-SUP-RC26-OC01-T03 The allocator takes only a profile name, a namespace name and an owner from its caller", func(t *testing.T) {
+		allocation, kubePath := allocationPackage(t)
+		var signatures []*types.Signature
+		var names []string
+		scope := allocation.Scope()
+		for _, name := range scope.Names() {
+			object := scope.Lookup(name)
+			if !object.Exported() {
+				continue
+			}
+			if function, ok := object.(*types.Func); ok {
+				signatures = append(signatures, function.Type().(*types.Signature))
+				names = append(names, name)
+			}
+			if named, ok := object.Type().(*types.Named); ok {
+				if _, ok := object.(*types.TypeName); ok {
+					methods := types.NewMethodSet(types.NewPointer(named))
+					for i := 0; i < methods.Len(); i++ {
+						if method := methods.At(i).Obj(); method.Exported() {
+							signatures = append(signatures, method.Type().(*types.Signature))
+							names = append(names, name+"."+method.Name())
+						}
+					}
+				}
+			}
+		}
+		if len(signatures) < 3 {
+			t.Fatalf("too few exported functions and methods: %v", names)
+		}
+		forbidden := []string{"rule", "role", "verb", "permission", "binding", "quota", "network", "polic"}
+		for i, signature := range signatures {
+			params := signature.Params()
+			for j := 0; j < params.Len(); j++ {
+				param := params.At(j)
+				kind := types.TypeString(param.Type(), nil)
+				switch {
+				case kind == "string", kind == "context.Context":
+				case kind == "*"+kubePath+".Client" && names[i] == "New":
+					// The constructor takes the projected client of the allocator worker, not a Kubernetes object.
+				default:
+					t.Errorf("%s takes %s of type %s", names[i], param.Name(), kind)
+				}
+				for _, word := range forbidden {
+					if strings.Contains(strings.ToLower(param.Name()), word) {
+						t.Errorf("%s takes %s, a %s from its caller", names[i], param.Name(), word)
+					}
+				}
+			}
+		}
+		var ensure string
+		for i, name := range names {
+			if name == "Allocator.Ensure" {
+				ensure = fmt.Sprint(signatures[i].Params())
+			}
+		}
+		if ensure != "(ctx context.Context, profileName string, name string, ownerID string)" {
+			t.Fatalf("Ensure takes %s", ensure)
+		}
+	})
 }
