@@ -50,3 +50,18 @@ func Set(cfg any, clocks Clocks) bool {
 	}
 	return set(cfg, clocks)
 }
+
+// nowFunc is a Clock that a function gives.
+type nowFunc func() time.Time
+
+func (f nowFunc) Now() time.Time { return f() }
+
+// SetGate gives gate, a *authz.SchemaGate, the clock now of its digest bound (ST-SUP-RP10-LC59), and reports false
+// for any other value. It goes through the one setter that the authz package registers, which takes the clock of a
+// gate from Retention.
+func SetGate(gate any, now func() time.Time) bool {
+	if set == nil || gate == nil || now == nil {
+		return false
+	}
+	return set(gate, Clocks{Retention: nowFunc(now)})
+}

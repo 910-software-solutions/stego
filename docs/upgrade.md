@@ -316,7 +316,44 @@ archetype does not have the change.
 | 3.273.0 | 1.273.0 | 1.273.0 | Runtime v0.204.0 and oidc-auth 0.2.0. oidc-auth takes the setting `accept_id_token` (`true` or `false`, `false` by default): with `true`, the verifier accepts an OpenID Connect ID token as the bearer, for a web client and an API that share one client ID at a provider that gives no JWT access token, such as tsidp (decision ST-SUP-Q218 (b)). It accepts a token that is marked as an ID token (`nonce`, `at_hash`, `c_hash` or the payload `typ` `ID`) only when its `aud` is exactly the `audience` (a string, or an array of that one member) and its `azp`, when present, is the `audience`; a payload `typ` may then be `Bearer` or `ID`. A token with no marker is checked as an access token: its `aud` must hold the `audience`. So the backend-for-frontend must send a `nonce` in every authorization request. A logout token (`events`) is always refused, every other check stays, and access tokens do not change. With no setting, each ID token is refused, as before. No environment variable turns it on. jwt-auth and rh-sso-auth do not change. | None. To accept ID tokens, set `accept_id_token: true` under `oidc-auth` in `service.yaml` only when the `audience` is the client ID of the web client. Send a `nonce` in every authorization request, keep the ID token on the server side and its lifetime short, and use POST for an RP-initiated logout or leave out `id_token_hint`. The browser-backend that STEGO generates sends the access token, so the opt-in is for a backend-for-frontend that STEGO does not generate. See [Accept an ID token as the bearer](operations.md#accept-an-id-token-as-the-bearer-oidc-auth). |
 | 3.274.0 | 1.274.0 | 1.274.0 | Runtime v0.204.0, rest-api 4.44.0 and command 1.31.0. A 400 for a value out of the bounds of an integer field gives the bound as an integer, such as `number must be at most 2147483647` in the validation entry of a collection write and `more than max 2147483647` in the reason of a command. Before, it gave the bound as `2.147483647e+09` (walkthrough 28, MSG-MAX). A bound of a `float32` or a `float64` field does not change. `stego validate` and `stego plan` give the warning `worker-relation` for a worker whose permission on its resource type, or on the type of an entity that it writes or reads, does not reach its relation `tenant#worker_<name>` (walkthrough 28, CHK-WREL). | None. A client that matches the text of the message accepts the new form. For a `worker-relation` warning, add the arm `tenant->worker_<name>` to the permission, as the warning says. |
 | 3.275.0 | 1.275.0 | 1.275.0 | Runtime v0.206.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.206.0 at h1:bZPMRT7stxVW4w0BN0Z/lMf4ypiW90UWocm9VmqvwJU=. The runtime code works as the code of v0.204.0. Only a test and a comment of the lease package change: the test of ST-SUP-RP09-LC06-T05 now ends the context while the renew statement waits on the lease row in the database, and accepts the next token in the holder and in the released row, because the UPDATE of that renew can commit on the server after its client stopped. The comment of the renew branch of `Hold` says that the release also tries the next token after a renew that failed with no answer. | None. |
+| 3.276.0 | 1.276.0 | 1.276.0 | Runtime v0.207.0 and postgres-adapter 6.33.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.207.0 at h1:43/jGJ7ihN3x89zFEax/jlaNLVvo+GprEMXMSZFQ4Ns=. The seal job and the re-seal job pass over each tenant of the tenant list, also a retired tenant, whose rows a retire keeps, so the contract step of a seal runs after a retire and no clear value of a retired tenant stays; before, the contract refused for ever after a retire (decision ST-SUP-Q219 (a), walkthrough 29 SEAL-RETIRE). Before the seal job trusts a completed pass, or goes on with a pass after its last tenant, it reads each tenant that the pass went over for a row with a clear value and no sealed value, and starts a new pass with the warn line `command.seal.clear_left` when it finds one, so a pass of an earlier runtime that skipped a retired tenant is done again. The seal and re-seal statements of postgres-adapter 6.33.0 read a row with the zero UUID too. The job `worker-tuples` of the controller gives each active tenant the tuple `tenant#service` that SpiceDB does not hold when the schema declares the relation `service` of the type `tenant`, so a check through `tenant->service` passes in a tenant provisioned before the release that added the relation (decision ST-SUP-Q220 (a), walkthrough 29 RELATE-TSVC). The refusal of a seal contract with rows in clear names runtime v0.207.0 and postgres-adapter 6.33.0. | Take the runtime and the generated code together (`stego apply`, `stego deps`): see [A seal open across the move to runtime v0.207.0](#a-seal-open-across-the-move-to-runtime-v02070). With a seal open, the first run of the seal job after the move can start a new pass, which also checks the rows of the retired tenants. Remove an earlier key of the ring only after a complete re-seal run of v0.207.0 with `left=0` ([operations.md](operations.md)). A service whose schema declares `tenant#service` gets one touch and one audit row `reconcile-worker-tuples` for each active tenant that lacks the tuple, at the first run of `worker-tuples`; see [The tuple of the tenant and its service](#the-tuple-of-the-tenant-and-its-service). |
+| 3.277.0 | 1.277.0 | 1.277.0 | Runtime v0.208.0 and otel-tracing 1.26.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.208.0 at h1:KRuGX6yffXzh3aegaCvtCJl8l7YeHJ5wH4nPXVuYWHo=. The local access line `http.server.request.completed` of a request with a status of 400 or more holds the fixed code of the answer as `stego.error_code`, also for an answer before the router: the 401 of the authentication gives its code, such as `SVC-AUT-001`, and the tenant check `tenant.not_provisioned`, `unavailable` or `internal`. Before, such a line had only the status. The code is never a value of the request. | None. A log query or an alert can filter on `stego.error_code` to find why a request was refused. |
+| 3.279.0 | 1.279.0 | 1.279.0 | Runtime v0.209.0, command 1.32.0 and worker 0.7.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.209.0 at h1:i8l5KpReS3EgcfZdFGEAF6C20a5XkseZ3ISPMNQueVU=. A command or a worker can declare `creates_with_children: true`: a reference to a row that a `Create` of the same attempt wrote is then decided by the record of that create, with no call of SpiceDB, when validate proved it from the schema by the union-subset rule, and only while SpiceDB serves the schema of the release (decision ST-SUP-Q221 (b), ST-SUP-RP10-LC59, ST-DECL-INV108; erp-demo G8). Validate refuses the key on a query, and on a command or a worker whose schema proves no reference, and warns `new-reference-decided` of each reference that it cannot prove. The migration job of such a service reads the schema back after `authorization_schema_served` and fails at the new step `authorization_schema_read_back` (fault `spicedb.schema_read_back`) when SpiceDB serves another schema. The runtime library takes the SpiceDB schema compiler (`github.com/authzed/spicedb` v1.57.1, which fixes GO-2026-6992), so `go.sum` of a service gains its modules: a binary of the command and service packages grows from 31.0 MB to 45.6 MB (324 to 426 non-standard packages, 118 to 307 modules in the build list) and its start from 50.5 ms to 85.8 ms (4.5 MB to 6.2 MB of heap). The compiler package alone gives 45.6 MB, so importing narrower schemadsl packages saves almost nothing; the modules have permissive licenses. | Take the runtime and the generated code together (`stego apply`, `stego deps`). With `creates_with_children`, the generated `runtime.go` gives the schema text to the parts (`SchemaText`) and to the migration job (`Schema`). With no `creates_with_children`, the generated code and each decision stay the same; only `go.sum` gains the modules of the schema compiler. See [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent). |
+| the next stego release | the next stego release | the next stego release | `stego validate`, `plan` and `apply` refuse a declaration in which two entities name the same `resource_type`, with the rule `resource-type-shared` at the second entity (ST-DECL-INV107). The SpiceDB object of a row is its resource type and its tenant-qualified ID, with no part that names the entity, and a fill chooses the ID of a new row, so a row of one entity with the ID of a row of the other, in the same tenant, took that row's relationships and grants. The runtime and the object IDs do not change, so a service whose entities each have a type of their own needs no change and no data migration. | Only for a declaration that the rule refuses: such a service cannot take this release yet, and `stego compat` and `stego plan` refuse a change of the resource type of an entity of the base (ST-GEN-INV41); see [Give each entity a resource type of its own](#give-each-entity-a-resource-type-of-its-own). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
+
+## Give each entity a resource type of its own
+
+From the next stego release, two entities may not name the same
+`resource_type` (ST-DECL-INV107). Also, `stego compat`, `stego plan` and
+`stego apply` refuse a release that changes or removes the resource type of
+an entity of the base, or that gives a new entity a resource type that an
+entity of the base has, also a dropped one (ST-GEN-INV41).
+
+STEGO cannot yet move the rows of an entity to a new resource type safely,
+so do not do it by hand. The reasons:
+
+- The relationships of the rows stay on the old type. No schema step deletes
+  them, and an outbox message of the release before can write one again
+  after a delete by hand. A row of an entity that later takes the old type,
+  with the ID of such a row in the same tenant, takes them and their grants.
+- A relationship whose subject is the caller of the create cannot be written
+  again from the rows: no row holds that caller. A copy from the old type
+  also copies the relationships of the other entity for each pair of rows
+  with one ID in one tenant, because the two rows shared one object, and
+  nothing tells their relationships apart.
+- An entity whose reference names the moved entity, such as a `Comment`
+  with `relation note`, keeps its relationships to the objects of the old
+  type, and its permissions through them find the old object.
+- Between the release that moves the entity and the delete, a new row of
+  the other entity with the ID of a moved row takes the old relationships.
+
+Thus a service that `stego validate` refuses with `resource-type-shared`
+cannot take this stego release yet. Keep it on the stego release before,
+and do not create a row of one of the two entities with the ID of a row of
+the other. A later release of STEGO will give a schema step that moves the
+rows of an entity to a new type and deletes their old relationships. A
+service whose entities each have a type of their own needs no change.
 
 ## Move a browser-service database to the owner and migrator logins
 
@@ -944,6 +981,59 @@ A release before runtime v0.192.0 that added a relation left its rows with no
 tuple. To give them the tuple, declare a relate step of that relation in your
 next release: the relate job reads each row that is there, and a tuple that
 is there does not change.
+
+### The tuple of the tenant and its service
+
+A relate step gives the rows a tuple. It does not give a tenant the tuple
+`tenant:<tenant>#service@<resource type>:<tenant>/<service>`, which a
+Provision writes when the schema declares the relation `service` of the type
+`tenant`, such as:
+
+```zed
+definition tenant {
+  relation service: service
+  permission audit = service->admin
+}
+```
+
+A release that adds that relation, or the first `definition tenant` with it,
+thus left each tenant that was there before with no such tuple. A check
+through `tenant->service`, such as `permission view = tenant->audit` on a row
+of the tenant, gave 404 in each such tenant, also after its relate step
+completed; a tenant provisioned on the new release got the tuple (walkthrough
+29, RELATE-TSVC).
+
+From runtime v0.207.0 the job `worker-tuples` of the controller also gives
+each active tenant the service tuple that SpiceDB does not hold (decision
+ST-SUP-Q220 (a)). It runs when the controller of the release starts, after
+the migration Job of the release wrote the release identity row, and then
+once an hour. It stages the tuple through the authz outbox with one audit row
+`reconcile-worker-tuples` in the tenant, and writes nothing for a tenant that
+holds it, or for a retired tenant. You need no step and no relate change for
+it:
+
+1. Roll out the release that adds the relation, with its relate step for the
+   rows, as above.
+2. When the controller of the new release holds the controller lease, the
+   job `worker-tuples` stages the service tuple of each active tenant. A
+   service with many tenants takes one SpiceDB read for each tenant.
+3. Check a row of a tenant that was there before the release: the check
+   through `tenant->service` now passes.
+
+A release with a runtime before v0.207.0 gives these tenants no service
+tuple. Move to runtime v0.207.0 or later: its first run of the job gives each
+active tenant the tuple, also for a relation that an earlier release added.
+
+### A seal open across the move to runtime v0.207.0
+
+Move the runtime and the generated code together: take rest-crud 3.276.0, or
+rpc-service or browser-service 1.276.0, and run `stego apply` and `stego deps`.
+A service on runtime v0.207.0 or later whose code a postgres-adapter before
+6.33.0 generated keeps a row with the zero UUID in clear: its seal job never
+reads that row, so each run of the job logs `command.seal.clear_left` with
+`first_null` `false` and starts the seal pass again, and the contract step
+refuses, until you build the release with postgres-adapter 6.33.0 and deploy
+it (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)).
 
 ## Upgrade over the old label keys
 

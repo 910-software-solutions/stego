@@ -777,7 +777,9 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 		// The lock of the worker tuples of t, which the reconcile takes too, comes first: before the key of the
 		// request and the chain lock of the audit row, which is the last lock of the transaction (ST-SUP-RP10-LC06),
 		// in the order of the reconcile, so the two never wait on each other (security review of PR #379, M1).
-		if len(spec.Workers) > 0 || len(undeclared) > 0 {
+		// A spec with the service relation takes it too, as the reconcile touches the service tuple (decision
+		// ST-SUP-Q220 (a)).
+		if len(spec.Workers) > 0 || len(undeclared) > 0 || spec.ServiceRelation {
 			if _, err := q.ExecContext(ctx, workerTuplesLock, t.ID()); err != nil {
 				return fmt.Errorf("command: the lock of the worker tuples of the tenant was not taken: %w", err)
 			}

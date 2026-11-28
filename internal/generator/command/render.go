@@ -460,6 +460,9 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 			w.f("},\n")
 		}
 	}
+	if len(c.witnesses) > 0 {
+		w.f("%s", WitnessesSpec(c.witnesses))
+	}
 	w.f("\tRetryOnConflict: %d,\n", c.retry)
 	if c.lock != "" {
 		w.f("\tLockTimeout: %s,\n", c.lock)

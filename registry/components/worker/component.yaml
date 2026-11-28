@@ -1,12 +1,14 @@
 # Version 0.5.0 runs no consumer fill before SpiceDB holds the tuple of the worker (ST-SUP-RC35-OC18).
 # Version 0.6.0 gives a worker that declares reads a read-only view of each read entity with no secret field, and the
 # worker role of a consuming worker only SELECT on its table (ST-SUP-RC35-OC19, decision ST-SUP-Q186 (a)).
+# Version 0.7.0 gives a worker that declares creates_with_children the witnesses that checking proved, which the runtime
+# freezes when it binds the handle (ST-DECL-INV108, ST-SUP-RP10-LC59, decision ST-SUP-Q221 (b)).
 # The worker capability (ST-SUP-RC35): for each declared worker, its slot contract and one runner bound to its one
 # fill. A declared worker selects it (ST-GEN-INV37); while it is not ga, the declaration carries an experimental
 # acceptance that names it.
 kind: component
 name: worker
-version: 0.6.0
+version: 0.7.0
 stage: alpha
 sunset: 2027-04-30
 output_namespace: workers

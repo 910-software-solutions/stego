@@ -496,6 +496,13 @@ again. (A provision of an ID that is active answers 409 with the code
 tenant ID. A retire changes only the service that gets it: retire the tenant
 in each service of the chain.
 
+With more than one API replica, a Provision or a Retire reaches the other
+replicas within 5 seconds (`tenant.MaxGateAge`): in that time another replica
+can still refuse the new tenant with 403 `tenant.not_provisioned`, or admit
+a request of the retired tenant, which then runs to its end. Thus a retire
+is done 5 seconds plus the longest request time after it answered. See
+[Provision or retire a tenant on more than one replica](operations.md#provision-or-retire-a-tenant-on-more-than-one-replica).
+
 The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later
@@ -615,6 +622,8 @@ alone (walkthrough 28, GRPC-CODES):
 | The same key with another request | 422 | `FailedPrecondition` | `idempotency-key-reused` |
 | The same key while the first request runs | 409 | `Aborted` | `idempotency-key-in-progress` |
 | A message that cannot be read | 400 | `InvalidArgument` | `bad_request` |
+| An `authz-revocation-after` value that is not a revocation, or more than one `authz-revocation-after` value | 400 | `InvalidArgument` | `bad_request` |
+| A call that its client cancelled, or whose deadline passed, during the wait for a revocation | none | `Canceled` or `DeadlineExceeded`, the status of the context | the text of the context error |
 | A value that the checks of the command refuse | 400 | `InvalidArgument`, with a `google.rpc.BadRequest` detail that names the field | `invalid` |
 | The caller does not have the permission on the row, or the row is not there | 404 | `NotFound` | `denied` |
 | The fill returns `command.ErrNotFound` | 404 | `NotFound` | `not_found` |
@@ -1682,6 +1691,57 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+With no opt-in, one command cannot do this. When a fill creates a row and
+then a row that refers to it, with the loaded value that the first `Create`
+returned, the runtime decides the reference at SpiceDB. SpiceDB does not
+hold the tuples of the new row before the relay writes them after the
+commit, so the decision is a deny: `Create` gives `command.ErrNotFound`,
+the command answers 404 `not_found`, and the transaction commits nothing
+(ST-SUP-RP10-LC05-T26). Then create the row in one call and the rows that
+refer to it in a second call that sends `Authz-Revocation-After`, and make
+each call idempotent.
+
+From runtime v0.209.0 (rest-crud 3.279.0, rpc-service and browser-service
+1.279.0), a command or a worker can declare `creates_with_children: true`
+(ST-SUP-Q221, ST-SUP-RP10-LC59, ST-DECL-INV108), beside its `writes`, such
+as a command `add-cost-item` with `writes: [Org, CostItem, PriceHistory]`,
+`resource_type: org` and `permission: catalog_edit`.
+
+Then the `Create` of a row that refers to a row that a `Create` of the same
+attempt wrote is decided with no call of SpiceDB, only when validate proved
+from the schema that the decisions and tuples of the first create give the
+permission of the reference. The fill does not change: it gives the loaded
+value that the first `Create` returned, as before. Use that value only: a
+value of a later `Update` or a `Get` of the row is decided at SpiceDB, and the
+value of a `Create` whose row a later `Update` or `Delete` changed is an
+internal error.
+
+- **The union-subset rule.** Holding D proves X when D is a term of X's
+  union, directly or through more unions only; arrows are followed when
+  they are plain (`->` or `.any()`). `view = edit + reader` proves `view`
+  from `edit`, and so does `view = edit2 + reader` with
+  `edit2 = edit + member`. Any intersection (`&`), exclusion (`-`),
+  `.all()`, caveat or expiration on that path makes it unprovable, and so
+  does a subset that is not a term: `edit = owner + admin` does not prove
+  `view = owner + admin + member`.
+- **What counts as held.** Only what the runtime decided: a command decides
+  the permission that the reference names, or its own; a worker decides its
+  own permission, whatever the reference names; a consuming worker also
+  decides the stager's, which is proved only from the stager's decisions. A
+  caller relationship of the new row counts for the caller. An optional
+  reference is never a witness.
+- **What it does not cover.** The command's own permission on the new row
+  (a `Get`, `Update`, `Relate` of it after its create), a move to a new
+  parent, and an update or a delete of a new child are decided at SpiceDB
+  as today. So is every reference while the schema that SpiceDB serves is
+  not the one compiled into the pod's own release (a rolling deploy of a
+  newer schema: up to about 7 s after it is served, an older pod can still
+  use its proof), or when SpiceDB does not answer.
+
+Validate refuses the opt-in when no reference has a proof, and warns
+`new-reference-decided` of each reference that has none. Each such
+decision writes the info line `command.reference.decided_by_create`.
+
 ### Act at once on a row that another user created
 
 A second user of the same tenant can also act at once on a new row, such as
@@ -1714,6 +1774,28 @@ when the revocation of the create completed, because the wait ends then. This
 is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
+
+### Release notes for runtime v0.208.0
+
+- A refusal before the router gives its fixed problem code to the access
+  line of the request (`otel.SetErrorCode`): the 401 of the authentication
+  its code, such as `SVC-AUT-001`, and the tenant check
+  `tenant.not_provisioned` for 403, `unavailable` for 503 and `internal` for
+  500 (erp-demo production run, ST-SUP-Q210). The code is the fixed code of
+  the problem, never a token, a claim or the tenant. From otel-tracing
+  1.26.0, the local access line of each request with a status of 400 or
+  more holds it as `stego.error_code`; the line of an answer before the
+  router still has no `http.route`.
+- The telemetry runtime that otel-tracing generates imports no package of
+  the runtime library: it gives each request a place under the key
+  `otel.SharedErrorCodeKey`, an unnamed struct type, which
+  `otel.SetErrorCode` fills and `otel.ErrorCode` reads too.
+- `otel.SetErrorCode` also takes upper-case letters, for the fixed codes of
+  the problem documents such as `SVC-AUT-001`. A code with any other
+  character, such as a space, is still ignored.
+- rest-crud 3.277.0, rpc-service 1.277.0 and browser-service 1.277.0 pin
+  this runtime. It holds each change of v0.206.0 too.
+- apidiff against v0.206.0: compatible (added `otel.SharedErrorCodeKey`).
 
 ### Release notes for runtime v0.203.0
 
@@ -1974,8 +2056,8 @@ This is the recommendation (a) of the open question ST-SUP-Q206.
   code.
 - The failure record of the migration Job names the fault, the object and
   the remedy of the steps `open`, `authorization_schema`,
-  `authorization_schema_again` and `authorization_schema_served`
-  (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
+  `authorization_schema_again`, `authorization_schema_served` and
+  `authorization_schema_read_back` (`service.StepError.FaultClass`, `FaultObject` and `FaultRemedy`), and a
   refused key source of a start names its fault (`authn.Keys*Fault`).
 - A unique violation of an index that the entity does not declare names the
   declared fields of its key when the name of the index is

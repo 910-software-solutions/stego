@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/910-software-solutions/stego/registry/runtime/idempotency"
 	"github.com/910-software-solutions/stego/registry/runtime/lease"
@@ -366,6 +367,267 @@ func TestSealStep(t *testing.T) {
 
 // TestSealContract holds the release of the expand step of a seal after its contract step (walkthrough 14, W14-B6
 // and W14-B7).
+func TestSealRetired(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC50-T10 The seal job of the tenant list seals the rows of a retired tenant, so no clear value is left with no sealed value", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		for _, id := range []string{"org-a", "org-b", "org-c"} {
+			if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, id), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// org-b is retired before the seal job runs, and org-c after a first pass: a Retire deletes no row, so each
+		// keeps its notes, which a release before wrote in clear.
+		if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-b"), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"org-a", "org-b", "org-c"} {
+			for i := range 3 {
+				n.exec(fmt.Sprintf(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('%s', '%s', 'x', 'secret-%s-%d')`, id, uuid.NewString(), id, i))
+			}
+		}
+		j, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		results, err := j.Run(n.ctx)
+		if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 9 || results[0].Sealed != 9 {
+			t.Fatalf("the seal job gave %+v and %v, want the pass completed with the 9 notes of the three tenants sealed", results, err)
+		}
+		// A row that a release before writes later in the retired org-c, as before its retire, and a new pass.
+		late := uuid.NewString()
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-c', '` + late + `', 'x', 'secret-org-c-late')`)
+		if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-c"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`UPDATE stego_schema.seals SET completed_at = NULL, pass_started = NULL, last_tenant = NULL, last_id = NULL WHERE change_id = '` + noteChange + `'`)
+		results, err = j.Run(n.ctx)
+		if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 10 || results[0].Sealed != 1 {
+			t.Fatalf("the second pass gave %+v and %v, want 10 notes checked and the late note of the retired org-c sealed", results, err)
+		}
+		if left := n.count(`SELECT count(*) FROM notes WHERE body IS NOT NULL AND body_sealed IS NULL`); left != 0 {
+			t.Fatalf("%d notes hold a clear value and no sealed value, want none", left)
+		}
+		rows, err := n.admin.QueryContext(n.ctx, `SELECT tenant_id, id FROM notes`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var all [][2]string
+		for rows.Next() {
+			var row [2]string
+			if err := rows.Scan(&row[0], &row[1]); err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, row)
+		}
+		if err := rows.Close(); err != nil || len(all) != 10 {
+			t.Fatalf("%d notes (%v), want 10", len(all), err)
+		}
+		for _, row := range all {
+			if clear, set, opened, ok := n.opened(row[0], row[1]); !set || !ok || opened != clear {
+				t.Fatalf("the note %s of %s holds the clear %t and a sealed value that opens to the clear value %t", row[1], row[0], set, ok && opened == clear)
+			}
+		}
+	})
+	t.Run("ST-SUP-RP10-LC50-T11 After a pass of a runtime before v0.207.0 that passed a retired tenant, completed or cut, the job starts a new pass and seals its rows", func(t *testing.T) {
+		for _, mode := range []string{"completed", "cut"} {
+			t.Run(mode, func(t *testing.T) {
+				n := newNoteEnv(t)
+				migration, err := tenant.Migration("public", n.roles[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				n.exec(migration)
+				for _, id := range []string{"org-a", "org-b", "org-c"} {
+					if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, id), nil); err != nil {
+						t.Fatal(err)
+					}
+					for i := range 3 {
+						n.exec(fmt.Sprintf(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('%s', '%s', 'x', 'secret-%s-%d')`, id, uuid.NewString(), id, i))
+					}
+				}
+				if err := tenant.Retire(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
+					t.Fatal(err)
+				}
+				// The seal job of a runtime before v0.207.0 passes over the active tenants alone: it completes its
+				// pass, or stops after its first batch (org-b), as at the rollout to this runtime.
+				old, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-old", lease.Settings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				old.pause = 0
+				old.tenants = func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, n.pool, "public") }
+				if mode == "cut" {
+					ctx, cancel := context.WithCancel(n.ctx)
+					old.batched = cancel
+					_, _ = old.Run(ctx)
+				} else if results, err := old.Run(n.ctx); err != nil || !results[0].Completed || results[0].Checked != 6 {
+					t.Fatalf("the old pass gave %+v and %v, want completed over the 6 notes of the active tenants", results, err)
+				}
+				if left := n.count(`SELECT count(*) FROM notes WHERE tenant_id = 'org-a' AND body IS NOT NULL AND body_sealed IS NULL`); left != 3 {
+					t.Fatalf("the old pass left %d notes of org-a in clear, want 3", left)
+				}
+				// This runtime: its first run starts a new pass over the tenant list and seals the notes of org-a.
+				j, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-new", lease.Settings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				j.pause = 0
+				results, err := j.Run(n.ctx)
+				if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 9 {
+					t.Fatalf("the run after the upgrade gave %+v and %v, want a new pass completed over the 9 notes", results, err)
+				}
+				if left := n.count(`SELECT count(*) FROM notes WHERE body IS NOT NULL AND body_sealed IS NULL`); left != 0 {
+					t.Fatalf("%d notes hold a clear value and no sealed value after the run, want none", left)
+				}
+				rows, err := n.admin.QueryContext(n.ctx, `SELECT tenant_id, id FROM notes`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var all [][2]string
+				for rows.Next() {
+					var row [2]string
+					if err := rows.Scan(&row[0], &row[1]); err != nil {
+						t.Fatal(err)
+					}
+					all = append(all, row)
+				}
+				if err := rows.Close(); err != nil || len(all) != 9 {
+					t.Fatalf("%d notes (%v), want 9", len(all), err)
+				}
+				for _, row := range all {
+					if clear, set, opened, ok := n.opened(row[0], row[1]); !set || !ok || opened != clear {
+						t.Fatalf("the note %s of %s does not hold a sealed value that opens to its clear value", row[1], row[0])
+					}
+				}
+				// The new pass is complete over each row: a run again trusts it and does no work.
+				if again, err := j.Run(n.ctx); err != nil || !again[0].Completed || again[0].Checked != 9 || again[0].Sealed != results[0].Sealed {
+					t.Fatalf("a run again gave %+v and %v, want the completed pass of 9 notes", again, err)
+				}
+				// A pass of this runtime that stopped after org-b goes on from its checkpoint: the read covers only
+				// the tenants before it, which the pass sealed, and not org-c, which the pass has still to seal.
+				n.exec(`UPDATE notes SET body_sealed = NULL WHERE tenant_id = 'org-c'`,
+					`UPDATE stego_schema.seals SET completed_at = NULL, last_tenant = 'org-b', last_id = NULL WHERE change_id = '`+noteChange+`'`)
+				resumed, err := j.Run(n.ctx)
+				if err != nil || !resumed[0].Completed || resumed[0].Checked != 15 || resumed[0].Sealed != results[0].Sealed+3 {
+					t.Fatalf("the resumed pass gave %+v and %v, want it to go on from org-b: 15 checked and the 3 notes of org-c sealed", resumed, err)
+				}
+			})
+		}
+	})
+	t.Run("ST-SUP-RP10-LC50-T12 The first page of a tenant starts before every ID, so the job seals a row with the zero UUID and a run again trusts the pass", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const zero = "00000000-0000-0000-0000-000000000000"
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '`+zero+`', 'x', 'secret-zero')`,
+			`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '`+uuid.NewString()+`', 'x', 'secret-other')`)
+		// The seal column as postgres-adapter 6.33.0 gives it: the first page takes NULL.
+		first := []SealColumn{noteSeal[0]}
+		first[0].FirstNull = true
+		first[0].Select = "SELECT id, body::text, body_sealed FROM notes WHERE tenant_id = $1 AND ($2::text IS NULL OR id > $2) ORDER BY id LIMIT $3 FOR UPDATE"
+		j, err := NewSealJob(n.pool, "public", n.ring, first, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		results, err := j.Run(n.ctx)
+		if err != nil || !results[0].Completed || results[0].Checked != 2 || results[0].Sealed != 2 {
+			t.Fatalf("the seal job gave %+v and %v, want the 2 notes, the zero UUID too, checked and sealed", results, err)
+		}
+		if clear, set, opened, ok := n.opened("org-a", zero); !set || !ok || opened != clear {
+			t.Fatal("the note with the zero UUID holds no sealed value that opens to its clear value")
+		}
+		// The check of the rows in clear finds none, so a run again trusts the pass and starts none.
+		for range 2 {
+			if again, err := j.Run(n.ctx); err != nil || !again[0].Completed || again[0].Checked != 2 || again[0].Sealed != 2 {
+				t.Fatalf("a run again gave %+v and %v, want the completed pass of 2 notes", again, err)
+			}
+		}
+		if strings.Contains(logs.String(), "command.seal.clear_left") {
+			t.Fatalf("a run again started a new pass for a row in clear:\n%s", logs.String())
+		}
+		// The code of a postgres-adapter before 6.33.0 has no FirstNull: its job never reads a new row with the zero
+		// UUID of org-b, so each of its two runs starts a new pass, and the line names that adapter (sec-20d L1).
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-b"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-b', '` + zero + `', 'x', 'secret-zero-b')`)
+		old, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old.pause = 0
+		logs.Reset()
+		if _, err := old.Run(n.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := old.Run(n.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(logs.String(), "command.seal.clear_left"); got != 2 || !strings.Contains(logs.String(), "postgres-adapter before 6.33.0") ||
+			!strings.Contains(logs.String(), "first_null=false") || strings.Contains(logs.String(), "as a runtime before v0.207.0 passed the retired tenants") {
+			t.Fatalf("the runs of the code of an earlier adapter logged %d new passes:\n%s\nwant one line for each run that names postgres-adapter 6.33.0", got, logs.String())
+		}
+	})
+	t.Run("ST-SUP-RP10-LC50-T13 The read of the rows in clear has the lock timeout of a batch, and a read that does not end fails the run and trusts no pass", func(t *testing.T) {
+		n := newNoteEnv(t)
+		migration, err := tenant.Migration("public", n.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.exec(migration)
+		if err := tenant.Provision(n.ctx, n.pool, "public", mustTenant(t, "org-a"), nil); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '` + uuid.NewString() + `', 'x', 'secret-a')`)
+		j, err := NewSealJob(n.pool, "public", n.ring, noteSeal, "holder-"+uuid.NewString(), lease.Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		j.pause = 0
+		if results, err := j.Run(n.ctx); err != nil || !results[0].Completed {
+			t.Fatalf("the first pass gave %+v and %v", results, err)
+		}
+		// A session holds a lock on the table that the read waits for: the read ends at the lock timeout of a batch,
+		// long before the deadline of the test, and the run fails with no completed pass.
+		lock, err := n.admin.BeginTx(n.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = lock.Rollback() }()
+		if _, err := lock.ExecContext(n.ctx, `LOCK TABLE notes IN ACCESS EXCLUSIVE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
+		defer cancel()
+		started := time.Now()
+		results, err := j.Run(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || time.Since(started) > 15*time.Second {
+			t.Fatalf("the run while the table is locked gave %v after %s, want the lock timeout 55P03 of the read", err, time.Since(started))
+		}
+		if len(results) != 0 && results[0].Completed {
+			t.Fatalf("the run whose read timed out gave %+v, want no completed pass", results)
+		}
+	})
+}
+
 func TestSealContract(t *testing.T) {
 	const secret = "member-0042@example.com"
 	t.Run("ST-SUP-RP10-LC49-T02 After the contract step drops the clear column, the release of the expand step reads and writes the sealed column alone", func(t *testing.T) {
@@ -871,6 +1133,56 @@ func TestRelateStep(t *testing.T) {
 		messages := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz'`)
 		if results, err := job.Run(e.ctx); err != nil || !results[0].Completed || e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz'`) != messages {
 			t.Fatalf("a run after the completed pass gave %+v, %v and staged more tuples", results, err)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC58-T05 The relate job of the tenant list gives no tuple to a row of a retired tenant", func(t *testing.T) {
+		e := newEnv(t)
+		releases, err := lease.Releases(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		seals, err := lease.SealsText(e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		list, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(`CREATE TABLE payouts (tenant_id text NOT NULL, id text NOT NULL, approver_id text, PRIMARY KEY (tenant_id, id))`,
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON payouts TO "+e.roles[0],
+			"ALTER TABLE payouts ENABLE ROW LEVEL SECURITY", "ALTER TABLE payouts FORCE ROW LEVEL SECURITY",
+			"CREATE POLICY payouts_tenant ON payouts USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+			"CREATE SCHEMA IF NOT EXISTS stego_schema", releases, seals, list,
+			"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+payoutChange+"', 'step_0002_"+payoutChange+"_expand', clock_timestamp() - interval '10 minutes')",
+			"INSERT INTO leases (name) VALUES ('"+SealLease(payoutChange)+"')")
+		for _, id := range []string{"t1", "t2"} {
+			if err := tenant.Provision(e.ctx, e.pool, "public", mustTenant(t, id), nil); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				e.exec(fmt.Sprintf(`INSERT INTO payouts (tenant_id, id) VALUES ('%s', '%s')`, id, uuid.NewString()))
+			}
+		}
+		// A Retire deleted the tuples of t2 (ST-SUP-RC27-OC15); its rows stay.
+		if err := tenant.Retire(e.ctx, e.pool, "public", mustTenant(t, "t2"), nil); err != nil {
+			t.Fatal(err)
+		}
+		job, err := NewRelateJob(RelateJobConfig{DB: e.pool, Schema: "public", Authz: e.authz, Audit: e.writer, Service: "payouts",
+			Changes: payoutRelates[:1], Holder: "holder-" + uuid.NewString(), Lease: lease.Settings{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job.pause = 0
+		results, err := job.Run(e.ctx)
+		if err != nil || len(results) != 1 || !results[0].Completed || results[0].Checked != 2 || results[0].Related != 2 {
+			t.Fatalf("the relate job gave %+v and %v, want the pass completed over the 2 rows of the active t1", results, err)
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND tenant_id = 't2'`); n != 0 {
+			t.Fatalf("the relate job staged %d tuples for the retired t2, want none", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE action = 'backfill-relation' AND tenant_id = 't2'`); n != 0 {
+			t.Fatalf("the relate job wrote %d audit rows in the retired t2, want none", n)
 		}
 	})
 	t.Run("ST-SUP-RP10-LC58-T02 A pass during which a release before reported itself starts again, so a row that it made later gets the tuple", func(t *testing.T) {

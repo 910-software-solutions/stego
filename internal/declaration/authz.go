@@ -342,11 +342,12 @@ func (s *AuthzSchema) grantsBut(subjectType, typeName, relation string) bool {
 // is the project folder; a schema path that leaves it is refused.
 func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []ValidationError {
 	if service.Authorization == nil {
-		return authorizationUnbound(service)
+		return append(authorizationUnbound(service), CreatesWithChildrenFaults(service, nil)...)
 	}
 	faults := validateAuthorizationSetting(service.Authorization)
 	faults = append(faults, validateAuthorizationTenancy(service)...)
 	faults = append(faults, validateSystemEntities(service.Entities)...)
+	faults = append(faults, validateSharedResourceTypes(service.Entities)...)
 	faults = append(faults, validateRelationshipParts(service.Entities)...)
 	faults = append(faults, validateAuthorizationCoverage(service)...)
 	schema, fault := readAuthzSchema(service.Authorization.SchemaPath, project)
@@ -355,8 +356,10 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 		return append(faults, *fault)
 	}
 	if schema == nil {
+		faults = append(faults, CreatesWithChildrenFaults(service, nil)...)
 		return append(faults, operationsAuthorization(service, nil)...)
 	}
+	faults = append(faults, CreatesWithChildrenFaults(service, schema)...)
 	faults = append(faults, operationsAuthorization(service, schema)...)
 	faults = append(faults, validateResetSchema(service, schema)...)
 	faults = append(faults, validateSchemaNames(service, schema)...)
@@ -396,6 +399,29 @@ func relateSchema(service *types.ServiceDeclaration, schema *AuthzSchema) []Vali
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-entity", Path: schemaChangePath(i) + ".relation", Found: change.Relation,
 				Message: fmt.Sprintf("schema change %q relates the rows of %s through %s#%s, which the schema %s does not give the subject type %s; add relation %s: %s to the definition %s", change.ID, change.Entity, entity.ResourceType, change.Relation, schema.Path, subject, change.Relation, subject, entity.ResourceType)})
 		}
+	}
+	return faults
+}
+
+// validateSharedResourceTypes refuses an entity whose resource type is the resource type of an earlier entity. The
+// SpiceDB object of a row is <resource type>:<tenant-qualified row ID>, with no part that names the entity, and a fill
+// chooses the ID of a new row, so a row of one entity created with the ID of a row of the other, in the same tenant,
+// would be the same object and take its relationships and grants (PRIORITY follow-up, 2026-11-27). The refusal needs
+// no data migration: an object ID qualified by the entity would change the object of each existing row.
+func validateSharedResourceTypes(entities []types.Entity) []ValidationError {
+	var faults []ValidationError
+	first := map[string]string{}
+	for i, entity := range entities {
+		resourceType := entity.EntityAuthorization.ResourceType
+		if resourceType == "" {
+			continue
+		}
+		if owner, taken := first[resourceType]; taken {
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "resource-type-shared", Path: fmt.Sprintf("entities[%d].resource_type", i), Found: resourceType,
+				Message: fmt.Sprintf("the entity %s has the resource type %q of the entity %s; the SpiceDB object of a row is its resource type and its tenant-qualified ID, and a fill chooses the ID of a new row, so a row of %s with the ID of a row of %s would take that row's relationships and grants; give each entity a resource type of its own", entity.Name, resourceType, owner, entity.Name, owner)})
+			continue
+		}
+		first[resourceType] = entity.Name
 	}
 	return faults
 }

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,10 @@ import (
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/910-software-solutions/stego/registry/runtime/authn"
+	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	rtotel "github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
 func TestServiceLogsLocalAndOTLP(t *testing.T) {
@@ -541,6 +546,63 @@ func TestLocalAccessLineEdges(t *testing.T) {
 			t.Fatalf("the local output holds the method: %s", output.Bytes())
 		}
 	})
+	t.Run("ST-SUP-RC17-OC20-T06 The access line of a refusal before the router holds its fixed problem code and no value", func(t *testing.T) {
+		// erp-demo production run (2026-11-27): a 401 of the authentication and a 403 tenant.not_provisioned of the
+		// tenant check came before the router, so their access lines had only the status.
+		traceEnvironment(t)
+		var output bytes.Buffer
+		runtime, err := newRuntime(formOf(&output))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const token, tenantID = "eyJhbGciOiJFZERTQSJ9.secret-token-value.sig", "acme-tenant-4711"
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /records/{id}", func(w http.ResponseWriter, r *http.Request) {
+			// A code that a handler gives for a request that then passes does not reach its line.
+			rtotel.SetErrorCode(r.Context(), "unused")
+		})
+		// The real authentication of the runtime library: a Verifier with no keys answers each request 401.
+		var verifier *authn.Verifier
+		authenticated := runtime.Handler(verifier.Middleware(runtime.Route(mux)))
+		request := httptest.NewRequest("GET", "/records/"+tenantID+"?tenant="+tenantID, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		answer := httptest.NewRecorder()
+		authenticated.ServeHTTP(answer, request)
+		if answer.Code != http.StatusUnauthorized {
+			t.Fatalf("the authentication gave %d, want 401", answer.Code)
+		}
+		// The tenant check of the runtime library gives the code as service.refuseTenant does, before the router; a
+		// code with text of a value is not a code and is ignored.
+		gated := runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rtotel.SetErrorCode(r.Context(), "tenant "+tenantID)
+			rtotel.SetErrorCode(r.Context(), "tenant.not_provisioned")
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		gated.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records/"+tenantID, nil))
+		runtime.Handler(runtime.Route(mux)).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records/"+tenantID, nil))
+		runtime.Close()
+		access := linesOf(localLines(t, &output), "http.server.request.completed")
+		if len(access) != 3 {
+			t.Fatalf("%d access lines, want 3", len(access))
+		}
+		for i, want := range []struct {
+			status float64
+			code   string
+		}{{401, "AUT-001"}, {403, "tenant.not_provisioned"}, {200, ""}} {
+			if _, routed := access[i]["http.route"]; access[i]["http.response.status_code"] != want.status || i < 2 && routed {
+				t.Fatalf("access line %d is %v, want the status %v and no route", i, access[i], want.status)
+			}
+			code, _ := access[i]["stego.error_code"].(string)
+			if code != want.code {
+				t.Errorf("access line %d holds the error code %q, want %q: %v", i, code, want.code, access[i])
+			}
+		}
+		for _, value := range []string{token, "secret-token-value", tenantID, "Bearer"} {
+			if bytes.Contains(output.Bytes(), []byte(value)) {
+				t.Errorf("the local output holds the value %q: %s", value, output.Bytes())
+			}
+		}
+	})
 }
 
 // formWriter takes the local lines of a runtime: it checks each line against the one form of the lines of the runtime
@@ -726,6 +788,118 @@ func TestLocalLineForm(t *testing.T) {
 		}
 		if strings.Count(output.String(), `"http.route":"/records"`) != AccessLimit+1 {
 			t.Fatalf("the output holds %d lines of the route, want %d and the count line", strings.Count(output.String(), `"http.route":"/records"`), AccessLimit)
+		}
+	})
+}
+
+func TestAccessLineHostileInput(t *testing.T) {
+	t.Run("ST-SUP-RC17-OC20-T07 The access line holds only a fixed code of the charset for hostile Authorization values, a forged or shadowed place, long codes and a panic, in the local and the OTLP modes", func(t *testing.T) {
+		// Security review of PR #14, I1: the red-team test of the reviewer. The generated errorCodeOf is the only
+		// defence when a package stores into the shared place directly, and no other test proved it.
+		for _, mode := range []string{"local", "otlp"} {
+			t.Run(mode, func(t *testing.T) {
+				if mode == "local" {
+					traceEnvironment(t)
+				} else {
+					collectorFixture(t, false)
+				}
+				var output bytes.Buffer
+				runtime, err := newRuntime(formOf(&output))
+				if err != nil {
+					t.Fatal(err)
+				}
+				signing := authntest.NewKey(t, "k1")
+				keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				v, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS", TenantClaim: "tenant", Keys: keys})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(v.Stop)
+				mux := http.NewServeMux()
+				mux.HandleFunc("GET /r/{id}", func(w http.ResponseWriter, r *http.Request) {
+					switch r.PathValue("id") {
+					case "forge":
+						place := r.Context().Value(struct{ StegoErrorCode struct{} }{}).(*atomic.Pointer[string])
+						bad := "EVILCODE\n\"injected\":\"x"
+						place.Store(&bad)
+						w.WriteHeader(403)
+					case "long65":
+						rtotel.SetErrorCode(r.Context(), strings.Repeat("L", 65))
+						w.WriteHeader(400)
+					case "long64":
+						rtotel.SetErrorCode(r.Context(), strings.Repeat("M", 64))
+						w.WriteHeader(400)
+					case "panic":
+						rtotel.SetErrorCode(r.Context(), "internal")
+						panic("PANICVALUE")
+					case "shadow":
+						ctx := context.WithValue(r.Context(), struct{ StegoErrorCode struct{} }{}, new(atomic.Pointer[string]))
+						rtotel.SetErrorCode(ctx, "shadowed")
+						w.WriteHeader(409)
+					case "ok":
+						rtotel.SetErrorCode(r.Context(), "denied")
+					}
+				})
+				mk := func(id string) *http.Request { return httptest.NewRequest("GET", "/r/"+id, nil) }
+				claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
+				claims["tenant"] = "acmetenant"
+				token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+				claims["tenant"] = "TEN\nANT\"x"
+				badTenant := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+				authed := runtime.Handler(v.Middleware(runtime.Route(mux)))
+				type c struct {
+					hdr  []string
+					id   string
+					code string
+					st   float64
+				}
+				huge := strings.Repeat("HUGETOKEN", 2000)
+				cases := []c{
+					{nil, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + huge}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Basic SECRETBASIC"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer AAA", "Bearer BBB"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer bad\"tok\nen"}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + badTenant}, "x", "ORDERS-AUT-001", 401},
+					{[]string{"Bearer " + token}, "forge", "", 403},
+					{[]string{"Bearer " + token}, "long65", "", 400},
+					{[]string{"Bearer " + token}, "long64", strings.Repeat("M", 64), 400},
+					{[]string{"Bearer " + token}, "shadow", "", 409},
+					{[]string{"Bearer " + token}, "ok", "", 200},
+					{[]string{"Bearer " + token}, "panic", "internal", 0},
+				}
+				for _, cs := range cases {
+					r := mk(cs.id)
+					for _, h := range cs.hdr {
+						r.Header.Add("Authorization", h)
+					}
+					func() {
+						defer func() { _ = recover() }()
+						authed.ServeHTTP(httptest.NewRecorder(), r)
+					}()
+				}
+				runtime.Close()
+				access := linesOf(localLines(t, &output), "http.server.request.completed")
+				if len(access) != len(cases) {
+					t.Fatalf("%d lines want %d: %s", len(access), len(cases), output.Bytes())
+				}
+				for i, cs := range cases {
+					code, _ := access[i]["stego.error_code"].(string)
+					st, _ := access[i]["http.response.status_code"].(float64)
+					if code != cs.code || st != cs.st {
+						t.Errorf("case %d (%s): code %q status %v, want %q %v: %v", i, cs.id, code, st, cs.code, cs.st, access[i])
+					}
+				}
+				for _, bad := range []string{"HUGETOKEN", "SECRETBASIC", "EVILCODE", "injected", "TEN", "PANICVALUE", "shadowed", token[:20], "AAA", "BBB", "denied", "acmetenant", badTenant[:20]} {
+					if bytes.Contains(output.Bytes(), []byte(bad)) {
+						t.Errorf("output holds %q", bad)
+					}
+				}
+				t.Logf("lines: %s", output.Bytes())
+			})
 		}
 	})
 }

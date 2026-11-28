@@ -46,6 +46,10 @@ type Command struct {
 	// fill may set to 0 on the row that the command is decided on: the step-up reset of a locked row, with a permission
 	// of its own (ST-DECL-INV104, decision ST-SUP-Q205 (c)).
 	ResetsAttempts []string `yaml:"resets_attempts,omitempty"`
+	// CreatesWithChildren opts the command in to the decision of a reference to a row that the same attempt created
+	// by the create of that row, where the schema proves it (ST-DECL-INV108, ST-SUP-RP10-LC59). False when it is not
+	// given.
+	CreatesWithChildren bool `yaml:"creates_with_children,omitempty"`
 }
 
 // Effect is one effect that a command or a worker may stage: the outbox destination and the effect name, which is

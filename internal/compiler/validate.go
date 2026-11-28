@@ -93,6 +93,8 @@ func scopedAccessWarnings(service *types.ServiceDeclaration, projectDir string) 
 	// A worker's permission on each resource type it decides reaches its relation on the type tenant (walkthrough 28,
 	// CHK-WREL).
 	warnings := append(declaration.ScopedAccessWarnings(service, schema), declaration.RootCreateWarnings(service, schema)...)
+	// A decision of a reference that creates_with_children cannot prove is decided at the provider (ST-DECL-INV108).
+	warnings = append(warnings, declaration.NewReferenceWarnings(service, schema)...)
 	return append(warnings, declaration.WorkerRelationWarnings(service, schema)...)
 }
 

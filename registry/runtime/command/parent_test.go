@@ -275,6 +275,163 @@ func TestReferences(t *testing.T) {
 	})
 }
 
+// TestReferenceToNewRow records the behaviour that ST-SUP-Q221 is about (erp-demo G8): a create of a row that
+// refers to a row that the same transaction created decides the reference at the provider, which does not hold the
+// relations of the new row yet, because the relay writes them only after the commit. The decision is a deny, and
+// the call is not found, unless the command declares creates_with_children and the schema proves the reference: the
+// decision is then made by the create of the row (ST-SUP-RP10-LC59).
+func TestReferenceToNewRow(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC05-T26 A reference to a row that the same transaction created is decided at the provider and is not found", func(t *testing.T) {
+		e := newEnv(t)
+		products, orders, nodes := referenceEntities(e)
+		e.exec(`INSERT INTO customers (tenant_id, id, name, email) VALUES ('t1', 'c1', 'C1', 'c1@example.com')`)
+		// The provider holds the relations of the rows that were there before the call. It holds none of p9 and
+		// n1, which the fill creates: their tuples are only in the outbox of the transaction.
+		held := []string{
+			relation(t, "user:u-7", "place", "t1", "service", "orders"),
+			relation(t, "user:u-7", "view", "t1", "customer", "c1"),
+			relation(t, "user:u-7", "place_order", "t1", "customer", "c1"),
+		}
+		place := e.command("place", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource = "place", &Resource{Type: "service", Service: "orders"}
+		}, orders, e.customerE, products, nodes)
+		run := func(key string, fill func(ctx context.Context, h *Handle[testProbe]) error) error {
+			_, err := e.run(place, e.request("t1", u7(t), key, `{}`), fillOf(fill))
+			return err
+		}
+		// The fill of add-cost-item in the request: a parent row, then a row that refers to it, with the loaded
+		// value that the create of the parent returned.
+		parentAndChild := func(ctx context.Context, h *Handle[testProbe]) error {
+			p, err := repo(t, h, products).Create(ctx, product{ID: "p9", Name: "P9"})
+			if err != nil {
+				return err
+			}
+			c, err := repo(t, h, e.customerE).Get(ctx, "c1")
+			if err != nil {
+				return err
+			}
+			_, err = repo(t, h, orders).Create(ctx, placedOrder{ID: "po9", CustomerID: "c1", ProductID: "p9"}, c, p)
+			return err
+		}
+
+		e.decision.setRelations(held...)
+		before := e.tuples()
+		e.decision.taken()
+		if err := run("k-lc05-t26-a", parentAndChild); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the create of a row that refers to a row of the same transaction gave %v, want not found (ST-SUP-Q221)", err)
+		}
+		var decided []string
+		for _, d := range e.decision.taken() {
+			decided = append(decided, d.Action+" "+d.Resource)
+		}
+		if !slices.Contains(decided, "view product:p9") {
+			t.Fatalf("the reference was decided as %v, want view on product:p9 at the provider", decided)
+		}
+		if e.count(`SELECT count(*) FROM products WHERE id = 'p9'`) != 0 || e.count(`SELECT count(*) FROM placed_orders WHERE id = 'po9'`) != 0 ||
+			len(e.tuples()) != len(before) || e.keyRows("k-lc05-t26-a") != 0 {
+			t.Fatal("the call that was not found left a row, a tuple or a key row")
+		}
+
+		// A tree: a root node and its first child in one call, the parent decided with add_child.
+		before = e.tuples()
+		if err := run("k-lc05-t26-b", func(ctx context.Context, h *Handle[testProbe]) error {
+			root, err := repo(t, h, nodes).Create(ctx, node{ID: "n1"}, nil)
+			if err != nil {
+				return err
+			}
+			_, err = repo(t, h, nodes).Create(ctx, node{ID: "n2", ParentID: "n1"}, root)
+			return err
+		}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the create of a child node under a node of the same transaction gave %v, want not found (ST-SUP-Q221)", err)
+		}
+		if e.count(`SELECT count(*) FROM nodes WHERE id IN ('n1', 'n2')`) != 0 || len(e.tuples()) != len(before) {
+			t.Fatal("the call that was not found left a row or a tuple")
+		}
+
+		// The cause is only that the provider does not hold the relations of p9 yet: when it holds the grant that
+		// the relay would write, the same fill commits and enqueues the tuple of the reference.
+		e.decision.setRelations(append(held, relation(t, "user:u-7", "view", "t1", "product", "p9"))...)
+		before = e.tuples()
+		if err := run("k-lc05-t26-c", parentAndChild); err != nil {
+			t.Fatalf("the same fill with view on product:p9 at the provider gave %v, want a commit", err)
+		}
+		if added := e.tuples()[len(before):]; !slices.Contains(added, "touch order:po9#product@product:p9") {
+			t.Fatalf("the create enqueued %v, want order:po9#product@product:p9 among them", added)
+		}
+
+		// With creates_with_children and a schema that proves each reference (product.view = owner and
+		// node.add_child = owner, with owner a relationship of the caller), the first two fills commit, and the
+		// references to p8 and n3 are decided by their creates.
+		gate, err := authz.NewSchemaGate(`definition user {}`, &servedSchema{text: `definition user {}`}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := e.runtime(func(c *Config) { c.SchemaGate = gate })
+		ps, ns := products.spec, nodes.spec
+		ps.Relationships = []Relationship[product]{{Relation: "owner", SubjectType: "user"}}
+		ns.Relationships = []Relationship[node]{{Relation: "owner", SubjectType: "user"}}
+		ns.Parent = slices.Clone(ns.Parent)
+		ns.Parent[0].Field, ns.Parent[0].Required = "parent_id", true
+		os := orders.spec
+		os.Parent = slices.Clone(os.Parent)
+		os.Parent[1].Field = "product_id"
+		ownedProducts, err := NewEntity(ps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownedNodes, err := NewEntity(ns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fieldOrders, err := NewEntity(os)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opted := e.command("place", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource = "place", &Resource{Type: "service", Service: "orders"}
+			s.CreatesWithChildren = true
+			s.Witnesses = []Witness{
+				{Entity: "PlacedOrder", Field: "product_id", Subject: SubjectCaller, Permission: "view", Kind: WitnessRelationship, Relation: "owner"},
+				{Entity: "Node", Field: "parent_id", Subject: SubjectCaller, Permission: "add_child", Kind: WitnessRelationship, Relation: "owner"},
+			}
+		}, fieldOrders, e.customerE, ownedProducts, ownedNodes)
+		e.decision.setRelations(held...)
+		e.decision.taken()
+		if _, err := e.runOn(rt, opted, e.request("t1", u7(t), "k-lc05-t26-d", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			p, err := repo(t, h, ownedProducts).Create(ctx, product{ID: "p8", Name: "P8"})
+			if err != nil {
+				return err
+			}
+			c, err := repo(t, h, e.customerE).Get(ctx, "c1")
+			if err != nil {
+				return err
+			}
+			_, err = repo(t, h, fieldOrders).Create(ctx, placedOrder{ID: "po8", CustomerID: "c1", ProductID: "p8"}, c, p)
+			return err
+		})); err != nil {
+			t.Fatalf("the opted-in create of an order of a new product gave %v, want a commit", err)
+		}
+		if _, err := e.runOn(rt, opted, e.request("t1", u7(t), "k-lc05-t26-e", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			root, err := repo(t, h, ownedNodes).Create(ctx, node{ID: "n3"}, nil)
+			if err != nil {
+				return err
+			}
+			_, err = repo(t, h, ownedNodes).Create(ctx, node{ID: "n4", ParentID: "n3"}, root)
+			return err
+		})); err != nil {
+			t.Fatalf("the opted-in create of a child node under a new node gave %v, want a commit", err)
+		}
+		for _, d := range e.decision.taken() {
+			if d.Resource == "product:p8" || d.Resource == "node:n3" {
+				t.Fatalf("the opted-in creates decided %s %s at the provider", d.Action, d.Resource)
+			}
+		}
+		if e.count(`SELECT count(*) FROM placed_orders WHERE id = 'po8'`) != 1 || e.count(`SELECT count(*) FROM nodes WHERE id IN ('n3', 'n4')`) != 2 {
+			t.Fatal("the opted-in creates did not commit")
+		}
+	})
+}
+
 // orderTuple is the tuple order:<id>#<relation>@customer:<customerID> of the tenant t1.
 func orderTuple(t *testing.T, id, relation, customerID string) authz.Tuple {
 	t.Helper()
