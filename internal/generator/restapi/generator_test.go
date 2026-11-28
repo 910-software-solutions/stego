@@ -4550,8 +4550,8 @@ func TestRuntimeList(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC20-OC10-T01 The emitted list handler refuses an order field that is not an entity field", func(t *testing.T) {
 		inOrder(t, "orders List", list, `listOrder(parameters.Get("orderBy"), map[string]bool{"sku": true, "qty": true})`, "handleError(w, r, BadRequest(err.Error()))")
-		// A pii or secret field orders no list (ST-SUP-RP11-LC20).
-		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
+		// A pii or secret field orders no list (ST-SUP-RP11-LC20); the public fields plan and prefs order it.
+		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true, "prefs": true})`) {
 			t.Error("the customers list orders by a sensitive field")
 		}
 		// A field written sensitivity: public is a public field, as one with no sensitivity: a list orders and
@@ -4565,7 +4565,7 @@ func TestRuntimeList(t *testing.T) {
 			}
 		}
 		writtenFiles := crudFiles(t, written)
-		if customers := handlerMethod(t, writtenFiles, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
+		if customers := handlerMethod(t, writtenFiles, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true, "prefs": true})`) {
 			t.Error("the customers list does not order by a field written public")
 		}
 		searched := false

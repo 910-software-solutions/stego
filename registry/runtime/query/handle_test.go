@@ -298,6 +298,8 @@ func newEnv(t *testing.T) *env {
 		"orders (tenant_id text NOT NULL, id text NOT NULL, total bigint NOT NULL, note bytea, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))",
 		"charges (tenant_id text NOT NULL, id text NOT NULL, card_last4 text NOT NULL, amount bigint NOT NULL, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))",
 		"tickets (tenant_id text NOT NULL, id uuid NOT NULL, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))",
+		// people has a pii field, a jsonb field, an optional jsonb field and a bytes field (ST-SUP-RP11-LC08, erp-demo G11).
+		"people (tenant_id text NOT NULL, id text NOT NULL, email text NOT NULL, roles jsonb NOT NULL, prefs jsonb, avatar bytea, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))",
 	} {
 		name, _, _ := strings.Cut(table, " ")
 		statements = append(statements, "CREATE TABLE app."+table,
@@ -435,7 +437,7 @@ func chargeEntityWith(t *testing.T, search bool) *Entity[Charge] {
 	t.Helper()
 	e, err := NewEntity(Spec{Name: "charge", Schema: "app", Table: "charges", Key: "id", Columns: []string{"id", "card_last4", "amount"},
 		ResourceType: "charge", ReadPermission: "view", ListPermission: "view", Fields: audit.Fields{"card_last4": audit.PII},
-		Search: search},
+		Types: map[string]ColumnType{"id": ColumnText, "card_last4": ColumnText, "amount": ColumnInt}, Search: search},
 		func(r Row) (Charge, error) {
 			id, err := r.Text("id")
 			if err != nil {

@@ -1775,6 +1775,36 @@ is true in the same tenant only. Give the location only to users who may know
 when the create completed.
 This is the recommendation (a) of the open question ST-SUP-Q206.
 
+### Release notes for runtime v0.211.0
+
+- A read of an entity with a `pii` field and a `jsonb` field answers again
+  (erp-demo G11). Before, each read, list and fill `Get` or `List` of such
+  an entity answered 500: a `jsonb` column scans as bytes, and the read
+  audit had no encoding for bytes.
+- `query.Spec.Types` gives the declared type of each column
+  (`query.ColumnType`: `ColumnText`, `ColumnInt`, `ColumnFloat`,
+  `ColumnBool`, `ColumnTime`, `ColumnBytes`, `ColumnJSON`). The read audit
+  converts each value by this type: a `json` column is its JSON value, which
+  the audit redacts at any depth; a `bytes` column is the standard base64
+  text of its bytes, also when the bytes are JSON text; NULL is null. The
+  query generator of query 1.8.0 gives `Types` to each entity with a `pii`
+  field.
+- `query.NewEntity` refuses an entity with a `pii` field when a column has
+  no type, and any entity that declares an unknown type or a type of a
+  column that it does not have. A value that is not of its declared type
+  fails the read with no result; the error names the column and the type,
+  never the value.
+- A query fill that ends with 500 writes one error line `query.fill.failed`
+  with the query and a fixed cause class (`fill_error`, `audit`, `closed`,
+  `panic`, `deadline` or `canceled`) and `held_back`, at most one line for
+  each query and class in ten seconds. The line holds no error text, no
+  value and no ID. A refusal, a missing row and a bad request write no line.
+- rest-crud 3.281.0, rpc-service 1.281.0 and browser-service 1.281.0 pin
+  this runtime. It holds each change of v0.209.0 too.
+- API against v0.209.0: added `query.ColumnType`, its constants and
+  `query.Spec.Types`. A hand-written `query.Spec` of an entity with a `pii`
+  field must now give `Types`.
+
 ### Release notes for runtime v0.208.0
 
 - A refusal before the router gives its fixed problem code to the access
