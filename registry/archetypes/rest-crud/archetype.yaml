@@ -8,7 +8,7 @@ version: 3.282.0
 runtime:
   module: github.com/910-software-solutions/stego/registry/runtime
   version: v0.212.0
-  sum: h1:CFv/Tv1r5NxTSFGy441icd6GsWFm36CrJtXco9lW/YA=
+  sum: h1:lTad1QTHXYnEyft/pzXQcZ++I/6fk8SSUl9TkPP4+Zs=
 
 components:
   - rest-api
