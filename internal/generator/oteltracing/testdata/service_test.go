@@ -832,6 +832,16 @@ func TestAccessLineHostileInput(t *testing.T) {
 					case "long64":
 						rtotel.SetErrorCode(r.Context(), strings.Repeat("M", 64))
 						w.WriteHeader(400)
+					case "forge65", "forge64":
+						// Security review sec-21-14c, G07: SetErrorCode refuses a code of 65 bytes, so only a code that a
+						// package stores into the shared place directly proves the length bound of the generated errorCodeOf.
+						place := r.Context().Value(struct{ StegoErrorCode struct{} }{}).(*atomic.Pointer[string])
+						code := strings.Repeat("N", 65)
+						if r.PathValue("id") == "forge64" {
+							code = strings.Repeat("P", 64)
+						}
+						place.Store(&code)
+						w.WriteHeader(400)
 					case "panic":
 						rtotel.SetErrorCode(r.Context(), "internal")
 						panic("PANICVALUE")
@@ -867,6 +877,8 @@ func TestAccessLineHostileInput(t *testing.T) {
 					{[]string{"Bearer " + token}, "forge", "", 403},
 					{[]string{"Bearer " + token}, "long65", "", 400},
 					{[]string{"Bearer " + token}, "long64", strings.Repeat("M", 64), 400},
+					{[]string{"Bearer " + token}, "forge65", "", 400},
+					{[]string{"Bearer " + token}, "forge64", strings.Repeat("P", 64), 400},
 					{[]string{"Bearer " + token}, "shadow", "", 409},
 					{[]string{"Bearer " + token}, "ok", "", 200},
 					{[]string{"Bearer " + token}, "panic", "internal", 0},
@@ -893,7 +905,7 @@ func TestAccessLineHostileInput(t *testing.T) {
 						t.Errorf("case %d (%s): code %q status %v, want %q %v: %v", i, cs.id, code, st, cs.code, cs.st, access[i])
 					}
 				}
-				for _, bad := range []string{"HUGETOKEN", "SECRETBASIC", "EVILCODE", "injected", "TEN", "PANICVALUE", "shadowed", token[:20], "AAA", "BBB", "denied", "acmetenant", badTenant[:20]} {
+				for _, bad := range []string{"HUGETOKEN", "SECRETBASIC", "EVILCODE", "injected", "TEN", "PANICVALUE", "shadowed", token[:20], "AAA", "BBB", "denied", "acmetenant", badTenant[:20], strings.Repeat("N", 65)} {
 					if bytes.Contains(output.Bytes(), []byte(bad)) {
 						t.Errorf("output holds %q", bad)
 					}
