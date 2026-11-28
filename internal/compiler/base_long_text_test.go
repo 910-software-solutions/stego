@@ -139,6 +139,23 @@ func TestBaseLongText(t *testing.T) {
 		if faults := longTextFaults(t, noted, on, "6.32.0"); len(faults) != 0 {
 			t.Errorf("a drop of ActivityEntry with note set searchable: true on a 6.32.0 base: got %+v, want no fault", faults)
 		}
+		// A dropped entity that no collection lists had no search index, so it needs no searchable: true (security
+		// review sec-22c, T2).
+		noList := func(service string) string {
+			return strings.ReplaceAll(service, "operations: [create, list]", "operations: [create]")
+		}
+		if faults := longTextFaults(t, noList(noted), noList(dropped), "6.32.0"); asks(faults, "ActivityEntry", "note", "set searchable: true on the field") {
+			t.Errorf("a drop of ActivityEntry, which no collection lists, with note of 1000 characters on a 6.32.0 base: got %+v, want no fault that asks for searchable: true", faults)
+		}
+		// A drop of a field that a relax with the item searchable of the base took out of the search needs no item: the
+		// relax dropped the index (security review sec-22c, T1).
+		relaxedBase := withChanges(td01, descriptionRelax, descriptionRelaxExpand)
+		relaxedDrop := withChanges(strings.Replace(relaxedBase, "      - { name: description, type: string, optional: true, max_length: 1000 }\n", "", 1),
+			"  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, after name\"}\n",
+			"  - {change: organization-description-drop, phase: expand}\n")
+		if faults := longTextFaults(t, relaxedBase, relaxedDrop, "6.32.0"); asks(faults, "Organization", "description", "add the item searchable") {
+			t.Errorf("a drop after the relax searchable of Organization.description on a 6.32.0 base: got %+v, want no fault that asks for the item", faults)
+		}
 		// A drop of the base stays as it is: only the item searchable that the base marking adds is not a change, and a
 		// change of a word that holds "searchable" is (security review sec-22c, N1).
 		changed := "the head changes the schema change organization-description-drop"
