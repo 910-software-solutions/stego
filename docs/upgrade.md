@@ -1024,6 +1024,32 @@ A release with a runtime before v0.207.0 gives these tenants no service
 tuple. Move to runtime v0.207.0 or later: its first run of the job gives each
 active tenant the tuple, also for a relation that an earlier release added.
 
+Do not retire a tenant during the rollout of the release that adds the
+relation. Wait until the last pod of the release before stopped. In the
+rollout, the controller of the new release can stage the service tuple of a
+tenant, and then a pod of the release before can retire that tenant. That pod
+does not know the relation `service`, so its Retire does not delete the
+tuple, and the tuple stays in SpiceDB after the retire (security review of PR
+#20, L2). No request reads it: the gate refuses each request of a retired
+tenant, a retired tenant ID is not provisioned again, and the Retire deletes
+the tuples of the rows of the tenant. It is the same window as the worker
+tuples of a rollout (see [Add a subscription to a running
+service](#add-a-subscription-to-a-running-service)).
+
+If you retired a tenant during such a rollout, remove its service tuple. Read
+it with the ID of the tenant resource (see [Rows with no parent, and who reads
+them](fills.md#rows-with-no-parent-and-who-reads-them)), then delete each relationship that the read shows:
+
+```bash
+b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+t=$(b64 <tenant>)
+zed relationship read "tenant:$t/$t" service
+zed relationship delete "tenant:$t/$t" service <subject that the read shows>
+```
+
+The audit of the service does not see this delete. Record it, who did it and
+why, in your own change log.
+
 ### A seal open across the move to runtime v0.207.0
 
 Move the runtime and the generated code together: take rest-crud 3.276.0, or
