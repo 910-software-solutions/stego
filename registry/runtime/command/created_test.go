@@ -1285,7 +1285,7 @@ func TestCreatedRows(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RP10-LC59-T16 The record and the decision read the ID of a row in the form that the database stores", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC59-T17 The record and the decision read the ID of a row in the form that the database stores", func(t *testing.T) {
 		c := newCostEnv(t)
 		c.exec(`INSERT INTO orgs (tenant_id, id, name) VALUES ('t1', 'o1', 'O1')`,
 			`CREATE TABLE uuid_items (tenant_id text NOT NULL, id uuid NOT NULL, org_id text NOT NULL DEFAULT '', billing_org_id text NOT NULL DEFAULT '', group_id text NOT NULL DEFAULT '',
