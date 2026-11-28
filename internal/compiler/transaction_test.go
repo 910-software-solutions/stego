@@ -297,7 +297,9 @@ func TestRecoveryAfterProcessExit(t *testing.T) {
 	for _, point := range []string{"prepared", "after_operation_1", "before_complete"} {
 		t.Run(point, func(t *testing.T) {
 			input := transactionInput(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			// The child is a new process of the test binary; a busy runner can take more than 15 seconds to start it and
+			// run it, so it gets two minutes (still bounded).
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTransactionProcessHelper$")
 			command.Env = append(os.Environ(), "STEGO_TEST_TRANSACTION_PROJECT="+input.ProjectDir, "STEGO_TEST_TRANSACTION_REGISTRY="+input.RegistryDir, "STEGO_TEST_TRANSACTION_POINT="+point)
