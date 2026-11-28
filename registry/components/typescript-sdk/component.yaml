@@ -14,9 +14,11 @@
 # walkthrough 21, P-D).
 # Version 1.6.0 gives idempotentReplayed as a boolean: true for Idempotent-Replayed: true, and false else, such as for
 # a first write, where 1.5.0 gave null (ST-SUP-RC24-OC07; walkthrough 22, small items).
+# Version 1.7.0 takes a string member with a pattern, as the document of a field with a pattern gives it, and does not
+# check the pattern in the browser (walkthrough 29, TS-PATTERN).
 kind: component
 name: typescript-sdk
-version: 1.6.0
+version: 1.7.0
 stage: ga
 output_namespace: tssdk
 config:

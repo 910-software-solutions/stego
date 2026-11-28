@@ -148,6 +148,22 @@ type SettingError struct {
 
 func (e *SettingError) Error() string { return "service: the setting " + e.names + " " + e.problem }
 
+// SettingFault is the fault class of the failure record of a refused setting (walkthrough 29, CA-CAUSE).
+const SettingFault = "setting"
+
+// FaultClass gives the fault class of the failure record of the process, SettingFault: with no class the record of a
+// refused setting gave its stage alone, and the migration job named no setting.
+func (e *SettingError) FaultClass() string { return SettingFault }
+
+// FaultObject gives the object of the fault: the variable at fault in lower case, such as stego_spicedb_ca_file.
+func (e *SettingError) FaultObject() string { return strings.ToLower(e.Variable) }
+
+// FaultRemedy gives the setting and what is wrong with it, fixed texts with no value of the setting, so that the
+// record of each refusal of one setting tells which it is.
+func (e *SettingError) FaultRemedy() string {
+	return "the setting " + e.names + " " + e.problem + ": correct it, then start the process again"
+}
+
 // settingError is a missing or malformed setting: it names the setting and never its value. names is one fixed name,
 // or two joined by " or ", of which the first is the variable at fault.
 func settingError(names, problem string) error {

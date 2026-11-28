@@ -105,7 +105,7 @@ func TestGeneration(t *testing.T) {
 	if len(files) != 3 {
 		t.Fatal("unexpected output")
 	}
-	for _, change := range []struct{ old, new string }{{"type: string, minLength: 1, maxLength: 200", "type: string, pattern: '(a+)+$'"}, {"operationId: createRecord", "operationId: session"}, {"operationId: createRecord", "operationId: login"}, {"in: path", "in: cookie"}, {"format: date-time", "format: unknown"}, {"minLength: 1", "minLenght: 1"}, {"type: string, minLength: 1, maxLength: 200", "minLength: 1"}, {"schema: {type: string}", "schema: {type: string, nullable: true}"}} {
+	for _, change := range []struct{ old, new string }{{"count: {type: integer, minimum: 0}", "count: {type: integer, minimum: 0, pattern: '^[0-9]+$'}"}, {"operationId: createRecord", "operationId: session"}, {"operationId: createRecord", "operationId: login"}, {"in: path", "in: cookie"}, {"format: date-time", "format: unknown"}, {"minLength: 1", "minLenght: 1"}, {"type: string, minLength: 1, maxLength: 200", "minLength: 1"}, {"schema: {type: string}", "schema: {type: string, nullable: true}"}} {
 		c := fixture()
 		c.Inputs["api.yaml"] = []byte(strings.ReplaceAll(sample, change.old, change.new))
 		if g.ValidateContext(c) == nil {
@@ -284,4 +284,40 @@ func TestErrorCodeConfiguration(t *testing.T) {
 	if _, _, err := g.Generate(ctx); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestPattern(t *testing.T) {
+	t.Run("ST-SUP-RC24-OC14-T03 A document whose string member has a pattern is made into a client that does not hold or check the pattern", func(t *testing.T) {
+		// walkthrough 29, TS-PATTERN: the rest-api document of a field with a pattern gives the pattern.
+		const pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}$"
+		const evil = "(a+)+$"
+		document := strings.Replace(sample, "type: string, minLength: 1, maxLength: 200", "type: string, minLength: 1, maxLength: 200, pattern: '"+pattern+"'", 1)
+		document = strings.Replace(document, "endpoint: {type: string, format: uri}", "endpoint: {type: string, format: uri, pattern: '"+evil+"'}", 1)
+		if document == sample || !strings.Contains(document, evil) {
+			t.Fatal("the sample document has no member to give a pattern")
+		}
+		c := fixture()
+		c.Inputs["api.yaml"] = []byte(document)
+		g := &Generator{}
+		if err := g.ValidateContext(c); err != nil {
+			t.Fatalf("a document with a string pattern is refused: %v", err)
+		}
+		files, _, err := g.Generate(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := fixture()
+		want, _, err := g.Generate(plain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(files, want) {
+			t.Fatal("the client of a document with patterns is not the client of the same document with no pattern")
+		}
+		for _, f := range files {
+			if strings.Contains(string(f.Content), "pattern") {
+				t.Fatalf("%s names a pattern", f.Path)
+			}
+		}
+	})
 }

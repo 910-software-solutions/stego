@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/910-software-solutions/stego/registry/runtime/authn"
 	"github.com/910-software-solutions/stego/registry/runtime/authn/authntest"
+	"github.com/910-software-solutions/stego/registry/runtime/authz"
 	"github.com/910-software-solutions/stego/registry/runtime/otel"
 	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 )
@@ -283,6 +286,13 @@ func TestTenantGateUnavailable(t *testing.T) {
 		claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
 		claims["tenant"] = "t1"
 		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		// Walkthrough 29, SQL53-LOG: the 503 of the tenant gate comes before any command, and wrote no warn line
+		// command.database.unavailable, so the page on its SQLSTATE class never fired.
+		var logs bytes.Buffer
+		previous, held := slog.Default(), gateUnavailableLog
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		gateUnavailableLog = authz.NewCauseLog(nil)
+		t.Cleanup(func() { slog.SetDefault(previous); gateUnavailableLog = held })
 		reached := false
 		router := http.NewServeMux()
 		router.HandleFunc("GET /api/v1/orders", func(http.ResponseWriter, *http.Request) { reached = true })
@@ -303,6 +313,15 @@ func TestTenantGateUnavailable(t *testing.T) {
 		if _, err := svc.Authenticate(context.Background(), "Bearer "+token); status.Code(err) != codes.Unavailable ||
 			status.Convert(err).Message() != "unavailable" {
 			t.Errorf("a gRPC call gave %v, want UNAVAILABLE with the code unavailable", err)
+		}
+		for _, step := range []string{"http", "grpc"} {
+			want := "action=" + TenantGateAction + " step=" + step + " cause=unavailable sqlstate_class=none "
+			if !strings.Contains(logs.String(), "command.database.unavailable") || !strings.Contains(logs.String(), want) {
+				t.Errorf("the 503 of the tenant gate over %s wrote no warn line %q:\n%s", step, want, logs.String())
+			}
+		}
+		if strings.Contains(logs.String(), closed) {
+			t.Errorf("the warn line names the address of the database:\n%s", logs.String())
 		}
 	})
 }

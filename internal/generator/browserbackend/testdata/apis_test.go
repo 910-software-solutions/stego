@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -81,10 +82,20 @@ func TestDeclaredAPIs(t *testing.T) {
 		} {
 			o := f.options
 			o.Upstreams = upstreams
-			if b, err := newBackend(ctx, f.db, o); err == nil {
+			b, err := newBackend(ctx, f.db, o)
+			if err == nil {
 				b.Close()
 				t.Fatalf("start accepted STEGO_BROWSER_API_URLS %q", upstreams)
 			}
+			// Walkthrough 29, BB-FAIL: the failure record names the fault, the setting and the remedy, and no value.
+			var named interface {
+				FaultClass() string
+				FaultObject() string
+				FaultRemedy() string
+			}
+			require(t, errors.As(err, &named) && named.FaultClass() == "browser.settings" && named.FaultObject() == "stego_browser_api_urls" &&
+				named.FaultRemedy() == apiURLsRemedy, "the refusal of STEGO_BROWSER_API_URLS "+upstreams+" names no fault, setting and remedy: "+err.Error())
+			require(t, !strings.Contains(err.Error(), f.second.URL) && !strings.Contains(named.FaultRemedy(), f.second.URL), "the refusal shows the value of STEGO_BROWSER_API_URLS")
 		}
 	})
 

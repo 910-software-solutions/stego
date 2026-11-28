@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +157,7 @@ func TestSpiceDBCAFile(t *testing.T) {
 		if err := os.Chmod(writable, 0o622); err != nil {
 			t.Fatal(err)
 		}
+		remedies := map[string][]string{}
 		for name, change := range map[string]map[string]string{
 			"a relative path":        {SpiceDBCAFileSetting: filepath.Base(caFile)},
 			"a missing file":         {SpiceDBCAFileSetting: filepath.Join(t.TempDir(), "missing-"+secretValue)},
@@ -176,6 +178,36 @@ func TestSpiceDBCAFile(t *testing.T) {
 			}
 			if got, want := StartStage(err), "service.start.setting.spicedb-authz."+SpiceDBCAFileSetting; got != want {
 				t.Errorf("%s: stage %q, want %q", name, got, want)
+			}
+			// Walkthrough 29, CA-CAUSE: the record of each refusal names the fault, the setting and what is wrong,
+			// in the service and in the migration job, so the three refusals of the walkthrough differ.
+			for _, refused := range []error{err, failed(StepSettings, err)} {
+				var named interface {
+					FaultClass() string
+					FaultObject() string
+					FaultRemedy() string
+				}
+				if !errors.As(refused, &named) || named.FaultClass() != SettingFault || named.FaultObject() != "stego_spicedb_ca_file" ||
+					!strings.Contains(named.FaultRemedy(), setting.problem) || strings.Contains(named.FaultRemedy(), secretValue) {
+					t.Errorf("%s: the fault of %v is not the setting %s with its problem", name, refused, SpiceDBCAFileSetting)
+				}
+			}
+			remedies[setting.FaultRemedy()] = append(remedies[setting.FaultRemedy()], name)
+		}
+		for _, names := range [][]string{{"a file group can write", "no PEM certificate", "the loopback test mode"}} {
+			seen := map[string]bool{}
+			for remedy, of := range remedies {
+				for _, name := range names {
+					if slices.Contains(of, name) {
+						if seen[remedy] {
+							t.Errorf("two of %q have the remedy %q", names, remedy)
+						}
+						seen[remedy] = true
+					}
+				}
+			}
+			if len(seen) != len(names) {
+				t.Errorf("the refusals %q have %d remedies, want %d", names, len(seen), len(names))
 			}
 		}
 

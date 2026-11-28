@@ -67,6 +67,12 @@ Give `prefer: "wait=N"` too for a shorter wait. A result with no location
 needs no `authzRevocationAfter`.
 `RequestSchemas` contains request models. `Schemas` contains response models.
 Runtime checks enforce the supported schema constraints in each direction.
+The client takes a string member with a `pattern`, such as a field that
+declares one, but it does not check the pattern: the service checks it and
+answers 400 for a value that does not match. Thus the browser never runs a
+pattern of the document, and a pattern that takes a long time on some values
+cannot stop the page (typescript-sdk 1.7.0; before, the client of such a
+document was refused).
 
 Call `session()` for public session data. Call `logout()` for console sign-out.
 Use the backend's `/auth/logout` page for the provider sign-out confirmation.

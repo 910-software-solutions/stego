@@ -832,9 +832,17 @@ var unavailableLog = authz.NewCauseLog(nil)
 // connection, or none for an error with no SQLSTATE, such as a refused connection; it never names the code in full or
 // the message, so an alert can tell the class of resources from an outage (security review of PR #499, L1).
 func logUnavailable(ctx context.Context, action, step string, err error) {
-	if ok, held := unavailableLog.Allow(action + "/" + step); ok {
+	LogUnavailable(ctx, unavailableLog, action, step, err)
+}
+
+// LogUnavailable logs the warn line of logUnavailable for a step outside Run whose 503 the database caused, such as
+// the tenant gate of a service, which reads the tenant list before any command (walkthrough 29, SQL53-LOG): with no
+// line there, a pool that cannot connect answered each call 503 and the page on class 53 never fired. held holds back
+// the lines of the caller to one for each action and step in each authz.LogEvery, as logUnavailable does.
+func LogUnavailable(ctx context.Context, held *authz.CauseLog, action, step string, err error) {
+	if ok, back := held.Allow(action + "/" + step); ok {
 		slog.WarnContext(ctx, "command: the database cannot serve now", otel.SlogEventKey, "command.database.unavailable", "action", action, "step", step,
-			"cause", "unavailable", "sqlstate_class", sqlStateClass(err), "held_back", held)
+			"cause", "unavailable", "sqlstate_class", sqlStateClass(err), "held_back", back)
 	}
 }
 

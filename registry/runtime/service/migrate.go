@@ -209,7 +209,7 @@ const (
 // The fixed remedies of the faults of the steps of the migration job.
 const (
 	migrateDatabaseRemedy = "the migration job cannot open the database: check that PostgreSQL runs and takes connections, that the key url of the Secret <service>-database-owner names it, and that its login may connect; then run the migration Job again"
-	migrateSpiceDBRemedy  = "the migration job cannot reach SpiceDB: check that SpiceDB runs, that STEGO_SPICEDB_ENDPOINT names it and that STEGO_SPICEDB_KEY_FILE holds its preshared key; then run the migration Job again"
+	migrateSpiceDBRemedy  = "the migration job cannot reach SpiceDB: check that SpiceDB runs, that STEGO_SPICEDB_ENDPOINT names it, that STEGO_SPICEDB_KEY_FILE holds its preshared key, and, for a certificate of SpiceDB that a private authority signs, that STEGO_SPICEDB_CA_FILE names the file of that authority; then run the migration Job again"
 	migrateRefusedRemedy  = "SpiceDB refuses the authorization schema of the release: with the cause invalid_argument.relationships_exist, the schema removes a definition or a relation that still has relationships; delete them with zed relationship delete, or keep them in authz/schema.zed; then run the migration Job again"
 	migrateServedRemedy   = "SpiceDB does not serve each definition of the schema of the release within the time limit of the job: check the SpiceDB pods and their datastore, then run the migration Job again"
 	migrateReadBackRemedy = "the schema that SpiceDB serves after the write is not the schema of the release: check that no other job or operator writes the schema of this SpiceDB at the same time, then run the migration Job again"
