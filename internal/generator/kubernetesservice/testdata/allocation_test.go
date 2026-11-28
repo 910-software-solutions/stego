@@ -686,3 +686,204 @@ func mergeNetworkFields(current, patch map[string]any) {
 		}
 	}
 }
+
+func TestAllocationEnsureWritesTheDeclaredProfile(t *testing.T) {
+	t.Run("ST-SUP-RC26-OC01-T01 Ensure for a declared profile writes that profile's namespace, quota, accounts, bindings and network rules", func(t *testing.T) {
+		a, s := fixture(t)
+		// The declaration of allocationContext, with two managed accounts and one network rule added in the configuration.
+		a.config.Profiles[0].ServiceAccounts = []string{"gateway", "reader"}
+		a.config.Profiles[0].NetworkIsolation = true
+		a.config.Profiles[0].NetworkPeers = []networkPeer{{Direction: "ingress", Namespace: "control", PodLabel: "app", PodValue: "widget", Protocol: "TCP", Port: 8443}}
+		p := a.config.Profiles[0]
+		const name = "tenant-12345678"
+		if err := a.Ensure(context.Background(), "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		namespace, ok := s.objects["/api/v1/namespaces/"+name]
+		if !ok || !strings.HasPrefix(kube.String(namespace, "metadata", "name"), "tenant-") {
+			t.Fatal("no namespace with the profile prefix")
+		}
+		if kube.String(namespace, "metadata", "labels", "example.test/owner") != "owner-1" || kube.String(namespace, "metadata", "labels", ProfileLabel) != "tenant" {
+			t.Fatal("namespace lacks the owner or the profile")
+		}
+		quota := s.objects["/api/v1/namespaces/"+name+"/resourcequotas/stego-allocation"]
+		hard, _ := kube.Nested(quota, "spec", "hard").(map[string]any)
+		want := map[string]string{"pods": "1", "limits.cpu": "1", "limits.memory": "256Mi", "limits.ephemeral-storage": "128Mi", "requests.storage": "1Gi"}
+		if len(hard) != len(want) {
+			t.Fatalf("quota %v, want %v", hard, want)
+		}
+		for key, value := range want {
+			if hard[key] != value {
+				t.Fatalf("quota %v, want %v", hard, want)
+			}
+		}
+		for _, alias := range []string{"gateway", "reader"} {
+			account := s.objects["/api/v1/namespaces/"+name+"/serviceaccounts/"+a.serviceAccountName(p, "owner-1", alias)]
+			if account == nil || account["automountServiceAccountToken"] != false {
+				t.Fatalf("managed account %s missing or mounts its token", alias)
+			}
+		}
+		subject := func(binding kube.Object) (string, string, string) {
+			subjects, _ := binding["subjects"].([]any)
+			if len(subjects) != 1 {
+				return "", "", ""
+			}
+			entry, _ := subjects[0].(map[string]any)
+			return kube.String(binding, "roleRef", "name"), kube.String(entry, "name"), kube.String(entry, "namespace")
+		}
+		data := s.objects["/apis/rbac.authorization.k8s.io/v1/namespaces/"+name+"/rolebindings/stego-"+a.marker+"-0"]
+		if role, account, ns := subject(data); role != "control.widget-queue.data" || account != "widget-data" || ns != "control" {
+			t.Fatalf("data binding is %s to %s/%s", role, ns, account)
+		}
+		review := s.objects["/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/control.widget-queue."+name+".1"]
+		if role, account, ns := subject(review); role != "control.widget-queue.review" || account != a.serviceAccountName(p, "owner-1", "gateway") || ns != name {
+			t.Fatalf("review binding is %s to %s/%s", role, ns, account)
+		}
+		policy := s.objects["/apis/networking.k8s.io/v1/namespaces/"+name+"/networkpolicies/stego-allocation"]
+		ingress, _ := kube.Nested(policy, "spec", "ingress").([]any)
+		if len(ingress) != 1 {
+			t.Fatalf("network rules %v", kube.Nested(policy, "spec"))
+		}
+		rule, _ := ingress[0].(map[string]any)
+		from, _ := rule["from"].([]any)
+		ports, _ := rule["ports"].([]any)
+		if len(from) != 1 || len(ports) != 1 {
+			t.Fatalf("network rule %v", rule)
+		}
+		target, _ := from[0].(map[string]any)
+		port, _ := ports[0].(map[string]any)
+		if kube.String(target, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "control" || kube.String(target, "podSelector", "matchLabels", "app") != "widget" || port["protocol"] != "TCP" || fmt.Sprint(port["port"]) != "8443" {
+			t.Fatalf("network rule %v", rule)
+		}
+	})
+}
+
+// seedNamespace puts a live namespace with these labels in the fake API, as another writer would leave it.
+func seedNamespace(s *api, name string, labels map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objects["/api/v1/namespaces/"+name] = kube.Object{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name, "uid": "uid-seed", "resourceVersion": "1", "labels": labels}}
+}
+
+func TestAllocationNamespaceOwnership(t *testing.T) {
+	const name = "tenant-12345678"
+	t.Run("ST-SUP-RC26-OC02-T01 Every namespace the allocator writes carries its owner and the installation marker", func(t *testing.T) {
+		a, s := fixture(t)
+		batch := a.config.Profiles[0]
+		batch.Name, batch.Prefix = "batch", "batch-"
+		a.config.Profiles = append(a.config.Profiles, batch)
+		want := map[string]string{"tenant-12345678": "owner-1", "tenant-87654321": "owner-2", "batch-12345678": "owner-1", "batch-87654321": "owner-2"}
+		for namespace, owner := range want {
+			if err := a.Ensure(context.Background(), strings.TrimSuffix(strings.SplitAfter(namespace, "-")[0], "-"), namespace, owner); err != nil {
+				t.Fatal(namespace, err)
+			}
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		seen := 0
+		for key, object := range s.objects {
+			namespace := strings.TrimPrefix(key, "/api/v1/namespaces/")
+			if namespace == key || strings.Contains(namespace, "/") {
+				continue
+			}
+			seen++
+			if owner, ok := want[namespace]; !ok || kube.String(object, "metadata", "labels", "example.test/owner") != owner {
+				t.Errorf("namespace %s has owner %q", namespace, kube.String(object, "metadata", "labels", "example.test/owner"))
+			}
+			if a.Marker() == "" || kube.String(object, "metadata", "labels", MarkerLabel) != a.Marker() {
+				t.Errorf("namespace %s has marker %q, want %q", namespace, kube.String(object, "metadata", "labels", MarkerLabel), a.Marker())
+			}
+		}
+		if seen != len(want) {
+			t.Fatalf("%d namespaces, want %d", seen, len(want))
+		}
+	})
+	t.Run("ST-SUP-RC26-OC02-T02 A write to a namespace of another owner is refused", func(t *testing.T) {
+		a, s := fixture(t)
+		seedNamespace(s, name, map[string]any{MarkerLabel: a.Marker(), ProfileLabel: "tenant", "example.test/owner": "owner-a", "app.kubernetes.io/managed-by": "widget"})
+		err := a.Ensure(context.Background(), "tenant", name, "owner-b")
+		if err == nil || !strings.Contains(err.Error(), "different owner") {
+			t.Fatalf("Ensure for another owner: %v", err)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if len(s.writes) != 0 {
+			t.Fatalf("writes %v", s.writes)
+		}
+	})
+	t.Run("ST-SUP-RC26-OC02-T03 A deletion of a namespace of another owner is refused", func(t *testing.T) {
+		a, s := fixture(t)
+		seedNamespace(s, name, map[string]any{MarkerLabel: a.Marker(), ProfileLabel: "tenant", "example.test/owner": "owner-a", "app.kubernetes.io/managed-by": "widget"})
+		if _, err := a.Delete(context.Background(), "tenant", name, "owner-b"); err == nil {
+			t.Fatal("deletion for another owner accepted")
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, write := range s.writes {
+			if strings.HasPrefix(write, "DELETE ") {
+				t.Fatalf("delete request %s", write)
+			}
+		}
+		if _, ok := s.objects["/api/v1/namespaces/"+name]; !ok {
+			t.Fatal("namespace removed")
+		}
+	})
+	t.Run("ST-SUP-RC26-OC02-T04 A namespace of the same name under another owner is an error, never a success", func(t *testing.T) {
+		a, s := fixture(t)
+		seedNamespace(s, name, map[string]any{"example.test/owner": "owner-a"})
+		if err := a.Ensure(context.Background(), "tenant", name, "owner-b"); err == nil || errors.Is(err, ErrPending) {
+			t.Fatalf("Ensure: %v", err)
+		}
+		if err := a.RequireNamespace(context.Background(), "tenant", name, "owner-b"); err == nil || errors.Is(err, ErrPending) {
+			t.Fatalf("RequireNamespace: %v", err)
+		}
+	})
+}
+
+func TestAllocationPendingUntilComplete(t *testing.T) {
+	const name = "tenant-12345678"
+	namespacePath := "/api/v1/namespaces/" + name
+	t.Run("ST-SUP-RC26-OC03-T01 An allocation whose namespace is absent or being deleted is pending", func(t *testing.T) {
+		a, s := fixture(t)
+		if err := a.RequireNamespace(context.Background(), "tenant", name, "owner-1"); !errors.Is(err, ErrPending) {
+			t.Fatalf("absent namespace: %v", err)
+		}
+		if err := a.Ensure(context.Background(), "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.objects[namespacePath]["metadata"].(map[string]any)["deletionTimestamp"] = "2026-11-28T00:00:00Z"
+		s.mu.Unlock()
+		if err := a.RequireNamespace(context.Background(), "tenant", name, "owner-1"); !errors.Is(err, ErrPending) {
+			t.Fatalf("deleting namespace: %v", err)
+		}
+	})
+	t.Run("ST-SUP-RC26-OC03-T04 A worker checks an allocation's identity without a write", func(t *testing.T) {
+		a, s := fixture(t)
+		ctx := context.Background()
+		a.config.Profiles[0].ServiceAccounts = []string{"gateway"}
+		if err := a.Ensure(ctx, "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		writes := len(s.writes)
+		uid := kube.String(s.objects[namespacePath], "metadata", "uid")
+		s.mu.Unlock()
+		if err := a.RequireNamespace(ctx, "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := a.NamespaceUID(ctx, "tenant", name, "owner-1"); err != nil || uid == "" || got != uid {
+			t.Fatalf("NamespaceUID %q, %v, want %q", got, err, uid)
+		}
+		if got, err := a.RequireServiceAccount(ctx, "tenant", name, "owner-1", "gateway"); err != nil || got != a.serviceAccountName(a.config.Profiles[0], "owner-1", "gateway") {
+			t.Fatalf("RequireServiceAccount %q, %v", got, err)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if len(s.writes) != writes {
+			t.Fatalf("checks wrote %v", s.writes[writes:])
+		}
+	})
+}

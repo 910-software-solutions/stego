@@ -459,3 +459,12 @@ func TestAllocationServiceAccountPeerRejectsChangedSeal(t *testing.T) {
 		t.Fatal("changed imported identity caused a write")
 	}
 }
+
+func TestAllocationPeerPending(t *testing.T) {
+	t.Run("ST-SUP-RC26-OC03-T03 An allocation whose peer allocation is absent is pending", func(t *testing.T) {
+		a, _ := accountPeerFixture(t, false)
+		if err := a.Ensure(context.Background(), "jobs", "jobs-12345678", "owner-1"); !errors.Is(err, ErrPending) {
+			t.Fatalf("Ensure without the source allocation: %v", err)
+		}
+	})
+}
