@@ -356,6 +356,7 @@ modes, is one string with its names joined by commas. Before, the fields were at
   | `migrate.authorization_schema`, `migrate.authorization_schema_again` | `spicedb.connection` | `spicedb` | The job cannot reach SpiceDB, such as with the cause `unavailable`. |
   | `migrate.authorization_schema`, `migrate.authorization_schema_again` | `spicedb.schema_refused` | `spicedb` | SpiceDB refuses the schema, such as with the cause `invalid_argument.relationships_exist`. |
   | `migrate.authorization_schema_served` | `spicedb.schema_not_served` | `spicedb` | SpiceDB does not serve each definition before the time limit of the job. |
+  | `migrate.authorization_schema_read_back` | `spicedb.schema_read_back` | `spicedb` | After the write, SpiceDB serves another schema than the schema of the release, such as one that another job or an operator wrote at the same time (runtime v0.209.0, a service that declares `creates_with_children`, ST-SUP-RP10-LC59). |
   | `migrate.tables` | `schema_change.unique_duplicates` | the unique index | Two or more rows hold one value of the key of a unique step (cause `constraint_violation`, SQLSTATE 23505). |
   | `migrate.tables` | `schema_change.foreign_key_broken` | the foreign key | A row breaks the key of a `within` step (SQLSTATE 23503). |
 
