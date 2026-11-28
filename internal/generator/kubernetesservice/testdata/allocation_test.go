@@ -841,3 +841,49 @@ func TestAllocationNamespaceOwnership(t *testing.T) {
 		}
 	})
 }
+
+func TestAllocationPendingUntilComplete(t *testing.T) {
+	const name = "tenant-12345678"
+	namespacePath := "/api/v1/namespaces/" + name
+	t.Run("ST-SUP-RC26-OC03-T01 An allocation whose namespace is absent or being deleted is pending", func(t *testing.T) {
+		a, s := fixture(t)
+		if err := a.RequireNamespace(context.Background(), "tenant", name, "owner-1"); !errors.Is(err, ErrPending) {
+			t.Fatalf("absent namespace: %v", err)
+		}
+		if err := a.Ensure(context.Background(), "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.objects[namespacePath]["metadata"].(map[string]any)["deletionTimestamp"] = "2026-11-28T00:00:00Z"
+		s.mu.Unlock()
+		if err := a.RequireNamespace(context.Background(), "tenant", name, "owner-1"); !errors.Is(err, ErrPending) {
+			t.Fatalf("deleting namespace: %v", err)
+		}
+	})
+	t.Run("ST-SUP-RC26-OC03-T04 A worker checks an allocation's identity without a write", func(t *testing.T) {
+		a, s := fixture(t)
+		ctx := context.Background()
+		a.config.Profiles[0].ServiceAccounts = []string{"gateway"}
+		if err := a.Ensure(ctx, "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		writes := len(s.writes)
+		uid := kube.String(s.objects[namespacePath], "metadata", "uid")
+		s.mu.Unlock()
+		if err := a.RequireNamespace(ctx, "tenant", name, "owner-1"); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := a.NamespaceUID(ctx, "tenant", name, "owner-1"); err != nil || uid == "" || got != uid {
+			t.Fatalf("NamespaceUID %q, %v, want %q", got, err, uid)
+		}
+		if got, err := a.RequireServiceAccount(ctx, "tenant", name, "owner-1", "gateway"); err != nil || got != a.serviceAccountName(a.config.Profiles[0], "owner-1", "gateway") {
+			t.Fatalf("RequireServiceAccount %q, %v", got, err)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if len(s.writes) != writes {
+			t.Fatalf("checks wrote %v", s.writes[writes:])
+		}
+	})
+}
