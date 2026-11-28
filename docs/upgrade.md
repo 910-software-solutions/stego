@@ -320,8 +320,64 @@ archetype does not have the change.
 | 3.277.0 | 1.277.0 | 1.277.0 | Runtime v0.208.0 and otel-tracing 1.26.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.208.0 at h1:KRuGX6yffXzh3aegaCvtCJl8l7YeHJ5wH4nPXVuYWHo=. The local access line `http.server.request.completed` of a request with a status of 400 or more holds the fixed code of the answer as `stego.error_code`, also for an answer before the router: the 401 of the authentication gives its code, such as `SVC-AUT-001`, and the tenant check `tenant.not_provisioned`, `unavailable` or `internal`. Before, such a line had only the status. The code is never a value of the request. | None. A log query or an alert can filter on `stego.error_code` to find why a request was refused. |
 | 3.279.0 | 1.279.0 | 1.279.0 | Runtime v0.209.0, command 1.32.0 and worker 0.7.0. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.209.0 at h1:i8l5KpReS3EgcfZdFGEAF6C20a5XkseZ3ISPMNQueVU=. A command or a worker can declare `creates_with_children: true`: a reference to a row that a `Create` of the same attempt wrote is then decided by the record of that create, with no call of SpiceDB, when validate proved it from the schema by the union-subset rule, and only while SpiceDB serves the schema of the release (decision ST-SUP-Q221 (b), ST-SUP-RP10-LC59, ST-DECL-INV108; erp-demo G8). Validate refuses the key on a query, and on a command or a worker whose schema proves no reference, and warns `new-reference-decided` of each reference that it cannot prove. The migration job of such a service reads the schema back after `authorization_schema_served` and fails at the new step `authorization_schema_read_back` (fault `spicedb.schema_read_back`) when SpiceDB serves another schema. The runtime library takes the SpiceDB schema compiler (`github.com/authzed/spicedb` v1.57.1, which fixes GO-2026-6992), so `go.sum` of a service gains its modules: a binary of the command and service packages grows from 31.0 MB to 45.6 MB (324 to 426 non-standard packages, 118 to 307 modules in the build list) and its start from 50.5 ms to 85.8 ms (4.5 MB to 6.2 MB of heap). The compiler package alone gives 45.6 MB, so importing narrower schemadsl packages saves almost nothing; the modules have permissive licenses. | Take the runtime and the generated code together (`stego apply`, `stego deps`). With `creates_with_children`, the generated `runtime.go` gives the schema text to the parts (`SchemaText`) and to the migration job (`Schema`). With no `creates_with_children`, the generated code and each decision stay the same; only `go.sum` gains the modules of the schema compiler. See [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent). |
 | 3.281.0 | 1.281.0 | 1.281.0 | Runtime v0.211.0 and query 1.8.0. It holds each change of runtime v0.209.0 too. The archetypes pin `github.com/910-software-solutions/stego/registry/runtime` v0.211.0 at h1:17Y3HdYrIId5itlv83m30+ZC/P57LE8drqqY78HLKo8=. A read of an entity with a `pii` field and a `jsonb` field answers again. Before, each read, list and query fill `List` or `Get` of such an entity answered 500, because the read audit could not encode the value of the `jsonb` column (erp-demo G11). The read audit now converts each value by the declared type of its column: a `jsonb` field is its JSON value, which the audit redacts at any depth, a `bytes` field is the standard base64 text of its bytes, also when the bytes are JSON text, and NULL is null. The generated code gives each entity with a `pii` field the new `query.Spec.Types`; `query.NewEntity` refuses such an entity when a column has no type or an unknown type, so the service does not start. A value that is not of its declared type fails the read with no result and an error that holds no value. A query fill that ends with 500 writes one error line `query.fill.failed` with the query and a fixed cause class, and no error text, value or ID (at most one line for each query and class in ten seconds, with `held_back`). | Take the runtime and the generated code together (`stego apply`, `stego deps`). A hand-written `query.Spec` of an entity with a `pii` field must give `Types` for each column. You can move a field that you changed to text as a workaround back to `jsonb` after this release. An alert can filter on `query.fill.failed`. |
+| 3.283.0 | 1.283.0 | 1.283.0 | postgres-adapter 6.34.0 and rest-api 4.45.0; the runtime library does not change. A string field with a `max_length` over 500 characters has no search index, and a list neither searches nor orders it: its value can pass the 2,000 bytes of an index entry in UTF-8, and before, a create of a value over about 2,700 bytes, such as 4,000 letters or 1,000 characters of four bytes, failed with 500 (erp-demo G10, decision ST-DECL-Q50). A `search` or an `orderBy` that names such a field answers 400 with a detail that names the field. The new field setting `searchable: false` takes any string field out of the search, its order and its index; `stego validate` refuses `searchable: true` on a field with a `max_length` over 500. A string with no `max_length` keeps its search index. The new relax item `searchable` drops the search index of a field at the contract step of the relax. `stego compat` refuses a head whose base ran a postgres-adapter before 6.34.0 and has such a field on a listed entity, such as `description` (`max_length: 1000`) of the example `user-management`, until the head declares that relax. | Find the clients that search or order such a field, and move them to another field first. Then declare a relax with the item `searchable` for each such field at expand, and its contract step in a later release (see [Drop the search index of a long text field](#drop-the-search-index-of-a-long-text-field)). |
 | the next stego release | the next stego release | the next stego release | `stego validate`, `plan` and `apply` refuse a declaration in which two entities name the same `resource_type`, with the rule `resource-type-shared` at the second entity (ST-DECL-INV107). The SpiceDB object of a row is its resource type and its tenant-qualified ID, with no part that names the entity, and a fill chooses the ID of a new row, so a row of one entity with the ID of a row of the other, in the same tenant, took that row's relationships and grants. The runtime and the object IDs do not change, so a service whose entities each have a type of their own needs no change and no data migration. | Only for a declaration that the rule refuses: such a service cannot take this release yet, and `stego compat` and `stego plan` refuse a change of the resource type of an entity of the base (ST-GEN-INV41); see [Give each entity a resource type of its own](#give-each-entity-a-resource-type-of-its-own). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
+
+## Drop the search index of a long text field
+
+Do this once, in the first release at rest-crud 3.283.0 (rpc-service and
+browser-service 1.283.0) or later, when `stego compat --base <tag of the
+running release>` gives a fault such as `the head relaxes
+Organization.description from string, max_length 1000, optional in place,
+which no schema step declares; declare a relax with the definition
+searchable`.
+
+Why: a release before postgres-adapter 6.34.0 built a search index on each
+public string field of a listed entity. A field with a `max_length` over 500
+characters has no search index from 6.34.0, so its long values can be
+stored. The database of the running release still holds the index, and the
+body of its `001_initial` stays as it ran.
+
+1. Find the clients that send `search` or `orderBy` with the field. From this
+   release, the list answers them 400 with a detail that names the field.
+   Move them to another field, or give the field a `max_length` of at most
+   500 instead (a shorter `max_length` is a new field, a copy and a drop).
+2. Declare one relax with the item `searchable` for each field that the
+   fault names, with its expand step at the end of the schema history:
+
+   ```yaml
+   schema_changes:
+     - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}
+   schema_history:
+     - {change: organization-description-relax, phase: expand}
+   ```
+
+3. Run `stego compat --base <tag of the running release>` again: it gives no
+   fault for the field. Deploy. The expand step keeps the index, so the pods
+   of the release before can restart, and a rollback to it is possible.
+4. When no pod of the release before runs, add the contract step in the next
+   release:
+
+   ```yaml
+   schema_history:
+     - {change: organization-description-relax, phase: expand}
+     - {change: organization-description-relax, phase: contract}
+   ```
+
+   `stego plan` lists the step, whose migration is
+   `DROP INDEX IF EXISTS public."organizations_description_search";`. Deploy.
+   The migration job refuses while a pod of a release before the expand step
+   reports itself, and names it; then it drops the index, and keeps each row.
+   From this step, a long value of the field is stored.
+
+A drop or a retype of a long text field, and a dropped entity, also keep the
+search index of the base: `stego compat` asks for the item `searchable` at the
+end of the `definition` of the drop or the retype, and for `searchable: true`
+on the field of the dropped entity, with the text to write. Add it, also to a
+drop that the base already declares.
+
+See [Relax steps](schema-changes.md#drop-the-search-index-of-a-field).
 
 ## Give each entity a resource type of its own
 
@@ -982,59 +1038,6 @@ A release before runtime v0.192.0 that added a relation left its rows with no
 tuple. To give them the tuple, declare a relate step of that relation in your
 next release: the relate job reads each row that is there, and a tuple that
 is there does not change.
-
-### The tuple of the tenant and its service
-
-A relate step gives the rows a tuple. It does not give a tenant the tuple
-`tenant:<tenant>#service@<resource type>:<tenant>/<service>`, which a
-Provision writes when the schema declares the relation `service` of the type
-`tenant`, such as:
-
-```zed
-definition tenant {
-  relation service: service
-  permission audit = service->admin
-}
-```
-
-A release that adds that relation, or the first `definition tenant` with it,
-thus left each tenant that was there before with no such tuple. A check
-through `tenant->service`, such as `permission view = tenant->audit` on a row
-of the tenant, gave 404 in each such tenant, also after its relate step
-completed; a tenant provisioned on the new release got the tuple (walkthrough
-29, RELATE-TSVC).
-
-From runtime v0.207.0 the job `worker-tuples` of the controller also gives
-each active tenant the service tuple that SpiceDB does not hold (decision
-ST-SUP-Q220 (a)). It runs when the controller of the release starts, after
-the migration Job of the release wrote the release identity row, and then
-once an hour. It stages the tuple through the authz outbox with one audit row
-`reconcile-worker-tuples` in the tenant, and writes nothing for a tenant that
-holds it, or for a retired tenant. You need no step and no relate change for
-it:
-
-1. Roll out the release that adds the relation, with its relate step for the
-   rows, as above.
-2. When the controller of the new release holds the controller lease, the
-   job `worker-tuples` stages the service tuple of each active tenant. A
-   service with many tenants takes one SpiceDB read for each tenant.
-3. Check a row of a tenant that was there before the release: the check
-   through `tenant->service` now passes.
-
-A release with a runtime before v0.207.0 gives these tenants no service
-tuple. Move to runtime v0.207.0 or later: its first run of the job gives each
-active tenant the tuple, also for a relation that an earlier release added.
-
-### A seal open across the move to runtime v0.207.0
-
-Move the runtime and the generated code together: take rest-crud 3.276.0, or
-rpc-service or browser-service 1.276.0, and run `stego apply` and `stego deps`.
-A service on runtime v0.207.0 or later whose code a postgres-adapter before
-6.33.0 generated keeps a row with the zero UUID in clear: its seal job never
-reads that row, so each run of the job logs `command.seal.clear_left` with
-`first_null` `false` and starts the seal pass again, and the contract step
-refuses, until you build the release with postgres-adapter 6.33.0 and deploy
-it (see [The contract step of a seal](schema-changes.md#the-contract-step-of-a-seal)).
 
 ## Upgrade over the old label keys
 

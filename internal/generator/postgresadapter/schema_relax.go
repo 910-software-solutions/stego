@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/910-software-solutions/stego/internal/gen"
 	"github.com/910-software-solutions/stego/internal/types"
 )
 
@@ -26,6 +27,14 @@ import (
 //  2. The validate migration validates the new CHECK, which takes SHARE UPDATE EXCLUSIVE and blocks no write.
 //  3. The finish migration drops the old CHECK, when it is still there, and gives the new CHECK the name of the
 //     field's CHECK.
+//
+// A relax with the item searchable keeps the search index of the field at its expand step, whose own migration also
+// makes the table of the release reports (releasesText), and drops the index at its contract step, in a later release
+// (ST-SUP-RC01-OC53, decision ST-DECL-Q50). The schema check of a release before postgres-adapter 6.34.0 refuses the
+// table with no such index, so the contract refuses while a process of a release before the expand step reports
+// itself, as the contract of a drop does (ST-SUP-RP09-LC14; security review of PR #22, M2). The release of the expand
+// step accepts the table with and with no index, so it can restart, and a rollback to it is possible, after the
+// contract. A relax with only that item changes no column: its own migration is the table of the release reports.
 //
 // The schema check of the release before accepts each state between these migrations on a column with the marker
 // (registry/runtime/manifest, ST-SUP-RP15-LC04).
@@ -76,7 +85,7 @@ var varchar = regexp.MustCompile(`^character varying\(([0-9]+)\)$`)
 // and a change of the column that PostgreSQL cannot make in place with no scan under its strong lock: a type other
 // than a longer character varying, NOT NULL added, a default taken away or changed, or a CHECK of the field that is
 // not the CHECK of its enum values.
-func relaxSteps(position int, before, after []tableModel, change types.SchemaChange) ([]schemaStep, error) {
+func relaxSteps(ctx gen.Context, position int, before, after []tableModel, change types.SchemaChange) ([]schemaStep, error) {
 	if len(before) != len(after) {
 		return nil, fmt.Errorf("a relax changes one column, and the step adds or removes a table")
 	}
@@ -104,6 +113,19 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		return nil, fmt.Errorf("a relax of %s.%s changes another CHECK of the table", name, change.Field)
 	}
 	same.checks = old.checks
+	// A relax with the item searchable drops the search index of the field (ST-SUP-RC01-OC53, decision ST-DECL-Q50).
+	// A relax without it keeps the body that it had before postgres-adapter 6.34.0, also when the field after it is
+	// out of the search: a database that ran it holds the index, which a later relax with the item drops.
+	searched, stays := slices.Contains(old.search, change.Field), slices.Contains(next.search, change.Field)
+	dropIndex := change.RelaxesSearch()
+	switch {
+	case dropIndex && (!searched || stays):
+		return nil, fmt.Errorf("a relax of %s.%s with the item searchable has no search index of the field to drop: the field before the step has none, or the field after it is still in the search", name, change.Field)
+	case !searched && stays:
+		return nil, fmt.Errorf("a relax of %s.%s puts the field in the search, and no step builds its search index", name, change.Field)
+	case searched != stays:
+		same.search = old.search
+	}
 	if !reflect.DeepEqual(same, old) {
 		return nil, fmt.Errorf("a relax of %s.%s changes more of the table than the column", name, change.Field)
 	}
@@ -158,10 +180,23 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 	if newColumn.defaultClause != oldColumn.defaultClause {
 		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s SET%s", column, newColumn.defaultClause))
 	}
-	if len(parts) == 0 {
+	if len(parts) == 0 && !dropIndex {
 		return nil, fmt.Errorf("a relax of %s.%s changes nothing of the column", name, change.Field)
 	}
 	step := StepMigrationName(position, change.ID, "expand")
+	// The contract step drops the search index; the expand step makes the table of the release reports, so that the
+	// contract can refuse while a process of a release before the expand step runs.
+	releases := ""
+	if dropIndex {
+		runtime, _, err := serviceRoles(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("a relax of %s.%s with the item searchable needs the release reports of the tenancy component: %w", name, change.Field, err)
+		}
+		releases = fmt.Sprintf(releasesText, sqlIdentifier(runtime))
+	}
+	if len(parts) == 0 {
+		return []schemaStep{{Name: step, Change: change, Phase: "expand", Body: releases}}, nil
+	}
 	form := struct {
 		typ, defaultValue string
 		check             *string
@@ -180,7 +215,7 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		form.check = &definition
 	}
 	comment := RelaxComment(step, form.typ, oldColumn.notNull && !newColumn.notNull, form.defaultValue, form.check)
-	body := fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment))
+	body := fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment)) + releases
 	steps := []schemaStep{{Name: step, Change: change, Phase: "expand", Body: body}}
 	if relaxCheck {
 		validates := []validation{{table: table, schema: "public", tableName: name, name: relax}}
@@ -193,6 +228,37 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		steps = append(steps, schemaStep{Name: FinishMigrationName(step), Change: change, Phase: "expand", Body: finish})
 	}
 	return steps, nil
+}
+
+// relaxContractSQL gives the contract step of a relax with the item searchable (ST-SUP-RC01-OC53; security review of
+// PR #22, M2): one statement, DROP INDEX IF EXISTS of the search index of the field. The statement takes the lock of
+// the table first and checks the running releases again in its transaction, so it does not drop the index while a
+// process of a release before the expand step, whose schema check needs the index, reports itself. When the index is
+// gone, a run before dropped it, and the statement does not run. The step changes no column, so the tables before
+// and after it are the same.
+func relaxContractSQL(before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
+	name := tableName(change.Entity)
+	if !change.RelaxesSearch() {
+		return nil, fmt.Errorf("a relax of %s.%s has a contract step only with the item searchable, which drops the search index of the field", name, change.Field)
+	}
+	old, ok := findTable(before, name)
+	next, found := findTable(after, name)
+	if !ok || !found {
+		return nil, fmt.Errorf("the contract of the relax finds no table %s", name)
+	}
+	if _, ok := findColumn(old, change.Field); !ok {
+		return nil, fmt.Errorf("the contract of the relax of %s.%s finds no column %s", name, change.Field, change.Field)
+	}
+	if !reflect.DeepEqual(normalized(old), normalized(next)) {
+		return nil, fmt.Errorf("the contract of the relax of %s.%s changes the tables", name, change.Field)
+	}
+	if slices.Contains(next.search, change.Field) {
+		return nil, fmt.Errorf("the contract of the relax of %s.%s drops the search index of a field that is still in the search", name, change.Field)
+	}
+	index := searchName(name, change.Field)
+	qualified := "public." + sqlIdentifier(index)
+	return &contractStep{change: change.ID, table: "public." + sqlIdentifier(name), schema: "public", tableName: name, drop: true, index: index,
+		statements: []contractStatement{{sql: "DROP INDEX IF EXISTS " + qualified, when: "SELECT pg_catalog.to_regclass(" + sqlString(qualified) + ") IS NOT NULL", guard: true}}}, nil
 }
 
 // valuesOnly tells whether a CHECK definition, as pg_get_constraintdef gives it, is the CHECK of enum values alone.

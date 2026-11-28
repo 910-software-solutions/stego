@@ -18,7 +18,7 @@ const SchemaGeneration = "tables-v1"
 // release made holds; schemaDefinitionBefore is the digest of the entities and the collections of the same baseline,
 // which a release before ST-SUP-RC01-OC42 wrote, and the marker check accepts it too.
 const SchemaDefinition = "60298df1f733ae69acd1bf786e117d0450c7c6107268605e4fb2c29cb71ab97e"
-const schemaDefinitionBefore = "389aee52eeb822e1af503d129e715128852729c979954674879c9b50c8c0b982"
+const schemaDefinitionBefore = "db461fbd125f67e89289f01e00be3c319f1eceed8621b6ebbdc4d235e0dd14d8"
 
 var ErrSchemaGeneration = errors.New("database schema generation is not supported")
 

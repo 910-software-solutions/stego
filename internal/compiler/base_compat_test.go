@@ -38,9 +38,36 @@ func parseHead(t *testing.T, data string) *types.ServiceDeclaration {
 	return head
 }
 
-// withChanges appends schema changes and schema history to a declaration.
+// withChanges appends schema changes and schema history to a declaration, after the ones that it has.
 func withChanges(declaration, changes, history string) string {
+	if strings.Contains(declaration, "\nschema_changes:\n") && strings.Contains(declaration, "\nschema_history:\n") {
+		at := strings.Index(declaration, "\nschema_history:\n")
+		declaration = declaration[:at+1] + strings.TrimLeft(changes, "\n") + declaration[at+1:]
+		end := strings.Index(declaration, "\nschema_history:\n") + len("\nschema_history:\n")
+		for end < len(declaration) && strings.HasPrefix(declaration[end:], "  - ") {
+			end += strings.Index(declaration[end:], "\n") + 1
+		}
+		return declaration[:end] + history + declaration[end:]
+	}
 	return strings.TrimRight(declaration, "\n") + "\nschema_changes:\n" + changes + "schema_history:\n" + history
+}
+
+// The relax of TD01 that drops the search index of Organization.description, of at most 1000 characters, which a
+// release before postgres-adapter 6.34.0 built (ST-GEN-INV40).
+const (
+	descriptionRelax       = "  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\n"
+	descriptionRelaxExpand = "  - {change: organization-description-relax, phase: expand}\n"
+)
+
+// withoutDescriptionRelax gives TD01 as a release before postgres-adapter 6.34.0 declared it: with no schema change.
+func withoutDescriptionRelax(t *testing.T, td01 string) string {
+	t.Helper()
+	at := strings.Index(td01, "\n# description, of at most 1000 characters")
+	end := strings.Index(td01, descriptionRelaxExpand)
+	if at < 0 || end < at || end+len(descriptionRelaxExpand) != len(td01) {
+		t.Fatal("TD01 does not end with the relax of Organization.description")
+	}
+	return td01[:at]
 }
 
 const (
@@ -411,9 +438,11 @@ func TestBaseCompat(t *testing.T) {
 				t.Errorf("postgres-adapter %s: gives %+v, want refused %t", c.adapter, check.Faults, c.refused)
 			}
 		}
-		// A base that writes no sensitivity: public is not refused for it over an older generator.
-		plain := []byte(td01)
-		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: plain, Record: adapterRecord(t, plain, "6.17.0")}, parseHead(t, td01))
+		// A base that writes no sensitivity: public is not refused for it over an older generator. Its description is
+		// of at most 500 characters here, as one of 1000 has a search index that a relax drops (ST-GEN-INV40-T).
+		short := sealBase(t)
+		plain := []byte(short)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: plain, Record: adapterRecord(t, plain, "6.17.0")}, parseHead(t, short))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the same declaration with no field written public is refused: %v %+v", err, check.Faults)
 		}

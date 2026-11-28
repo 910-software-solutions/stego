@@ -46,7 +46,11 @@ var organizationsListQuery = mustQuery(query.NewListQuery("list", data.EntityOrg
 
 // organizationsSearchFields are the fields that a list search may name, with the kind of their values: the declared
 // fields that are not pii, secret or implicit, of a text, number or bool type (ST-SUP-RP11-LC20).
-var organizationsSearchFields = map[string]query.FieldKind{"name": query.KindText, "description": query.KindText}
+var organizationsSearchFields = map[string]query.FieldKind{"name": query.KindText}
+
+// organizationsUnsearchedFields are the public string fields that a list neither searches nor orders, as they have no
+// search index: each sets searchable: false or has a max_length over 500 (ST-SUP-RC20-OC57).
+var organizationsUnsearchedFields = map[string]query.FieldKind{"description": query.KindText}
 
 // organizationsCreateFields are the body fields that the fingerprint of a create covers (ST-SUP-RC30-OC03).
 var organizationsCreateFields = []string{"name", "description"}
@@ -369,8 +373,12 @@ func (h *OrganizationsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, query.MaxLimit)
 	}
-	order, err := listOrder(parameters.Get("orderBy"), map[string]bool{"name": true, "description": true})
+	order, err := listOrder(parameters.Get("orderBy"), map[string]bool{"name": true})
 	if err != nil {
+		if name := unsearchedOrder(parameters.Get("orderBy"), organizationsUnsearchedFields); name != "" {
+			handleError(w, r, BadRequest(unsearchedDetail("orderBy", name)))
+			return
+		}
 		handleError(w, r, BadRequest(err.Error()))
 		return
 	}
@@ -381,6 +389,10 @@ func (h *OrganizationsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	where, err := query.ParseSearch(parameters.Get("search"), organizationsSearchFields, query.MaxFilter-0)
 	if err != nil {
+		if name := unsearchedSearch(parameters.Get("search"), organizationsSearchFields, organizationsUnsearchedFields, query.MaxFilter-0); name != "" {
+			handleError(w, r, BadRequest(unsearchedDetail("search", name)))
+			return
+		}
 		handleError(w, r, BadRequest("the search is not valid"))
 		return
 	}

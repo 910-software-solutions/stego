@@ -133,6 +133,12 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 		return check, err
 	}
 	declared := declaration
+	if LongTextIndexed(state.LastApplied) {
+		// The generator of the base gave a search index to each public string field of a listed entity, also to one
+		// whose max_length is over 500 (decision ST-DECL-Q50): its stored shape keeps that index, which a relax with
+		// the item searchable drops (ST-GEN-INV40).
+		declaration = withLongTextIndexes(declaration)
+	}
 	if ClearSecrets(state.LastApplied) {
 		// The base declares a secret field that its generator stored in clear (walkthrough 13, W13-B1): its stored
 		// shape is the field in clear, which a seal from secret moves (ST-SUP-RC01-OC49, ST-DECL-INV102).
@@ -164,6 +170,131 @@ const (
 	SecretStorageVersion = "6.13.0"
 	SecretRuntimeVersion = "v0.135.0"
 )
+
+// LongTextVersion is the first postgres-adapter version that gives no search index to a string field out of the
+// search: searchable: false, or a max_length over 500 with no searchable setting (ST-SUP-RC01-OC53, decision
+// ST-DECL-Q50). An adapter before it gave a search index to each public string field of a listed entity.
+const LongTextVersion = "6.34.0"
+
+// LongTextIndexed tells whether the record of a release pins a postgres-adapter before LongTextVersion: its
+// 001_initial and its steps gave a search index to each public string field of a listed entity, also to long text. A
+// version that does not parse, a record with no postgres-adapter pin, or no record, counts as such a release, so the
+// check fails closed, as before does (security review of PR #22, L2). The runtime library does not tell the two
+// apart: runtime v0.207.0 ran with postgres-adapter 6.33.0 and 6.34.0.
+func LongTextIndexed(applied *AppliedState) bool {
+	if applied == nil {
+		return true
+	}
+	pin, pinned := applied.Components["postgres-adapter"]
+	if !pinned {
+		return true
+	}
+	version := "v" + strings.TrimPrefix(pin.Version, "v")
+	return !semver.IsValid(version) || semver.Compare(version, "v"+LongTextVersion) < 0
+}
+
+// withLongTextIndexes gives a copy of the declaration in which each public string field out of the search with no
+// searchable setting, of a live or a dropped entity, is marked searchable: the stored shape of a release whose
+// generator gave it a search index (ST-GEN-INV40). A field that a relax with the item searchable of the declaration
+// names keeps its form, as that relax drops the index. The Definition of a drop or a retype of such a field of a
+// listed entity takes the item searchable, as the field that it gives back had its search index (security review of
+// PR #22, M1).
+func withLongTextIndexes(service *types.ServiceDeclaration) *types.ServiceDeclaration {
+	out := *service
+	searchable := true
+	// A field that a relax with the item searchable of the base takes out of the search has no index in the base.
+	dropped := map[[2]string]bool{}
+	for _, change := range service.SchemaChanges {
+		if change.RelaxesSearch() {
+			dropped[[2]string{change.Entity, change.Field}] = true
+		}
+	}
+	mark := func(entities []types.Entity) []types.Entity {
+		copied := make([]types.Entity, len(entities))
+		for i, entity := range entities {
+			entity.Fields = append([]types.Field(nil), entity.Fields...)
+			for j, field := range entity.Fields {
+				if field.Searchable == nil && field.Public() && field.Unsearched() && !dropped[[2]string{entity.Name, field.ColumnName()}] {
+					entity.Fields[j].Searchable = &searchable
+				}
+			}
+			copied[i] = entity
+		}
+		return copied
+	}
+	out.Entities, out.DroppedEntities = mark(service.Entities), mark(service.DroppedEntities)
+	out.SchemaChanges = append([]types.SchemaChange(nil), service.SchemaChanges...)
+	for i, change := range out.SchemaChanges {
+		if definition, ok := searchableDefinition(service, change); ok {
+			out.SchemaChanges[i].Definition = definition
+		}
+	}
+	return &out
+}
+
+// searchDefinitionFaults asks for the item searchable in each definition of a drop or a retype of the head that
+// gives back a public long text field of a listed entity, when the generator of the base gave such a field its
+// search index (LongTextIndexed): the item keeps that index in the 001_initial and the steps, so their bodies do not
+// change (security review of PR #22, M1). A drop of the base takes the item too: it changes no body.
+func searchDefinitionFaults(applied *AppliedState, head *types.ServiceDeclaration) []BaseFault {
+	if !LongTextIndexed(applied) {
+		return nil
+	}
+	var faults []BaseFault
+	for _, change := range head.SchemaChanges {
+		if definition, ok := searchableDefinition(head, change); ok {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the generator of the base gave %s.%s, which the %s %s gives back, its search index, and the definition does not keep it; add the item searchable to the definition: %s", change.Entity, change.Field, change.Kind, change.ID, definition)})
+		}
+	}
+	// A dropped entity gives back its fields as the base stored them: a long text field keeps its index with
+	// searchable: true, which ST-DECL-INV109 accepts on a dropped entity.
+	for _, entity := range head.DroppedEntities {
+		if !slices.ContainsFunc(head.DroppedCollections, func(c types.Collection) bool {
+			return c.Entity == entity.Name && slices.Contains(c.Operations, types.OpList)
+		}) {
+			continue
+		}
+		for _, field := range entity.Fields {
+			if field.Searchable == nil && field.Public() && field.Unsearched() {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Field: field.Name, Message: fmt.Sprintf("the generator of the base gave %s.%s of the dropped entity %s its search index, and the head does not keep it; set searchable: true on the field, so the 001_initial and the steps keep their bodies", entity.Name, field.Name, entity.Name)})
+			}
+		}
+	}
+	return faults
+}
+
+// searchableDefinition gives the Definition of a drop or a retype of a field with the item searchable added, when
+// the field that the Definition gives is a public long text field with no searchable item, of an entity that a
+// collection lists, and that no relax with the item searchable names: a release before postgres-adapter 6.34.0 gave
+// it a search index (security review of PR #22, M1). The item goes before a pattern, which is the last item.
+func searchableDefinition(service *types.ServiceDeclaration, change types.SchemaChange) (string, bool) {
+	if change.Field == "" || change.Definition == "" || (change.Kind != "drop" && change.Kind != "retype") || !listed(service, change.Entity) {
+		return "", false
+	}
+	// A relax with the item searchable of the field took it out of the search before the drop or the retype: the
+	// undo of that relax gives back the index (ST-GEN-INV40).
+	if slices.ContainsFunc(service.SchemaChanges, func(c types.SchemaChange) bool {
+		return c.RelaxesSearch() && c.Entity == change.Entity && c.Field == change.Field
+	}) {
+		return "", false
+	}
+	var field types.Field
+	var reason string
+	if change.Kind == "drop" {
+		var dropped gen.DroppedField
+		dropped, reason = gen.DropDefinition(change.Definition)
+		field = dropped.Field
+	} else {
+		field, reason = gen.DefinitionField(change.Definition)
+	}
+	if reason != "" || field.Searchable != nil || !field.Public() || !field.Unsearched() {
+		return "", false
+	}
+	if before, pattern, found := strings.Cut(change.Definition, ", pattern"); found {
+		return before + ", searchable, pattern" + pattern, true
+	}
+	return change.Definition + ", searchable", true
+}
 
 // ClearSecrets tells whether the record of a release names a postgres-adapter before SecretStorageVersion, or, with
 // no postgres-adapter in the record, a runtime library before SecretRuntimeVersion: that release stores each field
@@ -410,7 +541,7 @@ func syncRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	faults = append(faults, baseStepFaults(base, head)...)
-	faults = append(faults, baseChangeFaults(base, head)...)
+	faults = append(faults, baseChangeFaults(applied, base, head)...)
 	faults = append(faults, onePhaseFaults(base, head)...)
 	faults = append(faults, uniqueAddFaults(base, head)...)
 	faults = append(faults, relaxFaults(base, head)...)
@@ -424,8 +555,9 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 		// collections describe them.
 		faults = append(faults, collectionIndexFaults(base, head)...)
 	}
-	// A drop of a field whose seal is open has a fault that names the seal, in place of the fault of its stored form.
-	sealDrops := openSealDropFaults(base, head)
+	// A drop of a field whose seal is open has a fault that names the seal, and a drop or a retype whose definition
+	// needs the item searchable one that names the item, in place of the fault of its stored form.
+	sealDrops := append(openSealDropFaults(base, head), searchDefinitionFaults(applied, head)...)
 	named := map[[2]string]bool{}
 	for _, fault := range sealDrops {
 		named[[2]string{fault.Entity, fault.Field}] = true
@@ -728,6 +860,7 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 	// when another change of the same release, such as a rename, keeps generation from comparing the baselines
 	// (walkthrough 17, W17-B2).
 	sealedFrom := map[string]string{}
+	searched := map[string]bool{}
 	for _, change := range service.SchemaChanges {
 		if change.Entity != entity {
 			continue
@@ -740,6 +873,11 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 		case "add", "require":
 			if change.Field != "" {
 				added[change.Field] = true
+			}
+		case "relax":
+			// 001_initial gives the search index that a relax with the item searchable drops (ST-SUP-RC01-OC53).
+			if change.RelaxesSearch() {
+				searched[change.Field] = true
 			}
 		case "retype":
 			if earlier, seen := first[change.Field]; !seen || at(change) < at(earlier) {
@@ -801,6 +939,10 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 			if from, sealed := sealedFrom[field.Name]; sealed {
 				// No from is the same as from: public (docs/schema-changes.md, Seal steps).
 				field.Sensitivity = from
+			}
+			if searched[field.ColumnName()] {
+				yes := true
+				field.Searchable = &yes
 			}
 			if !added[field.Name] && postgresadapter.Searchable(field) {
 				filtered[original(field.Name)] = true
@@ -866,7 +1008,7 @@ func baseStepFaults(base, head *types.ServiceDeclaration) []BaseFault {
 }
 
 // baseChangeFaults refuses a head that removes a schema change of the base or changes it in any way.
-func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
+func baseChangeFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	for _, change := range base.SchemaChanges {
 		index := slices.IndexFunc(head.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == change.ID })
@@ -876,11 +1018,34 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		}
 		// A fill value of a retype is in the text of its expand step, which the ledger digest covers, so it does not
 		// change either (decision on ST-GEN-Q24 (c), orchestrator under the owner's delegation, 2026-11-14).
-		if now := head.SchemaChanges[index]; !reflect.DeepEqual(now, change) {
+		now := head.SchemaChanges[index]
+		if baseMarked(applied, change, now, head) {
+			// The generator of the base gave the field of the Definition its search index (security review of PR #22,
+			// M1): searchDefinitionFaults asks for the item searchable in the definition.
+			continue
+		}
+		if !reflect.DeepEqual(now, change) {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, also its fill value, which its expand step holds", change.ID)})
 		}
 	}
 	return faults
+}
+
+// baseMarked tells whether a schema change of the base differs from the same change of the head only in the item
+// searchable that withLongTextIndexes put in its Definition: the base runs a postgres-adapter before
+// LongTextVersion, and the base Definition is exactly the head Definition with the item added where
+// searchableDefinition puts it. Any other change of the Definition, also of a word that holds "searchable", is a
+// change of the base (security review sec-22c, N1).
+func baseMarked(applied *AppliedState, change, now types.SchemaChange, head *types.ServiceDeclaration) bool {
+	if !LongTextIndexed(applied) || change.Definition == now.Definition {
+		return false
+	}
+	marked, ok := searchableDefinition(head, now)
+	if !ok || marked != change.Definition {
+		return false
+	}
+	now.Definition = change.Definition
+	return reflect.DeepEqual(now, change)
 }
 
 // onePhaseFaults refuses a head whose new steps give one schema change its expand and its contract step, because
@@ -957,13 +1122,18 @@ type fieldShape struct {
 	// Secret and CompareOnly are the stored form of a secret field: sealed bytes, or an Argon2id hash (decision
 	// ST-DECL-Q44), so a change of either changes what the column holds.
 	Secret, CompareOnly bool
+	// Unsearched tells that a public string field of a listed entity has no search index: it is out of the search
+	// (types.Field.Unsearched, decision ST-DECL-Q50). Only a relax with the item searchable takes the index away, and
+	// no schema change builds it (ST-GEN-INV40).
+	Unsearched bool
 }
 
 func shapeOf(field types.Field) fieldShape {
 	return fieldShape{Type: field.Type, MinLength: field.MinLength, MaxLength: field.MaxLength, Min: field.Min, Max: field.Max,
 		Unique: field.Unique, UniqueComposite: field.UniqueComposite, UniqueWhenLive: field.UniqueWhenLive,
 		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To,
-		Secret: field.Secret() && !field.ClearStored, CompareOnly: field.Secret() && !field.ClearStored && field.CompareOnly}
+		Secret: field.Secret() && !field.ClearStored, CompareOnly: field.Secret() && !field.ClearStored && field.CompareOnly,
+		Unsearched: field.Public() && field.Unsearched()}
 }
 
 // storedEntity is the stored shape of one entity: its fields in the order of the declaration, the declared
@@ -975,6 +1145,10 @@ type storedEntity struct {
 	Uniques  []storedUnique
 	Settings string
 	Loose    bool
+	// Listed tells that a collection lists the entity, so that its searched fields have search indexes: only then
+	// does a field out of the search differ in its stored shape (fieldShape.Unsearched). A change of the lists has
+	// its own fault (collectionIndexFaults, generatedBaselines).
+	Listed bool
 }
 
 // storedUnique is a declared invariant of kind unique: its name, its columns and its condition.
@@ -1111,12 +1285,40 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 		case "relax":
 			if field >= 0 && !entity.Fields[field].Loose {
 				if before, reason := change.RelaxedFrom(fieldOf(entity.Fields[field])); reason == "" {
+					// fieldOf gives no sensitivity, and the relax keeps the one of the declared field.
 					entity.Fields[field].Shape = shapeOf(before)
+					entity.Fields[field].Shape.Unsearched = before.Unsearched() && fieldPublic(service, change.Entity, change.Field)
 				}
 			}
 		}
 	}
+	// A field of an entity that no collection lists has no search index, in or out of the search (ST-SUP-RP11-LC20).
+	for _, entity := range entities {
+		entity.Listed = listed(service, entity.Name)
+	}
 	return entities
+}
+
+// listed tells whether a collection of the declaration lists the entity.
+func listed(service *types.ServiceDeclaration, entity string) bool {
+	return slices.ContainsFunc(service.Collections, func(c types.Collection) bool {
+		return c.Entity == entity && slices.Contains(c.Operations, types.OpList)
+	})
+}
+
+// fieldPublic tells whether the declared field, by its declared name or its column, is of the sensitivity public.
+func fieldPublic(service *types.ServiceDeclaration, entity, name string) bool {
+	for _, e := range append(slices.Clone(service.Entities), service.DroppedEntities...) {
+		if e.Name != entity {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Name == name || f.ColumnName() == name {
+				return f.Public()
+			}
+		}
+	}
+	return true
 }
 
 // definitionType reads the type of a dropped field from its Definition, [name:] type[, constraint value]....
@@ -1241,7 +1443,10 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 			// A secret field is never renamed, because its sealed values are bound to its column (ST-DECL-INV101): its
 			// new name is a drop and an add.
 			pair := slices.IndexFunc(added, func(a storedField) bool {
-				return !field.Loose && !a.Loose && !field.Shape.Secret && reflect.DeepEqual(a.Shape, field.Shape)
+				// A rename keeps the search index of its field, so its state does not tell a pair apart.
+				one, other := a.Shape, field.Shape
+				one.Unsearched, other.Unsearched = false, false
+				return !field.Loose && !a.Loose && !field.Shape.Secret && reflect.DeepEqual(one, other)
 			})
 			if pair < 0 {
 				dropped = append(dropped, field)
@@ -1254,6 +1459,10 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 			continue
 		}
 		now := head.Fields[at]
+		if !base.Listed || !head.Listed {
+			// With no list on either side no search index tells the two apart (ST-GEN-INV40).
+			now.Shape.Unsearched = field.Shape.Unsearched
+		}
 		if field.Shape.Secret != now.Shape.Secret || field.Shape.CompareOnly != now.Shape.CompareOnly {
 			// The column of a secret holds its sealed bytes or its hash: a move between the clear, sealed and hashed
 			// forms rewrites each row. A seal moves a field in clear, with no other change, to its sealed column
@@ -1479,7 +1688,14 @@ func relaxFaults(base, head *types.ServiceDeclaration) []BaseFault {
 			continue
 		}
 		if reason == "" {
-			_, reason = change.RelaxedFrom(after)
+			var before types.Field
+			before, reason = change.RelaxedFrom(after)
+			// A relax that takes a public field of a listed entity out of the search, as a longer max_length past 500
+			// characters does, names the item searchable, so its contract step drops the search index (ST-GEN-INV40). The
+			// step of a relax without it keeps the index, and long values fail its write.
+			if reason == "" && !change.RelaxesSearch() && after.Public() && !before.Unsearched() && after.Unsearched() && listed(head, change.Entity) {
+				reason = fmt.Sprintf("it takes the field out of the search (a max_length over 500 after it, or searchable: false), and the field has a search index before it; add the item searchable to its definition, so its contract step drops the index: %s, searchable", change.Definition)
+			}
 		}
 		if reason != "" {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the relax %s of %s.%s does not relax the field in place: %s", change.ID, change.Entity, change.Field, reason)})
@@ -1522,12 +1738,18 @@ func withinFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	return faults
 }
 
-// fieldOf gives a stored field back as a declared field, for types.SchemaChange.RelaxedFrom.
+// fieldOf gives a stored field back as a declared field, for types.SchemaChange.RelaxedFrom. A string field whose
+// search state is not the one of its max_length gives it as its searchable setting.
 func fieldOf(field storedField) types.Field {
 	s := field.Shape
-	return types.Field{Name: field.Name, Type: s.Type, MinLength: s.MinLength, MaxLength: s.MaxLength, Min: s.Min, Max: s.Max,
+	f := types.Field{Name: field.Name, Type: s.Type, MinLength: s.MinLength, MaxLength: s.MaxLength, Min: s.Min, Max: s.Max,
 		Unique: s.Unique, UniqueComposite: s.UniqueComposite, UniqueWhenLive: s.UniqueWhenLive, Optional: s.Optional,
 		Default: s.Default, Values: s.Values, To: s.To}
+	if f.Type == types.FieldTypeString && s.Unsearched != f.LongText() {
+		searchable := !s.Unsearched
+		f.Searchable = &searchable
+	}
+	return f
 }
 
 // relaxDefinition gives the Definition of the relax that takes a field from the shape before to the shape after,
@@ -1575,6 +1797,15 @@ func relaxDefinition(before, after fieldShape) (string, bool) {
 		}
 		items = append(items, "no default")
 		rest.Default = after.Default
+	}
+	// A field out of the search after the change, which had a search index before, needs the item searchable, whose
+	// step drops the index (ST-GEN-INV40). No schema change builds a search index.
+	if before.Unsearched != after.Unsearched {
+		if before.Unsearched {
+			return "", false
+		}
+		items = append(items, "searchable")
+		rest.Unsearched = true
 	}
 	if len(items) == 0 || !reflect.DeepEqual(rest, restAfter) {
 		return "", false

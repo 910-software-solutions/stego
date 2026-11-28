@@ -361,9 +361,13 @@ type Migration struct {
 // clear column From is there, is the seal checkpoint of the change, the rows
 // of the listed tenants with Old set and New empty, and the running releases
 // (ST-SUP-RC01-OC50).
+//
+// Index, for the contract step of a relax with the item searchable, is the
+// search index that the step drops, with Drop: the check is the running
+// releases alone while the index is there (ST-SUP-RC01-OC53).
 type ContractStep struct {
 	Change, Schema, Table, Check, Definition, Trigger, Expand string
-	From, Old, New, TenantColumn, TenantSchema                string
+	From, Old, New, TenantColumn, TenantSchema, Index         string
 	Statements                                                []ContractStatement
 	Drop, Seal                                                bool
 }
@@ -1544,11 +1548,15 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 	}
 	if c.Drop {
 		// A drop has no sync trigger and no backfill: while its old column or table is there, the check refuses
-		// while a release that still reads it runs, and when it is gone a run before dropped it.
+		// while a release that still reads it runs, and when it is gone a run before dropped it. The contract of a
+		// relax with the item searchable checks its search index in the same way.
 		var there bool
 		query := "SELECT pg_catalog.to_regclass($1) IS NOT NULL"
 		args := []any{table}
-		if c.From != "" {
+		switch {
+		case c.Index != "":
+			args = []any{quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Index)}
+		case c.From != "":
 			query = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)"
 			args = append(args, c.From)
 		}
@@ -1765,7 +1773,10 @@ func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	if len(running) > 0 {
 		// The contract of a drop of an entity drops a table, and every other contract step an old column.
 		old := "the old column"
-		if c.Drop && c.From == "" {
+		switch {
+		case c.Drop && c.Index != "":
+			old = "the search index " + c.Index
+		case c.Drop && c.From == "":
 			old = "the old table"
 		}
 		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need %s; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand, old), wait: releaseWait}
@@ -1921,6 +1932,9 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep, checkpoi
 			drop := ""
 			if c.drop {
 				drop = ", Drop: true"
+			}
+			if c.index != "" {
+				drop += fmt.Sprintf(", Index: %q", c.index)
 			}
 			if c.seal {
 				drop = ", Seal: true"

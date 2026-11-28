@@ -725,8 +725,9 @@ type DroppedField struct {
 
 // DropDefinition reads the Definition of a dropped field (ST-DECL-EN21, ST-DECL-INV62): the type, then one item for
 // each attribute that the field had, separated by commas: min_length N, max_length N, min N, max N, values V1 V2 ...,
-// default D, optional, unique, pii or secret, after F or first, and last pattern P, because a pattern can hold a
-// comma. An item that the Definition does not name the field did not have. It gives a reason, and no field, when the
+// default D, optional, unique, pii or secret, searchable, after F or first, and last pattern P, because a pattern
+// can hold a comma. The item searchable tells that the field had its search index, as a release before
+// postgres-adapter 6.34.0 gave one to a long text field (ST-DECL-INV109; security review of PR #22, M1). An item that the Definition does not name the field did not have. It gives a reason, and no field, when the
 // Definition cannot be read, names an item twice, or gives no place.
 func DropDefinition(definition string) (DroppedField, string) {
 	dropped, reason := readDefinition(definition, true)
@@ -805,7 +806,7 @@ func readDefinition(definition string, place bool) (DroppedField, string) {
 			if field.Type != types.FieldTypeEnum {
 				return out, "the item values is only for an enum"
 			}
-		case "optional", "unique", "pii", "secret", "first":
+		case "optional", "unique", "pii", "secret", "first", "searchable":
 			if value != "" {
 				return out, fmt.Sprintf("the item %s takes no value, and the definition gives %q", key, value)
 			}
@@ -816,6 +817,9 @@ func readDefinition(definition string, place bool) (DroppedField, string) {
 				field.Unique = true
 			case "first":
 				out.First = true
+			case "searchable":
+				searchable := true
+				field.Searchable = &searchable
 			default:
 				field.Sensitivity = key
 			}
@@ -833,6 +837,18 @@ func readDefinition(definition string, place bool) (DroppedField, string) {
 	}
 	if field.Type == types.FieldTypeEnum && len(field.Values) == 0 && place {
 		return out, "the definition of an enum needs its values, as values V1 V2 ..."
+	}
+	// The item searchable keeps the search index of a long text field that a release before postgres-adapter 6.34.0
+	// built; any other field has its index, or none, with no item (ST-DECL-INV109).
+	if field.Searchable != nil {
+		switch {
+		case field.Type != types.FieldTypeString:
+			return out, fmt.Sprintf("the item searchable is only for a string field, and the field is of the type %s", field.Type)
+		case !field.Public():
+			return out, fmt.Sprintf("a %s field is never searched, so the item searchable does not suit it", field.Sensitivity)
+		case !field.LongText():
+			return out, fmt.Sprintf("the item searchable is only for a field with a max_length over %d characters, which had its search index before postgres-adapter 6.34.0; a shorter string has its search index with no item", types.SearchIndexBytes/types.UTF8Bytes)
+		}
 	}
 	return out, ""
 }

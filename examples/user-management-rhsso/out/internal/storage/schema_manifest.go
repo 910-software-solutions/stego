@@ -33,7 +33,6 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 				{Name: "organizations_pkey", Columns: []string{"tenant_id", "id"}},
 				{Name: "organizations_name_key", Columns: []string{"tenant_id", "name"}},
 				{Name: "organizations_name_search", Columns: []string{"tenant_id", "name"}, Lookup: true},
-				{Name: "organizations_description_search", Columns: []string{"tenant_id", "description"}, Lookup: true},
 			},
 			RowSecurity: true,
 			Policies:    []manifest.Policy{{Name: "stego_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))", WithCheck: "(tenant_id = current_setting('app.tenant'::text, true))"}},
@@ -115,4 +114,4 @@ var BackfillCopies = []lease.Copy{}
 // SchemaRelease is the name of the last migration of this release, under which each process of the release reports
 // itself in the database, so that the contract step of a schema change that this release does not know refuses
 // while it runs (ST-SUP-RP09-LC14).
-const SchemaRelease = "100_tenancy_row_security"
+const SchemaRelease = "step_0001_organization-description-relax_expand"

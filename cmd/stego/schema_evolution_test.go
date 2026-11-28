@@ -58,13 +58,15 @@ var evolutionV2 = [][2]string{
 			"      - { name: locale, type: string, max_length: 10 }\n"},
 	{"      - { name: rank, type: int64 }\n", "      - { name: rank, type: string, pattern: \"^-?[0-9]{1,18}$\" }\n"},
 	{"      - { name: quota, type: int32, min: 0, default: 0 }\n", "      - { name: quota, type: int64, min: 0, default: 0 }\n"},
-	{"\ncollections:\n", "\nschema_changes:\n  - {id: user-nickname-add, kind: add, entity: User, field: nickname}\n" +
+	// The example ends with its schema changes and schema history: the relax of Organization.description at expand
+	// (decision ST-DECL-Q50), so the steps of v2 come after it.
+	{"  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\nschema_history:\n  - {change: organization-description-relax, phase: expand}\n", "  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\n  - {id: user-nickname-add, kind: add, entity: User, field: nickname}\n" +
 		"  - {id: user-email-rename, kind: rename, entity: User, field: contact_email, from: email}\n" +
 		"  - {id: orgsetting-rank-retype, kind: retype, entity: OrgSetting, field: rank, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}\n" +
 		"  - {id: user-locale-require, kind: require, entity: User, field: locale, fill_value: en}\n" +
 		"  - {id: organization-quota-retype, kind: retype, entity: Organization, field: quota, from: int32, definition: \"int32, min 0, default 0\", conversion: integer_to_int64, inverse_conversion: int64_to_integer}\n" +
-		"schema_history:\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n" +
-		"  - {change: orgsetting-rank-retype, phase: expand}\n  - {change: user-locale-require, phase: expand}\n  - {change: organization-quota-retype, phase: expand}\n\ncollections:\n"},
+		"schema_history:\n  - {change: organization-description-relax, phase: expand}\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n" +
+		"  - {change: orgsetting-rank-retype, phase: expand}\n  - {change: user-locale-require, phase: expand}\n  - {change: organization-quota-retype, phase: expand}\n"},
 }
 
 // The declaration of v3 of ST-GEN-TD04, by the edit of the declaration of v2: the contract steps of the rename, the
@@ -251,9 +253,9 @@ func newEvolution(t *testing.T) *evolution {
 // resource, and the approver of an organization views it.
 var (
 	evolutionV1R = [][2]string{
-		{"\ncollections:\n", "\nschema_changes:\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
+		{"  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\nschema_history:\n  - {change: organization-description-relax, phase: expand}\n", "  - {id: organization-description-relax, kind: relax, entity: Organization, field: description, definition: searchable}\n  - {id: organization-tenant-relate, kind: relate, entity: Organization, relation: tenant}\n" +
 			"  - {id: organization-approver-relate, kind: relate, entity: Organization, relation: approver}\n" +
-			"schema_history:\n  - {change: organization-tenant-relate, phase: expand}\n  - {change: organization-approver-relate, phase: expand}\n\ncollections:\n"},
+			"schema_history:\n  - {change: organization-description-relax, phase: expand}\n  - {change: organization-tenant-relate, phase: expand}\n  - {change: organization-approver-relate, phase: expand}\n"},
 		{"    permissions: {create: public, read: view, list: view, update: edit, patch: edit, delete: edit}\n    public_reasons: {create: a new organization has no resource to decide on before it exists}\n",
 			"    permissions: {create: create_organization, read: view, list: view, update: edit, patch: edit, delete: edit}\n" +
 				"    relationships:\n      - {relation: approver, subject_source: field, subject_field: approver, subject_type: user}\n"},
@@ -454,7 +456,7 @@ func TestSchemaEvolution(t *testing.T) {
 		result(t, "ST-GEN-UC12-R03-T04")
 	})
 	t.Run("ST-GEN-UC12-R03-T05 A patchable int32 widened to an int64 keeps each value through both releases, and the new release holds the int32 range until the contract", func(t *testing.T) {
-		if plan := e.plans["v2 plan"]; !strings.Contains(plan, "organization-quota-retype: retype Organization.quota at expand; migration internal/storage/migrations/step_0005_organization-quota-retype_expand.sql; trigger organizations_quota_sync; backfill in the migration job under the lease stego.backfill.organization-quota-retype") {
+		if plan := e.plans["v2 plan"]; !strings.Contains(plan, "organization-quota-retype: retype Organization.quota at expand; migration internal/storage/migrations/step_0006_organization-quota-retype_expand.sql; trigger organizations_quota_sync; backfill in the migration job under the lease stego.backfill.organization-quota-retype") {
 			t.Fatalf("stego plan --base v1 of v2 does not list the widening of Organization.quota:\n%s", plan)
 		}
 		result(t, "ST-GEN-UC12-R03-T05")
@@ -487,11 +489,11 @@ func TestSchemaEvolution(t *testing.T) {
 	})
 	t.Run("ST-GEN-UC12-FL-T The email rename starts while v1 and v2 both run on a table with rows", func(t *testing.T) {
 		plan := e.plans["v2 plan"]
-		if e.plans["v2 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at expand; migration internal/storage/migrations/step_0002_user-email-rename_expand.sql; trigger users_contact_email_sync; backfill in the migration job under the lease stego.backfill.user-email-rename") {
+		if e.plans["v2 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at expand; migration internal/storage/migrations/step_0003_user-email-rename_expand.sql; trigger users_contact_email_sync; backfill in the migration job under the lease stego.backfill.user-email-rename") {
 			t.Fatalf("stego plan --base v1 of v2 (%s) does not list the rename with its kind, phase, migration, trigger and backfill:\n%s", e.plans["v2 plan error"], plan)
 		}
-		for _, line := range []string{"orgsetting-rank-retype: retype OrgSetting.rank at expand; migration internal/storage/migrations/step_0003_orgsetting-rank-retype_expand.sql; trigger org_settings_rank_sync; backfill in the migration job under the lease stego.backfill.orgsetting-rank-retype",
-			"user-locale-require: require User.locale at expand; migration internal/storage/migrations/step_0004_user-locale-require_expand.sql; trigger none; backfill none"} {
+		for _, line := range []string{"orgsetting-rank-retype: retype OrgSetting.rank at expand; migration internal/storage/migrations/step_0004_orgsetting-rank-retype_expand.sql; trigger org_settings_rank_sync; backfill in the migration job under the lease stego.backfill.orgsetting-rank-retype",
+			"user-locale-require: require User.locale at expand; migration internal/storage/migrations/step_0005_user-locale-require_expand.sql; trigger none; backfill none"} {
 			if !strings.Contains(plan, line) {
 				t.Fatalf("stego plan --base v1 of v2 does not list %q:\n%s", line, plan)
 			}
@@ -524,20 +526,20 @@ func TestSchemaEvolution(t *testing.T) {
 		result(t, "ST-GEN-UC15-R02-T01")
 	})
 	t.Run("ST-SUP-RP10-LC58-T03 In a rolling deploy that adds a relation, each row of the release before gets its tuple after the release before stops", func(t *testing.T) {
-		if plan := e.plans["v1r plan"]; e.plans["v1r plan error"] != "" || !strings.Contains(plan, "organization-tenant-relate: relate Organization#tenant at expand; migration internal/storage/migrations/step_0001_organization-tenant-relate_expand.sql; trigger none; backfill the relate job of the controller under the lease stego.backfill.organization-tenant-relate") {
+		if plan := e.plans["v1r plan"]; e.plans["v1r plan error"] != "" || !strings.Contains(plan, "organization-tenant-relate: relate Organization#tenant at expand; migration internal/storage/migrations/step_0002_organization-tenant-relate_expand.sql; trigger none; backfill the relate job of the controller under the lease stego.backfill.organization-tenant-relate") {
 			t.Fatalf("stego plan --base v1 of v1r (%s) does not list the relate step:\n%s", e.plans["v1r plan error"], plan)
 		}
 		result(t, "ST-SUP-RP10-LC58-T03")
 	})
 	t.Run("ST-SUP-RP10-LC58-T04 In a rolling deploy that relates a field, a former subject that the release before replaced loses its access, and the subject of the field gets it", func(t *testing.T) {
-		if plan := e.plans["v1r plan"]; !strings.Contains(plan, "organization-approver-relate: relate Organization#approver at expand; migration internal/storage/migrations/step_0002_organization-approver-relate_expand.sql") {
+		if plan := e.plans["v1r plan"]; !strings.Contains(plan, "organization-approver-relate: relate Organization#approver at expand; migration internal/storage/migrations/step_0003_organization-approver-relate_expand.sql") {
 			t.Fatalf("stego plan --base v1 of v1r does not list the relate step of the field:\n%s", plan)
 		}
 		result(t, "ST-SUP-RP10-LC58-T04")
 	})
 	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
 		plan := e.plans["v3 plan"]
-		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0006_user-email-rename_contract.sql; trigger none; backfill none") {
+		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0007_user-email-rename_contract.sql; trigger none; backfill none") {
 			t.Fatalf("stego plan --base v2 of v3 (%s) does not list the contract migration of the rename:\n%s", e.plans["v3 plan error"], plan)
 		}
 		if e.plans["removed compat error"] == "" || !strings.Contains(e.plans["removed compat"], "user-email-rename") {
