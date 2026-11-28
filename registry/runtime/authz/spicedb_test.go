@@ -108,6 +108,25 @@ var (
 // quantum is the revision quantization interval of the quantized server.
 const quantum = 4 * time.Second
 
+// afterBoundary waits until the quantization boundary after the setup writes has passed, so that checks up to the next
+// boundary read the state at it, and returns the time of the next boundary. The PostgreSQL datastore serves the first
+// transaction after the boundary: a case writes one before the change whose stale read it tests.
+func afterBoundary(t *testing.T) time.Time {
+	t.Helper()
+	next := time.Now().Truncate(quantum).Add(quantum)
+	time.Sleep(time.Until(next) + quantum/5)
+	return next.Add(quantum)
+}
+
+// inWindow fails the case when it ends after the quantization boundary end, because a check after it can read the
+// change, so the stale read of the case proves nothing.
+func inWindow(t *testing.T, end time.Time) {
+	t.Helper()
+	if time.Now().After(end.Add(-quantum / 10)) {
+		t.Fatalf("the case took longer than the quantization interval %s, so its stale read proves nothing", quantum)
+	}
+}
+
 func TestMain(m *testing.M) {
 	code := pgtest.Main(m)
 	for _, server := range []*spiceServer{&testingServer, &quantizedServer, &postgresServer} {
@@ -835,6 +854,10 @@ func TestAwaitSchema(t *testing.T) {
 		if err != nil || since.IsZero() {
 			t.Fatalf("SchemaToken gives %v, %v, want the token of the schema that SpiceDB holds", since, err)
 		}
+		// The touch is the first transaction after a quantization boundary, which SpiceDB serves, and the schema write
+		// comes after it in the same interval. A schema write just before a boundary with the check after it gave the
+		// check the new schema (flaky on the CI of PR #22).
+		end := afterBoundary(t)
 		before, err := env.provider.Touch(ctx, []Tuple{{Resource: Resource{Type: "user", ID: definition}, Relation: "delegate",
 			Subject: Subject{Type: "user", ID: "alice"}}}, nil)
 		if err != nil {
@@ -849,6 +872,7 @@ func TestAwaitSchema(t *testing.T) {
 			Resource: Resource{Type: definition, ID: "t1/c1"}, Consistency: AtLeast(before),
 		}}})
 		if err == nil {
+			inWindow(t, end)
 			t.Fatalf("a check of %s right after the write passed: the quantization of %v gives no stale read to test", definition, quantum)
 		}
 		if Cause(err) != CauseSchemaNotServed || !Transient(err) || !errors.Is(err, ErrProvider) {
