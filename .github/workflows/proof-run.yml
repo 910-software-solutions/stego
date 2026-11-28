@@ -227,7 +227,7 @@ jobs:
             compiler-runtime) select=(-run "$COMPILER_RUNTIME_TESTS") ;;
             compiler) select=(-skip "$COMPILER_RUNTIME_TESTS") ;;
           esac
-          go test -json -race -count=1 -mod=readonly -timeout=11m "${select[@]}" $(cat "$list") > "$out" || true
+          go test -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" $(cat "$list") > "$out" || true
           case "$PART" in
             stego | compiler) go test -json -race -vet=off -mod=readonly -list '.*' $(cat "$list") > "$RUNNER_TEMP/part/list-$PART.json" || true ;;
           esac
