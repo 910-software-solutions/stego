@@ -541,7 +541,7 @@ func syncRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	faults = append(faults, baseStepFaults(base, head)...)
-	faults = append(faults, baseChangeFaults(base, head)...)
+	faults = append(faults, baseChangeFaults(applied, base, head)...)
 	faults = append(faults, onePhaseFaults(base, head)...)
 	faults = append(faults, uniqueAddFaults(base, head)...)
 	faults = append(faults, relaxFaults(base, head)...)
@@ -1008,7 +1008,7 @@ func baseStepFaults(base, head *types.ServiceDeclaration) []BaseFault {
 }
 
 // baseChangeFaults refuses a head that removes a schema change of the base or changes it in any way.
-func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
+func baseChangeFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	for _, change := range base.SchemaChanges {
 		index := slices.IndexFunc(head.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == change.ID })
@@ -1019,8 +1019,7 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		// A fill value of a retype is in the text of its expand step, which the ledger digest covers, so it does not
 		// change either (decision on ST-GEN-Q24 (c), orchestrator under the owner's delegation, 2026-11-14).
 		now := head.SchemaChanges[index]
-		if marked := change; marked.Definition != now.Definition && reflect.DeepEqual(func() types.SchemaChange { marked.Definition = now.Definition; return marked }(), now) &&
-			strings.Contains(change.Definition, "searchable") && !strings.Contains(now.Definition, "searchable") {
+		if baseMarked(applied, change, now, head) {
 			// The generator of the base gave the field of the Definition its search index (security review of PR #22,
 			// M1): searchDefinitionFaults asks for the item searchable in the definition.
 			continue
@@ -1030,6 +1029,23 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		}
 	}
 	return faults
+}
+
+// baseMarked tells whether a schema change of the base differs from the same change of the head only in the item
+// searchable that withLongTextIndexes put in its Definition: the base runs a postgres-adapter before
+// LongTextVersion, and the base Definition is exactly the head Definition with the item added where
+// searchableDefinition puts it. Any other change of the Definition, also of a word that holds "searchable", is a
+// change of the base (security review sec-22c, N1).
+func baseMarked(applied *AppliedState, change, now types.SchemaChange, head *types.ServiceDeclaration) bool {
+	if !LongTextIndexed(applied) || change.Definition == now.Definition {
+		return false
+	}
+	marked, ok := searchableDefinition(head, now)
+	if !ok || marked != change.Definition {
+		return false
+	}
+	now.Definition = change.Definition
+	return reflect.DeepEqual(now, change)
 }
 
 // onePhaseFaults refuses a head whose new steps give one schema change its expand and its contract step, because

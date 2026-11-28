@@ -139,6 +139,21 @@ func TestBaseLongText(t *testing.T) {
 		if faults := longTextFaults(t, noted, on, "6.32.0"); len(faults) != 0 {
 			t.Errorf("a drop of ActivityEntry with note set searchable: true on a 6.32.0 base: got %+v, want no fault", faults)
 		}
+		// A drop of the base stays as it is: only the item searchable that the base marking adds is not a change, and a
+		// change of a word that holds "searchable" is (security review sec-22c, N1).
+		changed := "the head changes the schema change organization-description-drop"
+		for _, c := range []struct{ base, head, adapter string }{
+			{"string, optional, max_length 1000, after name, pattern ^searchable", "string, optional, max_length 1000, after name, pattern ^x", "6.34.0"},
+			{"string, optional, max_length 1000, after name, pattern ^searchable", "string, optional, max_length 1000, after name, pattern ^x", "6.32.0"},
+			{"string, optional, max_length 1000, after name, searchable", "string, optional, max_length 1000, after name", "6.34.0"},
+		} {
+			if faults := longTextFaults(t, drop(c.base), drop(c.head), c.adapter); !asks(faults, "Organization", "description", changed) {
+				t.Errorf("a base drop %q changed to %q on a %s base: got %+v, want the fault that the head changes it", c.base, c.head, c.adapter, faults)
+			}
+		}
+		if faults := longTextFaults(t, drop("string, optional, max_length 1000, after name, pattern ^searchable"), drop("string, optional, max_length 1000, after name, searchable, pattern ^searchable"), "6.32.0"); len(faults) != 0 {
+			t.Errorf("a base drop with a pattern given the item searchable on a 6.32.0 base: got %+v, want no fault", faults)
+		}
 		// A record with no postgres-adapter pin, or a pin that does not parse, counts as a base that gave long text its
 		// search index, so the check fails closed (security review of PR #22, L2).
 		data := []byte(td01)
