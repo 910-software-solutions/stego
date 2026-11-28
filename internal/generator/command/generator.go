@@ -182,6 +182,8 @@ type command struct {
 	effectNames map[string][]string
 	retry       int
 	lock        string // a Go duration expression, or empty for the default
+	// witnesses are the witnesses of a command that declares creates_with_children (ST-DECL-INV108).
+	witnesses []authzschema.ChildWitness
 
 	// service is the service name of the service-level resource of a command whose resource type is the resource
 	// type of the tenant provisioning, and empty for every other command (ST-SUP-RC32-OC15).
@@ -463,6 +465,13 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 	}
 	if err := planResets(cmd); err != nil {
 		return nil, err
+	}
+	if decl.CreatesWithChildren {
+		witnesses, err := ChildWitnesses(m.ctx, decl.Name)
+		if err != nil {
+			return nil, err
+		}
+		cmd.witnesses = witnesses
 	}
 	return cmd, nil
 }
