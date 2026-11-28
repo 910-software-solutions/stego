@@ -1703,16 +1703,9 @@ each call idempotent.
 
 From runtime v0.209.0 (rest-crud 3.279.0, rpc-service and browser-service
 1.279.0), a command or a worker can declare `creates_with_children: true`
-(ST-SUP-Q221, ST-SUP-RP10-LC59, ST-DECL-INV108):
-
-```yaml
-commands:
-  - name: add-cost-item
-    writes: [Org, CostItem, PriceHistory]
-    resource_type: org
-    permission: catalog_edit
-    creates_with_children: true
-```
+(ST-SUP-Q221, ST-SUP-RP10-LC59, ST-DECL-INV108), beside its `writes`, such
+as a command `add-cost-item` with `writes: [Org, CostItem, PriceHistory]`,
+`resource_type: org` and `permission: catalog_edit`.
 
 Then the `Create` of a row that refers to a row that a `Create` of the same
 attempt wrote is decided with no call of SpiceDB, only when validate proved

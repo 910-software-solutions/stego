@@ -18,7 +18,6 @@ import (
 	"github.com/authzed/spicedb/pkg/schemadsl/input"
 	"google.golang.org/grpc"
 
-	"github.com/910-software-solutions/stego/registry/runtime/internal/authzclock"
 	"github.com/910-software-solutions/stego/registry/runtime/otel"
 )
 
@@ -203,20 +202,6 @@ func NewSchemaGate(own string, reader SchemaReader, decisionLimit time.Duration)
 		decisionLimit = DefaultDecisionTimeout
 	}
 	return &SchemaGate{own: digest, reader: reader, limit: min(SchemaReadLimit, decisionLimit), now: time.Now}, nil
-}
-
-// The authz package gives the tests of the runtime module the clock of a schema gate, through the internal package
-// authzclock, so the code that a service generates cannot change the bound of a reading.
-func init() {
-	authzclock.RegisterGate(func(gate any, now func() time.Time) bool {
-		g, ok := gate.(*SchemaGate)
-		if ok && now != nil {
-			g.mu.Lock()
-			g.now = now
-			g.mu.Unlock()
-		}
-		return ok
-	})
 }
 
 // Digest is the expected digest of the gate: the canonical digest of the schema of the release.

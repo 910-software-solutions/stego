@@ -120,15 +120,25 @@ type Config struct {
 	clocks authzclock.Clocks
 }
 
-// The authz package gives the tests of the runtime module the clocks of a configuration, through the internal
-// package authzclock, so the configuration has no clock field that the code a service generates can set.
+// The authz package gives the tests of the runtime module the clocks of a configuration, and the clock of a schema
+// gate, through the internal package authzclock, so neither has a clock field that the code a service generates can
+// set.
 func init() {
 	authzclock.Register(func(cfg any, clocks authzclock.Clocks) bool {
-		c, ok := cfg.(*Config)
-		if ok {
+		switch c := cfg.(type) {
+		case *Config:
 			c.clocks = clocks
+			return true
+		case *SchemaGate:
+			if clocks.Gate == nil {
+				return false
+			}
+			c.mu.Lock()
+			c.now = clocks.Gate
+			c.mu.Unlock()
+			return true
 		}
-		return ok
+		return false
 	})
 }
 
