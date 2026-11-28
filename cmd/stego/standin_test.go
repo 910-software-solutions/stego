@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func standInSource(t *testing.T, goSum string) (string, string) {
 		}
 	}
 	git := func(args ...string) string {
-		command := exec.Command("git", append([]string{"-c", "user.name=STEGO", "-c", "user.email=stego@example.test", "-c", "commit.gpgsign=false"}, args...)...)
+		command := exec.Command("git", slices.Concat(noMaintenance, []string{"-c", "user.name=STEGO", "-c", "user.email=stego@example.test", "-c", "commit.gpgsign=false"}, args)...)
 		command.Dir = repository
 		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 		output, err := command.CombinedOutput()
