@@ -195,6 +195,11 @@ each level too:
 - `command.authz.undecided` and `query.authz.undecided` (WARN, `command: the
   authorization provider could not decide` and `query: the authorization
   provider could not decide the read`).
+- `query.fill.failed` (ERROR, `query: the fill failed`, from runtime
+  v0.211.0): a query fill ended with an answer of 500. The line gives the
+  query and the fixed cause class `fill_error`, `audit`, `closed`, `panic`,
+  `deadline` or `canceled`, and `held_back`. It holds no error text, no value
+  and no ID. A refusal, a missing row and a bad request write no line.
 - `command.seal.pass` and `command.reseal.pass` (INFO): a pass of the seal or
   the re-seal of a secret column.
  The export to an OpenTelemetry collector does not

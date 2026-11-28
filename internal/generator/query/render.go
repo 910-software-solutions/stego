@@ -190,11 +190,14 @@ func renderEntity(w *writer, e *entity) {
 func renderSpec(w *writer, e *entity, load string) {
 	v := e.value
 	columns := make([]string, 0, len(v.Fields))
-	var sensitive []string
+	var sensitive, typed []string
+	pii := false
 	for _, f := range v.Fields {
 		columns = append(columns, strconv.Quote(f.Column))
+		typed = append(typed, strconv.Quote(f.Column)+": query."+columnType(f))
 		switch f.Sensitivity {
 		case "pii":
+			pii = true
 			sensitive = append(sensitive, strconv.Quote(f.Column)+": audit.PII")
 		case "secret":
 			sensitive = append(sensitive, strconv.Quote(f.Column)+": audit.Secret")
@@ -224,7 +227,35 @@ func renderSpec(w *writer, e *entity, load string) {
 	if len(sensitive) > 0 {
 		w.p("Fields: audit.Fields{%s},", strings.Join(sensitive, ", "))
 	}
+	if pii {
+		// The read audit of an entity with a pii field converts each column by its declared type, so a jsonb column
+		// is a JSON value and a bytes column its base64 text (ST-SUP-RP11-LC08, erp-demo G11).
+		w.p("Types: map[string]query.ColumnType{%s},", strings.Join(typed, ", "))
+	}
 	w.p("}, %s))\n", load)
+}
+
+// columnType is the name of the query.ColumnType of the field's read: the type by which the read audit converts the
+// value of its column.
+func columnType(f capability.Field) string {
+	switch f.Read {
+	case capability.ReadText:
+		return "ColumnText"
+	case capability.ReadInt, capability.ReadInt32:
+		return "ColumnInt"
+	case capability.ReadBool:
+		return "ColumnBool"
+	case capability.ReadTime:
+		return "ColumnTime"
+	case capability.ReadFloat:
+		return "ColumnFloat"
+	case capability.ReadBytes:
+		return "ColumnBytes"
+	case capability.ReadJSON:
+		return "ColumnJSON"
+	}
+	// A read with no column type gives a type that NewEntity refuses, so the service does not start (fail closed).
+	return "ColumnType(" + strconv.Quote(f.Read) + ")"
 }
 
 // readExpr is the expression that reads the field's column from the row r.

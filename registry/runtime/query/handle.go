@@ -3,9 +3,11 @@ package query
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"strings"
@@ -67,6 +69,11 @@ type Spec struct {
 	// Fields are the sensitivities of the entity's fields by column name. An entity with a pii field is audited on
 	// each read (ST-SUP-RP11-LC08).
 	Fields audit.Fields
+	// Types are the declared types of the columns by column name. The read audit of an entity with a pii field
+	// converts the value of each column by its declared type, so a jsonb column is a JSON value and a bytes column
+	// its base64 text (ST-SUP-RP11-LC08). NewEntity refuses an entity with a pii field that does not declare the type
+	// of each column, and a type that is not a ColumnType.
+	Types map[string]ColumnType
 	// Search is true for an entity with a small expected cardinality: its list filters with a resource search of
 	// the provider. Otherwise a list pages the table and filters each page with one batch evaluation
 	// (ST-SUP-RP11-LC07).
@@ -75,6 +82,80 @@ type Spec struct {
 	// it refuses, decides it as a missing row, and answers ErrNotFound, so a malformed key never fails the read
 	// statement with 500 (walkthrough 10, B4). Nil checks no form.
 	ValidID func(id string) bool
+}
+
+// ColumnType is the declared type of a column, by which the read audit converts its value (Spec.Types).
+type ColumnType string
+
+// The column types, one for each read of Row: a string, enum or ref field is text, an int32 or int64 field int, a
+// float or double field float, a jsonb field json.
+const (
+	ColumnText  ColumnType = "text"
+	ColumnInt   ColumnType = "int"
+	ColumnFloat ColumnType = "float"
+	ColumnBool  ColumnType = "bool"
+	ColumnTime  ColumnType = "time"
+	ColumnBytes ColumnType = "bytes"
+	ColumnJSON  ColumnType = "json"
+)
+
+// known reports whether t is one of the column types.
+func (t ColumnType) known() bool {
+	switch t {
+	case ColumnText, ColumnInt, ColumnFloat, ColumnBool, ColumnTime, ColumnBytes, ColumnJSON:
+		return true
+	}
+	return false
+}
+
+// auditValue converts the value v of the column, as the driver gives it, by the declared type t of the column, to
+// a value that the audit runtime encodes (ST-SUP-RP11-LC08): a json column is its JSON value, which the audit
+// runtime decodes and redacts at any depth; a bytes column is the standard base64 text of its bytes, the form that
+// a response gives the field; NULL is nil. Only a json column takes bytes as JSON text, so a bytes column that
+// holds JSON text stays its base64 text. A value that is not of the declared type, and a type that is not known,
+// is an error that names the column and the type and never holds the value, so the read gives no result.
+func auditValue(column string, t ColumnType, v any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch t {
+	case ColumnText:
+		if s, ok := v.(string); ok {
+			return s, nil
+		}
+	case ColumnInt:
+		switch v.(type) {
+		case int64, int32, int16, int8, int, uint64, uint32, uint16, uint8, uint:
+			return v, nil
+		}
+	case ColumnFloat:
+		switch v.(type) {
+		case float64, float32:
+			return v, nil
+		}
+	case ColumnBool:
+		if b, ok := v.(bool); ok {
+			return b, nil
+		}
+	case ColumnTime:
+		if tm, ok := v.(time.Time); ok {
+			return tm, nil
+		}
+	case ColumnBytes:
+		if b, ok := v.([]byte); ok {
+			return base64.StdEncoding.EncodeToString(b), nil
+		}
+	case ColumnJSON:
+		switch x := v.(type) {
+		case []byte:
+			return json.RawMessage(append([]byte(nil), x...)), nil
+		case string:
+			return json.RawMessage(x), nil
+		}
+	default:
+		return nil, fmt.Errorf("query: the column %s has the type %q, which is not a column type", column, string(t))
+	}
+	return nil, fmt.Errorf("query: the column %s holds a value that is not of its declared type %s", column, t)
 }
 
 // ValidUUID reports whether id has the form of a UUID: 36 characters, hexadecimal digits in either case and four
@@ -250,13 +331,23 @@ func (r Row) Time(column string) (time.Time, error) {
 	}
 }
 
-// state is the state of an entity for the audit row of a read: each column and its value.
-func (r Row) state() map[string]any {
+// auditState is the state of an entity for the audit row of a read: each column and its value, converted by the
+// declared type of the column in types (auditValue). A column with no declared type is an error, so the read gives
+// no result (ST-SUP-RP11-LC08).
+func (r Row) auditState(types map[string]ColumnType) (map[string]any, error) {
 	m := make(map[string]any, len(r.columns))
 	for i, name := range r.columns {
-		m[name] = r.values[i]
+		t, ok := types[name]
+		if !ok {
+			return nil, fmt.Errorf("query: the column %s has no declared type", name)
+		}
+		v, err := auditValue(name, t, r.values[i])
+		if err != nil {
+			return nil, err
+		}
+		m[name] = v
 	}
-	return m
+	return m, nil
 }
 
 // entity is the part of an entity's declaration that does not depend on its Go type.
@@ -325,7 +416,25 @@ func NewEntity[T any](spec Spec, load func(Row) (T, error)) (*Entity[T], error) 
 			pii = true
 		}
 	}
+	for column, t := range spec.Types {
+		if !seen[column] {
+			return nil, fmt.Errorf("query: the entity %s declares the type of %q, which is not one of its columns", spec.Name, column)
+		}
+		if !t.known() {
+			return nil, fmt.Errorf("query: the entity %s declares the column %s with the type %q, which is not a column type", spec.Name, column, string(t))
+		}
+	}
+	if pii {
+		// The read audit converts each value by its declared type: an entity with a pii field declares the type of
+		// each column, so no read of it fails on a value that the audit cannot encode (ST-SUP-RP11-LC08).
+		for _, column := range spec.Columns {
+			if _, ok := spec.Types[column]; !ok {
+				return nil, fmt.Errorf("query: the entity %s has a pii field and declares no type of the column %s", spec.Name, column)
+			}
+		}
+	}
 	spec.Columns = append([]string(nil), spec.Columns...)
+	spec.Types = maps.Clone(spec.Types)
 	return &Entity[T]{e: entity{spec: spec, table: spec.Schema + "." + spec.Table, selectList: selectList, pii: pii},
 		load: load}, nil
 }
