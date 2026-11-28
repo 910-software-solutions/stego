@@ -537,6 +537,7 @@ type workflowStep struct {
 	WorkingDirectory string            `yaml:"working-directory"`
 	Shell            string            `yaml:"shell"`
 	ContinueOnError  string            `yaml:"continue-on-error"`
+	TimeoutMinutes   int               `yaml:"timeout-minutes"`
 }
 
 type workflowJob struct {
@@ -723,7 +724,7 @@ var partCommands = []string{
 	`go test -C internal/assure -json -race -count=1 -mod=readonly -timeout=20m -run "$pattern" ./... > "$out" || true`,
 	`select=()`,
 	`if [ "$module" = internal/assure ]; then select=(-skip "$ASSURE_LOCAL_A_TESTS|$ASSURE_LOCAL_B_TESTS"); fi`,
-	`go test -C "$module" -json -race -count=1 -mod=readonly -timeout=20m "${select[@]}" ./... >> "$out" || true`,
+	`go test -C "$module" -json -race -count=1 -mod=readonly -timeout=11m "${select[@]}" ./... >> "$out" || true`,
 	`go test -C "$module" -json -race -vet=off -mod=readonly -list '.*' ./... >> "$RUNNER_TEMP/part/list-$PART.json" || true`,
 	`select=()`,
 	`stego-build) select=(-run "$STEGO_BUILD_TESTS") ;;`,
@@ -886,6 +887,75 @@ func TestSuitesJob(t *testing.T) {
 		if got := strings.Count(output, "::warning::"); got != 2 || !strings.Contains(output, "::warning::The part compiler ran example.test/root/compiler in 722 seconds") ||
 			!strings.Contains(output, "::warning::The part rest ran example.test/root/a in 3000 seconds") {
 			t.Errorf("the step gives %d warnings, want one for each package over 12 minutes:\n%s", got, output)
+		}
+	})
+	t.Run("ST-ASR-UC01-R01-T04 The go test runs of each part end by their own timeouts before the step's timeout cancels the step", func(t *testing.T) {
+		t.Parallel()
+		// A cancelled step writes no artifact, so a slow package would give a missing part and no test outcome.
+		// The test runs the step of each part with a stand-in go that writes its arguments (and one package for go
+		// list), adds the -timeout values of the go test runs that run tests, and expects the sum and listMargin to
+		// end before the step's timeout. The go list and go test -list runs use the test builds in the build cache.
+		const listMargin = 3 * time.Minute
+		tests := readWorkflow(t).Jobs["tests"]
+		var step workflowStep
+		for _, s := range tests.Steps {
+			if s.Name == "Run the Go suites of the part" {
+				step = s
+			}
+		}
+		if step.Run == "" || step.TimeoutMinutes <= 0 {
+			t.Fatalf("the tests job has no step that runs the Go suites with a timeout: %+v", step)
+		}
+		limit := time.Duration(step.TimeoutMinutes) * time.Minute
+		bin := t.TempDir()
+		writeFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GO_CALLS\"\nif [ \"$1\" = list ]; then echo example.test/a; fi\n")
+		if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		timeoutFlag := regexp.MustCompile(`(?:^| )-timeout=(\S+)`)
+		for _, part := range tests.Strategy.Matrix.Part {
+			runnerTemp := t.TempDir()
+			calls := filepath.Join(runnerTemp, "go-calls.txt")
+			command := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step.Run)
+			command.Dir = runnerTemp
+			var env []string
+			for name, value := range tests.Env {
+				env = append(env, name+"="+value)
+			}
+			// The part comes from the matrix in place of the expression of the job's environment.
+			command.Env = append(env, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "RUNNER_TEMP="+runnerTemp, "PART="+part, "GO_CALLS="+calls)
+			if out, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("the step of the part %s: %v: %s", part, err, out)
+			}
+			data, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var total time.Duration
+			runs := 0
+			for _, call := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				if !strings.HasPrefix(call, "test ") || strings.Contains(call, " -list ") {
+					continue
+				}
+				runs++
+				match := timeoutFlag.FindStringSubmatch(call)
+				if match == nil {
+					t.Errorf("the part %s runs go test with no -timeout: go %s", part, call)
+					continue
+				}
+				timeout, err := time.ParseDuration(match[1])
+				if err != nil || timeout <= 0 {
+					t.Errorf("the part %s runs go test with the timeout %q: go %s", part, match[1], call)
+					continue
+				}
+				total += timeout
+			}
+			if runs == 0 {
+				t.Errorf("the part %s runs no go test", part)
+			}
+			if total+listMargin > limit {
+				t.Errorf("the go test runs of the part %s have the timeouts %v in total, which with %v for the lists do not end before the step's %v", part, total, listMargin, limit)
+			}
 		}
 	})
 	t.Run("ST-ASR-UC01-R01-T02 The suites job fails for a missing, extra, cut or incomplete part, and for a failed test or package of any name", func(t *testing.T) {
