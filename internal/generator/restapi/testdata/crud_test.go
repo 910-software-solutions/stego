@@ -1585,6 +1585,50 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC28-OC04-T04 A read and a list of an entity with a pii field and a jsonb field answer 200 and audit the JSON value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		mail := "mail-" + uuid.NewString()
+		id := e.create(a, "customers", "customer", `{"name":"Ida","api_token":"tok","plan":"free","contact":{"email":"`+mail+`"},"prefs":{"lang":"de","tags":["a",2]}}`)
+		bare := e.create(a, "customers", "customer", `{"name":"Ole","api_token":"tok","plan":"free"}`)
+		if r := e.send(a, http.MethodGet, "/api/v1/customers/"+id, "", ""); r.status != http.StatusOK {
+			t.Fatalf("the read of a customer with jsonb values answered %d %s, want 200", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1/customers?pageSize=10", "", ""); r.status != http.StatusOK {
+			t.Fatalf("the list of customers with jsonb values answered %d %s, want 200", r.status, r.body)
+		}
+		var states []string
+		rows, err := e.admin.QueryContext(e.ctx, `SELECT after::text FROM audit_event WHERE tenant_id = $1 AND action = 'read' AND resource_id = $2 ORDER BY seq`, a.tenant.ID(), id)
+		must(t, err)
+		for rows.Next() {
+			var state string
+			must(t, rows.Scan(&state))
+			states = append(states, state)
+		}
+		must(t, rows.Err())
+		must(t, rows.Close())
+		if len(states) != 2 {
+			t.Fatalf("%d read audit rows of the customer, want one for the read and one for the list", len(states))
+		}
+		for _, state := range states {
+			var m map[string]any
+			must(t, json.Unmarshal([]byte(state), &m))
+			prefs, _ := json.Marshal(m["prefs"])
+			if string(prefs) != `{"lang":"de","tags":["a",2]}` {
+				t.Errorf("the read audit row holds prefs %s, want the JSON value", prefs)
+			}
+			if m["name"] != audit.RedactionMarker || m["contact"] != audit.RedactionMarker {
+				t.Errorf("the read audit row holds name %v and contact %v, want the redaction marker", m["name"], m["contact"])
+			}
+			if strings.Contains(state, mail) || strings.Contains(state, "Ida") {
+				t.Errorf("the read audit row holds a pii value: %s", state)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'read' AND resource_id = $2 AND after->'prefs' = 'null'::jsonb`, a.tenant.ID(), bare); n != 1 {
+			t.Errorf("%d read audit rows of the customer with no prefs hold prefs null, want 1 (the list)", n)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC38-T01 A list on the runtime data path pages by cursor in the requested order, with no total", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())

@@ -7,12 +7,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/910-software-solutions/stego/registry/runtime/audit"
 	"github.com/910-software-solutions/stego/registry/runtime/authz"
+	"github.com/910-software-solutions/stego/registry/runtime/otel"
 	"github.com/910-software-solutions/stego/registry/runtime/probe"
 	"github.com/910-software-solutions/stego/registry/runtime/tenant"
 
@@ -217,6 +220,60 @@ type Bound[P any] struct {
 // Fill is a query fill: it gets the decoded request and the query handle, and returns the response.
 type Fill[Req, Res, P any] func(ctx context.Context, req Req, h *Handle[P]) (Res, error)
 
+// errAudit is the error of a read whose read audit row could not be made or written (ST-SUP-RP11-LC08). Its
+// errors name the entity and the column, never a value.
+var errAudit = errors.New("query: the read audit failed")
+
+// The fixed cause classes of the log line query.fill.failed (ST-SUP-RP11-LC10).
+const (
+	fillCauseError    = "fill_error"
+	fillCauseAudit    = "audit"
+	fillCauseClosed   = "closed"
+	fillCausePanic    = "panic"
+	fillCauseDeadline = "deadline"
+	fillCauseCanceled = "canceled"
+)
+
+// fillCause gives the fixed cause class of the error of a fill that ends with 500, and never its text.
+func fillCause(err error) string {
+	switch {
+	case errors.Is(err, errPanic):
+		return fillCausePanic
+	case errors.Is(err, errAudit):
+		return fillCauseAudit
+	case errors.Is(err, ErrClosed):
+		return fillCauseClosed
+	case errors.Is(err, context.DeadlineExceeded):
+		return fillCauseDeadline
+	case errors.Is(err, context.Canceled):
+		return fillCauseCanceled
+	}
+	return fillCauseError
+}
+
+// fillLog holds back the line query.fill.failed to one line for each query and cause class in each authz.LogEvery,
+// with the number of lines that it held back.
+var fillLog = authz.NewCauseLog(nil)
+
+// logFillFailure writes the one error line query.fill.failed of a query whose fill ends with an answer of 500 and
+// whose cause no other log line names (ST-SUP-RP11-LC10): the query name and the fixed cause class, and no error
+// text, no value and no ID of a row or of the request. A declared refusal, a missing row, a bad request and a
+// read that a retry may pass (statusOf) write no line; nor does a decision that the provider refused, which
+// query.authz.undecided names, or a resource search over its bound, which query.cardinality.exceeded names.
+func logFillFailure(ctx context.Context, query string, err error) {
+	var refusal *Refusal
+	var undecided *undecidedError
+	if statusOf(err) != http.StatusInternalServerError || errors.As(err, &refusal) || errors.As(err, &undecided) ||
+		errors.Is(err, ErrTooManyKeys) {
+		return
+	}
+	cause := fillCause(err)
+	if ok, held := fillLog.Allow(query + "/" + cause); ok {
+		slog.ErrorContext(ctx, "query: the fill failed", otel.SlogEventKey, "query.fill.failed", "query", query,
+			"cause", cause, "held_back", held)
+	}
+}
+
 // errPanic is the error of a fill that panicked or did not return normally, such as one that called
 // runtime.Goexit. It does not carry the panic value (ST-SUP-RP11-LC10).
 var errPanic = errors.New("query: the fill panicked")
@@ -326,6 +383,7 @@ func runFill[P any](ctx context.Context, rt *Runtime, q *Query, b Bound[P], body
 		if tenant.StalePlan(fillErr) {
 			tenant.ResetStatements()
 		}
+		logFillFailure(ctx, q.name, fillErr)
 		return fillErr
 	}
 	if err := tenant.Commit(ctx, tx, b.Tenant); err != nil {
@@ -396,7 +454,7 @@ func (c *core) auditedFailure(ctx context.Context, e *entity, id, code string) e
 	event := c.readEvent(e, id)
 	event.ErrorCode = code
 	if _, err := a.rt.audit.RecordRead(ctx, a.rt.auditDB, c.tenant, event); err != nil {
-		a.failed = fmt.Errorf("query: the read audit row of %s: %w", e.spec.Name, err)
+		a.failed = fmt.Errorf("%w: the row of %s: %w", errAudit, e.spec.Name, err)
 		return a.failed
 	}
 	a.done[key] = true
@@ -439,13 +497,19 @@ func (c *core) audited(ctx context.Context, e *entity, id string, row Row) error
 		return nil
 	}
 	event := c.readEvent(e, id)
-	state := row.state()
+	// Each value is converted by the declared type of its column, so a jsonb column is a JSON value and a bytes column
+	// its base64 text; a value that the declared type does not take fails the read (ST-SUP-RP11-LC08).
+	state, err := row.auditState(e.spec.Types)
+	if err != nil {
+		a.failed = fmt.Errorf("%w: the row of %s: %w", errAudit, e.spec.Name, err)
+		return a.failed
+	}
 	if err := event.SetStates(a.rt.settings, e.spec.Fields, state, state); err != nil {
-		a.failed = fmt.Errorf("query: the read audit row of %s: %w", e.spec.Name, err)
+		a.failed = fmt.Errorf("%w: the row of %s: %w", errAudit, e.spec.Name, err)
 		return a.failed
 	}
 	if _, err := a.rt.audit.RecordRead(ctx, a.rt.auditDB, c.tenant, event); err != nil {
-		a.failed = fmt.Errorf("query: the read audit row of %s: %w", e.spec.Name, err)
+		a.failed = fmt.Errorf("%w: the row of %s: %w", errAudit, e.spec.Name, err)
 		return a.failed
 	}
 	a.done[key] = true
