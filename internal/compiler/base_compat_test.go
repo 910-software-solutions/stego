@@ -982,7 +982,7 @@ func TestBaseUniqueOfField(t *testing.T) {
 				t.Errorf("runtime %q: the faults are %+v, want one of %s that names %s and the change", runtime, faults, StepLedgerRule, UniqueRuntimeVersion)
 			}
 		}
-		for _, runtime := range []string{UniqueRuntimeVersion, "v0.209.0"} {
+		for _, runtime := range []string{UniqueRuntimeVersion, "v0.212.0"} {
 			if faults := uniqueRuntimeFaults(applied(runtime), base, head); len(faults) != 0 {
 				t.Errorf("runtime %s: refused: %+v", runtime, faults)
 			}
