@@ -7,7 +7,7 @@
 # gRPC, before any statement or decision (walkthrough 10, B4; ST-SUP-RC33-OC05).
 kind: component
 name: query
-version: 1.7.0
+version: 1.8.0
 stage: ga
 output_namespace: queries
 

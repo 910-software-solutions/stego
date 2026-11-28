@@ -608,7 +608,7 @@
     {
       "id": "component:query",
       "name": "query",
-      "version": "1.7.0",
+      "version": "1.8.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared query for the caller and gives back its rows.",
@@ -631,7 +631,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.7.0",
+          "version": "1.8.0",
           "field": "architecture"
         }
       }
@@ -1041,7 +1041,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.7.0",
+          "version": "1.8.0",
           "field": "provides"
         }
       }
@@ -5095,7 +5095,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.7.0",
+          "version": "1.8.0",
           "field": "needs"
         }
       }
@@ -7457,7 +7457,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.7.0",
+          "version": "1.8.0",
           "field": "environment"
         }
       }
@@ -7475,7 +7475,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.7.0",
+          "version": "1.8.0",
           "field": "environment"
         }
       }
@@ -15387,7 +15387,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }
@@ -15402,7 +15402,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }
@@ -15417,7 +15417,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }
@@ -15432,7 +15432,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }
@@ -15447,7 +15447,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }
@@ -15462,7 +15462,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.7.0",
+              "version": "1.8.0",
               "field": "environment"
             }
           }

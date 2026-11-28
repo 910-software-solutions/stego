@@ -7,8 +7,8 @@ version: 3.283.0
 # of that folder at the version. A new runtime version moves it in a new archetype version.
 runtime:
   module: github.com/910-software-solutions/stego/registry/runtime
-  version: v0.209.0
-  sum: h1:i8l5KpReS3EgcfZdFGEAF6C20a5XkseZ3ISPMNQueVU=
+  version: v0.211.0
+  sum: h1:17Y3HdYrIId5itlv83m30+ZC/P57LE8drqqY78HLKo8=
 
 components:
   - rest-api
